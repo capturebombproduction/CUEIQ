@@ -6,7 +6,6 @@ import { toast } from "sonner";
 import {
   Radio,
   ImageDown,
-  MapPin,
   CalendarDays,
   ExternalLink,
   Loader2,
