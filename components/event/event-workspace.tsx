@@ -11,6 +11,7 @@ import {
   type MicAssignment,
   type ScheduleItem,
   type SetlistItem,
+  type Song,
 } from "@/lib/types";
 
 export function EventWorkspace({
@@ -24,6 +25,7 @@ export function EventWorkspace({
   setlist,
   micMap,
   members,
+  songs,
 }: {
   eventId: string;
   tenantId: string;
@@ -35,6 +37,7 @@ export function EventWorkspace({
   setlist: SetlistItem[];
   micMap: MicAssignment[];
   members: Member[];
+  songs: Song[];
 }) {
   const modules = EVENT_TYPES[eventType]?.modules ?? EVENT_TYPES.idol.modules;
 
@@ -55,6 +58,7 @@ export function EventWorkspace({
           showStartTime={showStartTime}
           hardOutTime={hardOutTime}
           members={members}
+          songs={songs}
         />
       </TabsContent>
 

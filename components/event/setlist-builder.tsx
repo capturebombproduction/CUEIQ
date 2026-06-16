@@ -10,6 +10,7 @@ import {
   Mic,
   AlarmClock,
   CheckCircle2,
+  ListMusic,
 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { Button } from "@/components/ui/button";
@@ -40,6 +41,7 @@ import {
   type MicSlot,
   type SetlistItem,
   type SetlistKind,
+  type Song,
 } from "@/lib/types";
 import {
   computeSetlistTimes,
@@ -236,6 +238,77 @@ function MicSlotsDialog({
   );
 }
 
+// ---- pick a song from the group's library (dialog) ------------------------
+function LibraryPickerDialog({
+  songs,
+  onPick,
+}: {
+  songs: Song[];
+  onPick: (song: Song) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [q, setQ] = useState("");
+  const filtered = songs.filter((s) =>
+    s.title.toLowerCase().includes(q.trim().toLowerCase())
+  );
+
+  return (
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogTrigger asChild>
+        <Button type="button" variant="outline">
+          <ListMusic className="h-4 w-4" /> จากคลัง
+        </Button>
+      </DialogTrigger>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>เลือกเพลงจากคลัง</DialogTitle>
+        </DialogHeader>
+        {songs.length === 0 ? (
+          <p className="py-6 text-center text-sm text-muted-foreground">
+            ยังไม่มีเพลงในคลังของวงนี้ — เพิ่มได้ที่เมนู “คลังเพลง”
+          </p>
+        ) : (
+          <div className="space-y-2">
+            <Input
+              autoFocus
+              placeholder="ค้นหาชื่อเพลง…"
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+            />
+            <div className="max-h-72 space-y-1 overflow-auto">
+              {filtered.length === 0 ? (
+                <p className="py-4 text-center text-sm text-muted-foreground">
+                  ไม่พบเพลง
+                </p>
+              ) : (
+                filtered.map((s) => (
+                  <button
+                    key={s.id}
+                    type="button"
+                    className="flex w-full items-center justify-between gap-3 rounded-md border px-3 py-2 text-left text-sm transition-colors hover:bg-muted"
+                    onClick={() => {
+                      onPick(s);
+                      setQ("");
+                      setOpen(false);
+                    }}
+                  >
+                    <span className="font-medium">{s.title}</span>
+                    <span className="shrink-0 tabular-nums text-muted-foreground">
+                      {s.duration_seconds
+                        ? formatDuration(s.duration_seconds)
+                        : "—"}
+                    </span>
+                  </button>
+                ))
+              )}
+            </div>
+          </div>
+        )}
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 // ---- main builder ----------------------------------------------------------
 export function SetlistBuilder({
   eventId,
@@ -245,6 +318,7 @@ export function SetlistBuilder({
   showStartTime,
   hardOutTime,
   members,
+  songs,
 }: {
   eventId: string;
   tenantId: string;
@@ -253,6 +327,7 @@ export function SetlistBuilder({
   showStartTime: string | null;
   hardOutTime: string | null;
   members: Member[];
+  songs: Song[];
 }) {
   const supabase = createClient();
   const [items, setItems] = useState<SetlistItem[]>(
@@ -287,28 +362,20 @@ export function SetlistBuilder({
     persist(id, partial);
   }
 
-  async function addItem(kind: SetlistKind) {
+  async function insertItem(extra: Partial<SetlistItem> & { kind: SetlistKind }) {
     const sort = items.length
       ? Math.max(...items.map((i) => i.sort_order)) + 1
       : 1;
-    const defaults: Record<SetlistKind, Partial<SetlistItem>> = {
-      song: { title: "", duration_seconds: 210 },
-      mc: { title: "MC", duration_seconds: 180 },
-      se: { title: "SE", duration_seconds: 30 },
-      interlude: { title: "Interlude", duration_seconds: 60 },
-      guest: { title: "Guest", duration_seconds: 120 },
-    };
     const { data, error } = await supabase
       .from("setlist_items")
       .insert({
         tenant_id: tenantId,
         event_id: eventId,
-        kind,
         buffer_before_seconds: 0,
         buffer_after_seconds: 3,
         mic_slots: [],
         sort_order: sort,
-        ...defaults[kind],
+        ...extra,
       })
       .select("*")
       .single();
@@ -317,6 +384,27 @@ export function SetlistBuilder({
       return;
     }
     setItems((prev) => [...prev, data as SetlistItem]);
+  }
+
+  async function addItem(kind: SetlistKind) {
+    const defaults: Record<SetlistKind, Partial<SetlistItem>> = {
+      song: { title: "", duration_seconds: 210 },
+      mc: { title: "MC", duration_seconds: 180 },
+      se: { title: "SE", duration_seconds: 30 },
+      interlude: { title: "Interlude", duration_seconds: 60 },
+      guest: { title: "Guest", duration_seconds: 120 },
+    };
+    await insertItem({ kind, ...defaults[kind] });
+  }
+
+  /** Add a setlist row from a library song — auto-fills title + duration. */
+  async function addFromLibrary(song: Song) {
+    await insertItem({
+      kind: "song",
+      title: song.title,
+      duration_seconds: song.duration_seconds,
+    });
+    toast.success(`เพิ่ม "${song.title}" จากคลังแล้ว`);
   }
 
   async function removeItem(id: string) {
@@ -580,6 +668,7 @@ export function SetlistBuilder({
           <Button type="button" variant="default" onClick={() => addItem("song")}>
             <Plus className="h-4 w-4" /> เพลง
           </Button>
+          <LibraryPickerDialog songs={songs} onPick={addFromLibrary} />
           <Button type="button" variant="outline" onClick={() => addItem("mc")}>
             <Plus className="h-4 w-4" /> MC
           </Button>

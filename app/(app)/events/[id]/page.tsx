@@ -114,6 +114,7 @@ export default async function EventPage({
         setlist={bundle.setlist}
         micMap={bundle.micMap}
         members={bundle.members}
+        songs={bundle.songs}
       />
     </div>
   );

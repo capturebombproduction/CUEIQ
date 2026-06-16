@@ -77,6 +77,7 @@ export interface EventBundle {
   setlist: SetlistItem[];
   micMap: MicAssignment[];
   members: Member[];
+  songs: Song[];
   role: Role | null;
 }
 
@@ -100,7 +101,7 @@ export async function getEventBundle(
     .eq("tenant_id", event.tenant_id)
     .maybeSingle();
 
-  const [schedule, setlist, micMap, members] = await Promise.all([
+  const [schedule, setlist, micMap, members, songs] = await Promise.all([
     supabase
       .from("schedule_items")
       .select("*")
@@ -122,6 +123,11 @@ export async function getEventBundle(
       .select("*")
       .eq("group_id", event.group_id)
       .order("sort_order", { ascending: true }),
+    supabase
+      .from("songs")
+      .select("*")
+      .eq("group_id", event.group_id)
+      .order("title", { ascending: true }),
   ]);
 
   return {
@@ -133,6 +139,7 @@ export async function getEventBundle(
     setlist: (setlist.data ?? []) as SetlistItem[],
     micMap: (micMap.data ?? []) as MicAssignment[],
     members: (members.data ?? []) as Member[],
+    songs: (songs.data ?? []) as Song[],
     role: (membership?.role as Role) ?? null,
   };
 }
