@@ -251,6 +251,8 @@ export interface EventRow {
   hard_out_time: string | null; // "HH:MM:SS"
   status: GroupStatus;
   notes: string | null;
+  map_url: string | null;
+  costume_theme: string | null;
   created_by: string | null;
   created_at: string;
   updated_at: string;

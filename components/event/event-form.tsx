@@ -30,6 +30,7 @@ import {
   type GroupStatus,
 } from "@/lib/types";
 import { shortClock } from "@/lib/time";
+import { VENUE_PRESETS, findVenuePreset, mapsSearchUrl } from "@/lib/venues";
 
 const EVENT_TYPE_KEYS = Object.keys(EVENT_TYPES) as EventType[];
 const STATUS_KEYS = Object.keys(STATUS_META) as GroupStatus[];
@@ -61,9 +62,19 @@ export function EventForm({
   const [showStart, setShowStart] = useState(shortClock(event?.show_start_time));
   const [hardOut, setHardOut] = useState(shortClock(event?.hard_out_time));
   const [venue, setVenue] = useState(event?.venue ?? "");
+  const [mapUrl, setMapUrl] = useState(event?.map_url ?? "");
+  const [costumeTheme, setCostumeTheme] = useState(event?.costume_theme ?? "");
   const [status, setStatus] = useState<GroupStatus>(event?.status ?? "draft");
   const [notes, setNotes] = useState(event?.notes ?? "");
   const [loading, setLoading] = useState(false);
+
+  function onVenueChange(v: string) {
+    setVenue(v);
+    // Auto-fill the map link from a known venue, unless the user already
+    // pasted one of their own.
+    const preset = findVenuePreset(v);
+    if (preset && !mapUrl.trim()) setMapUrl(preset.mapUrl);
+  }
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -88,6 +99,8 @@ export function EventForm({
       hard_out_time: hardOut || null,
       status,
       notes: notes.trim() || null,
+      map_url: mapUrl.trim() || null,
+      costume_theme: costumeTheme.trim() || null,
     };
 
     if (mode === "create") {
@@ -209,10 +222,16 @@ export function EventForm({
               <Label htmlFor="venue">สถานที่</Label>
               <Input
                 id="venue"
+                list="venue-presets"
                 value={venue}
-                onChange={(e) => setVenue(e.target.value)}
+                onChange={(e) => onVenueChange(e.target.value)}
                 placeholder="เช่น Lot of Live (Bangkok)"
               />
+              <datalist id="venue-presets">
+                {VENUE_PRESETS.map((p) => (
+                  <option key={p.name} value={p.name} />
+                ))}
+              </datalist>
             </div>
             <div className="space-y-2">
               <Label>สถานะ</Label>
@@ -231,6 +250,50 @@ export function EventForm({
                   ))}
                 </SelectContent>
               </Select>
+            </div>
+          </div>
+
+          <div className="grid gap-4 sm:grid-cols-2">
+            <div className="space-y-2">
+              <Label htmlFor="map">Google Map (ลิงก์)</Label>
+              <Input
+                id="map"
+                value={mapUrl}
+                onChange={(e) => setMapUrl(e.target.value)}
+                placeholder="วางลิงก์ Google Maps"
+              />
+              <p className="text-xs text-muted-foreground">
+                {mapUrl.trim() ? (
+                  <a
+                    href={mapUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-primary underline"
+                  >
+                    เปิดลิงก์เพื่อตรวจสอบ ↗
+                  </a>
+                ) : venue.trim() ? (
+                  <a
+                    href={mapsSearchUrl(venue)}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-primary underline"
+                  >
+                    ค้นหา “{venue}” ใน Google Maps แล้ววางลิงก์ ↗
+                  </a>
+                ) : (
+                  "เลือกสถานที่ที่มี preset ระบบจะใส่ลิงก์ให้ หรือวางเอง"
+                )}
+              </p>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="costume">COSTUME THEME</Label>
+              <Input
+                id="costume"
+                value={costumeTheme}
+                onChange={(e) => setCostumeTheme(e.target.value)}
+                placeholder="เช่น All Black"
+              />
             </div>
           </div>
 

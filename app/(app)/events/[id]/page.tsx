@@ -5,7 +5,6 @@ import {
   CalendarDays,
   MapPin,
   Music2,
-  Radio,
   Pencil,
 } from "lucide-react";
 import { getEventBundle } from "@/lib/queries";
@@ -87,11 +86,6 @@ export default async function EventPage({
 
           <div className="flex flex-wrap gap-2">
             <ExportButton eventId={event.id} />
-            <Button asChild>
-              <Link href={`/events/${event.id}/live`}>
-                <Radio className="h-4 w-4" /> Live Mode
-              </Link>
-            </Button>
             {editable && (
               <Button asChild variant="outline">
                 <Link href={`/events/${event.id}/edit`}>
@@ -104,6 +98,7 @@ export default async function EventPage({
       </div>
 
       <EventWorkspace
+        event={event}
         eventId={event.id}
         tenantId={event.tenant_id}
         editable={editable}
