@@ -21,11 +21,14 @@ export function SiteHeader({
           <Link href="/dashboard" className="shrink-0">
             <Brand />
           </Link>
+          <span className="hidden whitespace-nowrap border-l pl-3 text-xs italic text-muted-foreground lg:inline">
+            ดีไซน์ บาย PatzNutthapat
+          </span>
           <MainNav />
         </div>
         <div className="flex items-center gap-2 sm:gap-3">
           {tenantName && (
-            <span className="hidden max-w-[16ch] truncate text-sm text-muted-foreground md:inline">
+            <span className="hidden whitespace-nowrap text-sm text-muted-foreground md:inline">
               {tenantName}
             </span>
           )}
