@@ -45,12 +45,13 @@ npm install
 ถ้าจะใช้โปรเจกต์ Supabase อื่น ให้แก้ตาม `.env.example`
 
 ### 3) ตั้งค่าฐานข้อมูล Supabase  ⚠️ สำคัญ
-เปิด **Supabase Dashboard → SQL Editor** แล้วรัน 2 ไฟล์นี้ตามลำดับ:
+เปิด **Supabase Dashboard → SQL Editor** แล้วรัน 3 ไฟล์นี้ตามลำดับ:
 
 1. [`supabase/migrations/0001_init.sql`](supabase/migrations/0001_init.sql) — สร้างตาราง + RLS + trigger
-2. [`supabase/seed.sql`](supabase/seed.sql) — ข้อมูลตัวอย่าง **VANTAFLARE “SUNNY SEITAN-SAI”**
+2. [`supabase/migrations/0002_songs.sql`](supabase/migrations/0002_songs.sql) — ตาราง Song Library + RLS + grants (Phase 2)
+3. [`supabase/seed.sql`](supabase/seed.sql) — ข้อมูลตัวอย่าง **VANTAFLARE “SUNNY SEITAN-SAI”** + คลังเพลง
 
-> ทั้งสองไฟล์รันซ้ำได้ปลอดภัย (idempotent)
+> ทั้งสามไฟล์รันซ้ำได้ปลอดภัย (idempotent)
 
 **แนะนำสำหรับช่วง beta:** ปิดการยืนยันอีเมลเพื่อทดสอบเร็วขึ้น
 Supabase → **Authentication → Sign In / Providers → Email → ปิด “Confirm email”**
