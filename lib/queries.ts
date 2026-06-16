@@ -144,6 +144,18 @@ export async function getEventBundle(
   };
 }
 
+/** All members in the tenant, grouped-ordered. */
+export async function getMembers(tenantId: string): Promise<Member[]> {
+  const supabase = createClient();
+  const { data } = await supabase
+    .from("members")
+    .select("*")
+    .eq("tenant_id", tenantId)
+    .order("group_id", { ascending: true })
+    .order("sort_order", { ascending: true });
+  return (data ?? []) as Member[];
+}
+
 /** All songs in the tenant's library (newest first). */
 export async function getSongs(tenantId: string): Promise<Song[]> {
   const supabase = createClient();

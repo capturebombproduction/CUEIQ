@@ -7,6 +7,7 @@ import { cn } from "@/lib/utils";
 const LINKS = [
   { href: "/dashboard", label: "โชว์" },
   { href: "/library", label: "คลังเพลง" },
+  { href: "/groups", label: "วง" },
 ];
 
 export function MainNav() {
