@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import {
   ChevronUp,
@@ -11,6 +11,7 @@ import {
   AlarmClock,
   CheckCircle2,
   ListMusic,
+  GripVertical,
 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { Button } from "@/components/ui/button";
@@ -333,6 +334,8 @@ export function SetlistBuilder({
   const [items, setItems] = useState<SetlistItem[]>(
     [...initialItems].sort((a, b) => a.sort_order - b.sort_order)
   );
+  const dragIndex = useRef<number | null>(null);
+  const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
 
   const showStartSec = parseClockToSeconds(showStartTime);
   const hardOutSec = parseClockToSeconds(hardOutTime);
@@ -439,6 +442,36 @@ export function SetlistBuilder({
     ]);
   }
 
+  /** Drag & drop reorder (desktop): move the dragged row to `target` index. */
+  async function handleDrop(target: number) {
+    const from = dragIndex.current;
+    dragIndex.current = null;
+    setDragOverIndex(null);
+    if (from == null || from === target) return;
+    const prev = items;
+    const next = [...items];
+    const [moved] = next.splice(from, 1);
+    next.splice(target, 0, moved);
+    const renumbered = next.map((it, i) => ({ ...it, sort_order: i + 1 }));
+    setItems(renumbered);
+    const changed = renumbered.filter(
+      (it) => prev.find((o) => o.id === it.id)?.sort_order !== it.sort_order
+    );
+    const results = await Promise.all(
+      changed.map((it) =>
+        supabase
+          .from("setlist_items")
+          .update({ sort_order: it.sort_order })
+          .eq("id", it.id)
+      )
+    );
+    const failed = results.find((r) => r.error);
+    if (failed?.error) {
+      toast.error("เรียงลำดับไม่สำเร็จ", { description: failed.error.message });
+      setItems(prev);
+    }
+  }
+
   return (
     <div className="space-y-4">
       {/* Summary / Hard-out banner */}
@@ -491,12 +524,44 @@ export function SetlistBuilder({
           return (
             <div
               key={it.id}
+              onDragOver={
+                editable
+                  ? (e) => {
+                      e.preventDefault();
+                      if (dragOverIndex !== idx) setDragOverIndex(idx);
+                    }
+                  : undefined
+              }
+              onDrop={editable ? () => handleDrop(idx) : undefined}
+              onDragLeave={
+                editable
+                  ? () => setDragOverIndex((v) => (v === idx ? null : v))
+                  : undefined
+              }
               className={cn(
                 "rounded-lg border bg-card p-3 shadow-sm",
-                t?.overHardOut && "border-destructive/60 bg-destructive/5"
+                t?.overHardOut && "border-destructive/60 bg-destructive/5",
+                dragOverIndex === idx && "ring-2 ring-primary"
               )}
             >
               <div className="flex items-center gap-2">
+                {editable && (
+                  <button
+                    type="button"
+                    draggable
+                    onDragStart={() => {
+                      dragIndex.current = idx;
+                    }}
+                    onDragEnd={() => {
+                      dragIndex.current = null;
+                      setDragOverIndex(null);
+                    }}
+                    className="shrink-0 cursor-grab text-muted-foreground hover:text-foreground active:cursor-grabbing"
+                    aria-label="ลากเพื่อย้ายลำดับ"
+                  >
+                    <GripVertical className="h-4 w-4" />
+                  </button>
+                )}
                 <span className="grid h-6 w-6 shrink-0 place-items-center rounded bg-muted text-xs font-semibold tabular-nums">
                   {idx + 1}
                 </span>
