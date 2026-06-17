@@ -269,31 +269,27 @@ export function EventSummary({
 
         {/* Setlist — detailed table */}
         <Section title={`Setlist & Show Flow (${setlist.length})`}>
-          <div className="flex flex-wrap items-center gap-x-5 gap-y-1 pb-1 text-sm">
-            <span className="flex items-center gap-1.5">
-              <Clock className="h-4 w-4 text-muted-foreground" />
-              Total Duration{" "}
-              <b className="tabular-nums">{formatDuration(timing.totalSeconds)}</b>
-            </span>
-            {hasClock && (
-              <span className="tabular-nums text-muted-foreground">
-                {formatClockOfDay(showStartSec!)}–
-                {formatClockOfDay(timing.endSec)}
+          {!isCapturing && (
+            <div className="flex flex-wrap items-center gap-x-5 gap-y-1 pb-1 text-sm">
+              <span className="flex items-center gap-1.5">
+                <Clock className="h-4 w-4 text-muted-foreground" />
+                Total Duration{" "}
+                <b className="tabular-nums">{formatDuration(timing.totalSeconds)}</b>
               </span>
-            )}
-            {hardOutSec != null &&
-              (timing.isOver ? (
-                <Badge variant="destructive" className="gap-1">
-                  <AlarmClock className="h-3.5 w-3.5" /> เกิน Hard Out{" "}
-                  {formatDuration(timing.overBy)}
-                </Badge>
-              ) : (
-                <Badge variant="success" className="gap-1">
-                  <CheckCircle2 className="h-3.5 w-3.5" /> Remaining{" "}
-                  {formatDuration(Math.max(0, hardOutSec - timing.endSec))}
-                </Badge>
-              ))}
-          </div>
+              {hardOutSec != null &&
+                (timing.isOver ? (
+                  <Badge variant="destructive" className="gap-1">
+                    <AlarmClock className="h-3.5 w-3.5" /> เกิน Hard Out{" "}
+                    {formatDuration(timing.overBy)}
+                  </Badge>
+                ) : (
+                  <Badge variant="success" className="gap-1">
+                    <CheckCircle2 className="h-3.5 w-3.5" /> Remaining{" "}
+                    {formatDuration(Math.max(0, hardOutSec - timing.endSec))}
+                  </Badge>
+                ))}
+            </div>
+          )}
 
           {setlist.length === 0 ? (
             <p className="text-sm text-muted-foreground">ยังไม่มีรายการ</p>
