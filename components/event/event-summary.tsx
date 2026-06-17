@@ -132,14 +132,18 @@ export function EventSummary({
     await new Promise((r) => setTimeout(r, 120)); // wait for re-render
     try {
       const { toJpeg } = await import("html-to-image");
-      const dataUrl = await toJpeg(captureRef.current, {
+      // Force 600px reflow before capture so text doesn't wrap at mobile width
+      const el = captureRef.current;
+      const prevWidth = el.style.width;
+      el.style.width = "600px";
+      await new Promise((r) => setTimeout(r, 80)); // wait for browser reflow
+      const dataUrl = await toJpeg(el, {
         pixelRatio: 2,
         backgroundColor: "#ffffff",
         cacheBust: true,
         quality: 0.92,
-        width: 600,
-        style: { width: "600px", padding: "32px" },
       });
+      el.style.width = prevWidth;
       const filename = `${event.name.replace(/[^\w\-]+/g, "_") || "summary"}.jpg`;
 
       // Web Share API — saves directly to gallery on iOS/Android
