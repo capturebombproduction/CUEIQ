@@ -103,16 +103,12 @@ export function LiveMode({
     return () => clearInterval(id);
   }, []);
 
-  // always-current handler for when the playing audio finishes (auto-advance)
-  const onEndedRef = useRef<() => void>(() => {});
-
   // audio element — create once
   useEffect(() => {
     const audio = new Audio();
     audio.addEventListener("ended", () => {
       setPlayingId(null);
       setAudioPlaying(false);
-      onEndedRef.current();
     });
     audio.addEventListener("timeupdate", () => {
       setAudioCurrent(audio.currentTime);
@@ -429,21 +425,14 @@ export function LiveMode({
     apply({ ...INITIAL, mode: state.mode }); // keep chosen mode after reset
   }
 
-  // in Auto mode, advance to next item when the current item's audio finishes
-  onEndedRef.current = () => {
-    const s = stateRef.current;
-    if (s.mode === "auto" && s.running && s.currentIndex < items.length - 1) {
-      goto(s.currentIndex + 1);
-    }
-  };
-
-  // in Auto mode, advance items WITHOUT an audio file when their countdown hits 0.
+  // in Auto mode, advance to the next item when the countdown (duration + buffers)
+  // reaches 0 — NOT when the audio file ends. Respects the set buffer time.
   // Only the control device (the one holding audio files) advances; viewers follow via sync.
   useEffect(() => {
     if (state.mode !== "auto" || !state.running) return;
     if (Object.keys(audioUrls).length === 0) return; // viewers don't drive advance
     const cur = items[state.currentIndex];
-    if (!cur || audioUrls[cur.id]) return; // items with audio advance on 'ended'
+    if (!cur) return;
     if (state.currentIndex >= items.length - 1) return;
     if (remaining > 0) return;
     if (autoAdvanceForRef.current === cur.id) return;
