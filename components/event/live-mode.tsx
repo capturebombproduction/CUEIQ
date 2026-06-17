@@ -409,6 +409,8 @@ export function LiveMode({
   }
   function goto(index: number) {
     if (index < 0 || index >= items.length) return;
+    // clicking the item that's already current must NOT reset its timer/audio
+    if (index === state.currentIndex && state.startedAt != null) return;
     apply({
       ...state,
       currentIndex: index,
@@ -515,7 +517,7 @@ export function LiveMode({
             {state.currentIndex + 1} / {items.length}
           </span>
         </div>
-        <h2 className="mb-3 text-2xl font-bold leading-tight">
+        <h2 className="mb-3 break-words px-1 text-xl font-bold leading-tight sm:text-2xl">
           {current?.title || "—"}
         </h2>
         <p className="text-5xl font-black tabular-nums sm:text-6xl lg:text-7xl">

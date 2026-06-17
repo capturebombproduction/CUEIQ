@@ -350,7 +350,7 @@ export function EventSummary({
                           )}
                           {slots.length > 0 && (
                             <span className="mt-0.5 block text-[10px] font-normal text-muted-foreground lg:hidden">
-                              🎤 {slots.map((s) => s.member ? `${s.mic}·${s.member}` : s.mic).join(" ")}
+                              🎤 {slots.map((s) => s.mic).join(" ")}
                             </span>
                           )}
                         </TableCell>
