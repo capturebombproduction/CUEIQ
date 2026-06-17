@@ -126,15 +126,15 @@ export function EventSummary({
   const mapQuery = event.venue || event.name;
 
   async function exportJpg() {
-    if (!captureRef.current) return;
+    const el = captureRef.current;
+    if (!el) return;
+    const prevWidth = el.style.width;
     setExporting(true);
     setIsCapturing(true); // swap iframe → static map
     await new Promise((r) => setTimeout(r, 120)); // wait for re-render
     try {
       const { toJpeg } = await import("html-to-image");
       // Force 600px reflow before capture so text doesn't wrap at mobile width
-      const el = captureRef.current;
-      const prevWidth = el.style.width;
       el.style.width = "600px";
       await new Promise((r) => setTimeout(r, 80)); // wait for browser reflow
       const dataUrl = await toJpeg(el, {
@@ -143,7 +143,6 @@ export function EventSummary({
         cacheBust: true,
         quality: 0.92,
       });
-      el.style.width = prevWidth;
       const filename = `${event.name.replace(/[^\w\-]+/g, "_") || "summary"}.jpg`;
 
       // Web Share API — saves directly to gallery on iOS/Android
@@ -173,6 +172,7 @@ export function EventSummary({
         description: e instanceof Error ? e.message : String(e),
       });
     } finally {
+      el.style.width = prevWidth; // always restore — even if capture threw
       setIsCapturing(false);
       setExporting(false);
     }
