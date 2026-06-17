@@ -80,6 +80,8 @@ export function LiveMode({
   const [audioPlaying, setAudioPlaying] = useState(false);
   const [audioCurrent, setAudioCurrent] = useState(0);
   const [audioDuration, setAudioDuration] = useState(0);
+  // tracks which "currentId→nextId" pair already had auto-trigger fired
+  const autoTriggeredForRef = useRef<string | null>(null);
 
   // ticking clock
   useEffect(() => {
@@ -138,6 +140,39 @@ export function LiveMode({
       wakeLockRef.current = null;
     };
   }, [state.running]);
+
+  // reset auto-trigger when item changes
+  useEffect(() => {
+    autoTriggeredForRef.current = null;
+  }, [state.currentIndex]);
+
+  // negative buffer: auto-play next item's audio when remaining ≤ |buffer_before|
+  useEffect(() => {
+    if (!state.running || !state.itemStartedAt) return;
+    const cur = items[state.currentIndex];
+    const nxt = items[state.currentIndex + 1];
+    if (!cur || !nxt) return;
+    const nextBefore = nxt.buffer_before_seconds ?? 0;
+    if (nextBefore >= 0) return; // only for negative buffer
+
+    const rem = blockSeconds(cur) - (now - state.itemStartedAt) / 1000;
+    const triggerKey = `${cur.id}→${nxt.id}`;
+    if (autoTriggeredForRef.current === triggerKey) return;
+
+    if (rem > 0 && rem <= Math.abs(nextBefore)) {
+      autoTriggeredForRef.current = triggerKey;
+      const url = audioUrls[nxt.id];
+      if (url && audioRef.current) {
+        const audio = audioRef.current;
+        audio.pause();
+        audio.src = url;
+        audio.currentTime = 0;
+        audio.play().catch(() => {});
+        setPlayingId(nxt.id);
+        setAudioPlaying(true);
+      }
+    }
+  }, [now, state, items, audioUrls]);
 
   // realtime sync
   useEffect(() => {
