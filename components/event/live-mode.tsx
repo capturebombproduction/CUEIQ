@@ -30,7 +30,8 @@ type ShowMode = "manual" | "auto";
 
 interface LiveState {
   running: boolean;
-  startedAt: number | null;
+  begun: boolean; // show entered (controls shown) — independent of the run clock
+  startedAt: number | null; // when the show FIRST ran — drives accumulated time
   itemStartedAt: number | null;
   itemElapsedAtPause: number | null;
   currentIndex: number;
@@ -39,6 +40,7 @@ interface LiveState {
 
 const INITIAL: LiveState = {
   running: false,
+  begun: false,
   startedAt: null,
   itemStartedAt: null,
   itemElapsedAtPause: null,
@@ -226,6 +228,7 @@ export function LiveMode({
       if (!payload || payload.sender === meId.current) return;
       setState({
         running: payload.running,
+        begun: payload.begun ?? payload.startedAt != null,
         startedAt: payload.startedAt,
         itemStartedAt: payload.itemStartedAt,
         itemElapsedAtPause: payload.itemElapsedAtPause ?? null,
@@ -237,7 +240,7 @@ export function LiveMode({
     ch.on("broadcast", { event: "sync-request" }, ({ payload }) => {
       if (!payload || payload.sender === meId.current) return;
       const s = stateRef.current;
-      if (s.startedAt != null) {
+      if (s.begun) {
         ch.send({
           type: "broadcast",
           event: "state",
@@ -419,14 +422,14 @@ export function LiveMode({
   function start() {
     const ts = Date.now();
     if (state.mode === "auto") {
-      // Auto: begin running + play first track immediately
-      apply({ running: true, startedAt: ts, itemStartedAt: ts, itemElapsedAtPause: null, currentIndex: 0, mode: "auto" });
+      // Auto: begin running + play first track immediately (run clock starts now)
+      apply({ running: true, begun: true, startedAt: ts, itemStartedAt: ts, itemElapsedAtPause: null, currentIndex: 0, mode: "auto" });
       const first = items[0];
       if (first) playItemAudio(first.id);
     } else {
-      // Manual: cue first item but DON'T start the countdown — it begins when
-      // the operator presses play. startedAt set so accumulated tracks the show.
-      apply({ running: false, startedAt: ts, itemStartedAt: null, itemElapsedAtPause: 0, currentIndex: 0, mode: "manual" });
+      // Manual: enter the show but DON'T start the run clock or countdown — both
+      // begin only when the operator presses รันโชว์. Accumulated stays 0 until then.
+      apply({ running: false, begun: true, startedAt: null, itemStartedAt: null, itemElapsedAtPause: 0, currentIndex: 0, mode: "manual" });
     }
   }
   function setMode(mode: ShowMode) {
@@ -435,7 +438,7 @@ export function LiveMode({
   function goto(index: number) {
     if (index < 0 || index >= items.length) return;
     // clicking the item that's already current must NOT reset its timer/audio
-    if (index === state.currentIndex && state.startedAt != null) return;
+    if (index === state.currentIndex && state.begun) return;
     const it = items[index];
     if (state.mode === "auto") {
       // Auto: jump + play new track + run countdown
@@ -449,15 +452,15 @@ export function LiveMode({
       });
       if (it) playItemAudio(it.id);
     } else {
-      // Manual: cue the new item FROZEN (countdown waits for play). Leave the
+      // Manual: cue the new item FROZEN (countdown waits for รันโชว์). Leave the
       // previous track playing — its row keeps the 🔊 until it ends or is replaced.
+      // Don't touch startedAt — accumulated only runs once the show has been run.
       apply({
         ...state,
         currentIndex: index,
         itemStartedAt: null,
         itemElapsedAtPause: 0,
         running: false,
-        startedAt: state.startedAt ?? Date.now(),
       });
     }
   }
@@ -663,7 +666,7 @@ export function LiveMode({
           </Button>
         </div>
 
-        {!state.running && state.startedAt == null ? (
+        {!state.begun ? (
           <Button size="xl" className="w-full" onClick={start}>
             <Play className="h-5 w-5" /> START SHOW
           </Button>
