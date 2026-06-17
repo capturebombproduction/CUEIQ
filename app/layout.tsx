@@ -11,6 +11,18 @@ export const metadata: Metadata = {
     "CueIQ — Show & Event Management Platform. Run sheets, setlists, mic maps and live countdowns for idol & artist shows.",
   applicationName: "CueIQ",
   manifest: "/manifest.webmanifest",
+  appleWebApp: {
+    capable: true,
+    statusBarStyle: "default",
+    title: "CueIQ",
+  },
+  icons: {
+    apple: "/apple-touch-icon.png",
+    icon: [
+      { url: "/icon-192.png", sizes: "192x192", type: "image/png" },
+      { url: "/icon-512.png", sizes: "512x512", type: "image/png" },
+    ],
+  },
 };
 
 export const viewport: Viewport = {

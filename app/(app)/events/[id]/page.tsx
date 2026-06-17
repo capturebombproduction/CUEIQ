@@ -44,7 +44,7 @@ export default async function EventPage({
       <div>
         <Button asChild variant="ghost" size="sm" className="-ml-2 mb-2">
           <Link href="/dashboard">
-            <ArrowLeft className="h-4 w-4" /> โชว์ทั้งหมด
+            <ArrowLeft className="h-4 w-4" /> All Events
           </Link>
         </Button>
 
