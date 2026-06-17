@@ -12,9 +12,18 @@ import {
   Clock,
   AlarmClock,
   CheckCircle2,
+  Pencil,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 import {
   computeSetlistTimes,
   formatDuration,
@@ -45,7 +54,6 @@ function fmtDate(date: string | null): string {
   });
 }
 
-/** One "Label : value" line; renders nothing when value is empty. */
 function Line({ label, value }: { label: string; value?: string | null }) {
   if (!value) return null;
   return (
@@ -80,11 +88,15 @@ export function EventSummary({
   schedule,
   setlist,
   members,
+  showMic,
+  onNavigate,
 }: {
   event: EventRow & { group: Group | null };
   schedule: ScheduleItem[];
   setlist: SetlistItem[];
   members: Member[];
+  showMic: boolean;
+  onNavigate: (view: string) => void;
 }) {
   const captureRef = useRef<HTMLDivElement>(null);
   const [exporting, setExporting] = useState(false);
@@ -139,7 +151,7 @@ export function EventSummary({
   return (
     <div className="space-y-4">
       {/* Action bar — not included in the exported image */}
-      <div className="flex flex-wrap gap-2">
+      <div className="flex flex-wrap items-center gap-2">
         <Button asChild>
           <Link href={`/events/${event.id}/live`}>
             <Radio className="h-4 w-4" /> เข้า Live Mode
@@ -154,7 +166,7 @@ export function EventSummary({
           บันทึกเป็นรูป (PNG)
         </Button>
         <p className="self-center text-xs text-muted-foreground">
-          แก้ข้อมูลได้ที่แท็บอื่น/ปุ่ม “แก้ไข” — หน้านี้เป็นสรุปอย่างเดียว
+          หน้านี้เป็นสรุปอย่างเดียว — แก้ข้อมูลที่แท็บ/ปุ่มด้านล่าง
         </p>
       </div>
 
@@ -211,9 +223,15 @@ export function EventSummary({
 
         {/* Appointments */}
         <Section title="นัดหมายเวลา">
-          <Line label="On Location" value={shortClock(sched("on_location")?.start_time)} />
+          <Line
+            label="On Location"
+            value={shortClock(sched("on_location")?.start_time)}
+          />
           <Line label="ห้องพัก" value={sched("dressing_room")?.location} />
-          <Line label="เวลาถ่ายรูป" value={shortClock(sched("photo")?.start_time)} />
+          <Line
+            label="เวลาถ่ายรูป"
+            value={shortClock(sched("photo")?.start_time)}
+          />
           <Line label="COSTUME THEME" value={event.costume_theme} />
         </Section>
 
@@ -225,22 +243,25 @@ export function EventSummary({
           <Line label="Booth Location" value={booth?.location} />
         </Section>
 
-        {/* Setlist */}
+        {/* Setlist — detailed table */}
         <Section title={`Setlist & Show Flow (${setlist.length})`}>
           <div className="flex flex-wrap items-center gap-x-5 gap-y-1 pb-1 text-sm">
             <span className="flex items-center gap-1.5">
               <Clock className="h-4 w-4 text-muted-foreground" />
-              รวม <b className="tabular-nums">{formatDuration(timing.totalSeconds)}</b>
+              เวลารวม{" "}
+              <b className="tabular-nums">{formatDuration(timing.totalSeconds)}</b>
             </span>
             {hasClock && (
               <span className="tabular-nums text-muted-foreground">
-                {formatClockOfDay(showStartSec!)}–{formatClockOfDay(timing.endSec)}
+                {formatClockOfDay(showStartSec!)}–
+                {formatClockOfDay(timing.endSec)}
               </span>
             )}
             {hardOutSec != null &&
               (timing.isOver ? (
                 <Badge variant="destructive" className="gap-1">
-                  <AlarmClock className="h-3.5 w-3.5" /> เกิน {formatDuration(timing.overBy)}
+                  <AlarmClock className="h-3.5 w-3.5" /> เกิน Hard Out{" "}
+                  {formatDuration(timing.overBy)}
                 </Badge>
               ) : (
                 <Badge variant="success" className="gap-1">
@@ -253,43 +274,67 @@ export function EventSummary({
           {setlist.length === 0 ? (
             <p className="text-sm text-muted-foreground">ยังไม่มีรายการ</p>
           ) : (
-            <div className="divide-y rounded-md border">
-              {setlist.map((it, idx) => {
-                const t = timing.rows[idx];
-                const mics = (it.mic_slots ?? [])
-                  .map((m) => m.mic)
-                  .filter(Boolean)
-                  .join(" ");
-                return (
-                  <div
-                    key={it.id}
-                    className="flex items-center gap-2 px-2.5 py-1.5 text-sm"
-                  >
-                    <span className="w-5 shrink-0 text-right tabular-nums text-muted-foreground">
-                      {idx + 1}
-                    </span>
-                    <span className="w-10 shrink-0 text-[10px] font-bold text-muted-foreground">
-                      {SETLIST_KIND_SHORT[it.kind]}
-                    </span>
+            <div className="rounded-md border">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead className="w-10 text-right">#</TableHead>
+                    <TableHead className="w-14">ประเภท</TableHead>
                     {hasClock && (
-                      <span className="w-24 shrink-0 tabular-nums text-xs text-muted-foreground">
-                        {formatClockOfDay(t.startSec)}–{formatClockOfDay(t.endSec)}
-                      </span>
+                      <TableHead className="w-28">เริ่ม–จบ</TableHead>
                     )}
-                    <span className="flex-1 truncate font-medium">
-                      {it.title || "—"}
-                    </span>
-                    <span className="w-12 shrink-0 text-right tabular-nums text-xs">
-                      {formatDuration(it.duration_seconds)}
-                    </span>
-                    {mics && (
-                      <span className="w-20 shrink-0 truncate text-right text-xs text-muted-foreground">
-                        🎤 {mics}
-                      </span>
-                    )}
-                  </div>
-                );
-              })}
+                    <TableHead>ชื่อเพลง / หัวข้อ</TableHead>
+                    <TableHead className="w-16 text-right">ความยาว</TableHead>
+                    <TableHead className="w-16 text-right">สะสม</TableHead>
+                    <TableHead className="w-40">ไมค์ → สมาชิก</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {setlist.map((it, idx) => {
+                    const t = timing.rows[idx];
+                    const slots = it.mic_slots ?? [];
+                    return (
+                      <TableRow key={it.id} className={t?.overHardOut ? "bg-destructive/5" : ""}>
+                        <TableCell className="text-right tabular-nums text-muted-foreground">
+                          {idx + 1}
+                        </TableCell>
+                        <TableCell className="text-[10px] font-bold text-muted-foreground">
+                          {SETLIST_KIND_SHORT[it.kind]}
+                        </TableCell>
+                        {hasClock && (
+                          <TableCell className="tabular-nums text-xs text-muted-foreground">
+                            {formatClockOfDay(t.startSec)}–
+                            {formatClockOfDay(t.endSec)}
+                          </TableCell>
+                        )}
+                        <TableCell className="font-medium">
+                          {it.title || "—"}
+                          {it.notes && (
+                            <span className="block text-xs font-normal text-muted-foreground">
+                              {it.notes}
+                            </span>
+                          )}
+                        </TableCell>
+                        <TableCell className="text-right tabular-nums">
+                          {formatDuration(it.duration_seconds)}
+                        </TableCell>
+                        <TableCell className="text-right tabular-nums text-muted-foreground">
+                          {formatDuration(t?.accumulatedSec ?? 0)}
+                        </TableCell>
+                        <TableCell className="text-xs text-muted-foreground">
+                          {slots.length === 0
+                            ? "—"
+                            : slots
+                                .map((s) =>
+                                  s.member ? `${s.mic}·${s.member}` : s.mic
+                                )
+                                .join("  ")}
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })}
+                </TableBody>
+              </Table>
             </div>
           )}
         </Section>
@@ -306,6 +351,33 @@ export function EventSummary({
             </div>
           </Section>
         )}
+      </div>
+
+      {/* Bottom quick menu — jump to edit tabs / live mode */}
+      <div className="flex flex-wrap items-center gap-2 border-t pt-4">
+        <span className="self-center text-sm font-medium text-muted-foreground">
+          ไปแก้ไข:
+        </span>
+        <Button variant="outline" size="sm" onClick={() => onNavigate("setlist")}>
+          <Pencil className="h-3.5 w-3.5" /> Setlist + Run Time
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => onNavigate("schedule")}
+        >
+          <Pencil className="h-3.5 w-3.5" /> นัดหมาย
+        </Button>
+        {showMic && (
+          <Button variant="outline" size="sm" onClick={() => onNavigate("mic")}>
+            <Pencil className="h-3.5 w-3.5" /> Mic Map
+          </Button>
+        )}
+        <Button size="sm" asChild>
+          <Link href={`/events/${event.id}/live`}>
+            <Radio className="h-3.5 w-3.5" /> Live Mode
+          </Link>
+        </Button>
       </div>
     </div>
   );

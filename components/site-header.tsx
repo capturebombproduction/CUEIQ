@@ -19,11 +19,8 @@ export function SiteHeader({
       <div className="container flex h-14 items-center justify-between gap-4">
         <div className="flex items-center gap-2 sm:gap-4">
           <Link href="/dashboard" className="shrink-0">
-            <Brand />
+            <Brand subtitle="Designed by PatzNutthapat" />
           </Link>
-          <span className="hidden whitespace-nowrap border-l pl-3 text-xs italic text-muted-foreground lg:inline">
-            ดีไซน์ บาย PatzNutthapat
-          </span>
           <MainNav />
         </div>
         <div className="flex items-center gap-2 sm:gap-3">

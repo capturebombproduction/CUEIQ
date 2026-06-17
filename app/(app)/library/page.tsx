@@ -1,6 +1,7 @@
 import { getSongs, getWorkspace } from "@/lib/queries";
 import { JoinDemo } from "@/components/join-demo";
 import { SongLibrary } from "@/components/song/song-library";
+import { RefreshButton } from "@/components/refresh-button";
 import { canEdit } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
@@ -15,11 +16,14 @@ export default async function LibraryPage() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold tracking-tight">คลังเพลง</h1>
-        <p className="text-sm text-muted-foreground">
-          {ws.tenant.name} · {songs.length} เพลง
-        </p>
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-bold tracking-tight">คลังเพลง</h1>
+          <p className="text-sm text-muted-foreground">
+            {ws.tenant.name} · {songs.length} เพลง
+          </p>
+        </div>
+        <RefreshButton />
       </div>
       <SongLibrary
         tenantId={ws.membership.tenant_id}

@@ -4,9 +4,11 @@ import { cn } from "@/lib/utils";
 export function Brand({
   className,
   size = "md",
+  subtitle,
 }: {
   className?: string;
   size?: "sm" | "md" | "lg";
+  subtitle?: string;
 }) {
   const box =
     size === "lg" ? "h-10 w-10" : size === "sm" ? "h-6 w-6" : "h-8 w-8";
@@ -29,8 +31,15 @@ export function Brand({
       >
         <AudioLines className={icon} />
       </span>
-      <span className={text}>
-        Cue<span className="text-primary">IQ</span>
+      <span className="flex flex-col justify-center leading-none">
+        <span className={text}>
+          Cue<span className="text-primary">IQ</span>
+        </span>
+        {subtitle && (
+          <span className="mt-0.5 text-[10px] font-normal text-muted-foreground">
+            {subtitle}
+          </span>
+        )}
       </span>
     </span>
   );
