@@ -65,6 +65,7 @@ export function LiveMode({
 }) {
   const [state, setState] = useState<LiveState>(INITIAL);
   const [now, setNow] = useState(() => Date.now());
+  const [syncReady, setSyncReady] = useState(false);
   const channelRef = useRef<RealtimeChannel | null>(null);
   const meId = useRef<string>(
     typeof crypto !== "undefined" && "randomUUID" in crypto
@@ -192,9 +193,15 @@ export function LiveMode({
         currentIndex: payload.currentIndex,
       });
     });
-    ch.subscribe();
-    channelRef.current = ch;
+    ch.subscribe((status) => {
+      if (status === "SUBSCRIBED") {
+        channelRef.current = ch;
+        setSyncReady(true);
+      }
+    });
     return () => {
+      channelRef.current = null;
+      setSyncReady(false);
       supabase.removeChannel(ch);
     };
   }, [eventId]);
@@ -384,6 +391,13 @@ export function LiveMode({
             )}
           />
           <span className="truncate">{eventName}</span>
+          <span
+            title={syncReady ? "Sync ready" : "Connecting…"}
+            className={cn(
+              "h-2 w-2 rounded-full",
+              syncReady ? "bg-green-500" : "animate-pulse bg-yellow-400"
+            )}
+          />
         </div>
         <div className="text-right">
           <p className="text-xs text-muted-foreground">เวลาจริง</p>
