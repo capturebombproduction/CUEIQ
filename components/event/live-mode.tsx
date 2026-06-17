@@ -427,13 +427,46 @@ export function LiveMode({
       const first = items[0];
       if (first) playItemAudio(first.id);
     } else {
-      // Manual: enter the show but DON'T start the run clock or countdown — both
-      // begin only when the operator presses รันโชว์. Accumulated stays 0 until then.
-      apply({ running: false, begun: true, startedAt: null, itemStartedAt: null, itemElapsedAtPause: 0, currentIndex: 0, mode: "manual" });
+      // Manual: accumulated (show clock) starts now at START SHOW. Only the
+      // per-item countdown + audio wait for รันโชว์ / play.
+      apply({ running: false, begun: true, startedAt: ts, itemStartedAt: null, itemElapsedAtPause: 0, currentIndex: 0, mode: "manual" });
     }
   }
   function setMode(mode: ShowMode) {
-    apply({ ...state, mode });
+    // Switching to Auto resumes the script: run the countdown and (re)play the
+    // current track synced to the elapsed time, so it continues per script even
+    // after a detour into Manual.
+    if (mode === "auto" && state.begun) {
+      const cur = items[state.currentIndex];
+      const offset = state.running
+        ? (state.itemStartedAt ? (Date.now() - state.itemStartedAt) / 1000 : 0)
+        : (state.itemElapsedAtPause ?? 0);
+      apply({
+        ...state,
+        mode,
+        running: true,
+        itemStartedAt: Date.now() - offset * 1000,
+        itemElapsedAtPause: null,
+        startedAt: state.startedAt ?? Date.now(),
+      });
+      const url = cur ? audioUrls[cur.id] : undefined;
+      const audio = audioRef.current;
+      if (cur && url && audio) {
+        const pos = Math.max(0, offset - (cur.buffer_before_seconds || 0));
+        if (playingId !== cur.id) {
+          audio.src = url;
+          audio.currentTime = pos;
+          setPlayingId(cur.id);
+          audio.play().catch(() => {});
+          setAudioPlaying(true);
+        } else if (audio.paused) {
+          audio.play().catch(() => {});
+          setAudioPlaying(true);
+        }
+      }
+    } else {
+      apply({ ...state, mode });
+    }
   }
   function goto(index: number) {
     if (index < 0 || index >= items.length) return;
