@@ -376,12 +376,25 @@ export function LiveMode({
     }
   }
 
+  // stop any playing audio without starting new (used for manual navigation)
+  function stopAudio() {
+    audioRef.current?.pause();
+    setPlayingId(null);
+    setAudioPlaying(false);
+    setAudioCurrent(0);
+  }
+
   // show-level controls
   function start() {
     const ts = Date.now();
     apply({ running: true, startedAt: ts, itemStartedAt: ts, itemElapsedAtPause: null, currentIndex: 0, mode: state.mode });
-    const first = items[0];
-    if (first) playItemAudio(first.id);
+    // Auto plays the first track; Manual waits for the operator to press play
+    if (state.mode === "auto") {
+      const first = items[0];
+      if (first) playItemAudio(first.id);
+    } else {
+      stopAudio();
+    }
   }
   function setMode(mode: ShowMode) {
     apply({ ...state, mode });
@@ -416,7 +429,12 @@ export function LiveMode({
       startedAt: state.startedAt ?? Date.now(),
     });
     const it = items[index];
-    if (it) playItemAudio(it.id);
+    // Auto plays the new track; Manual just selects it and stops old audio
+    if (state.mode === "auto") {
+      if (it) playItemAudio(it.id);
+    } else {
+      stopAudio();
+    }
   }
   function reset() {
     audioRef.current?.pause();
