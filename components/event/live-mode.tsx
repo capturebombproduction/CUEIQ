@@ -12,6 +12,8 @@ import {
   FolderOpen,
   Music2,
   Volume2,
+  Hand,
+  Sparkles,
 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { Button } from "@/components/ui/button";
@@ -24,12 +26,15 @@ import {
 } from "@/lib/types";
 import { formatCountdown, formatDuration, nowClock } from "@/lib/time";
 
+type ShowMode = "manual" | "auto";
+
 interface LiveState {
   running: boolean;
   startedAt: number | null;
   itemStartedAt: number | null;
   itemElapsedAtPause: number | null;
   currentIndex: number;
+  mode: ShowMode;
 }
 
 const INITIAL: LiveState = {
@@ -38,6 +43,7 @@ const INITIAL: LiveState = {
   itemStartedAt: null,
   itemElapsedAtPause: null,
   currentIndex: 0,
+  mode: "manual",
 };
 
 function blockSeconds(it: SetlistItem) {
@@ -88,6 +94,8 @@ export function LiveMode({
   const [audioDuration, setAudioDuration] = useState(0);
   // tracks which "currentId→nextId" pair already had auto-trigger fired
   const autoTriggeredForRef = useRef<string | null>(null);
+  // tracks which item already triggered an auto-advance (no-audio items)
+  const autoAdvanceForRef = useRef<string | null>(null);
 
   // ticking clock
   useEffect(() => {
@@ -95,12 +103,16 @@ export function LiveMode({
     return () => clearInterval(id);
   }, []);
 
+  // always-current handler for when the playing audio finishes (auto-advance)
+  const onEndedRef = useRef<() => void>(() => {});
+
   // audio element — create once
   useEffect(() => {
     const audio = new Audio();
     audio.addEventListener("ended", () => {
       setPlayingId(null);
       setAudioPlaying(false);
+      onEndedRef.current();
     });
     audio.addEventListener("timeupdate", () => {
       setAudioCurrent(audio.currentTime);
@@ -174,9 +186,10 @@ export function LiveMode({
     return () => document.removeEventListener("visibilitychange", onVisible);
   }, []);
 
-  // reset auto-trigger when item changes
+  // reset per-item auto guards when item changes
   useEffect(() => {
     autoTriggeredForRef.current = null;
+    autoAdvanceForRef.current = null;
   }, [state.currentIndex]);
 
   // negative buffer: auto-play next item's audio when remaining ≤ |buffer_before|
@@ -221,6 +234,7 @@ export function LiveMode({
         itemStartedAt: payload.itemStartedAt,
         itemElapsedAtPause: payload.itemElapsedAtPause ?? null,
         currentIndex: payload.currentIndex,
+        mode: payload.mode ?? "manual",
       });
     });
     // a device that just joined asks for current state; anyone mid-show replies
@@ -369,9 +383,12 @@ export function LiveMode({
   // show-level controls
   function start() {
     const ts = Date.now();
-    apply({ running: true, startedAt: ts, itemStartedAt: ts, itemElapsedAtPause: null, currentIndex: 0 });
+    apply({ running: true, startedAt: ts, itemStartedAt: ts, itemElapsedAtPause: null, currentIndex: 0, mode: state.mode });
     const first = items[0];
     if (first) playItemAudio(first.id);
+  }
+  function setMode(mode: ShowMode) {
+    apply({ ...state, mode });
   }
   function pauseToggle() {
     if (state.running) {
@@ -407,8 +424,31 @@ export function LiveMode({
     audioRef.current?.pause();
     setPlayingId(null);
     setAudioPlaying(false);
-    apply(INITIAL);
+    apply({ ...INITIAL, mode: state.mode }); // keep chosen mode after reset
   }
+
+  // in Auto mode, advance to next item when the current item's audio finishes
+  onEndedRef.current = () => {
+    const s = stateRef.current;
+    if (s.mode === "auto" && s.running && s.currentIndex < items.length - 1) {
+      goto(s.currentIndex + 1);
+    }
+  };
+
+  // in Auto mode, advance items WITHOUT an audio file when their countdown hits 0.
+  // Only the control device (the one holding audio files) advances; viewers follow via sync.
+  useEffect(() => {
+    if (state.mode !== "auto" || !state.running) return;
+    if (Object.keys(audioUrls).length === 0) return; // viewers don't drive advance
+    const cur = items[state.currentIndex];
+    if (!cur || audioUrls[cur.id]) return; // items with audio advance on 'ended'
+    if (state.currentIndex >= items.length - 1) return;
+    if (remaining > 0) return;
+    if (autoAdvanceForRef.current === cur.id) return;
+    autoAdvanceForRef.current = cur.id;
+    goto(state.currentIndex + 1);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [now, state, remaining, audioUrls, items]);
 
   const wallClock = useMemo(() => nowClock(new Date(now)), [now]);
 
@@ -570,6 +610,24 @@ export function LiveMode({
 
       {/* show controls */}
       <div className="rounded-xl border bg-card p-3">
+        {/* mode toggle — switchable anytime, even mid-show */}
+        <div className="mb-2 grid grid-cols-2 gap-2">
+          <Button
+            variant={state.mode === "manual" ? "default" : "outline"}
+            size="sm"
+            onClick={() => setMode("manual")}
+          >
+            <Hand className="h-4 w-4" /> Manual
+          </Button>
+          <Button
+            variant={state.mode === "auto" ? "default" : "outline"}
+            size="sm"
+            onClick={() => setMode("auto")}
+          >
+            <Sparkles className="h-4 w-4" /> Run Script (Auto)
+          </Button>
+        </div>
+
         {!state.running && state.startedAt == null ? (
           <Button size="xl" className="w-full" onClick={start}>
             <Play className="h-5 w-5" /> START SHOW
@@ -606,7 +664,9 @@ export function LiveMode({
         )}
         <p className="mt-2 text-center text-xs text-muted-foreground">
           <Radio className="mr-1 inline h-3 w-3" />
-          ซิงค์หลายเครื่องอัตโนมัติ — กด NEXT เพื่อข้ามรายการ
+          {state.mode === "auto"
+            ? "Auto: เปลี่ยนรายการเองเมื่อเพลงจบ — กด Manual เพื่อคุมเอง"
+            : "Manual: กด NEXT เพื่อข้ามรายการ — ซิงค์หลายเครื่องอัตโนมัติ"}
         </p>
       </div>
 
