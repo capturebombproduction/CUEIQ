@@ -313,15 +313,15 @@ export function EventSummary({
               <Table>
                 <TableHeader>
                   <TableRow>
-                    <TableHead className="w-8 text-right">#</TableHead>
-                    <TableHead className="w-12">Type</TableHead>
+                    <TableHead className="w-8 py-2 text-right text-xs">#</TableHead>
+                    <TableHead className={`w-12 py-2 text-xs ${isCapturing ? "hidden" : "hidden sm:table-cell"}`}>Type</TableHead>
                     {hasClock && (
-                      <TableHead className="w-24">Time</TableHead>
+                      <TableHead className={`w-24 py-2 text-xs ${isCapturing ? "hidden" : "hidden sm:table-cell"}`}>Start – End</TableHead>
                     )}
-                    <TableHead>Title / Topic</TableHead>
-                    <TableHead className="hidden w-20 text-right sm:table-cell">Duration</TableHead>
-                    <TableHead className="hidden w-24 text-right md:table-cell">Running Time</TableHead>
-                    <TableHead className="hidden w-40 lg:table-cell">Mic Assignment</TableHead>
+                    <TableHead className="py-2 text-xs">Title / Topic</TableHead>
+                    <TableHead className="w-16 py-2 text-right text-xs">Duration</TableHead>
+                    <TableHead className="w-20 py-2 text-right text-xs">Running Time</TableHead>
+                    <TableHead className={`w-40 py-2 text-xs ${isCapturing ? "hidden" : "hidden lg:table-cell"}`}>Mic Assignment</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -330,39 +330,49 @@ export function EventSummary({
                     const slots = it.mic_slots ?? [];
                     return (
                       <TableRow key={it.id} className={t?.overHardOut ? "bg-destructive/5" : ""}>
-                        <TableCell className="text-right tabular-nums text-muted-foreground">
+                        {/* # */}
+                        <TableCell className="py-1.5 text-right tabular-nums text-xs text-muted-foreground">
                           {idx + 1}
                         </TableCell>
-                        <TableCell className="text-[10px] font-bold text-muted-foreground">
+                        {/* Type — hidden on portrait / during export */}
+                        <TableCell className={`py-1.5 text-[10px] font-bold text-muted-foreground ${isCapturing ? "hidden" : "hidden sm:table-cell"}`}>
                           {SETLIST_KIND_SHORT[it.kind]}
                         </TableCell>
+                        {/* Start–End — hidden on portrait / during export */}
                         {hasClock && (
-                          <TableCell className="tabular-nums text-xs text-muted-foreground">
-                            {formatClockOfDay(t.startSec)}–
-                            {formatClockOfDay(t.endSec)}
+                          <TableCell className={`py-1.5 tabular-nums text-xs text-muted-foreground ${isCapturing ? "hidden" : "hidden sm:table-cell"}`}>
+                            {formatClockOfDay(t.startSec)}–{formatClockOfDay(t.endSec)}
                           </TableCell>
                         )}
-                        <TableCell className="font-medium">
-                          {it.title || "—"}
+                        {/* Title — time shown inline on portrait / during export */}
+                        <TableCell className="py-1.5 font-medium">
+                          {hasClock && (
+                            <span className={`block tabular-nums text-[10px] text-muted-foreground ${isCapturing ? "" : "sm:hidden"}`}>
+                              {formatClockOfDay(t.startSec)}–{formatClockOfDay(t.endSec)}
+                            </span>
+                          )}
+                          <span className="text-xs sm:text-sm">{it.title || "—"}</span>
                           {it.notes && (
-                            <span className="block text-xs font-normal text-muted-foreground">
+                            <span className="block text-[10px] font-normal text-muted-foreground">
                               {it.notes}
                             </span>
                           )}
-                          {/* Mic shown inline on mobile (hidden on lg where it has its own column) */}
                           {slots.length > 0 && (
-                            <span className="mt-0.5 block text-xs font-normal text-muted-foreground lg:hidden">
+                            <span className="mt-0.5 block text-[10px] font-normal text-muted-foreground lg:hidden">
                               🎤 {slots.map((s) => s.member ? `${s.mic}·${s.member}` : s.mic).join(" ")}
                             </span>
                           )}
                         </TableCell>
-                        <TableCell className="hidden text-right tabular-nums sm:table-cell">
+                        {/* Duration — always visible */}
+                        <TableCell className="py-1.5 text-right tabular-nums text-xs">
                           {formatDuration(it.duration_seconds)}
                         </TableCell>
-                        <TableCell className="hidden text-right tabular-nums text-muted-foreground md:table-cell">
+                        {/* Running Time — always visible */}
+                        <TableCell className="py-1.5 text-right tabular-nums text-xs text-muted-foreground">
                           {formatDuration(t?.accumulatedSec ?? 0)}
                         </TableCell>
-                        <TableCell className="hidden text-xs text-muted-foreground lg:table-cell">
+                        {/* Mic — landscape/tablet only, hidden during export */}
+                        <TableCell className={`py-1.5 text-xs text-muted-foreground ${isCapturing ? "hidden" : "hidden lg:table-cell"}`}>
                           {slots.length === 0
                             ? "—"
                             : slots.map((s) => s.member ? `${s.mic}·${s.member}` : s.mic).join("  ")}

@@ -8,11 +8,9 @@ import { ROLE_SHORT, type Role } from "@/lib/types";
 export function SiteHeader({
   name,
   role,
-  tenantName,
 }: {
   name?: string | null;
   role?: Role | null;
-  tenantName?: string | null;
 }) {
   return (
     <header className="sticky top-0 z-40 border-b bg-background/80 backdrop-blur supports-[backdrop-filter]:bg-background/60">
@@ -24,11 +22,6 @@ export function SiteHeader({
           <MainNav />
         </div>
         <div className="flex items-center gap-2 sm:gap-3">
-          {tenantName && (
-            <span className="hidden whitespace-nowrap text-sm text-muted-foreground md:inline">
-              {tenantName}
-            </span>
-          )}
           {role && (
             <Badge variant="secondary" className="hidden sm:inline-flex">
               {ROLE_SHORT[role]}

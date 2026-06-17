@@ -17,7 +17,6 @@ export default async function AppLayout({
       <SiteHeader
         name={ws.user.name}
         role={ws.membership?.role ?? null}
-        tenantName={ws.tenant?.name ?? null}
       />
       <main className="container py-6">{children}</main>
     </div>
