@@ -29,7 +29,6 @@ interface LiveState {
   startedAt: number | null;
   itemStartedAt: number | null;
   itemElapsedAtPause: number | null;
-  totalElapsedAtPause: number | null;
   currentIndex: number;
 }
 
@@ -38,7 +37,6 @@ const INITIAL: LiveState = {
   startedAt: null,
   itemStartedAt: null,
   itemElapsedAtPause: null,
-  totalElapsedAtPause: null,
   currentIndex: 0,
 };
 
@@ -222,7 +220,6 @@ export function LiveMode({
         startedAt: payload.startedAt,
         itemStartedAt: payload.itemStartedAt,
         itemElapsedAtPause: payload.itemElapsedAtPause ?? null,
-        totalElapsedAtPause: payload.totalElapsedAtPause ?? null,
         currentIndex: payload.currentIndex,
       });
     });
@@ -323,9 +320,8 @@ export function LiveMode({
     ? (now - state.itemStartedAt) / 1000
     : (state.itemElapsedAtPause ?? 0);
   const remaining = current ? blockSeconds(current) - elapsedItem : 0;
-  const totalElapsed = state.running && state.startedAt
-    ? (now - state.startedAt) / 1000
-    : (state.totalElapsedAtPause ?? 0);
+  // accumulated = real elapsed time since show start; keeps counting through pauses
+  const totalElapsed = state.startedAt ? (now - state.startedAt) / 1000 : 0;
 
   const zone: "over" | "red" | "amber" | "ok" = !state.running
     ? "ok"
@@ -373,21 +369,21 @@ export function LiveMode({
   // show-level controls
   function start() {
     const ts = Date.now();
-    apply({ running: true, startedAt: ts, itemStartedAt: ts, itemElapsedAtPause: null, totalElapsedAtPause: null, currentIndex: 0 });
+    apply({ running: true, startedAt: ts, itemStartedAt: ts, itemElapsedAtPause: null, currentIndex: 0 });
     const first = items[0];
     if (first) playItemAudio(first.id);
   }
   function pauseToggle() {
     if (state.running) {
+      // pause: freeze item countdown + audio. Accumulated keeps running (derived from startedAt).
       const frozenItem = state.itemStartedAt ? (Date.now() - state.itemStartedAt) / 1000 : 0;
-      const frozenTotal = state.startedAt ? (Date.now() - state.startedAt) / 1000 : 0;
-      apply({ ...state, running: false, itemElapsedAtPause: frozenItem, totalElapsedAtPause: frozenTotal });
+      apply({ ...state, running: false, itemElapsedAtPause: frozenItem });
       audioRef.current?.pause();
       setAudioPlaying(false);
     } else {
       const itemOffset = state.itemElapsedAtPause ?? 0;
       const newItemStart = Date.now() - itemOffset * 1000;
-      apply({ ...state, running: true, itemStartedAt: newItemStart, itemElapsedAtPause: null, totalElapsedAtPause: null });
+      apply({ ...state, running: true, itemStartedAt: newItemStart, itemElapsedAtPause: null });
       if (playingId && audioRef.current) {
         audioRef.current.play().catch(() => {});
         setAudioPlaying(true);
@@ -401,7 +397,6 @@ export function LiveMode({
       currentIndex: index,
       itemStartedAt: Date.now(),
       itemElapsedAtPause: null,
-      totalElapsedAtPause: null,
       running: true,
       startedAt: state.startedAt ?? Date.now(),
     });
@@ -652,8 +647,12 @@ export function LiveMode({
                 </span>
               </button>
 
-              {/* audio controls */}
+              {/* audio controls — load file only; playback is via START/NEXT/player */}
               <div className="flex shrink-0 items-center gap-1">
+                {/* playing indicator (not a button) */}
+                {isPlayingThis && (
+                  <Volume2 className="h-3.5 w-3.5 animate-pulse text-primary" />
+                )}
                 {/* load file */}
                 <button
                   onClick={() => openFilePicker(it.id)}
@@ -666,27 +665,6 @@ export function LiveMode({
                   )}
                 >
                   <FolderOpen className="h-3.5 w-3.5" />
-                </button>
-
-                {/* play/pause */}
-                <button
-                  onClick={() => toggleAudio(it.id)}
-                  disabled={!hasFile}
-                  title={hasFile ? "เล่น/หยุดเพลง" : "โหลดไฟล์ก่อน"}
-                  className={cn(
-                    "flex h-7 w-7 items-center justify-center rounded-md transition-colors",
-                    hasFile
-                      ? isPlayingThis
-                        ? "bg-primary text-primary-foreground"
-                        : "hover:bg-muted text-foreground"
-                      : "cursor-not-allowed text-muted-foreground/30"
-                  )}
-                >
-                  {isPlayingThis ? (
-                    <Volume2 className="h-3.5 w-3.5 animate-pulse" />
-                  ) : (
-                    <Play className="h-3.5 w-3.5" />
-                  )}
                 </button>
               </div>
             </div>
