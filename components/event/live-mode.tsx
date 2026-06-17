@@ -293,20 +293,47 @@ export function LiveMode({
     ok: "bg-card text-foreground",
   }[zone];
 
+  // Play an item's audio if a file is loaded; otherwise stop current playback.
+  function playItemAudio(itemId: string) {
+    const url = audioUrls[itemId];
+    const audio = audioRef.current;
+    if (!audio) return;
+    if (url) {
+      audio.pause();
+      audio.src = url;
+      audio.currentTime = 0;
+      audio.play().catch(() => {});
+      setPlayingId(itemId);
+      setAudioPlaying(true);
+    } else {
+      audio.pause();
+      setPlayingId(null);
+      setAudioPlaying(false);
+    }
+  }
+
   // show-level controls
   function start() {
     const ts = Date.now();
     apply({ running: true, startedAt: ts, itemStartedAt: ts, itemElapsedAtPause: null, totalElapsedAtPause: null, currentIndex: 0 });
+    const first = items[0];
+    if (first) playItemAudio(first.id);
   }
   function pauseToggle() {
     if (state.running) {
       const frozenItem = state.itemStartedAt ? (Date.now() - state.itemStartedAt) / 1000 : 0;
       const frozenTotal = state.startedAt ? (Date.now() - state.startedAt) / 1000 : 0;
       apply({ ...state, running: false, itemElapsedAtPause: frozenItem, totalElapsedAtPause: frozenTotal });
+      audioRef.current?.pause();
+      setAudioPlaying(false);
     } else {
       const itemOffset = state.itemElapsedAtPause ?? 0;
       const newItemStart = Date.now() - itemOffset * 1000;
       apply({ ...state, running: true, itemStartedAt: newItemStart, itemElapsedAtPause: null, totalElapsedAtPause: null });
+      if (playingId && audioRef.current) {
+        audioRef.current.play().catch(() => {});
+        setAudioPlaying(true);
+      }
     }
   }
   function goto(index: number) {
@@ -320,6 +347,8 @@ export function LiveMode({
       running: true,
       startedAt: state.startedAt ?? Date.now(),
     });
+    const it = items[index];
+    if (it) playItemAudio(it.id);
   }
   function reset() {
     audioRef.current?.pause();
