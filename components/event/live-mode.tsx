@@ -640,22 +640,38 @@ export function LiveMode({
               variant="outline"
               size="lg"
               onClick={() => goto(state.currentIndex - 1)}
-              disabled={state.currentIndex === 0}
+              disabled={state.mode === "auto" || state.currentIndex === 0}
+              title={state.mode === "auto" ? "สลับเป็น Manual เพื่อข้ามเอง" : "ย้อนกลับ"}
             >
               <SkipBack className="h-5 w-5" />
             </Button>
-            <Button variant="outline" size="lg" onClick={pauseToggle}>
+            {/* play/stop — distinct color + label so it isn't mistaken for skip */}
+            <Button
+              size="lg"
+              onClick={pauseToggle}
+              className={cn(
+                "shrink-0 font-semibold text-white",
+                state.running
+                  ? "bg-green-600 hover:bg-green-700"
+                  : "bg-amber-500 hover:bg-amber-600"
+              )}
+            >
               {state.running ? (
-                <Pause className="h-5 w-5" />
+                <>
+                  <Pause className="h-5 w-5" /> กำลังเล่น
+                </>
               ) : (
-                <Play className="h-5 w-5" />
+                <>
+                  <Play className="h-5 w-5" /> เล่นต่อ
+                </>
               )}
             </Button>
             <Button
               size="lg"
               className="flex-1"
               onClick={() => goto(state.currentIndex + 1)}
-              disabled={state.currentIndex >= items.length - 1}
+              disabled={state.mode === "auto" || state.currentIndex >= items.length - 1}
+              title={state.mode === "auto" ? "สลับเป็น Manual เพื่อข้ามเอง" : "รายการถัดไป"}
             >
               <SkipForward className="h-5 w-5" /> NEXT
             </Button>
@@ -685,10 +701,19 @@ export function LiveMode({
                 i === state.currentIndex && "bg-primary/10"
               )}
             >
-              {/* go-to button */}
+              {/* go-to button — locked in Auto mode to prevent accidental jumps */}
               <button
                 onClick={() => goto(i)}
-                className="flex flex-1 items-center gap-2 text-left text-sm"
+                disabled={state.mode === "auto"}
+                title={
+                  state.mode === "auto"
+                    ? "Auto mode — สลับเป็น Manual ก่อนถึงจะเลือกเองได้"
+                    : undefined
+                }
+                className={cn(
+                  "flex flex-1 items-center gap-2 text-left text-sm",
+                  state.mode === "auto" && "cursor-default"
+                )}
               >
                 <span className="w-5 shrink-0 text-center text-xs text-muted-foreground tabular-nums">
                   {i + 1}
