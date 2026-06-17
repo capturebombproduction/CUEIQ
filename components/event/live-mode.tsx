@@ -28,7 +28,8 @@ interface LiveState {
   running: boolean;
   startedAt: number | null;
   itemStartedAt: number | null;
-  itemElapsedAtPause: number | null; // seconds frozen when paused
+  itemElapsedAtPause: number | null;
+  totalElapsedAtPause: number | null;
   currentIndex: number;
 }
 
@@ -37,6 +38,7 @@ const INITIAL: LiveState = {
   startedAt: null,
   itemStartedAt: null,
   itemElapsedAtPause: null,
+  totalElapsedAtPause: null,
   currentIndex: 0,
 };
 
@@ -190,6 +192,7 @@ export function LiveMode({
         startedAt: payload.startedAt,
         itemStartedAt: payload.itemStartedAt,
         itemElapsedAtPause: payload.itemElapsedAtPause ?? null,
+        totalElapsedAtPause: payload.totalElapsedAtPause ?? null,
         currentIndex: payload.currentIndex,
       });
     });
@@ -269,7 +272,9 @@ export function LiveMode({
     ? (now - state.itemStartedAt) / 1000
     : (state.itemElapsedAtPause ?? 0);
   const remaining = current ? blockSeconds(current) - elapsedItem : 0;
-  const totalElapsed = state.startedAt && state.running ? (now - state.startedAt) / 1000 : 0;
+  const totalElapsed = state.running && state.startedAt
+    ? (now - state.startedAt) / 1000
+    : (state.totalElapsedAtPause ?? 0);
 
   const zone: "over" | "red" | "amber" | "ok" = !state.running
     ? "ok"
@@ -291,35 +296,17 @@ export function LiveMode({
   // show-level controls
   function start() {
     const ts = Date.now();
-    apply({ running: true, startedAt: ts, itemStartedAt: ts, itemElapsedAtPause: null, currentIndex: 0 });
-    // auto-play first item's audio
-    const first = items[0];
-    if (first && audioUrls[first.id] && audioRef.current) {
-      const audio = audioRef.current;
-      audio.pause();
-      audio.src = audioUrls[first.id];
-      audio.currentTime = 0;
-      audio.play().catch(() => {});
-      setPlayingId(first.id);
-      setAudioPlaying(true);
-    }
+    apply({ running: true, startedAt: ts, itemStartedAt: ts, itemElapsedAtPause: null, totalElapsedAtPause: null, currentIndex: 0 });
   }
   function pauseToggle() {
     if (state.running) {
-      // pause: freeze elapsed
-      const frozen = state.itemStartedAt ? (Date.now() - state.itemStartedAt) / 1000 : 0;
-      apply({ ...state, running: false, itemElapsedAtPause: frozen });
-      audioRef.current?.pause();
-      setAudioPlaying(false);
+      const frozenItem = state.itemStartedAt ? (Date.now() - state.itemStartedAt) / 1000 : 0;
+      const frozenTotal = state.startedAt ? (Date.now() - state.startedAt) / 1000 : 0;
+      apply({ ...state, running: false, itemElapsedAtPause: frozenItem, totalElapsedAtPause: frozenTotal });
     } else {
-      // resume: shift itemStartedAt so elapsed continues from frozen point
-      const offset = state.itemElapsedAtPause ?? 0;
-      const newStart = Date.now() - offset * 1000;
-      apply({ ...state, running: true, itemStartedAt: newStart, itemElapsedAtPause: null });
-      if (playingId && audioRef.current) {
-        audioRef.current.play().catch(() => {});
-        setAudioPlaying(true);
-      }
+      const itemOffset = state.itemElapsedAtPause ?? 0;
+      const newItemStart = Date.now() - itemOffset * 1000;
+      apply({ ...state, running: true, itemStartedAt: newItemStart, itemElapsedAtPause: null, totalElapsedAtPause: null });
     }
   }
   function goto(index: number) {
@@ -329,25 +316,10 @@ export function LiveMode({
       currentIndex: index,
       itemStartedAt: Date.now(),
       itemElapsedAtPause: null,
+      totalElapsedAtPause: null,
       running: true,
       startedAt: state.startedAt ?? Date.now(),
     });
-    // auto-play audio for new item
-    const it = items[index];
-    if (it && audioUrls[it.id] && audioRef.current) {
-      const audio = audioRef.current;
-      audio.pause();
-      audio.src = audioUrls[it.id];
-      audio.currentTime = 0;
-      audio.play().catch(() => {});
-      setPlayingId(it.id);
-      setAudioPlaying(true);
-    } else {
-      // no file for this item — stop current audio
-      audioRef.current?.pause();
-      setPlayingId(null);
-      setAudioPlaying(false);
-    }
   }
   function reset() {
     audioRef.current?.pause();
