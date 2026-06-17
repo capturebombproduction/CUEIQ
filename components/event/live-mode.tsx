@@ -193,11 +193,10 @@ export function LiveMode({
         currentIndex: payload.currentIndex,
       });
     });
+    // set immediately so SDK can queue messages sent before SUBSCRIBED
+    channelRef.current = ch;
     ch.subscribe((status) => {
-      if (status === "SUBSCRIBED") {
-        channelRef.current = ch;
-        setSyncReady(true);
-      }
+      setSyncReady(status === "SUBSCRIBED");
     });
     return () => {
       channelRef.current = null;
@@ -425,7 +424,7 @@ export function LiveMode({
         <h2 className="mb-3 text-2xl font-bold leading-tight">
           {current?.title || "—"}
         </h2>
-        <p className="text-6xl font-black tabular-nums sm:text-7xl">
+        <p className="text-5xl font-black tabular-nums sm:text-6xl lg:text-7xl">
           {formatCountdown(Math.round(remaining))}
         </p>
         <p className="mt-2 text-sm opacity-80">
