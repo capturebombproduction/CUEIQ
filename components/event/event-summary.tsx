@@ -232,26 +232,15 @@ export function EventSummary({
               </a>
             </div>
           )}
-          {mapQuery && (
+          {mapQuery && !isCapturing && (
             <div className="overflow-hidden rounded-md border">
-              {isCapturing ? (
-                // Plain div during export — no cross-origin fetch issues
-                <div className="flex h-48 w-full flex-col items-center justify-center gap-2 bg-slate-100 px-4 text-center">
-                  <svg className="h-8 w-8 text-slate-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>
-                  <p className="font-semibold text-slate-700">{event.venue || mapQuery}</p>
-                  {event.map_url && (
-                    <p className="break-all text-xs text-slate-500">{event.map_url}</p>
-                  )}
-                </div>
-              ) : (
-                <iframe
-                  title="map"
-                  src={mapsEmbedUrl(mapQuery)}
-                  className="h-48 w-full"
-                  loading="lazy"
-                  referrerPolicy="no-referrer-when-downgrade"
-                />
-              )}
+              <iframe
+                title="map"
+                src={mapsEmbedUrl(mapQuery)}
+                className="h-48 w-full"
+                loading="lazy"
+                referrerPolicy="no-referrer-when-downgrade"
+              />
             </div>
           )}
         </Section>
@@ -386,7 +375,7 @@ export function EventSummary({
           )}
         </Section>
 
-        {members.length > 0 && (
+        {members.length > 0 && !isCapturing && (
           <Section title="Members & Mics">
             <div className="flex flex-wrap gap-1.5">
               {members.map((m) => (
