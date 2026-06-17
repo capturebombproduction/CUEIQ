@@ -100,6 +100,7 @@ export function EventSummary({
 }) {
   const captureRef = useRef<HTMLDivElement>(null);
   const [exporting, setExporting] = useState(false);
+  const [isCapturing, setIsCapturing] = useState(false);
 
   const showStartSec = parseClockToSeconds(event.show_start_time);
   const hardOutSec = parseClockToSeconds(event.hard_out_time);
@@ -124,26 +125,49 @@ export function EventSummary({
   const booth = sched("booth");
   const mapQuery = event.venue || event.name;
 
-  async function exportPng() {
+  async function exportJpg() {
     if (!captureRef.current) return;
     setExporting(true);
+    setIsCapturing(true); // swap iframe → static map
+    await new Promise((r) => setTimeout(r, 120)); // wait for re-render
     try {
-      const { toPng } = await import("html-to-image");
-      const dataUrl = await toPng(captureRef.current, {
+      const { toJpeg } = await import("html-to-image");
+      const dataUrl = await toJpeg(captureRef.current, {
         pixelRatio: 2,
         backgroundColor: "#ffffff",
         cacheBust: true,
+        quality: 0.92,
       });
+      const filename = `${event.name.replace(/[^\w\-]+/g, "_") || "summary"}.jpg`;
+
+      // Web Share API — saves directly to gallery on iOS/Android
+      if (navigator.share && navigator.canShare) {
+        try {
+          const res = await fetch(dataUrl);
+          const blob = await res.blob();
+          const file = new File([blob], filename, { type: "image/jpeg" });
+          if (navigator.canShare({ files: [file] })) {
+            await navigator.share({ files: [file], title: event.name });
+            toast.success("แชร์รูปสรุปแล้ว");
+            return;
+          }
+        } catch {
+          // share cancelled or unsupported — fall through to download
+        }
+      }
+
+      // Desktop fallback
       const a = document.createElement("a");
-      a.download = `${event.name.replace(/[^\w\-]+/g, "_") || "summary"}.png`;
+      a.download = filename;
       a.href = dataUrl;
       a.click();
-      toast.success("บันทึกรูปสรุปแล้ว 🖼️");
+      toast.success("บันทึกรูปสรุปแล้ว");
     } catch (e) {
       toast.error("บันทึกรูปไม่สำเร็จ — แคปหน้าจอแทนได้", {
         description: e instanceof Error ? e.message : String(e),
       });
     } finally {
+      setIsCapturing(false);
       setExporting(false);
     }
   }
@@ -157,13 +181,13 @@ export function EventSummary({
             <Radio className="h-4 w-4" /> เข้า Live Mode
           </Link>
         </Button>
-        <Button variant="outline" onClick={exportPng} disabled={exporting}>
+        <Button variant="outline" onClick={exportJpg} disabled={exporting}>
           {exporting ? (
             <Loader2 className="h-4 w-4 animate-spin" />
           ) : (
             <ImageDown className="h-4 w-4" />
           )}
-          บันทึกเป็นรูป (PNG)
+          บันทึกเป็นรูป (JPG)
         </Button>
         <p className="self-center text-xs text-muted-foreground">
           หน้านี้เป็นสรุปอย่างเดียว — แก้ข้อมูลที่แท็บ/ปุ่มด้านล่าง
@@ -210,13 +234,23 @@ export function EventSummary({
           )}
           {mapQuery && (
             <div className="overflow-hidden rounded-md border">
-              <iframe
-                title="map"
-                src={mapsEmbedUrl(mapQuery)}
-                className="h-48 w-full"
-                loading="lazy"
-                referrerPolicy="no-referrer-when-downgrade"
-              />
+              {isCapturing ? (
+                // Static map for JPG export (iframe can't be captured cross-origin)
+                <img
+                  src={`https://staticmap.openstreetmap.de/staticmap.php?center=${encodeURIComponent(mapQuery)}&zoom=15&size=600x192&maptype=mapnik&markers=${encodeURIComponent(mapQuery)},red-pushpin`}
+                  alt={mapQuery}
+                  className="h-48 w-full object-cover"
+                  crossOrigin="anonymous"
+                />
+              ) : (
+                <iframe
+                  title="map"
+                  src={mapsEmbedUrl(mapQuery)}
+                  className="h-48 w-full"
+                  loading="lazy"
+                  referrerPolicy="no-referrer-when-downgrade"
+                />
+              )}
             </div>
           )}
         </Section>
