@@ -69,6 +69,9 @@ export function LiveMode({
   const [now, setNow] = useState(() => Date.now());
   const [syncReady, setSyncReady] = useState(false);
   const channelRef = useRef<RealtimeChannel | null>(null);
+  // always-current state for use inside stable callbacks (subscribe, visibilitychange)
+  const stateRef = useRef(state);
+  stateRef.current = state;
   const meId = useRef<string>(
     typeof crypto !== "undefined" && "randomUUID" in crypto
       ? crypto.randomUUID()
@@ -137,6 +140,10 @@ export function LiveMode({
     navigator.wakeLock
       ?.request("screen")
       .then((wl) => {
+        // browser nulls the ref when it auto-releases (e.g. tab hidden)
+        wl.addEventListener("release", () => {
+          if (wakeLockRef.current === wl) wakeLockRef.current = null;
+        });
         wakeLockRef.current = wl;
       })
       .catch(() => {});
@@ -145,6 +152,29 @@ export function LiveMode({
       wakeLockRef.current = null;
     };
   }, [state.running]);
+
+  // re-acquire Wake Lock when returning to the tab (browser auto-releases it on hide)
+  useEffect(() => {
+    function onVisible() {
+      if (
+        document.visibilityState === "visible" &&
+        stateRef.current.running &&
+        !wakeLockRef.current
+      ) {
+        navigator.wakeLock
+          ?.request("screen")
+          .then((wl) => {
+            wl.addEventListener("release", () => {
+              if (wakeLockRef.current === wl) wakeLockRef.current = null;
+            });
+            wakeLockRef.current = wl;
+          })
+          .catch(() => {});
+      }
+    }
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
+  }, []);
 
   // reset auto-trigger when item changes
   useEffect(() => {
@@ -196,10 +226,31 @@ export function LiveMode({
         currentIndex: payload.currentIndex,
       });
     });
+    // a device that just joined asks for current state; anyone mid-show replies
+    ch.on("broadcast", { event: "sync-request" }, ({ payload }) => {
+      if (!payload || payload.sender === meId.current) return;
+      const s = stateRef.current;
+      if (s.startedAt != null) {
+        ch.send({
+          type: "broadcast",
+          event: "state",
+          payload: { ...s, sender: meId.current },
+        });
+      }
+    });
     // set immediately so SDK can queue messages sent before SUBSCRIBED
     channelRef.current = ch;
     ch.subscribe((status) => {
-      setSyncReady(status === "SUBSCRIBED");
+      const ready = status === "SUBSCRIBED";
+      setSyncReady(ready);
+      if (ready) {
+        // request current show state from any device already running
+        ch.send({
+          type: "broadcast",
+          event: "sync-request",
+          payload: { sender: meId.current },
+        });
+      }
     });
     return () => {
       channelRef.current = null;
@@ -299,6 +350,11 @@ export function LiveMode({
     const audio = audioRef.current;
     if (!audio) return;
     if (url) {
+      // already playing this exact item (e.g. started early via negative buffer) — don't restart
+      if (playingId === itemId && !audio.paused) {
+        setAudioPlaying(true);
+        return;
+      }
       audio.pause();
       audio.src = url;
       audio.currentTime = 0;
@@ -309,6 +365,8 @@ export function LiveMode({
       audio.pause();
       setPlayingId(null);
       setAudioPlaying(false);
+      setAudioCurrent(0);
+      setAudioDuration(0);
     }
   }
 
