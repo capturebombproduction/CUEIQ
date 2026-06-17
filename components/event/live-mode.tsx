@@ -470,8 +470,9 @@ export function LiveMode({
   }
   function goto(index: number) {
     if (index < 0 || index >= items.length) return;
-    // clicking the item that's already current must NOT reset its timer/audio
-    if (index === state.currentIndex && state.begun) return;
+    // never re-trigger the item that's already current OR the track that's
+    // currently playing — would reset its countdown mid-play
+    if (state.begun && (index === state.currentIndex || items[index]?.id === playingId)) return;
     const it = items[index];
     if (state.mode === "auto") {
       // Auto: jump + play new track + run countdown
@@ -763,6 +764,10 @@ export function LiveMode({
         {items.map((it, i) => {
           const hasFile = !!audioUrls[it.id];
           const isPlayingThis = playingId === it.id && audioPlaying;
+          // can't re-select the current item or the track that's playing (would reset it)
+          const locked =
+            state.mode === "auto" ||
+            (state.begun && (i === state.currentIndex || it.id === playingId));
           return (
             <div
               key={it.id}
@@ -771,18 +776,20 @@ export function LiveMode({
                 i === state.currentIndex && "bg-primary/10"
               )}
             >
-              {/* go-to button — locked in Auto mode to prevent accidental jumps */}
+              {/* go-to button — locked in Auto and for the current/playing track */}
               <button
                 onClick={() => goto(i)}
-                disabled={state.mode === "auto"}
+                disabled={locked}
                 title={
                   state.mode === "auto"
                     ? "Auto mode — สลับเป็น Manual ก่อนถึงจะเลือกเองได้"
-                    : undefined
+                    : it.id === playingId
+                      ? "เพลงนี้กำลังเล่นอยู่"
+                      : undefined
                 }
                 className={cn(
                   "flex flex-1 items-center gap-2 text-left text-sm",
-                  state.mode === "auto" && "cursor-default"
+                  locked && "cursor-default"
                 )}
               >
                 <span className="w-5 shrink-0 text-center text-xs text-muted-foreground tabular-nums">
