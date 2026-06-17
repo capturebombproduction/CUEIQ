@@ -452,10 +452,9 @@ export function LiveMode({
       const url = cur ? audioUrls[cur.id] : undefined;
       const audio = audioRef.current;
       if (cur && url && audio) {
-        const pos = Math.max(0, offset - (cur.buffer_before_seconds || 0));
         if (playingId !== cur.id) {
           audio.src = url;
-          audio.currentTime = pos;
+          audio.currentTime = Math.max(0, offset); // audio runs in sync with countdown
           setPlayingId(cur.id);
           audio.play().catch(() => {});
           setAudioPlaying(true);
@@ -470,10 +469,25 @@ export function LiveMode({
   }
   function goto(index: number) {
     if (index < 0 || index >= items.length) return;
-    // never re-trigger the item that's already current OR the track that's
-    // currently playing — would reset its countdown mid-play
-    if (state.begun && (index === state.currentIndex || items[index]?.id === playingId)) return;
+    if (state.begun && index === state.currentIndex) return; // already current → no-op
     const it = items[index];
+
+    // Returning to the track whose audio is loaded/playing — sync the countdown to
+    // its REAL position (audio kept playing while you checked another song) instead
+    // of resetting it. e.g. song at 0:30, 5s detour, back → countdown reflects 0:35.
+    if (state.begun && it && it.id === playingId) {
+      const audio = audioRef.current;
+      const pos = audio ? audio.currentTime : 0;
+      const playing = !!audio && !audio.paused;
+      apply({
+        ...state,
+        currentIndex: index,
+        itemStartedAt: playing ? Date.now() - pos * 1000 : null,
+        itemElapsedAtPause: playing ? null : pos,
+        running: playing,
+      });
+      return;
+    }
     if (state.mode === "auto") {
       // Auto: jump + play new track + run countdown
       apply({
@@ -764,10 +778,9 @@ export function LiveMode({
         {items.map((it, i) => {
           const hasFile = !!audioUrls[it.id];
           const isPlayingThis = playingId === it.id && audioPlaying;
-          // can't re-select the current item or the track that's playing (would reset it)
-          const locked =
-            state.mode === "auto" ||
-            (state.begun && (i === state.currentIndex || it.id === playingId));
+          // only Auto locks navigation; in Manual every row is selectable
+          // (current = no-op, playing track = resync, others = cue)
+          const locked = state.mode === "auto";
           return (
             <div
               key={it.id}
@@ -783,9 +796,7 @@ export function LiveMode({
                 title={
                   state.mode === "auto"
                     ? "Auto mode — สลับเป็น Manual ก่อนถึงจะเลือกเองได้"
-                    : it.id === playingId
-                      ? "เพลงนี้กำลังเล่นอยู่"
-                      : undefined
+                    : undefined
                 }
                 className={cn(
                   "flex flex-1 items-center gap-2 text-left text-sm",
