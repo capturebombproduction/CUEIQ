@@ -137,6 +137,8 @@ export function EventSummary({
         backgroundColor: "#ffffff",
         cacheBust: true,
         quality: 0.92,
+        width: 600,
+        style: { width: "600px", padding: "32px" },
       });
       const filename = `${event.name.replace(/[^\w\-]+/g, "_") || "summary"}.jpg`;
 
@@ -197,7 +199,7 @@ export function EventSummary({
       {/* Captured summary */}
       <div
         ref={captureRef}
-        className="space-y-5 rounded-lg border bg-card p-5 text-foreground"
+        className="space-y-5 rounded-lg border bg-card p-6 text-foreground"
       >
         {/* Heading */}
         <div className="space-y-1 border-b pb-3">
