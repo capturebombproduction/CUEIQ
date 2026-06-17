@@ -665,11 +665,12 @@ export function LiveMode({
             >
               {state.running ? (
                 <>
-                  <Pause className="h-5 w-5" /> กำลังเล่น
+                  <span className="h-2 w-2 shrink-0 animate-pulse rounded-full bg-white" />
+                  กำลังโชว์
                 </>
               ) : (
                 <>
-                  <Play className="h-5 w-5" /> เล่นต่อ
+                  <Play className="h-5 w-5" /> พักโชว์ — แตะเล่นต่อ
                 </>
               )}
             </Button>
