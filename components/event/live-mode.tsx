@@ -429,11 +429,12 @@ export function LiveMode({
       startedAt: state.startedAt ?? Date.now(),
     });
     const it = items[index];
-    // Auto plays the new track; Manual just selects it and stops old audio
-    if (state.mode === "auto") {
-      if (it) playItemAudio(it.id);
-    } else {
-      stopAudio();
+    // Auto plays the new track immediately.
+    // Manual: leave the previous track PLAYING and just cue the new item as
+    // current — the operator presses play when ready (or lets the old track
+    // finish first). The old row keeps its 🔊 indicator until it ends.
+    if (state.mode === "auto" && it) {
+      playItemAudio(it.id);
     }
   }
   function reset() {
