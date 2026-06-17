@@ -308,8 +308,8 @@ export function EventSummary({
                       <TableHead className={`w-24 py-2 text-xs ${isCapturing ? "hidden" : "hidden sm:table-cell"}`}>Start – End</TableHead>
                     )}
                     <TableHead className="py-2 text-xs">Title / Topic</TableHead>
-                    <TableHead className="w-16 py-2 text-right text-xs">Duration</TableHead>
-                    <TableHead className="w-20 py-2 text-right text-xs">Running Time</TableHead>
+                    <TableHead className="hidden w-16 py-2 text-right text-xs sm:table-cell">Duration</TableHead>
+                    <TableHead className="hidden w-20 py-2 text-right text-xs sm:table-cell">Running Time</TableHead>
                     <TableHead className={`w-40 py-2 text-xs ${isCapturing ? "hidden" : "hidden lg:table-cell"}`}>Mic Assignment</TableHead>
                   </TableRow>
                 </TableHeader>
@@ -352,12 +352,12 @@ export function EventSummary({
                             </span>
                           )}
                         </TableCell>
-                        {/* Duration — always visible */}
-                        <TableCell className="py-1.5 text-right tabular-nums text-xs">
+                        {/* Duration — hidden on portrait */}
+                        <TableCell className="hidden py-1.5 text-right tabular-nums text-xs sm:table-cell">
                           {formatDuration(it.duration_seconds)}
                         </TableCell>
-                        {/* Running Time — always visible */}
-                        <TableCell className="py-1.5 text-right tabular-nums text-xs text-muted-foreground">
+                        {/* Running Time — hidden on portrait */}
+                        <TableCell className="hidden py-1.5 text-right tabular-nums text-xs text-muted-foreground sm:table-cell">
                           {formatDuration(t?.accumulatedSec ?? 0)}
                         </TableCell>
                         {/* Mic — landscape/tablet only, hidden during export */}
