@@ -107,8 +107,11 @@ export function ScheduleEditor({
     dragIndex.current = null;
     setDragOverIndex(null);
 
+    // compare each item's new sort_order against its OWN previous value (by id),
+    // not the item that happened to share its index — otherwise nothing persists
+    const prevById = new Map(items.map((it) => [it.id, it.sort_order]));
     const changed = renumbered.filter(
-      (it, i) => it.sort_order !== items[i]?.sort_order
+      (it) => prevById.get(it.id) !== it.sort_order
     );
     const { error } = await Promise.all(
       changed.map((it) =>
