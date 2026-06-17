@@ -217,7 +217,7 @@ export function EventSummary({
         {/* Location */}
         <Section title="Location">
           <Line label="Venue" value={event.venue} />
-          {event.map_url && (
+          {event.map_url && !isCapturing && (
             <div className="flex gap-2 text-sm">
               <span className="min-w-[120px] shrink-0 font-medium text-muted-foreground">
                 Google Map
