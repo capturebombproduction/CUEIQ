@@ -295,26 +295,43 @@ export function LiveMode({
     e.target.value = "";
   }
 
-  function toggleAudio(itemId: string) {
-    const url = audioUrls[itemId];
-    if (!url || !audioRef.current) return;
+  // Unified play/pause for the CURRENT item — controls countdown + audio together.
+  // This is what starts the countdown in Manual (countdown begins when you press play).
+  function toggleCurrentPlayback() {
+    const cur = items[state.currentIndex];
     const audio = audioRef.current;
+    if (!cur || !audio) return;
+    const url = audioUrls[cur.id];
 
-    if (playingId === itemId) {
-      if (audio.paused) {
+    if (state.running) {
+      // pause: freeze countdown at current elapsed + pause audio
+      const frozenItem = state.itemStartedAt
+        ? (Date.now() - state.itemStartedAt) / 1000
+        : (state.itemElapsedAtPause ?? 0);
+      apply({ ...state, running: false, itemElapsedAtPause: frozenItem });
+      audio.pause();
+      setAudioPlaying(false);
+    } else {
+      // start/resume: countdown ticks + current item's audio plays in sync
+      const offset = state.itemElapsedAtPause ?? 0;
+      apply({
+        ...state,
+        running: true,
+        itemStartedAt: Date.now() - offset * 1000,
+        itemElapsedAtPause: null,
+        startedAt: state.startedAt ?? Date.now(),
+      });
+      if (url) {
+        if (playingId !== cur.id) {
+          // switching to this item (e.g. after cueing NEXT) — start its file fresh
+          audio.pause();
+          audio.src = url;
+          audio.currentTime = 0;
+          setPlayingId(cur.id);
+        }
         audio.play().catch(() => {});
         setAudioPlaying(true);
-      } else {
-        audio.pause();
-        setAudioPlaying(false);
       }
-    } else {
-      audio.pause();
-      audio.src = url;
-      audio.currentTime = 0;
-      audio.play().catch(() => {});
-      setPlayingId(itemId);
-      setAudioPlaying(true);
     }
   }
 
@@ -376,65 +393,50 @@ export function LiveMode({
     }
   }
 
-  // stop any playing audio without starting new (used for manual navigation)
-  function stopAudio() {
-    audioRef.current?.pause();
-    setPlayingId(null);
-    setAudioPlaying(false);
-    setAudioCurrent(0);
-  }
-
   // show-level controls
   function start() {
     const ts = Date.now();
-    apply({ running: true, startedAt: ts, itemStartedAt: ts, itemElapsedAtPause: null, currentIndex: 0, mode: state.mode });
-    // Auto plays the first track; Manual waits for the operator to press play
     if (state.mode === "auto") {
+      // Auto: begin running + play first track immediately
+      apply({ running: true, startedAt: ts, itemStartedAt: ts, itemElapsedAtPause: null, currentIndex: 0, mode: "auto" });
       const first = items[0];
       if (first) playItemAudio(first.id);
     } else {
-      stopAudio();
+      // Manual: cue first item but DON'T start the countdown — it begins when
+      // the operator presses play. startedAt set so accumulated tracks the show.
+      apply({ running: false, startedAt: ts, itemStartedAt: null, itemElapsedAtPause: 0, currentIndex: 0, mode: "manual" });
     }
   }
   function setMode(mode: ShowMode) {
     apply({ ...state, mode });
   }
-  function pauseToggle() {
-    if (state.running) {
-      // pause: freeze item countdown + audio. Accumulated keeps running (derived from startedAt).
-      const frozenItem = state.itemStartedAt ? (Date.now() - state.itemStartedAt) / 1000 : 0;
-      apply({ ...state, running: false, itemElapsedAtPause: frozenItem });
-      audioRef.current?.pause();
-      setAudioPlaying(false);
-    } else {
-      const itemOffset = state.itemElapsedAtPause ?? 0;
-      const newItemStart = Date.now() - itemOffset * 1000;
-      apply({ ...state, running: true, itemStartedAt: newItemStart, itemElapsedAtPause: null });
-      if (playingId && audioRef.current) {
-        audioRef.current.play().catch(() => {});
-        setAudioPlaying(true);
-      }
-    }
-  }
   function goto(index: number) {
     if (index < 0 || index >= items.length) return;
     // clicking the item that's already current must NOT reset its timer/audio
     if (index === state.currentIndex && state.startedAt != null) return;
-    apply({
-      ...state,
-      currentIndex: index,
-      itemStartedAt: Date.now(),
-      itemElapsedAtPause: null,
-      running: true,
-      startedAt: state.startedAt ?? Date.now(),
-    });
     const it = items[index];
-    // Auto plays the new track immediately.
-    // Manual: leave the previous track PLAYING and just cue the new item as
-    // current — the operator presses play when ready (or lets the old track
-    // finish first). The old row keeps its 🔊 indicator until it ends.
-    if (state.mode === "auto" && it) {
-      playItemAudio(it.id);
+    if (state.mode === "auto") {
+      // Auto: jump + play new track + run countdown
+      apply({
+        ...state,
+        currentIndex: index,
+        itemStartedAt: Date.now(),
+        itemElapsedAtPause: null,
+        running: true,
+        startedAt: state.startedAt ?? Date.now(),
+      });
+      if (it) playItemAudio(it.id);
+    } else {
+      // Manual: cue the new item FROZEN (countdown waits for play). Leave the
+      // previous track playing — its row keeps the 🔊 until it ends or is replaced.
+      apply({
+        ...state,
+        currentIndex: index,
+        itemStartedAt: null,
+        itemElapsedAtPause: 0,
+        running: false,
+        startedAt: state.startedAt ?? Date.now(),
+      });
     }
   }
   function reset() {
@@ -463,7 +465,6 @@ export function LiveMode({
   const wallClock = useMemo(() => nowClock(new Date(now)), [now]);
 
   const currentAudioUrl = current ? audioUrls[current.id] : undefined;
-  const currentAudioPlaying = current && playingId === current.id && audioPlaying;
 
   if (items.length === 0) {
     return (
@@ -561,10 +562,10 @@ export function LiveMode({
               <div className="w-full space-y-1.5 rounded-lg bg-black/10 px-3 py-2">
                 <div className="flex items-center gap-2">
                   <button
-                    onClick={() => toggleAudio(current.id)}
+                    onClick={toggleCurrentPlayback}
                     className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-white/20 hover:bg-white/30"
                   >
-                    {currentAudioPlaying ? (
+                    {state.running ? (
                       <Pause className="h-4 w-4" />
                     ) : (
                       <Play className="h-4 w-4" />
@@ -656,7 +657,7 @@ export function LiveMode({
             {/* play/stop — distinct color + label so it isn't mistaken for skip */}
             <Button
               size="lg"
-              onClick={pauseToggle}
+              onClick={toggleCurrentPlayback}
               className={cn(
                 "shrink-0 font-semibold text-white",
                 state.running
