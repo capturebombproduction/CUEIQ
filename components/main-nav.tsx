@@ -5,9 +5,9 @@ import { usePathname } from "next/navigation";
 import { cn } from "@/lib/utils";
 
 const LINKS = [
-  { href: "/dashboard", label: "Events" },
-  { href: "/library", label: "Music Library" },
-  { href: "/groups", label: "Artists" },
+  { href: "/dashboard", label: "Events", short: "Events" },
+  { href: "/library", label: "Music Library", short: "Library" },
+  { href: "/groups", label: "Artists", short: "Artists" },
 ];
 
 export function MainNav() {
@@ -22,13 +22,14 @@ export function MainNav() {
             key={link.href}
             href={link.href}
             className={cn(
-              "rounded-md px-2.5 py-1.5 text-sm font-medium transition-colors sm:px-3",
+              "rounded-md px-2 py-1.5 text-sm font-medium transition-colors sm:px-3",
               active
                 ? "bg-muted text-foreground"
                 : "text-muted-foreground hover:bg-muted/60 hover:text-foreground"
             )}
           >
-            {link.label}
+            <span className="sm:hidden">{link.short}</span>
+            <span className="hidden sm:inline">{link.label}</span>
           </Link>
         );
       })}

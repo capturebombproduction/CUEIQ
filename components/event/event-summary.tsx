@@ -278,15 +278,15 @@ export function EventSummary({
               <Table>
                 <TableHeader>
                   <TableRow>
-                    <TableHead className="w-10 text-right">#</TableHead>
-                    <TableHead className="w-14">Type</TableHead>
+                    <TableHead className="w-8 text-right">#</TableHead>
+                    <TableHead className="w-12">Type</TableHead>
                     {hasClock && (
-                      <TableHead className="w-32">Start – End</TableHead>
+                      <TableHead className="w-24">Time</TableHead>
                     )}
                     <TableHead>Title / Topic</TableHead>
-                    <TableHead className="w-20 text-right">Duration</TableHead>
-                    <TableHead className="w-24 text-right">Running Time</TableHead>
-                    <TableHead className="w-40">Mic Assignment</TableHead>
+                    <TableHead className="hidden w-20 text-right sm:table-cell">Duration</TableHead>
+                    <TableHead className="hidden w-24 text-right md:table-cell">Running Time</TableHead>
+                    <TableHead className="hidden w-40 lg:table-cell">Mic Assignment</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -314,21 +314,23 @@ export function EventSummary({
                               {it.notes}
                             </span>
                           )}
+                          {/* Mic shown inline on mobile (hidden on lg where it has its own column) */}
+                          {slots.length > 0 && (
+                            <span className="mt-0.5 block text-xs font-normal text-muted-foreground lg:hidden">
+                              🎤 {slots.map((s) => s.member ? `${s.mic}·${s.member}` : s.mic).join(" ")}
+                            </span>
+                          )}
                         </TableCell>
-                        <TableCell className="text-right tabular-nums">
+                        <TableCell className="hidden text-right tabular-nums sm:table-cell">
                           {formatDuration(it.duration_seconds)}
                         </TableCell>
-                        <TableCell className="text-right tabular-nums text-muted-foreground">
+                        <TableCell className="hidden text-right tabular-nums text-muted-foreground md:table-cell">
                           {formatDuration(t?.accumulatedSec ?? 0)}
                         </TableCell>
-                        <TableCell className="text-xs text-muted-foreground">
+                        <TableCell className="hidden text-xs text-muted-foreground lg:table-cell">
                           {slots.length === 0
                             ? "—"
-                            : slots
-                                .map((s) =>
-                                  s.member ? `${s.mic}·${s.member}` : s.mic
-                                )
-                                .join("  ")}
+                            : slots.map((s) => s.member ? `${s.mic}·${s.member}` : s.mic).join("  ")}
                         </TableCell>
                       </TableRow>
                     );
