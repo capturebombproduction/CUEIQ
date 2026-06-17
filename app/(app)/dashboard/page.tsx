@@ -51,15 +51,16 @@ export default async function DashboardPage() {
     <div className="space-y-6">
       <div className="flex items-end justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight">โชว์ทั้งหมด</h1>
+          <h1 className="text-2xl font-bold tracking-tight">All Events</h1>
           <p className="text-sm text-muted-foreground">
-            {ws.tenant.name} · {events.length} งาน
+            {ws.tenant.name} · {events.length}{" "}
+            {events.length === 1 ? "Event" : "Events"}
           </p>
         </div>
         {editable && (
           <Button asChild>
             <Link href="/events/new">
-              <Plus className="h-4 w-4" /> สร้างงานใหม่
+              <Plus className="h-4 w-4" /> New Event
             </Link>
           </Button>
         )}
@@ -69,11 +70,11 @@ export default async function DashboardPage() {
         <Card>
           <CardContent className="flex flex-col items-center justify-center gap-3 py-16 text-center">
             <Music2 className="h-10 w-10 text-muted-foreground" />
-            <p className="text-muted-foreground">ยังไม่มีงาน</p>
+            <p className="text-muted-foreground">No events yet</p>
             {editable && (
               <Button asChild variant="outline">
                 <Link href="/events/new">
-                  <Plus className="h-4 w-4" /> สร้างงานแรก
+                  <Plus className="h-4 w-4" /> Create your first event
                 </Link>
               </Button>
             )}
@@ -97,7 +98,7 @@ export default async function DashboardPage() {
                       {formatDate(ev.event_date)}
                       {ev.show_start_time && (
                         <span className="tabular-nums">
-                          · {shortClock(ev.show_start_time)} น.
+                          · {shortClock(ev.show_start_time)}
                         </span>
                       )}
                     </p>

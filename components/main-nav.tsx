@@ -5,9 +5,9 @@ import { usePathname } from "next/navigation";
 import { cn } from "@/lib/utils";
 
 const LINKS = [
-  { href: "/dashboard", label: "โชว์" },
-  { href: "/library", label: "คลังเพลง" },
-  { href: "/groups", label: "วง" },
+  { href: "/dashboard", label: "Events" },
+  { href: "/library", label: "Music Library" },
+  { href: "/groups", label: "Artists" },
 ];
 
 export function MainNav() {

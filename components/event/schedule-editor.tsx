@@ -1,8 +1,8 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { toast } from "sonner";
-import { ChevronUp, ChevronDown, Trash2, Plus } from "lucide-react";
+import { GripVertical, Trash2, Plus } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -38,6 +38,8 @@ export function ScheduleEditor({
     [...initialItems].sort((a, b) => a.sort_order - b.sort_order)
   );
   const [busy, setBusy] = useState(false);
+  const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
+  const dragIndex = useRef<number | null>(null);
 
   function setLocal(id: string, partial: Partial<ScheduleItem>) {
     setItems((prev) =>
@@ -50,7 +52,7 @@ export function ScheduleEditor({
       .from("schedule_items")
       .update(partial)
       .eq("id", id);
-    if (error) toast.error("บันทึกไม่สำเร็จ", { description: error.message });
+    if (error) toast.error("Save failed", { description: error.message });
   }
 
   async function addItem() {
@@ -70,7 +72,7 @@ export function ScheduleEditor({
       .single();
     setBusy(false);
     if (error || !data) {
-      toast.error("เพิ่มรายการไม่สำเร็จ", { description: error?.message });
+      toast.error("Failed to add item", { description: error?.message });
       return;
     }
     setItems((prev) => [...prev, data as ScheduleItem]);
@@ -84,49 +86,72 @@ export function ScheduleEditor({
       .delete()
       .eq("id", id);
     if (error) {
-      toast.error("ลบไม่สำเร็จ", { description: error.message });
+      toast.error("Delete failed", { description: error.message });
       setItems(snapshot);
     }
   }
 
-  async function move(index: number, dir: -1 | 1) {
-    const target = index + dir;
-    if (target < 0 || target >= items.length) return;
-    const a = items[index];
-    const b = items[target];
+  async function handleDrop(targetIndex: number) {
+    const from = dragIndex.current;
+    if (from === null || from === targetIndex) {
+      dragIndex.current = null;
+      setDragOverIndex(null);
+      return;
+    }
     const next = [...items];
-    next[index] = { ...b, sort_order: a.sort_order };
-    next[target] = { ...a, sort_order: b.sort_order };
-    next.sort((x, y) => x.sort_order - y.sort_order);
-    setItems(next);
-    await Promise.all([
-      supabase
-        .from("schedule_items")
-        .update({ sort_order: b.sort_order })
-        .eq("id", a.id),
-      supabase
-        .from("schedule_items")
-        .update({ sort_order: a.sort_order })
-        .eq("id", b.id),
-    ]);
+    const [moved] = next.splice(from, 1);
+    next.splice(targetIndex, 0, moved);
+    // renumber sort_order 1..n
+    const renumbered = next.map((it, i) => ({ ...it, sort_order: i + 1 }));
+    setItems(renumbered);
+    dragIndex.current = null;
+    setDragOverIndex(null);
+
+    const changed = renumbered.filter(
+      (it, i) => it.sort_order !== items[i]?.sort_order
+    );
+    const { error } = await Promise.all(
+      changed.map((it) =>
+        supabase
+          .from("schedule_items")
+          .update({ sort_order: it.sort_order })
+          .eq("id", it.id)
+      )
+    ).then((results) => results.find((r) => r.error) ?? { error: null });
+    if (error) {
+      toast.error("Reorder failed", { description: error.message });
+      setItems(items);
+    }
   }
 
   return (
     <div className="space-y-3">
       {items.length === 0 && (
         <p className="rounded-lg border border-dashed py-8 text-center text-sm text-muted-foreground">
-          ยังไม่มีรายการนัดหมาย
+          No call time entries yet
         </p>
       )}
 
       {items.map((it, idx) => (
         <div
           key={it.id}
-          className="rounded-lg border bg-card p-3 shadow-sm sm:p-4"
+          className={[
+            "rounded-lg border bg-card p-3 shadow-sm transition-shadow sm:p-4",
+            dragOverIndex === idx ? "ring-2 ring-primary" : "",
+          ].join(" ")}
+          onDragOver={(e) => {
+            e.preventDefault();
+            setDragOverIndex(idx);
+          }}
+          onDrop={(e) => {
+            e.preventDefault();
+            handleDrop(idx);
+          }}
+          onDragLeave={() => setDragOverIndex(null)}
         >
           <div className="grid gap-3 sm:grid-cols-12">
             <div className="space-y-1 sm:col-span-3">
-              <Label className="text-xs text-muted-foreground">ประเภท</Label>
+              <Label className="text-xs text-muted-foreground">Type</Label>
               <Select
                 value={it.kind}
                 disabled={!editable}
@@ -149,11 +174,11 @@ export function ScheduleEditor({
             </div>
 
             <div className="space-y-1 sm:col-span-3">
-              <Label className="text-xs text-muted-foreground">หัวข้อ</Label>
+              <Label className="text-xs text-muted-foreground">Label</Label>
               <Input
                 value={it.label ?? ""}
                 disabled={!editable}
-                placeholder="เช่น Stage Round 1"
+                placeholder="e.g. Stage Round 1"
                 onChange={(e) => setLocal(it.id, { label: e.target.value })}
                 onBlur={(e) =>
                   persist(it.id, { label: e.target.value.trim() || null })
@@ -162,7 +187,7 @@ export function ScheduleEditor({
             </div>
 
             <div className="space-y-1 sm:col-span-2">
-              <Label className="text-xs text-muted-foreground">เริ่ม</Label>
+              <Label className="text-xs text-muted-foreground">Start</Label>
               <Input
                 type="time"
                 value={it.start_time?.slice(0, 5) ?? ""}
@@ -175,7 +200,7 @@ export function ScheduleEditor({
             </div>
 
             <div className="space-y-1 sm:col-span-2">
-              <Label className="text-xs text-muted-foreground">จบ</Label>
+              <Label className="text-xs text-muted-foreground">End</Label>
               <Input
                 type="time"
                 value={it.end_time?.slice(0, 5) ?? ""}
@@ -190,24 +215,16 @@ export function ScheduleEditor({
             <div className="flex items-end justify-end gap-1 sm:col-span-2">
               {editable && (
                 <>
-                  <Button
+                  <button
                     type="button"
-                    variant="ghost"
-                    size="icon"
-                    onClick={() => move(idx, -1)}
-                    disabled={idx === 0}
+                    draggable
+                    onDragStart={() => { dragIndex.current = idx; }}
+                    onDragEnd={() => { dragIndex.current = null; setDragOverIndex(null); }}
+                    className="cursor-grab rounded p-1.5 text-muted-foreground hover:bg-muted active:cursor-grabbing"
+                    aria-label="Drag to reorder"
                   >
-                    <ChevronUp className="h-4 w-4" />
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon"
-                    onClick={() => move(idx, 1)}
-                    disabled={idx === items.length - 1}
-                  >
-                    <ChevronDown className="h-4 w-4" />
-                  </Button>
+                    <GripVertical className="h-4 w-4" />
+                  </button>
                   <Button
                     type="button"
                     variant="ghost"
@@ -222,11 +239,11 @@ export function ScheduleEditor({
             </div>
 
             <div className="space-y-1 sm:col-span-6">
-              <Label className="text-xs text-muted-foreground">สถานที่</Label>
+              <Label className="text-xs text-muted-foreground">Location</Label>
               <Input
                 value={it.location ?? ""}
                 disabled={!editable}
-                placeholder="เช่น Main Stage"
+                placeholder="e.g. Main Stage"
                 onChange={(e) => setLocal(it.id, { location: e.target.value })}
                 onBlur={(e) =>
                   persist(it.id, { location: e.target.value.trim() || null })
@@ -234,7 +251,7 @@ export function ScheduleEditor({
               />
             </div>
             <div className="space-y-1 sm:col-span-6">
-              <Label className="text-xs text-muted-foreground">โน้ต</Label>
+              <Label className="text-xs text-muted-foreground">Notes</Label>
               <Input
                 value={it.notes ?? ""}
                 disabled={!editable}
@@ -256,7 +273,7 @@ export function ScheduleEditor({
           disabled={busy}
           className="w-full"
         >
-          <Plus className="h-4 w-4" /> เพิ่มรายการนัดหมาย
+          <Plus className="h-4 w-4" /> Add Call Time Entry
         </Button>
       )}
     </div>

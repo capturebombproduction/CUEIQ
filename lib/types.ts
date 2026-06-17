@@ -155,7 +155,7 @@ export type ScheduleKind =
 export const SCHEDULE_KIND_LABELS: Record<ScheduleKind, string> = {
   on_location: "On Location (ถึงสถานที่)",
   dressing_room: "Dressing Room (ห้องแต่งตัว)",
-  stb: "Stand By (STB)",
+  stb: "Standby Time (STB)",
   sound_check: "Sound Check",
   costume: "Costume (เปลี่ยนชุด)",
   stage: "Stage (ขึ้นเวที)",

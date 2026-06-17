@@ -192,7 +192,7 @@ export function EventSummary({
 
         {/* Location */}
         <Section title="Location">
-          <Line label="สถานที่" value={event.venue} />
+          <Line label="Venue" value={event.venue} />
           {event.map_url && (
             <div className="flex gap-2 text-sm">
               <span className="min-w-[120px] shrink-0 font-medium text-muted-foreground">
@@ -204,7 +204,7 @@ export function EventSummary({
                 rel="noreferrer"
                 className="inline-flex items-center gap-1 break-all font-medium text-primary underline"
               >
-                เปิดแผนที่ <ExternalLink className="h-3 w-3 shrink-0" />
+                View Map <ExternalLink className="h-3 w-3 shrink-0" />
               </a>
             </div>
           )}
@@ -222,24 +222,24 @@ export function EventSummary({
         </Section>
 
         {/* Appointments */}
-        <Section title="นัดหมายเวลา">
+        <Section title="Call Time">
           <Line
             label="On Location"
             value={shortClock(sched("on_location")?.start_time)}
           />
-          <Line label="ห้องพัก" value={sched("dressing_room")?.location} />
+          <Line label="Dressing Room" value={sched("dressing_room")?.location} />
           <Line
-            label="เวลาถ่ายรูป"
+            label="Photo Session"
             value={shortClock(sched("photo")?.start_time)}
           />
-          <Line label="COSTUME THEME" value={event.costume_theme} />
+          <Line label="Costume Theme" value={event.costume_theme} />
         </Section>
 
         {/* Stage & Booth */}
-        <Section title="เวลาการแสดง">
-          <Line label="STAGE" value={showWindow} />
-          <Line label="STB Show" value={shortClock(sched("stb")?.start_time)} />
-          <Line label="BOOTH" value={range(booth)} />
+        <Section title="Showtime">
+          <Line label="Standby Time" value={shortClock(sched("stb")?.start_time)} />
+          <Line label="Stage" value={showWindow} />
+          <Line label="Booth" value={range(booth)} />
           <Line label="Booth Location" value={booth?.location} />
         </Section>
 
@@ -248,7 +248,7 @@ export function EventSummary({
           <div className="flex flex-wrap items-center gap-x-5 gap-y-1 pb-1 text-sm">
             <span className="flex items-center gap-1.5">
               <Clock className="h-4 w-4 text-muted-foreground" />
-              เวลารวม{" "}
+              Total Duration{" "}
               <b className="tabular-nums">{formatDuration(timing.totalSeconds)}</b>
             </span>
             {hasClock && (
@@ -265,7 +265,7 @@ export function EventSummary({
                 </Badge>
               ) : (
                 <Badge variant="success" className="gap-1">
-                  <CheckCircle2 className="h-3.5 w-3.5" /> เหลือ{" "}
+                  <CheckCircle2 className="h-3.5 w-3.5" /> Remaining{" "}
                   {formatDuration(Math.max(0, hardOutSec - timing.endSec))}
                 </Badge>
               ))}
@@ -279,14 +279,14 @@ export function EventSummary({
                 <TableHeader>
                   <TableRow>
                     <TableHead className="w-10 text-right">#</TableHead>
-                    <TableHead className="w-14">ประเภท</TableHead>
+                    <TableHead className="w-14">Type</TableHead>
                     {hasClock && (
-                      <TableHead className="w-28">เริ่ม–จบ</TableHead>
+                      <TableHead className="w-32">Start – End</TableHead>
                     )}
-                    <TableHead>ชื่อเพลง / หัวข้อ</TableHead>
-                    <TableHead className="w-16 text-right">ความยาว</TableHead>
-                    <TableHead className="w-16 text-right">สะสม</TableHead>
-                    <TableHead className="w-40">ไมค์ → สมาชิก</TableHead>
+                    <TableHead>Title / Topic</TableHead>
+                    <TableHead className="w-20 text-right">Duration</TableHead>
+                    <TableHead className="w-24 text-right">Running Time</TableHead>
+                    <TableHead className="w-40">Mic Assignment</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -340,7 +340,7 @@ export function EventSummary({
         </Section>
 
         {members.length > 0 && (
-          <Section title="สมาชิก + ไมค์">
+          <Section title="Members & Mics">
             <div className="flex flex-wrap gap-1.5">
               {members.map((m) => (
                 <Badge key={m.id} variant="secondary" className="font-normal">

@@ -120,6 +120,20 @@ export function EventWorkspace({
           </TabsContent>
         )}
       </Tabs>
+
+      {/* Bottom summary + refresh — mirrors the top bar for convenience after editing */}
+      <div className="flex flex-wrap items-center gap-2 border-t pt-4">
+        <Button
+          type="button"
+          size="lg"
+          variant={view === "summary" ? "default" : "outline"}
+          onClick={() => setView("summary")}
+          className="font-semibold"
+        >
+          <ClipboardList className="h-5 w-5" /> Summary
+        </Button>
+        <RefreshButton />
+      </div>
     </div>
   );
 }
