@@ -295,24 +295,43 @@ export function LiveMode({
     e.target.value = "";
   }
 
-  // Unified play/pause for the CURRENT item — controls countdown + audio together.
-  // This is what starts the countdown in Manual (countdown begins when you press play).
-  function toggleCurrentPlayback() {
+  // Preview/check the CURRENT item's audio — pure audio, never touches the
+  // show countdown. Use it to listen to a song / verify its settings.
+  function togglePreviewAudio() {
     const cur = items[state.currentIndex];
     const audio = audioRef.current;
     if (!cur || !audio) return;
     const url = audioUrls[cur.id];
+    if (!url) return;
+    if (playingId === cur.id && !audio.paused) {
+      audio.pause();
+      setAudioPlaying(false);
+    } else {
+      if (playingId !== cur.id) {
+        audio.pause();
+        audio.src = url;
+        audio.currentTime = 0;
+        setPlayingId(cur.id);
+      }
+      audio.play().catch(() => {});
+      setAudioPlaying(true);
+    }
+  }
 
+  // RUN / pause the show countdown — the deliberate "go live" action.
+  // In Manual it controls the timer only (audio is checked separately above).
+  // In Auto it also pauses/resumes the playing track so they stay together.
+  function toggleShowRun() {
     if (state.running) {
-      // pause: freeze countdown at current elapsed + pause audio
       const frozenItem = state.itemStartedAt
         ? (Date.now() - state.itemStartedAt) / 1000
         : (state.itemElapsedAtPause ?? 0);
       apply({ ...state, running: false, itemElapsedAtPause: frozenItem });
-      audio.pause();
-      setAudioPlaying(false);
+      if (state.mode === "auto") {
+        audioRef.current?.pause();
+        setAudioPlaying(false);
+      }
     } else {
-      // start/resume: countdown ticks + current item's audio plays in sync
       const offset = state.itemElapsedAtPause ?? 0;
       apply({
         ...state,
@@ -321,16 +340,19 @@ export function LiveMode({
         itemElapsedAtPause: null,
         startedAt: state.startedAt ?? Date.now(),
       });
-      if (url) {
-        if (playingId !== cur.id) {
-          // switching to this item (e.g. after cueing NEXT) — start its file fresh
-          audio.pause();
-          audio.src = url;
-          audio.currentTime = 0;
-          setPlayingId(cur.id);
+      if (state.mode === "auto") {
+        const cur = items[state.currentIndex];
+        const url = cur ? audioUrls[cur.id] : undefined;
+        const audio = audioRef.current;
+        if (url && audio) {
+          if (playingId !== cur!.id) {
+            audio.src = url;
+            audio.currentTime = 0;
+            setPlayingId(cur!.id);
+          }
+          audio.play().catch(() => {});
+          setAudioPlaying(true);
         }
-        audio.play().catch(() => {});
-        setAudioPlaying(true);
       }
     }
   }
@@ -465,6 +487,7 @@ export function LiveMode({
   const wallClock = useMemo(() => nowClock(new Date(now)), [now]);
 
   const currentAudioUrl = current ? audioUrls[current.id] : undefined;
+  const currentAudioPlaying = !!current && playingId === current.id && audioPlaying;
 
   if (items.length === 0) {
     return (
@@ -562,10 +585,11 @@ export function LiveMode({
               <div className="w-full space-y-1.5 rounded-lg bg-black/10 px-3 py-2">
                 <div className="flex items-center gap-2">
                   <button
-                    onClick={toggleCurrentPlayback}
+                    onClick={togglePreviewAudio}
+                    title="เล่น/หยุดเพลง (เช็คเพลง — ไม่รันโชว์)"
                     className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-white/20 hover:bg-white/30"
                   >
-                    {state.running ? (
+                    {currentAudioPlaying ? (
                       <Pause className="h-4 w-4" />
                     ) : (
                       <Play className="h-4 w-4" />
@@ -657,7 +681,7 @@ export function LiveMode({
             {/* play/stop — distinct color + label so it isn't mistaken for skip */}
             <Button
               size="lg"
-              onClick={toggleCurrentPlayback}
+              onClick={toggleShowRun}
               className={cn(
                 "shrink-0 font-semibold text-white",
                 state.running
@@ -668,11 +692,11 @@ export function LiveMode({
               {state.running ? (
                 <>
                   <span className="h-2 w-2 shrink-0 animate-pulse rounded-full bg-white" />
-                  กำลังโชว์
+                  กำลังรันโชว์
                 </>
               ) : (
                 <>
-                  <Play className="h-5 w-5" /> พักโชว์ — แตะเล่นต่อ
+                  <Play className="h-5 w-5" /> รันโชว์ (จับเวลา)
                 </>
               )}
             </Button>
