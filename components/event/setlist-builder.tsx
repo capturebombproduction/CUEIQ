@@ -365,6 +365,21 @@ export function SetlistBuilder({
     persist(id, partial);
   }
 
+  // Set this item's duration to all the time left until Hard Out (e.g. final MC).
+  // startSec is this row's clock-of-day start (already includes its buffer_before).
+  function fillRemaining(itemId: string, startSec: number, bufferAfter: number) {
+    if (hardOutSec == null) return;
+    const dur = Math.round(hardOutSec - Math.max(0, bufferAfter || 0) - startSec);
+    if (dur <= 0) {
+      toast.error("เวลาไม่พอ — รายการก่อนหน้าใช้เวลาเกิน Hard Out แล้ว", {
+        description: "ลองลดความยาวรายการอื่นก่อน",
+      });
+      return;
+    }
+    update(itemId, { duration_seconds: dur });
+    toast.success(`ตั้งเป็นเวลาที่เหลือ ${formatDuration(dur)}`);
+  }
+
   async function insertItem(extra: Partial<SetlistItem> & { kind: SetlistKind }) {
     const sort = items.length
       ? Math.max(...items.map((i) => i.sort_order)) + 1
@@ -646,9 +661,23 @@ export function SetlistBuilder({
               {/* Editable fields */}
               <div className="mt-2 grid gap-2 pl-8 sm:grid-cols-12">
                 <div className="space-y-1 sm:col-span-3">
-                  <Label className="text-xs text-muted-foreground">
-                    ความยาว (m:ss)
-                  </Label>
+                  <div className="flex items-center justify-between gap-1">
+                    <Label className="text-xs text-muted-foreground">
+                      ความยาว (m:ss)
+                    </Label>
+                    {editable && hardOutSec != null && t && (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          fillRemaining(it.id, t.startSec, it.buffer_after_seconds)
+                        }
+                        title="ตั้งความยาว = เวลาที่เหลือจนถึง Hard Out (เช่น MC ปิดท้าย)"
+                        className="text-[10px] font-medium text-primary hover:underline"
+                      >
+                        เวลาที่เหลือ
+                      </button>
+                    )}
+                  </div>
                   <DurationField
                     seconds={it.duration_seconds}
                     disabled={!editable}
