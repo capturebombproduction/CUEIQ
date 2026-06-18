@@ -73,9 +73,7 @@ export function EventWorkspace({
   function confirmSaved() {
     setSaving(true);
     router.refresh();
-    toast.success("บันทึก/อัปเดตข้อมูลเรียบร้อยแล้ว", {
-      description: "ระบบบันทึกอัตโนมัติทุกครั้งที่แก้ไขอยู่แล้ว",
-    });
+    toast.success("บันทึกเรียบร้อยแล้ว");
     setTimeout(() => setSaving(false), 800);
   }
 
@@ -153,9 +151,6 @@ export function EventWorkspace({
           confirms with a toast (data already auto-saves). No page bounce. */}
       {view !== "summary" && (
         <div className="mt-2 flex flex-wrap items-center gap-2 rounded-lg border bg-muted/30 p-3">
-          <span className="mr-1 text-xs text-muted-foreground">
-            บันทึกอัตโนมัติทุกครั้งที่แก้ไข
-          </span>
           <Button
             type="button"
             variant="default"
