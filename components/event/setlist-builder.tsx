@@ -375,7 +375,7 @@ export function SetlistBuilder({
         tenant_id: tenantId,
         event_id: eventId,
         buffer_before_seconds: 0,
-        buffer_after_seconds: 3,
+        buffer_after_seconds: 0,
         mic_slots: [],
         sort_order: sort,
         ...extra,
@@ -657,29 +657,31 @@ export function SetlistBuilder({
                 </div>
                 <div className="space-y-1 sm:col-span-2">
                   <Label className="text-xs text-muted-foreground">
-                    Buffer ก่อน (วิ · ติดลบ = เล่นซ้อน)
+                    เล่นซ้อน (วิ · เริ่มก่อนเพลงก่อนจบ)
                   </Label>
                   <Input
                     type="number"
+                    max={0}
                     min={-300}
+                    placeholder="เช่น -5"
                     className="tabular-nums"
                     value={it.buffer_before_seconds}
                     disabled={!editable}
                     onChange={(e) =>
                       setLocal(it.id, {
-                        buffer_before_seconds: Number(e.target.value) || 0,
+                        buffer_before_seconds: Math.min(0, Number(e.target.value) || 0),
                       })
                     }
                     onBlur={(e) =>
                       persist(it.id, {
-                        buffer_before_seconds: Number(e.target.value) || 0,
+                        buffer_before_seconds: Math.min(0, Number(e.target.value) || 0),
                       })
                     }
                   />
                 </div>
                 <div className="space-y-1 sm:col-span-2">
                   <Label className="text-xs text-muted-foreground">
-                    Buffer หลัง (วิ)
+                    เผื่อเวลาหลัง (วิ)
                   </Label>
                   <Input
                     type="number"
@@ -689,12 +691,12 @@ export function SetlistBuilder({
                     disabled={!editable}
                     onChange={(e) =>
                       setLocal(it.id, {
-                        buffer_after_seconds: Number(e.target.value) || 0,
+                        buffer_after_seconds: Math.max(0, Number(e.target.value) || 0),
                       })
                     }
                     onBlur={(e) =>
                       persist(it.id, {
-                        buffer_after_seconds: Number(e.target.value) || 0,
+                        buffer_after_seconds: Math.max(0, Number(e.target.value) || 0),
                       })
                     }
                   />
