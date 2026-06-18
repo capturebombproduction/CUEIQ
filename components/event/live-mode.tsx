@@ -802,24 +802,32 @@ export function LiveMode({
     // after a detour into Manual.
     if (mode === "auto" && state.begun) {
       const audio = audioRef.current;
-      // Anchor Auto to the track that's ACTUALLY playing — not wherever the user
+      // Anchor Auto to the track that's ACTUALLY sounding — not wherever the user
       // browsed to in Manual. e.g. song 1 is playing, you peek at song 2's info in
       // Manual, then switch back to Auto → it should resume song 1 (the live track),
-      // NOT jump to song 2. The real anchor is the currently-playing audio.
-      const playIdx = playingId
-        ? items.findIndex((it) => it.id === playingId)
+      // NOT jump to song 2. The sounding track is playingId locally, or committedRef
+      // when we're a file-less remote driving the speaker device (no local playingId).
+      const committed = committedRef.current;
+      const soundingId = playingId ?? committed.id;
+      const soundIdx = soundingId
+        ? items.findIndex((it) => it.id === soundingId)
         : -1;
-      const anchorPlaying = playIdx >= 0 && !!audio && !audio.paused;
-      const idx = anchorPlaying ? playIdx : state.currentIndex;
+      const haveLocalAudio = !!playingId && !!audio && !audio.paused;
+      const idx = soundIdx >= 0 ? soundIdx : state.currentIndex;
       const cur = items[idx];
-      // how far into the current item we are
-      const offset = anchorPlaying
-        ? audio!.currentTime // resume from the live audio position
-        : state.running
-          ? state.itemStartedAt
-            ? (Date.now() - state.itemStartedAt) / 1000
-            : 0
-          : (state.itemElapsedAtPause ?? 0);
+      // how far into the sounding item we are
+      const offset =
+        soundIdx >= 0
+          ? haveLocalAudio
+            ? audio!.currentTime // resume from the live audio position
+            : committed.anchor != null
+              ? (Date.now() - committed.anchor) / 1000 // remote sounding position
+              : 0
+          : state.running
+            ? state.itemStartedAt
+              ? (Date.now() - state.itemStartedAt) / 1000
+              : 0
+            : (state.itemElapsedAtPause ?? 0);
       apply({
         ...state,
         mode,
@@ -836,7 +844,7 @@ export function LiveMode({
           audio.src = url;
           audio.currentTime = Math.max(0, offset);
           setPlayingId(cur.id);
-        } else if (!anchorPlaying) {
+        } else if (!haveLocalAudio) {
           // same track but it wasn't actively playing — resync its position
           audio.currentTime = Math.max(0, offset);
         }
