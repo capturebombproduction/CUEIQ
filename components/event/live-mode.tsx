@@ -72,13 +72,19 @@ function fmtTime(sec: number) {
 export function LiveMode({
   eventId,
   eventName,
-  items,
+  items: initialItems,
 }: {
   eventId: string;
   eventName: string;
   items: SetlistItem[];
 }) {
   const [state, setState] = useState<LiveState>(INITIAL);
+  // The setlist is held in state (seeded from the server prop) so edits made on
+  // ANOTHER device — broadcast as "setlist-changed" — can update Live Mode mid-show
+  // without a reload. currentIndex is remapped by item id so the show keeps its place.
+  const [items, setItems] = useState<SetlistItem[]>(initialItems);
+  const itemsRef = useRef(items);
+  itemsRef.current = items;
   const [now, setNow] = useState(() => Date.now());
   const [syncReady, setSyncReady] = useState(false);
   const [syncStatus, setSyncStatus] = useState<string>("init"); // raw channel status, for diagnosing sync issues
@@ -132,6 +138,31 @@ export function LiveMode({
     const v = (volumes[playingId] ?? 100) / 100;
     audioRef.current.volume = Math.min(1, Math.max(0, v));
   }, [volumes, playingId]);
+
+  // restore per-track volume presets for this event (saved on-device, per-device)
+  const volumesLoadedRef = useRef(false);
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(`cueiq:vol:${eventId}`);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === "object") setVolumes(parsed);
+      }
+    } catch {}
+    volumesLoadedRef.current = true;
+  }, [eventId]);
+
+  // persist volume presets, debounced (the fade buttons update this ~60fps — only
+  // the settled value is written). Survives refresh so soundcheck levels stick.
+  useEffect(() => {
+    if (!volumesLoadedRef.current) return; // don't overwrite before the restore runs
+    const id = setTimeout(() => {
+      try {
+        localStorage.setItem(`cueiq:vol:${eventId}`, JSON.stringify(volumes));
+      } catch {}
+    }, 400);
+    return () => clearTimeout(id);
+  }, [volumes, eventId]);
 
   // stop any running fade on unmount
   useEffect(() => {
@@ -343,9 +374,18 @@ export function LiveMode({
         ch.send({
           type: "broadcast",
           event: "state",
-          payload: { ...s, sender: meId.current, sentAt: Date.now() },
+          payload: {
+            ...s,
+            sender: meId.current,
+            sentAt: Date.now(),
+            currentItemId: itemsRef.current[s.currentIndex]?.id ?? null,
+          },
         });
       }
+    });
+    // another device edited the setlist (title/duration/mic/order) → refetch & merge
+    ch.on("broadcast", { event: "setlist-changed" }, () => {
+      refetchRef.current();
     });
     // set immediately so SDK can queue messages sent before SUBSCRIBED
     channelRef.current = ch;
@@ -370,6 +410,17 @@ export function LiveMode({
     };
   }, [eventId]);
 
+  // Build the broadcast payload. currentItemId lets the setlist editor know which
+  // row is on air (to lock it), independent of index shifts from concurrent edits.
+  function statePayload(s: LiveState) {
+    return {
+      ...s,
+      sender: meId.current,
+      sentAt: Date.now(),
+      currentItemId: itemsRef.current[s.currentIndex]?.id ?? null,
+    };
+  }
+
   function apply(next: LiveState, broadcast = true) {
     setState(next);
     // only the controlling device broadcasts — viewers never push state
@@ -377,10 +428,41 @@ export function LiveMode({
       channelRef.current?.send({
         type: "broadcast",
         event: "state",
-        payload: { ...next, sender: meId.current, sentAt: Date.now() },
+        payload: statePayload(next),
       });
     }
   }
+
+  // Pull the latest setlist from the server — fired when another device edits it
+  // ("setlist-changed" broadcast). Remap currentIndex by the live item's id so the
+  // running show keeps its place and timers (startedAt/itemStartedAt) are untouched.
+  async function refetchItems() {
+    const supabase = createClient();
+    const { data } = await supabase
+      .from("setlist_items")
+      .select("*")
+      .eq("event_id", eventId)
+      .order("sort_order", { ascending: true });
+    if (!data) return;
+    const newItems = data as SetlistItem[];
+    const s = stateRef.current;
+    const curId = itemsRef.current[s.currentIndex]?.id;
+    setItems(newItems);
+    if (!curId) return;
+    const newIdx = newItems.findIndex((it) => it.id === curId);
+    if (newIdx >= 0 && newIdx !== s.currentIndex) {
+      setState((prev) => ({ ...prev, currentIndex: newIdx }));
+    } else if (newIdx < 0) {
+      // the item we were browsing was removed — clamp into range, keep timers
+      setState((prev) => ({
+        ...prev,
+        currentIndex: Math.min(prev.currentIndex, Math.max(0, newItems.length - 1)),
+      }));
+    }
+  }
+  // ref so the realtime subscription (registered once) always calls the latest
+  const refetchRef = useRef(refetchItems);
+  refetchRef.current = refetchItems;
 
   // Claim control of the show on this device. Broadcasting our current state tells
   // the previous controller to step down (it'll see our message and become a viewer).
@@ -390,7 +472,7 @@ export function LiveMode({
     channelRef.current?.send({
       type: "broadcast",
       event: "state",
-      payload: { ...stateRef.current, sender: meId.current, sentAt: Date.now() },
+      payload: statePayload(stateRef.current),
     });
   }
 
@@ -927,21 +1009,21 @@ export function LiveMode({
                   <button
                     onClick={() => fadeVolumeTo(0, 3000)}
                     title="ค่อย ๆ ปิดเสียงเป็น 0% ใน 3 วินาที"
-                    className="flex items-center justify-center gap-1.5 rounded-lg bg-white/15 py-2.5 text-sm font-semibold hover:bg-white/25"
+                    className="flex items-center justify-center gap-1.5 rounded-lg bg-rose-600/85 py-3 text-sm font-bold text-white shadow-sm ring-1 ring-rose-400/40 hover:bg-rose-600"
                   >
                     <VolumeX className="h-4 w-4" /> Auto Mute
                   </button>
                   <button
                     onClick={() => fadeVolumeTo(30)}
                     title="ค่อย ๆ ลดเสียงลงเป็น 30% ใน 2 วินาที (ช่วง MC)"
-                    className="flex items-center justify-center gap-1.5 rounded-lg bg-white/15 py-2.5 text-sm font-semibold hover:bg-white/25"
+                    className="flex items-center justify-center gap-1.5 rounded-lg bg-amber-400/90 py-3 text-sm font-bold text-black shadow-sm ring-1 ring-amber-300/50 hover:bg-amber-400"
                   >
                     <Volume1 className="h-4 w-4" /> MC
                   </button>
                   <button
                     onClick={() => fadeVolumeTo(100, 2500)}
                     title="ค่อย ๆ เพิ่มเสียงกลับเป็น 100% ใน 2.5 วินาที"
-                    className="flex items-center justify-center gap-1.5 rounded-lg bg-white/15 py-2.5 text-sm font-semibold hover:bg-white/25"
+                    className="flex items-center justify-center gap-1.5 rounded-lg bg-emerald-600/85 py-3 text-sm font-bold text-white shadow-sm ring-1 ring-emerald-400/40 hover:bg-emerald-600"
                   >
                     <Volume2 className="h-4 w-4" /> Auto Loudness
                   </button>

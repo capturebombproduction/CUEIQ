@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import type { RealtimeChannel } from "@supabase/supabase-js";
 import { toast } from "sonner";
 import {
   ChevronUp,
@@ -12,6 +13,7 @@ import {
   CheckCircle2,
   ListMusic,
   GripVertical,
+  Radio,
 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { deleteAudio } from "@/lib/audio-store";
@@ -338,6 +340,46 @@ export function SetlistBuilder({
   const dragIndex = useRef<number | null>(null);
   const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
 
+  // Live Mode sync: join the show channel so we can (a) tell a running Live Mode to
+  // refetch when the setlist changes, and (b) learn which item is on air and lock it.
+  const channelRef = useRef<RealtimeChannel | null>(null);
+  const [liveItemId, setLiveItemId] = useState<string | null>(null);
+  useEffect(() => {
+    const supabase = createClient();
+    const ch = supabase.channel(`live:${eventId}`, {
+      config: { broadcast: { self: false } },
+    });
+    // a running Live Mode broadcasts its state; lock the on-air row (only while begun)
+    ch.on("broadcast", { event: "state" }, ({ payload }) => {
+      if (!payload) return;
+      setLiveItemId(payload.begun ? (payload.currentItemId ?? null) : null);
+    });
+    ch.subscribe((status) => {
+      if (status === "SUBSCRIBED") {
+        // ask any running Live Mode for its current state (so we lock immediately)
+        ch.send({
+          type: "broadcast",
+          event: "sync-request",
+          payload: { sender: "setlist-builder" },
+        });
+      }
+    });
+    channelRef.current = ch;
+    return () => {
+      channelRef.current = null;
+      supabase.removeChannel(ch);
+    };
+  }, [eventId]);
+
+  // notify a running Live Mode to pull the updated setlist (after a successful write)
+  function notifyLive() {
+    channelRef.current?.send({
+      type: "broadcast",
+      event: "setlist-changed",
+      payload: { at: Date.now() },
+    });
+  }
+
   const showStartSec = parseClockToSeconds(showStartTime);
   const hardOutSec = parseClockToSeconds(hardOutTime);
   const hasClock = showStartSec != null;
@@ -359,6 +401,7 @@ export function SetlistBuilder({
       .update(partial)
       .eq("id", id);
     if (error) toast.error("บันทึกไม่สำเร็จ", { description: error.message });
+    else notifyLive();
   }
 
   function update(id: string, partial: Partial<SetlistItem>) {
@@ -403,6 +446,7 @@ export function SetlistBuilder({
       return;
     }
     setItems((prev) => [...prev, data as SetlistItem]);
+    notifyLive();
   }
 
   async function addItem(kind: SetlistKind) {
@@ -437,6 +481,7 @@ export function SetlistBuilder({
       setItems(snapshot);
     } else {
       deleteAudio(eventId, id).catch(() => {}); // clean up on-device audio blob
+      notifyLive();
     }
   }
 
@@ -460,6 +505,7 @@ export function SetlistBuilder({
         .update({ sort_order: a.sort_order })
         .eq("id", b.id),
     ]);
+    notifyLive();
   }
 
   /** Drag & drop reorder (desktop): move the dragged row to `target` index. */
@@ -489,6 +535,8 @@ export function SetlistBuilder({
     if (failed?.error) {
       toast.error("เรียงลำดับไม่สำเร็จ", { description: failed.error.message });
       setItems(prev);
+    } else {
+      notifyLive();
     }
   }
 
@@ -541,6 +589,10 @@ export function SetlistBuilder({
       <div className="space-y-2">
         {items.map((it, idx) => {
           const t = timing.rows[idx];
+          // This row is on air in a running Live Mode → lock its edits (can't change
+          // what's playing). Other rows stay editable and sync to Live Mode live.
+          const isLive = liveItemId === it.id;
+          const rowEditable = editable && !isLive;
           return (
             <div
               key={it.id}
@@ -561,11 +613,18 @@ export function SetlistBuilder({
               className={cn(
                 "rounded-lg border bg-card p-3 shadow-sm",
                 t?.overHardOut && "border-destructive/60 bg-destructive/5",
-                dragOverIndex === idx && "ring-2 ring-primary"
+                dragOverIndex === idx && "ring-2 ring-primary",
+                isLive && "border-rose-400 ring-2 ring-rose-400/60"
               )}
             >
+              {isLive && (
+                <div className="mb-2 flex items-center gap-1.5 text-xs font-semibold text-rose-600">
+                  <Radio className="h-3.5 w-3.5 animate-pulse" />
+                  กำลังเล่นอยู่บนเวที — ล็อกแก้ไขชั่วคราว
+                </div>
+              )}
               <div className="flex items-center gap-2">
-                {editable && (
+                {rowEditable && (
                   <button
                     type="button"
                     draggable
@@ -588,7 +647,7 @@ export function SetlistBuilder({
                 <div className="w-[88px] shrink-0">
                   <Select
                     value={it.kind}
-                    disabled={!editable}
+                    disabled={!rowEditable}
                     onValueChange={(v) => update(it.id, { kind: v as SetlistKind })}
                   >
                     <SelectTrigger className="h-9">
@@ -606,12 +665,12 @@ export function SetlistBuilder({
                 <Input
                   className="flex-1"
                   value={it.title}
-                  disabled={!editable}
+                  disabled={!rowEditable}
                   placeholder="ชื่อเพลง / หัวข้อ"
                   onChange={(e) => setLocal(it.id, { title: e.target.value })}
                   onBlur={(e) => persist(it.id, { title: e.target.value })}
                 />
-                {editable && (
+                {rowEditable && (
                   <div className="flex shrink-0">
                     <Button
                       type="button"
@@ -671,10 +730,10 @@ export function SetlistBuilder({
                   </Label>
                   <DurationField
                     seconds={it.duration_seconds}
-                    disabled={!editable}
+                    disabled={!rowEditable}
                     onCommit={(s) => update(it.id, { duration_seconds: s })}
                   />
-                  {editable && hardOutSec != null && t && (
+                  {rowEditable && hardOutSec != null && t && (
                     <Button
                       type="button"
                       variant="outline"
@@ -700,7 +759,7 @@ export function SetlistBuilder({
                     placeholder="เช่น -5"
                     className="tabular-nums"
                     value={it.buffer_before_seconds}
-                    disabled={!editable}
+                    disabled={!rowEditable}
                     onChange={(e) =>
                       setLocal(it.id, {
                         buffer_before_seconds: Math.min(0, Number(e.target.value) || 0),
@@ -722,7 +781,7 @@ export function SetlistBuilder({
                     min={0}
                     className="tabular-nums"
                     value={it.buffer_after_seconds}
-                    disabled={!editable}
+                    disabled={!rowEditable}
                     onChange={(e) =>
                       setLocal(it.id, {
                         buffer_after_seconds: Math.max(0, Number(e.target.value) || 0),
@@ -740,17 +799,17 @@ export function SetlistBuilder({
                   <MicSlotsDialog
                     item={it}
                     members={members}
-                    disabled={!editable}
+                    disabled={!rowEditable}
                     onSave={(slots) => update(it.id, { mic_slots: slots })}
                   />
                 </div>
               </div>
 
-              {(editable || it.notes) && (
+              {(rowEditable || it.notes) && (
                 <div className="mt-2 pl-8">
                   <Input
                     value={it.notes ?? ""}
-                    disabled={!editable}
+                    disabled={!rowEditable}
                     placeholder="โน้ต (เช่น โปรย confetti, เปลี่ยนชุด)"
                     onChange={(e) => setLocal(it.id, { notes: e.target.value })}
                     onBlur={(e) =>
