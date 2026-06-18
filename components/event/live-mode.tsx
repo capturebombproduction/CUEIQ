@@ -279,11 +279,17 @@ export function LiveMode({
     });
     ch.on("broadcast", { event: "state" }, ({ payload }) => {
       if (!payload || payload.sender === meId.current) return;
+      // Correct for clock differences between devices: the sender stamps its own
+      // Date.now() as sentAt; we shift its absolute timestamps into OUR clock so
+      // both screens count down in step even if their system clocks disagree.
+      const skew =
+        typeof payload.sentAt === "number" ? Date.now() - payload.sentAt : 0;
       setState({
         running: payload.running,
         begun: payload.begun ?? payload.startedAt != null,
-        startedAt: payload.startedAt,
-        itemStartedAt: payload.itemStartedAt,
+        startedAt: payload.startedAt != null ? payload.startedAt + skew : null,
+        itemStartedAt:
+          payload.itemStartedAt != null ? payload.itemStartedAt + skew : null,
         itemElapsedAtPause: payload.itemElapsedAtPause ?? null,
         currentIndex: payload.currentIndex,
         mode: payload.mode ?? "manual",
@@ -297,7 +303,7 @@ export function LiveMode({
         ch.send({
           type: "broadcast",
           event: "state",
-          payload: { ...s, sender: meId.current },
+          payload: { ...s, sender: meId.current, sentAt: Date.now() },
         });
       }
     });
@@ -328,7 +334,7 @@ export function LiveMode({
       channelRef.current?.send({
         type: "broadcast",
         event: "state",
-        payload: { ...next, sender: meId.current },
+        payload: { ...next, sender: meId.current, sentAt: Date.now() },
       });
     }
   }
@@ -408,7 +414,7 @@ export function LiveMode({
         if (url && audio) {
           if (playingId !== cur!.id) {
             audio.src = url;
-            audio.currentTime = 0;
+            audio.currentTime = Math.max(0, offset); // resume from elapsed, not 0
             setPlayingId(cur!.id);
           }
           audio.play().catch(() => {});
@@ -420,6 +426,9 @@ export function LiveMode({
 
   function seekAudio(e: React.ChangeEvent<HTMLInputElement>) {
     if (!audioRef.current) return;
+    // the scrubber only controls the track actually loaded on the primary element;
+    // ignore drags when the current row isn't the playing one (e.g. a cued next item)
+    if (playingId !== items[state.currentIndex]?.id) return;
     audioRef.current.currentTime = Number(e.target.value);
   }
 
@@ -514,14 +523,13 @@ export function LiveMode({
       if (cur && url && audio) {
         if (playingId !== cur.id) {
           audio.src = url;
-          audio.currentTime = Math.max(0, offset); // audio runs in sync with countdown
           setPlayingId(cur.id);
-          audio.play().catch(() => {});
-          setAudioPlaying(true);
-        } else if (audio.paused) {
-          audio.play().catch(() => {});
-          setAudioPlaying(true);
         }
+        // Always resync audio position when entering Auto — covers the case
+        // where the user previewed the track at a different position in Manual.
+        audio.currentTime = Math.max(0, offset);
+        audio.play().catch(() => {});
+        setAudioPlaying(true);
       }
     } else {
       // switching to Manual — stop any pending overlap pre-roll on the secondary
@@ -599,8 +607,12 @@ export function LiveMode({
     audioRef.current?.pause();
     audioRef2.current?.pause();
     overlapNextIdRef.current = null;
+    autoTriggeredForRef.current = null;
+    autoAdvanceForRef.current = null;
     setPlayingId(null);
     setAudioPlaying(false);
+    setAudioCurrent(0);
+    setAudioDuration(0);
     apply({ ...INITIAL, mode: state.mode }); // keep chosen mode after reset
   }
 
@@ -664,7 +676,9 @@ export function LiveMode({
         </div>
         <div className="text-right">
           <p className="text-xs text-muted-foreground">เวลาจริง</p>
-          <p className="font-semibold tabular-nums">{wallClock}</p>
+          <p className="font-semibold tabular-nums" suppressHydrationWarning>
+            {wallClock}
+          </p>
         </div>
       </div>
 

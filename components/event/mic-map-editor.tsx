@@ -127,17 +127,30 @@ export function MicMapEditor({
     }
   }
 
-  async function changeMicNumber(oldNum: number, newNum: number) {
-    if (newNum === oldNum || !Number.isFinite(newNum)) return;
+  /** Returns true if applied, false if rejected (caller should revert the input). */
+  function changeMicNumber(oldNum: number, newNum: number): boolean {
+    if (newNum === oldNum) return true; // unchanged — keep as-is
+    if (!Number.isFinite(newNum) || newNum < 1) return false;
+    // don't silently merge into an existing mic group (would collide order_index)
+    if (mics.some((m) => m.mic_number === newNum)) {
+      toast.error(`ไมค์ ${newNum} มีอยู่แล้ว`, {
+        description: "เลือกเบอร์อื่น หรือย้ายคนเข้ากลุ่มทีละคนแทน",
+      });
+      return false;
+    }
     setMics((prev) =>
       prev.map((m) => (m.mic_number === oldNum ? { ...m, mic_number: newNum } : m))
     );
-    const { error } = await supabase
+    supabase
       .from("mic_assignments")
       .update({ mic_number: newNum })
       .eq("event_id", eventId)
-      .eq("mic_number", oldNum);
-    if (error) toast.error("เปลี่ยนเบอร์ไมค์ไม่สำเร็จ", { description: error.message });
+      .eq("mic_number", oldNum)
+      .then(({ error }) => {
+        if (error)
+          toast.error("เปลี่ยนเบอร์ไมค์ไม่สำเร็จ", { description: error.message });
+      });
+    return true;
   }
 
   async function moveHolder(micNumber: number, index: number, dir: -1 | 1) {
@@ -203,7 +216,11 @@ export function MicMapEditor({
                   defaultValue={g.num}
                   disabled={!editable}
                   className="h-8 w-16 tabular-nums"
-                  onBlur={(e) => changeMicNumber(g.num, Number(e.target.value))}
+                  onBlur={(e) => {
+                    if (!changeMicNumber(g.num, Number(e.target.value))) {
+                      e.target.value = String(g.num); // revert on rejection
+                    }
+                  }}
                 />
                 {g.holders.length > 1 && (
                   <Badge variant="secondary">วนไมค์ {g.holders.length} คน</Badge>

@@ -99,6 +99,8 @@ export async function getEventBundle(
     .from("tenant_members")
     .select("role")
     .eq("tenant_id", event.tenant_id)
+    .order("created_at", { ascending: true })
+    .limit(1)
     .maybeSingle();
 
   const [schedule, setlist, micMap, members, songs] = await Promise.all([

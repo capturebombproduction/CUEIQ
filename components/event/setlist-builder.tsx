@@ -14,6 +14,7 @@ import {
   GripVertical,
 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
+import { deleteAudio } from "@/lib/audio-store";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -434,6 +435,8 @@ export function SetlistBuilder({
     if (error) {
       toast.error("ลบไม่สำเร็จ", { description: error.message });
       setItems(snapshot);
+    } else {
+      deleteAudio(eventId, id).catch(() => {}); // clean up on-device audio blob
     }
   }
 
