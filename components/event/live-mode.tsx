@@ -14,6 +14,7 @@ import {
   Volume2,
   Hand,
   Sparkles,
+  Eye,
 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { saveAudio, loadAudioForEvent } from "@/lib/audio-store";
@@ -78,10 +79,16 @@ export function LiveMode({
   const [now, setNow] = useState(() => Date.now());
   const [syncReady, setSyncReady] = useState(false);
   const [syncStatus, setSyncStatus] = useState<string>("init"); // raw channel status, for diagnosing sync issues
+  // Only ONE device drives the show. This device may control until it receives
+  // state from another device (then it becomes a read-only viewer); "ขอควบคุม"
+  // flips it back and demotes the others.
+  const [isController, setIsController] = useState(true);
   const channelRef = useRef<RealtimeChannel | null>(null);
   // always-current state for use inside stable callbacks (subscribe, visibilitychange)
   const stateRef = useRef(state);
   stateRef.current = state;
+  const isControllerRef = useRef(isController);
+  isControllerRef.current = isController;
   const meId = useRef<string>(
     typeof crypto !== "undefined" && "randomUUID" in crypto
       ? crypto.randomUUID()
@@ -248,6 +255,7 @@ export function LiveMode({
   // overlaps the current one — current keeps playing, next "เล่นสวนขึ้นมา" |lead| sec early.
   useEffect(() => {
     if (state.mode !== "auto" || !state.running || !state.itemStartedAt) return;
+    if (!isControllerRef.current) return; // only the controller drives audio
     const cur = items[state.currentIndex];
     const nxt = items[state.currentIndex + 1];
     if (!cur || !nxt) return;
@@ -280,6 +288,15 @@ export function LiveMode({
     });
     ch.on("broadcast", { event: "state" }, ({ payload }) => {
       if (!payload || payload.sender === meId.current) return;
+      // Receiving another device's state means someone else is driving → this
+      // device steps down to a read-only viewer so it can't fight the controller.
+      if (isControllerRef.current) {
+        isControllerRef.current = false;
+        setIsController(false);
+        audioRef.current?.pause();
+        audioRef2.current?.pause();
+        setAudioPlaying(false);
+      }
       // Correct for clock differences between devices: the sender stamps its own
       // Date.now() as sentAt; we shift its absolute timestamps into OUR clock so
       // both screens count down in step even if their system clocks disagree.
@@ -333,13 +350,26 @@ export function LiveMode({
 
   function apply(next: LiveState, broadcast = true) {
     setState(next);
-    if (broadcast) {
+    // only the controlling device broadcasts — viewers never push state
+    if (broadcast && isControllerRef.current) {
       channelRef.current?.send({
         type: "broadcast",
         event: "state",
         payload: { ...next, sender: meId.current, sentAt: Date.now() },
       });
     }
+  }
+
+  // Claim control of the show on this device. Broadcasting our current state tells
+  // the previous controller to step down (it'll see our message and become a viewer).
+  function takeControl() {
+    setIsController(true);
+    isControllerRef.current = true;
+    channelRef.current?.send({
+      type: "broadcast",
+      event: "state",
+      payload: { ...stateRef.current, sender: meId.current, sentAt: Date.now() },
+    });
   }
 
   // audio controls
@@ -655,6 +685,7 @@ export function LiveMode({
   // Only the control device (the one holding audio files) advances; viewers follow via sync.
   useEffect(() => {
     if (state.mode !== "auto" || !state.running) return;
+    if (!isControllerRef.current) return; // viewers follow broadcasts, never self-advance
     if (Object.keys(audioUrls).length === 0) return; // viewers don't drive advance
     const cur = items[state.currentIndex];
     if (!cur) return;
@@ -834,12 +865,36 @@ export function LiveMode({
 
       {/* show controls */}
       <div className="rounded-xl border bg-card p-3">
+        {/* control vs view-only — only one device drives the show */}
+        {!isController ? (
+          <div className="mb-2 flex items-center justify-between gap-2 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-amber-900">
+            <span className="flex items-center gap-1.5 text-sm font-medium">
+              <Eye className="h-4 w-4 shrink-0" /> ดูอย่างเดียว — ซิงค์จากเครื่องคุม
+            </span>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={takeControl}
+              className="shrink-0 border-amber-400 bg-white"
+            >
+              ขอควบคุม
+            </Button>
+          </div>
+        ) : (
+          state.begun && (
+            <p className="mb-2 text-center text-[11px] text-muted-foreground">
+              <Radio className="mr-1 inline h-3 w-3" /> เครื่องนี้กำลังคุมโชว์
+            </p>
+          )
+        )}
+
         {/* mode toggle — switchable anytime, even mid-show */}
         <div className="mb-2 grid grid-cols-2 gap-2">
           <Button
             variant={state.mode === "manual" ? "default" : "outline"}
             size="sm"
             onClick={() => setMode("manual")}
+            disabled={!isController}
           >
             <Hand className="h-4 w-4" /> Manual
           </Button>
@@ -847,13 +902,19 @@ export function LiveMode({
             variant={state.mode === "auto" ? "default" : "outline"}
             size="sm"
             onClick={() => setMode("auto")}
+            disabled={!isController}
           >
             <Sparkles className="h-4 w-4" /> Run Script (Auto)
           </Button>
         </div>
 
         {!state.begun ? (
-          <Button size="xl" className="w-full" onClick={start}>
+          <Button
+            size="xl"
+            className="w-full"
+            onClick={start}
+            disabled={!isController}
+          >
             <Play className="h-5 w-5" /> START SHOW
           </Button>
         ) : (
@@ -862,7 +923,7 @@ export function LiveMode({
               variant="outline"
               size="lg"
               onClick={() => goto(state.currentIndex - 1)}
-              disabled={state.mode === "auto" || state.currentIndex === 0}
+              disabled={!isController || state.mode === "auto" || state.currentIndex === 0}
               title={state.mode === "auto" ? "สลับเป็น Manual เพื่อข้ามเอง" : "ย้อนกลับ"}
             >
               <SkipBack className="h-5 w-5" />
@@ -871,6 +932,7 @@ export function LiveMode({
             <Button
               size="lg"
               onClick={toggleShowRun}
+              disabled={!isController}
               className={cn(
                 "shrink-0 font-semibold text-white",
                 state.running
@@ -893,12 +955,17 @@ export function LiveMode({
               size="lg"
               className="flex-1"
               onClick={() => goto(state.currentIndex + 1)}
-              disabled={state.mode === "auto" || state.currentIndex >= items.length - 1}
+              disabled={!isController || state.mode === "auto" || state.currentIndex >= items.length - 1}
               title={state.mode === "auto" ? "สลับเป็น Manual เพื่อข้ามเอง" : "รายการถัดไป"}
             >
               <SkipForward className="h-5 w-5" /> NEXT
             </Button>
-            <Button variant="ghost" size="lg" onClick={reset}>
+            <Button
+              variant="ghost"
+              size="lg"
+              onClick={reset}
+              disabled={!isController}
+            >
               <RotateCcw className="h-5 w-5" />
             </Button>
           </div>
@@ -916,9 +983,10 @@ export function LiveMode({
         {items.map((it, i) => {
           const hasFile = !!audioUrls[it.id];
           const isPlayingThis = playingId === it.id && audioPlaying;
-          // only Auto locks navigation; in Manual every row is selectable
-          // (current = no-op, playing track = resync, others = cue)
-          const locked = state.mode === "auto";
+          // Auto locks navigation; viewers can't navigate either (read-only).
+          // In Manual a controller can select any row (current = no-op,
+          // playing track = resync, others = cue).
+          const locked = state.mode === "auto" || !isController;
           return (
             <div
               key={it.id}
