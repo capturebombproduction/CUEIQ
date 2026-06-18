@@ -333,6 +333,46 @@ export function LiveMode({
     }
   }, [now, state, items, audioUrls]);
 
+  // Viewer audio-sync: a NON-controller device that holds the audio file keeps the
+  // sound coming out and follows the controller's broadcasts (play/pause/skip/seek).
+  // This is what lets you wire one device to the speakers and run it by remote from
+  // another — taking control elsewhere no longer silences the audio device.
+  useEffect(() => {
+    if (isControllerRef.current) return; // the controller drives its own audio
+    const audio = audioRef.current;
+    if (!audio) return;
+    const cur = items[state.currentIndex];
+    const url = cur ? audioUrls[cur.id] : undefined;
+
+    if (state.running && cur && url) {
+      const offset = state.itemStartedAt
+        ? (Date.now() - state.itemStartedAt) / 1000
+        : (state.itemElapsedAtPause ?? 0);
+      if (playingId !== cur.id) {
+        // controller moved to a new track we have a file for — switch + seek to it
+        audio.src = url;
+        audio.currentTime = Math.max(0, offset);
+        setPlayingId(cur.id);
+        audio.play().catch(() => {});
+        setAudioPlaying(true);
+      } else {
+        // same track — resync only if we've drifted from the controller's clock
+        if (Math.abs(audio.currentTime - offset) > 0.7) {
+          audio.currentTime = Math.max(0, offset);
+        }
+        if (audio.paused) {
+          audio.play().catch(() => {});
+          setAudioPlaying(true);
+        }
+      }
+    } else {
+      // controller paused / no file for this item on this device → stop our audio
+      if (!audio.paused) audio.pause();
+      setAudioPlaying(false);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state, items, audioUrls, isController, playingId]);
+
   // realtime sync
   useEffect(() => {
     const supabase = createClient();
@@ -343,12 +383,12 @@ export function LiveMode({
       if (!payload || payload.sender === meId.current) return;
       // Receiving another device's state means someone else is driving → this
       // device steps down to a read-only viewer so it can't fight the controller.
+      // We do NOT pause audio here: a device wired to the speakers keeps playing and
+      // follows the new controller's commands (see the viewer audio-sync effect).
       if (isControllerRef.current) {
         isControllerRef.current = false;
         setIsController(false);
-        audioRef.current?.pause();
-        audioRef2.current?.pause();
-        setAudioPlaying(false);
+        audioRef2.current?.pause(); // stop only any overlap pre-roll on the secondary
       }
       // Correct for clock differences between devices: the sender stamps its own
       // Date.now() as sentAt; we shift its absolute timestamps into OUR clock so
@@ -826,8 +866,9 @@ export function LiveMode({
   // Only the control device (the one holding audio files) advances; viewers follow via sync.
   useEffect(() => {
     if (state.mode !== "auto" || !state.running) return;
-    if (!isControllerRef.current) return; // viewers follow broadcasts, never self-advance
-    if (Object.keys(audioUrls).length === 0) return; // viewers don't drive advance
+    // Only the controller advances (countdown-driven) — it needn't hold the audio
+    // files; the device with the files follows via the viewer audio-sync effect.
+    if (!isControllerRef.current) return;
     const cur = items[state.currentIndex];
     if (!cur) return;
     if (state.currentIndex >= items.length - 1) return;
@@ -1079,7 +1120,16 @@ export function LiveMode({
         {!isController ? (
           <div className="mb-2 flex items-center justify-between gap-2 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-amber-900">
             <span className="flex items-center gap-1.5 text-sm font-medium">
-              <Eye className="h-4 w-4 shrink-0" /> ดูอย่างเดียว — ซิงค์จากเครื่องคุม
+              {audioPlaying ? (
+                <>
+                  <Volume2 className="h-4 w-4 shrink-0" /> เครื่องนี้เล่นเสียงอยู่ —
+                  คุมจากเครื่องอื่น
+                </>
+              ) : (
+                <>
+                  <Eye className="h-4 w-4 shrink-0" /> ดูอย่างเดียว — ซิงค์จากเครื่องคุม
+                </>
+              )}
             </span>
             <Button
               size="sm"
