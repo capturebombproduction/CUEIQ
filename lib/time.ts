@@ -120,8 +120,12 @@ export function computeSetlistTimes(
   hardOutSec: number | null = null
 ): SetlistTiming {
   let cursor = showStartSec;
-  const rows: RowTiming[] = items.map((it) => {
-    const bb = Math.max(0, it.buffer_before_seconds || 0);
+  const rows: RowTiming[] = items.map((it, i) => {
+    // Negative buffer_before = this song overlaps the PREVIOUS one (continuous
+    // play / no gap) → it pulls the timeline back and shortens the total.
+    // The first item has nothing to overlap, so clamp it to ≥0.
+    const rawBb = it.buffer_before_seconds || 0;
+    const bb = i === 0 ? Math.max(0, rawBb) : rawBb;
     const ba = Math.max(0, it.buffer_after_seconds || 0);
     const dur = Math.max(0, it.duration_seconds || 0);
     const slotStartSec = cursor;
