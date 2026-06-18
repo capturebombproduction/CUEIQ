@@ -922,11 +922,11 @@ export function LiveMode({
                   </span>
                 </div>
 
-                {/* big one-tap auto-fade buttons (2s) */}
+                {/* big one-tap auto-fade buttons */}
                 <div className="grid grid-cols-3 gap-2">
                   <button
-                    onClick={() => fadeVolumeTo(0)}
-                    title="ค่อย ๆ ปิดเสียงเป็น 0% ใน 2 วินาที"
+                    onClick={() => fadeVolumeTo(0, 3000)}
+                    title="ค่อย ๆ ปิดเสียงเป็น 0% ใน 3 วินาที"
                     className="flex items-center justify-center gap-1.5 rounded-lg bg-white/15 py-2.5 text-sm font-semibold hover:bg-white/25"
                   >
                     <VolumeX className="h-4 w-4" /> Auto Mute
@@ -939,8 +939,8 @@ export function LiveMode({
                     <Volume1 className="h-4 w-4" /> MC
                   </button>
                   <button
-                    onClick={() => fadeVolumeTo(100)}
-                    title="ค่อย ๆ เพิ่มเสียงกลับเป็น 100% ใน 2 วินาที"
+                    onClick={() => fadeVolumeTo(100, 2500)}
+                    title="ค่อย ๆ เพิ่มเสียงกลับเป็น 100% ใน 2.5 วินาที"
                     className="flex items-center justify-center gap-1.5 rounded-lg bg-white/15 py-2.5 text-sm font-semibold hover:bg-white/25"
                   >
                     <Volume2 className="h-4 w-4" /> Auto Loudness
