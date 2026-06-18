@@ -509,28 +509,46 @@ export function LiveMode({
     // current track synced to the elapsed time, so it continues per script even
     // after a detour into Manual.
     if (mode === "auto" && state.begun) {
-      const cur = items[state.currentIndex];
-      const offset = state.running
-        ? (state.itemStartedAt ? (Date.now() - state.itemStartedAt) / 1000 : 0)
-        : (state.itemElapsedAtPause ?? 0);
+      const audio = audioRef.current;
+      // Anchor Auto to the track that's ACTUALLY playing — not wherever the user
+      // browsed to in Manual. e.g. song 1 is playing, you peek at song 2's info in
+      // Manual, then switch back to Auto → it should resume song 1 (the live track),
+      // NOT jump to song 2. The real anchor is the currently-playing audio.
+      const playIdx = playingId
+        ? items.findIndex((it) => it.id === playingId)
+        : -1;
+      const anchorPlaying = playIdx >= 0 && !!audio && !audio.paused;
+      const idx = anchorPlaying ? playIdx : state.currentIndex;
+      const cur = items[idx];
+      // how far into the current item we are
+      const offset = anchorPlaying
+        ? audio!.currentTime // resume from the live audio position
+        : state.running
+          ? state.itemStartedAt
+            ? (Date.now() - state.itemStartedAt) / 1000
+            : 0
+          : (state.itemElapsedAtPause ?? 0);
       apply({
         ...state,
         mode,
+        currentIndex: idx,
         running: true,
         itemStartedAt: Date.now() - offset * 1000,
         itemElapsedAtPause: null,
         startedAt: state.startedAt ?? Date.now(),
       });
       const url = cur ? audioUrls[cur.id] : undefined;
-      const audio = audioRef.current;
       if (cur && url && audio) {
         if (playingId !== cur.id) {
+          // a different track is loaded — switch to the anchor track and seek
           audio.src = url;
+          audio.currentTime = Math.max(0, offset);
           setPlayingId(cur.id);
+        } else if (!anchorPlaying) {
+          // same track but it wasn't actively playing — resync its position
+          audio.currentTime = Math.max(0, offset);
         }
-        // Always resync audio position when entering Auto — covers the case
-        // where the user previewed the track at a different position in Manual.
-        audio.currentTime = Math.max(0, offset);
+        // if it's already the live playing track, leave its position untouched
         audio.play().catch(() => {});
         setAudioPlaying(true);
       }
