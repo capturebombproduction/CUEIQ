@@ -125,6 +125,20 @@ export function LiveMode({
   const autoTriggeredForRef = useRef<string | null>(null);
   // tracks which item already triggered an auto-advance (no-audio items)
   const autoAdvanceForRef = useRef<string | null>(null);
+  // The item the show has COMMITTED to sound out + when it started (controller clock).
+  // Distinct from currentIndex: in Manual you can cue/browse another row while THIS
+  // keeps playing. Broadcast so a remote (file-less) controller can still tell the
+  // speaker device what should be playing. Updated only on play/commit, not on cue.
+  const committedRef = useRef<{ id: string | null; anchor: number | null }>({
+    id: null,
+    anchor: null,
+  });
+  // viewer side: the audio intent last received from the controller
+  const [remoteAudio, setRemoteAudio] = useState<{
+    id: string | null;
+    playing: boolean;
+    anchor: number | null;
+  } | null>(null);
 
   // ticking clock
   useEffect(() => {
@@ -334,44 +348,42 @@ export function LiveMode({
   }, [now, state, items, audioUrls]);
 
   // Viewer audio-sync: a NON-controller device that holds the audio file keeps the
-  // sound coming out and follows the controller's broadcasts (play/pause/skip/seek).
-  // This is what lets you wire one device to the speakers and run it by remote from
-  // another — taking control elsewhere no longer silences the audio device.
+  // sound coming out and follows the controller's AUDIO INTENT (which item should be
+  // sounding + from where), broadcast separately from the visible currentIndex. That
+  // separation is what makes Manual feel right — the controller can cue/browse the
+  // next row while THIS device keeps playing the committed track, exactly like a
+  // single device, and a file-less remote can still drive the speaker device.
   useEffect(() => {
     if (isControllerRef.current) return; // the controller drives its own audio
     const audio = audioRef.current;
     if (!audio) return;
-    const cur = items[state.currentIndex];
-    const url = cur ? audioUrls[cur.id] : undefined;
+    const cmd = remoteAudio;
+    const url = cmd?.id ? audioUrls[cmd.id] : undefined;
 
-    if (state.running && cur && url) {
-      const offset = state.itemStartedAt
-        ? (Date.now() - state.itemStartedAt) / 1000
-        : (state.itemElapsedAtPause ?? 0);
-      if (playingId !== cur.id) {
-        // controller moved to a new track we have a file for — switch + seek to it
+    if (cmd && cmd.id && cmd.playing && url) {
+      const pos = cmd.anchor != null ? (Date.now() - cmd.anchor) / 1000 : 0;
+      if (playingId !== cmd.id) {
+        // controller committed a new track we have a file for — switch + seek to it
         audio.src = url;
-        audio.currentTime = Math.max(0, offset);
-        setPlayingId(cur.id);
+        audio.currentTime = Math.max(0, pos);
+        setPlayingId(cmd.id);
         audio.play().catch(() => {});
-        setAudioPlaying(true);
+        if (!audioPlaying) setAudioPlaying(true);
       } else {
         // same track — resync only if we've drifted from the controller's clock
-        if (Math.abs(audio.currentTime - offset) > 0.7) {
-          audio.currentTime = Math.max(0, offset);
+        if (Math.abs(audio.currentTime - pos) > 0.7) {
+          audio.currentTime = Math.max(0, pos);
         }
-        if (audio.paused) {
-          audio.play().catch(() => {});
-          setAudioPlaying(true);
-        }
+        if (audio.paused) audio.play().catch(() => {});
+        if (!audioPlaying) setAudioPlaying(true);
       }
     } else {
-      // controller paused / no file for this item on this device → stop our audio
+      // controller paused, or we don't have this item's file → stop our audio
       if (!audio.paused) audio.pause();
-      setAudioPlaying(false);
+      if (audioPlaying) setAudioPlaying(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state, items, audioUrls, isController, playingId]);
+  }, [remoteAudio, audioUrls, isController, playingId]);
 
   // realtime sync
   useEffect(() => {
@@ -405,12 +417,32 @@ export function LiveMode({
         currentIndex: payload.currentIndex,
         mode: payload.mode ?? "manual",
       });
+      // audio intent — what should be SOUNDING (skew-corrected anchor). Drives the
+      // viewer audio-sync effect; also mirrored into committedRef so this device has
+      // a sane "playing track" if it later takes control.
+      const anchor =
+        typeof payload.audioAnchor === "number"
+          ? payload.audioAnchor + skew
+          : null;
+      const audioId = payload.audioItemId ?? null;
+      const audioPlaying = !!payload.audioPlaying;
+      setRemoteAudio({ id: audioId, playing: audioPlaying, anchor });
+      if (audioPlaying && audioId) {
+        committedRef.current = { id: audioId, anchor };
+      }
     });
     // a device that just joined asks for current state; anyone mid-show replies
     ch.on("broadcast", { event: "sync-request" }, ({ payload }) => {
       if (!payload || payload.sender === meId.current) return;
       const s = stateRef.current;
       if (s.begun) {
+        const c = committedRef.current;
+        const curId = itemsRef.current[s.currentIndex]?.id ?? null;
+        const af = s.running
+          ? { audioItemId: curId, audioPlaying: true, audioAnchor: s.itemStartedAt }
+          : c.id && c.id !== curId
+            ? { audioItemId: c.id, audioPlaying: true, audioAnchor: c.anchor }
+            : { audioItemId: c.id ?? curId, audioPlaying: false, audioAnchor: c.anchor };
         ch.send({
           type: "broadcast",
           event: "state",
@@ -418,7 +450,8 @@ export function LiveMode({
             ...s,
             sender: meId.current,
             sentAt: Date.now(),
-            currentItemId: itemsRef.current[s.currentIndex]?.id ?? null,
+            currentItemId: curId,
+            ...af,
           },
         });
       }
@@ -450,6 +483,28 @@ export function LiveMode({
     };
   }, [eventId]);
 
+  // Derive the audio intent for a broadcast: which item should be SOUNDING, whether
+  // it's playing, and its start anchor. While running, that's the current item. When
+  // not running it's either a Manual cue (a different committed item still plays) or
+  // a pause of the current item.
+  function audioFields(s: LiveState) {
+    const c = committedRef.current;
+    const curId = itemsRef.current[s.currentIndex]?.id ?? null;
+    if (s.running) {
+      return {
+        audioItemId: curId,
+        audioPlaying: true,
+        audioAnchor: s.itemStartedAt,
+      };
+    }
+    if (c.id && c.id !== curId) {
+      // Manual: a previously-committed track keeps playing while this row is cued
+      return { audioItemId: c.id, audioPlaying: true, audioAnchor: c.anchor };
+    }
+    // paused (or idle) on the current item
+    return { audioItemId: c.id ?? curId, audioPlaying: false, audioAnchor: c.anchor };
+  }
+
   // Build the broadcast payload. currentItemId lets the setlist editor know which
   // row is on air (to lock it), independent of index shifts from concurrent edits.
   function statePayload(s: LiveState) {
@@ -458,10 +513,23 @@ export function LiveMode({
       sender: meId.current,
       sentAt: Date.now(),
       currentItemId: itemsRef.current[s.currentIndex]?.id ?? null,
+      ...audioFields(s),
     };
   }
 
   function apply(next: LiveState, broadcast = true) {
+    // Maintain the committed sounding item (for the audio-intent broadcast):
+    // running → the current item is what's sounding; reset (not begun) → clear.
+    // Every other !running case (Manual cue / pause) deliberately keeps it so the
+    // previously-committed track keeps playing while you browse/cue another row.
+    if (next.running) {
+      committedRef.current = {
+        id: itemsRef.current[next.currentIndex]?.id ?? null,
+        anchor: next.itemStartedAt,
+      };
+    } else if (!next.begun) {
+      committedRef.current = { id: null, anchor: null };
+    }
     setState(next);
     // only the controlling device broadcasts — viewers never push state
     if (broadcast && isControllerRef.current) {
