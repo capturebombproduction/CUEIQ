@@ -77,6 +77,7 @@ export function LiveMode({
   const [state, setState] = useState<LiveState>(INITIAL);
   const [now, setNow] = useState(() => Date.now());
   const [syncReady, setSyncReady] = useState(false);
+  const [syncStatus, setSyncStatus] = useState<string>("init"); // raw channel status, for diagnosing sync issues
   const channelRef = useRef<RealtimeChannel | null>(null);
   // always-current state for use inside stable callbacks (subscribe, visibilitychange)
   const stateRef = useRef(state);
@@ -309,7 +310,9 @@ export function LiveMode({
     });
     // set immediately so SDK can queue messages sent before SUBSCRIBED
     channelRef.current = ch;
-    ch.subscribe((status) => {
+    ch.subscribe((status, err) => {
+      setSyncStatus(status);
+      if (err) console.error("[realtime] channel error:", status, err);
       const ready = status === "SUBSCRIBED";
       setSyncReady(ready);
       if (ready) {
@@ -667,12 +670,17 @@ export function LiveMode({
           />
           <span className="truncate">{eventName}</span>
           <span
-            title={syncReady ? "Sync ready" : "Connecting…"}
+            title={syncReady ? "Sync ready" : `สถานะ: ${syncStatus}`}
             className={cn(
-              "h-2 w-2 rounded-full",
+              "h-2 w-2 shrink-0 rounded-full",
               syncReady ? "bg-green-500" : "animate-pulse bg-yellow-400"
             )}
           />
+          {!syncReady && (
+            <span className="text-[10px] font-normal text-muted-foreground">
+              {syncStatus === "init" ? "กำลังเชื่อม…" : syncStatus}
+            </span>
+          )}
         </div>
         <div className="text-right">
           <p className="text-xs text-muted-foreground">เวลาจริง</p>
