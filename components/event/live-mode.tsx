@@ -858,13 +858,24 @@ export function LiveMode({
     if (state.begun && index === state.currentIndex) return; // already current → no-op
     const it = items[index];
 
-    // Returning to the track whose audio is loaded/playing — sync the countdown to
-    // its REAL position (audio kept playing while you checked another song) instead
-    // of resetting it. e.g. song at 0:30, 5s detour, back → countdown reflects 0:35.
-    if (state.begun && it && it.id === playingId) {
+    // Returning to the track that is actually SOUNDING — sync the countdown to its
+    // REAL position instead of resetting it. The track may be playing locally
+    // (playingId) OR on another device we're driving by remote (committedRef): a
+    // file-less remote has no playingId, so without the committedRef check, tapping
+    // the live track would cue it (running=false) and silence the speaker device.
+    const committed = committedRef.current;
+    const isSounding = !!it && (it.id === playingId || it.id === committed.id);
+    if (state.begun && it && isSounding) {
       const audio = audioRef.current;
-      const pos = audio ? audio.currentTime : 0;
-      const playing = !!audio && !audio.paused;
+      const haveLocalAudio = it.id === playingId && !!audio;
+      const pos = haveLocalAudio
+        ? audio!.currentTime
+        : committed.anchor != null
+          ? (Date.now() - committed.anchor) / 1000
+          : 0;
+      // a locally-held track follows its own paused state; a track sounding on a
+      // remote (committed but not held here) is, by definition, still playing.
+      const playing = haveLocalAudio ? !audio!.paused : true;
       apply({
         ...state,
         currentIndex: index,
@@ -1246,10 +1257,11 @@ export function LiveMode({
             <Play className="h-5 w-5" /> START SHOW
           </Button>
         ) : (
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1.5">
             <Button
               variant="outline"
-              size="lg"
+              size="icon"
+              className="h-11 w-11 shrink-0"
               onClick={() => goto(state.currentIndex - 1)}
               disabled={!isController || state.mode === "auto" || state.currentIndex === 0}
               title={state.mode === "auto" ? "สลับเป็น Manual เพื่อข้ามเอง" : "ย้อนกลับ"}
@@ -1262,7 +1274,7 @@ export function LiveMode({
               onClick={toggleShowRun}
               disabled={!isController}
               className={cn(
-                "shrink-0 font-semibold text-white",
+                "min-w-0 shrink font-semibold text-white",
                 state.running
                   ? "bg-green-600 hover:bg-green-700"
                   : "bg-amber-500 hover:bg-amber-600"
@@ -1281,16 +1293,17 @@ export function LiveMode({
             </Button>
             <Button
               size="lg"
-              className="flex-1"
+              className="min-w-0 flex-1 px-3"
               onClick={() => goto(state.currentIndex + 1)}
               disabled={!isController || state.mode === "auto" || state.currentIndex >= items.length - 1}
               title={state.mode === "auto" ? "สลับเป็น Manual เพื่อข้ามเอง" : "รายการถัดไป"}
             >
-              <SkipForward className="h-5 w-5" /> NEXT
+              <SkipForward className="h-5 w-5 shrink-0" /> NEXT
             </Button>
             <Button
               variant="ghost"
-              size="lg"
+              size="icon"
+              className="h-11 w-11 shrink-0"
               onClick={reset}
               disabled={!isController}
             >
