@@ -385,23 +385,28 @@ export function LiveMode({
     }
   }
 
-  // RUN / pause the show countdown — the deliberate "go live" action.
-  // In Manual it controls the timer only (audio is checked separately above).
-  // In Auto it also pauses/resumes the playing track so they stay together.
+  // RUN / pause the show — the deliberate "go live" action. In BOTH modes it
+  // plays/pauses the CURRENT item's audio together with the countdown, so pressing
+  // "รันโชว์" on a cued item actually fires that track (in Manual it's how you commit
+  // a cued song; Auto additionally auto-advances at 0).
   function toggleShowRun() {
+    const audio = audioRef.current;
+    const cur = items[state.currentIndex];
     if (state.running) {
+      // PAUSE — freeze the item countdown (accumulated keeps running via startedAt)
       const frozenItem = state.itemStartedAt
         ? (Date.now() - state.itemStartedAt) / 1000
         : (state.itemElapsedAtPause ?? 0);
       apply({ ...state, running: false, itemElapsedAtPause: frozenItem });
+      audio?.pause();
+      setAudioPlaying(false);
       if (state.mode === "auto") {
-        audioRef.current?.pause();
         audioRef2.current?.pause(); // also halt any overlap pre-roll
         overlapNextIdRef.current = null;
         autoTriggeredForRef.current = null; // let overlap re-arm on resume
-        setAudioPlaying(false);
       }
     } else {
+      // RUN — go live with the current item: play its audio + run its countdown
       const offset = state.itemElapsedAtPause ?? 0;
       apply({
         ...state,
@@ -410,18 +415,26 @@ export function LiveMode({
         itemElapsedAtPause: null,
         startedAt: state.startedAt ?? Date.now(),
       });
-      if (state.mode === "auto") {
-        const cur = items[state.currentIndex];
-        const url = cur ? audioUrls[cur.id] : undefined;
-        const audio = audioRef.current;
-        if (url && audio) {
-          if (playingId !== cur!.id) {
-            audio.src = url;
-            audio.currentTime = Math.max(0, offset); // resume from elapsed, not 0
-            setPlayingId(cur!.id);
+      if (cur && audio) {
+        const url = audioUrls[cur.id];
+        if (playingId === cur.id) {
+          // resuming the same (paused) track — continue from where it stopped
+          if (url) {
+            audio.play().catch(() => {});
+            setAudioPlaying(true);
           }
+        } else if (url) {
+          // committing a newly-cued track that has audio — play from the offset
+          audio.src = url;
+          audio.currentTime = Math.max(0, offset);
+          setPlayingId(cur.id);
           audio.play().catch(() => {});
           setAudioPlaying(true);
+        } else {
+          // cued item has no audio file (e.g. MC) — stop whatever was still playing
+          audio.pause();
+          setPlayingId(null);
+          setAudioPlaying(false);
         }
       }
     }
