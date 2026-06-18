@@ -392,29 +392,6 @@ export function LiveMode({
     e.target.value = "";
   }
 
-  // Preview/check the CURRENT item's audio — pure audio, never touches the
-  // show countdown. Use it to listen to a song / verify its settings.
-  function togglePreviewAudio() {
-    const cur = items[state.currentIndex];
-    const audio = audioRef.current;
-    if (!cur || !audio) return;
-    const url = audioUrls[cur.id];
-    if (!url) return;
-    if (playingId === cur.id && !audio.paused) {
-      audio.pause();
-      setAudioPlaying(false);
-    } else {
-      if (playingId !== cur.id) {
-        audio.pause();
-        audio.src = url;
-        audio.currentTime = 0;
-        setPlayingId(cur.id);
-      }
-      audio.play().catch(() => {});
-      setAudioPlaying(true);
-    }
-  }
-
   // RUN / pause the show — the deliberate "go live" action. In BOTH modes it
   // plays/pauses the CURRENT item's audio together with the countdown, so pressing
   // "รันโชว์" on a cued item actually fires that track (in Manual it's how you commit
@@ -470,12 +447,27 @@ export function LiveMode({
     }
   }
 
+  // live scrub (Manual only) — moves the audio head while dragging; the show
+  // countdown is re-locked on release so they don't drift.
   function seekAudio(e: React.ChangeEvent<HTMLInputElement>) {
     if (!audioRef.current) return;
     // the scrubber only controls the track actually loaded on the primary element;
     // ignore drags when the current row isn't the playing one (e.g. a cued next item)
     if (playingId !== items[state.currentIndex]?.id) return;
     audioRef.current.currentTime = Number(e.target.value);
+  }
+
+  // on release, snap the show countdown to the new audio position and sync viewers
+  function commitSeek() {
+    const audio = audioRef.current;
+    const cur = items[state.currentIndex];
+    if (!audio || !cur || playingId !== cur.id) return;
+    const pos = audio.currentTime;
+    if (state.running) {
+      apply({ ...state, itemStartedAt: Date.now() - pos * 1000, itemElapsedAtPause: null });
+    } else {
+      apply({ ...state, itemStartedAt: null, itemElapsedAtPause: pos });
+    }
   }
 
   const current = items[state.currentIndex];
@@ -700,7 +692,6 @@ export function LiveMode({
   const wallClock = useMemo(() => nowClock(new Date(now)), [now]);
 
   const currentAudioUrl = current ? audioUrls[current.id] : undefined;
-  const currentAudioPlaying = !!current && playingId === current.id && audioPlaying;
 
   if (items.length === 0) {
     return (
@@ -804,17 +795,17 @@ export function LiveMode({
             {currentAudioUrl ? (
               <div className="w-full space-y-1.5 rounded-lg bg-black/10 px-3 py-2">
                 <div className="flex items-center gap-2">
-                  <button
-                    onClick={togglePreviewAudio}
-                    title="เล่น/หยุดเพลง (เช็คเพลง — ไม่รันโชว์)"
-                    className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-white/20 hover:bg-white/30"
+                  {/* status glyph only — play/pause is controlled by the รันโชว์ button */}
+                  <span
+                    title={state.running ? "กำลังเล่น (คุมที่ปุ่มรันโชว์)" : "หยุดอยู่ (กดรันโชว์เพื่อเล่น)"}
+                    className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-white/15 text-white/80"
                   >
-                    {currentAudioPlaying ? (
+                    {state.running ? (
                       <Pause className="h-4 w-4" />
                     ) : (
                       <Play className="h-4 w-4" />
                     )}
-                  </button>
+                  </span>
                   <input
                     type="range"
                     min={0}
@@ -822,7 +813,22 @@ export function LiveMode({
                     step={0.1}
                     value={playingId === current.id ? audioCurrent : 0}
                     onChange={seekAudio}
-                    className="h-1.5 flex-1 cursor-pointer accent-white"
+                    onPointerUp={commitSeek}
+                    onKeyUp={commitSeek}
+                    disabled={state.mode === "auto" || !isController}
+                    title={
+                      state.mode === "auto"
+                        ? "Auto: เลื่อนเวลาเพลงไม่ได้ — คุมที่ปุ่มหยุดโชว์"
+                        : !isController
+                          ? "ดูอย่างเดียว"
+                          : "เลื่อนเวลาเพลง"
+                    }
+                    className={cn(
+                      "h-1.5 flex-1 accent-white",
+                      state.mode === "auto" || !isController
+                        ? "cursor-not-allowed opacity-50"
+                        : "cursor-pointer"
+                    )}
                   />
                   <span className="w-16 shrink-0 text-right text-xs tabular-nums opacity-80">
                     {playingId === current.id
