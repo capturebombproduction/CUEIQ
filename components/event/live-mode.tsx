@@ -362,6 +362,9 @@ export function LiveMode({
       apply({ ...state, running: false, itemElapsedAtPause: frozenItem });
       if (state.mode === "auto") {
         audioRef.current?.pause();
+        audioRef2.current?.pause(); // also halt any overlap pre-roll
+        overlapNextIdRef.current = null;
+        autoTriggeredForRef.current = null; // let overlap re-arm on resume
         setAudioPlaying(false);
       }
     } else {
@@ -496,6 +499,11 @@ export function LiveMode({
         }
       }
     } else {
+      // switching to Manual — stop any pending overlap pre-roll on the secondary
+      if (mode === "manual") {
+        audioRef2.current?.pause();
+        overlapNextIdRef.current = null;
+      }
       apply({ ...state, mode });
     }
   }
