@@ -662,29 +662,29 @@ export function SetlistBuilder({
 
               {/* Editable fields */}
               <div className="mt-2 grid gap-2 pl-8 sm:grid-cols-12">
-                <div className="space-y-1 sm:col-span-3">
-                  <div className="flex items-center justify-between gap-1">
-                    <Label className="text-xs text-muted-foreground">
-                      ความยาว (m:ss)
-                    </Label>
-                    {editable && hardOutSec != null && t && (
-                      <button
-                        type="button"
-                        onClick={() =>
-                          fillRemaining(it.id, t.startSec, it.buffer_after_seconds)
-                        }
-                        title="ตั้งความยาว = เวลาที่เหลือจนถึง Hard Out (เช่น MC ปิดท้าย)"
-                        className="text-[10px] font-medium text-primary hover:underline"
-                      >
-                        เวลาที่เหลือ
-                      </button>
-                    )}
-                  </div>
+                <div className="space-y-1 sm:col-span-2">
+                  <Label className="text-xs text-muted-foreground">
+                    ความยาว (m:ss)
+                  </Label>
                   <DurationField
                     seconds={it.duration_seconds}
                     disabled={!editable}
                     onCommit={(s) => update(it.id, { duration_seconds: s })}
                   />
+                  {editable && hardOutSec != null && t && (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() =>
+                        fillRemaining(it.id, t.startSec, it.buffer_after_seconds)
+                      }
+                      title="ตั้งความยาว = เวลาที่เหลือจนถึง Hard Out (เช่น MC ปิดท้าย)"
+                      className="h-8 w-full gap-1 text-xs"
+                    >
+                      <AlarmClock className="h-3.5 w-3.5" /> เวลาที่เหลือ
+                    </Button>
+                  )}
                 </div>
                 <div className="space-y-1 sm:col-span-2">
                   <Label className="text-xs text-muted-foreground">
@@ -732,7 +732,7 @@ export function SetlistBuilder({
                     }
                   />
                 </div>
-                <div className="space-y-1 sm:col-span-5">
+                <div className="space-y-1 sm:col-span-6">
                   <Label className="text-xs text-muted-foreground">ไมค์ + สมาชิก</Label>
                   <MicSlotsDialog
                     item={it}
