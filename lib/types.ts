@@ -167,12 +167,19 @@ export const SCHEDULE_KIND_LABELS: Record<ScheduleKind, string> = {
 // ---------------------------------------------------------------------------
 // Setlist items
 // ---------------------------------------------------------------------------
-export type SetlistKind = "song" | "mc" | "se" | "interlude" | "guest";
+export type SetlistKind =
+  | "song"
+  | "mc"
+  | "se"
+  | "instrument"
+  | "interlude"
+  | "guest";
 
 export const SETLIST_KIND_LABELS: Record<SetlistKind, string> = {
   song: "เพลง (Song)",
   mc: "MC (พูดคุย)",
   se: "SE (Sound Effect)",
+  instrument: "Instrument (บรรเลง)",
   interlude: "Interlude / VTR",
   guest: "Guest / Special",
 };
@@ -181,6 +188,7 @@ export const SETLIST_KIND_SHORT: Record<SetlistKind, string> = {
   song: "SONG",
   mc: "MC",
   se: "SE",
+  instrument: "INST",
   interlude: "INT",
   guest: "GUEST",
 };

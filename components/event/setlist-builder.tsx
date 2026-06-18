@@ -405,12 +405,14 @@ export function SetlistBuilder({
   }
 
   async function addItem(kind: SetlistKind) {
+    // titles prefill the kind label; all durations start at 0 (user fills the real time)
     const defaults: Record<SetlistKind, Partial<SetlistItem>> = {
-      song: { title: "", duration_seconds: 210 },
-      mc: { title: "MC", duration_seconds: 180 },
-      se: { title: "SE", duration_seconds: 30 },
-      interlude: { title: "Interlude", duration_seconds: 60 },
-      guest: { title: "Guest", duration_seconds: 120 },
+      song: { title: "", duration_seconds: 0 },
+      mc: { title: "MC", duration_seconds: 0 },
+      se: { title: "SE", duration_seconds: 0 },
+      instrument: { title: "Instrument", duration_seconds: 0 },
+      interlude: { title: "Interlude", duration_seconds: 0 },
+      guest: { title: "Guest", duration_seconds: 0 },
     };
     await insertItem({ kind, ...defaults[kind] });
   }
@@ -774,9 +776,19 @@ export function SetlistBuilder({
           <Button
             type="button"
             variant="outline"
+            onClick={() => addItem("instrument")}
+          >
+            <Plus className="h-4 w-4" /> Instrument
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
             onClick={() => addItem("interlude")}
           >
             <Plus className="h-4 w-4" /> Interlude
+          </Button>
+          <Button type="button" variant="outline" onClick={() => addItem("guest")}>
+            <Plus className="h-4 w-4" /> Guest
           </Button>
         </div>
       )}
