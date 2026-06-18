@@ -863,10 +863,10 @@ export function LiveMode({
 
       {/* top bar */}
       <div className="flex items-center justify-between gap-3 rounded-xl border bg-card px-4 py-3">
-        <div className="flex items-center gap-2 font-medium">
+        <div className="flex min-w-0 flex-1 items-center gap-2 font-medium">
           <Radio
             className={cn(
-              "h-4 w-4",
+              "h-4 w-4 shrink-0",
               state.running ? "text-destructive" : "text-muted-foreground"
             )}
           />
@@ -879,12 +879,12 @@ export function LiveMode({
             )}
           />
           {!syncReady && (
-            <span className="text-[10px] font-normal text-muted-foreground">
+            <span className="shrink-0 text-[10px] font-normal text-muted-foreground">
               {syncStatus === "init" ? "กำลังเชื่อม…" : syncStatus}
             </span>
           )}
         </div>
-        <div className="text-right">
+        <div className="shrink-0 text-right">
           <p className="text-xs text-muted-foreground">เวลาจริง</p>
           <p className="font-semibold tabular-nums" suppressHydrationWarning>
             {wallClock}
@@ -1030,7 +1030,7 @@ export function LiveMode({
                 </div>
 
                 <div className="flex items-center justify-between gap-2">
-                  <p className="truncate text-left text-[10px] opacity-60">
+                  <p className="min-w-0 flex-1 truncate text-left text-[10px] opacity-60">
                     <Music2 className="mr-1 inline h-3 w-3" />
                     {audioNames[current.id]}
                   </p>
@@ -1215,7 +1215,7 @@ export function LiveMode({
                     : undefined
                 }
                 className={cn(
-                  "flex flex-1 items-center gap-2 text-left text-sm",
+                  "flex min-w-0 flex-1 items-center gap-2 text-left text-sm",
                   locked && "cursor-default"
                 )}
               >
@@ -1227,7 +1227,7 @@ export function LiveMode({
                 </Badge>
                 <span
                   className={cn(
-                    "flex-1 truncate",
+                    "min-w-0 flex-1 truncate",
                     i === state.currentIndex && "font-medium"
                   )}
                 >
