@@ -979,7 +979,7 @@ export function LiveMode({
   }
 
   return (
-    <div className="mx-auto max-w-2xl space-y-4">
+    <div className="mx-auto max-w-2xl space-y-4 landscape:max-w-5xl">
       {/* hidden file input */}
       <input
         ref={fileInputRef}
@@ -1020,6 +1020,9 @@ export function LiveMode({
         </div>
       </div>
 
+      {/* current item + next-up prep — stacked in portrait, side by side in
+          landscape (e.g. iPad) so the crew can ready the next item's mics/props */}
+      <div className="grid gap-4 landscape:grid-cols-2 landscape:items-stretch">
       {/* main countdown */}
       <div
         className={cn(
@@ -1185,15 +1188,80 @@ export function LiveMode({
         )}
       </div>
 
+        {/* NEXT-UP prep card — shown in landscape so the team can ready mics/props
+            for what's coming while the current item is still playing */}
+        <div className="hidden rounded-2xl border bg-card p-5 text-left shadow-sm landscape:flex landscape:flex-col">
+          <div className="mb-3 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+            <SkipForward className="h-3.5 w-3.5" /> รายการถัดไป
+          </div>
+          {next ? (
+            <>
+              <div className="mb-1 flex items-center gap-2">
+                <Badge variant="secondary">
+                  {SETLIST_KIND_SHORT[next.kind as SetlistKind]}
+                </Badge>
+                <span className="tabular-nums text-xs text-muted-foreground">
+                  {state.currentIndex + 2} / {items.length} ·{" "}
+                  {formatDuration(next.duration_seconds)}
+                </span>
+              </div>
+              <h3 className="mb-3 break-words text-xl font-bold leading-tight">
+                {next.title || "—"}
+              </h3>
+              {next.mic_slots?.length > 0 ? (
+                <div>
+                  <p className="mb-1.5 flex items-center gap-1 text-xs font-medium text-muted-foreground">
+                    <Radio className="h-3 w-3" /> เตรียมไมค์
+                  </p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {next.mic_slots.map((s, i) => (
+                      <Badge key={i} variant="outline" className="text-sm">
+                        {s.mic} → {s.member}
+                      </Badge>
+                    ))}
+                  </div>
+                </div>
+              ) : (
+                <p className="text-sm text-muted-foreground">
+                  — ไม่มีไมค์ที่ต้องเตรียม —
+                </p>
+              )}
+              {next.notes && (
+                <p className="mt-3 rounded-lg bg-muted/60 px-3 py-2 text-sm">
+                  📝 {next.notes}
+                </p>
+              )}
+              <p className="mt-auto pt-4 text-xs text-muted-foreground">
+                {audioUrls[next.id] ? (
+                  <>
+                    <Music2 className="mr-1 inline h-3 w-3" /> ไฟล์เพลงพร้อมบนเครื่องนี้
+                  </>
+                ) : (
+                  <>
+                    <FolderOpen className="mr-1 inline h-3 w-3" /> ยังไม่ได้โหลดไฟล์เพลง
+                  </>
+                )}
+              </p>
+            </>
+          ) : (
+            <div className="flex flex-1 flex-col items-center justify-center text-center text-muted-foreground">
+              <p className="text-lg font-semibold">— จบโชว์ —</p>
+              <p className="text-sm">ไม่มีรายการถัดไปแล้ว</p>
+            </div>
+          )}
+        </div>
+      </div>
+
       {/* stats */}
-      <div className="grid grid-cols-2 gap-3">
+      <div className="grid grid-cols-2 gap-3 landscape:grid-cols-1">
         <div className="rounded-xl border bg-card p-4 text-center">
           <p className="text-xs text-muted-foreground">เวลาสะสม (Accumulated)</p>
           <p className="text-2xl font-bold tabular-nums">
             {formatDuration(totalElapsed)}
           </p>
         </div>
-        <div className="rounded-xl border bg-card p-4 text-center">
+        {/* next-title mini box — redundant with the prep card in landscape, so hide it there */}
+        <div className="rounded-xl border bg-card p-4 text-center landscape:hidden">
           <p className="text-xs text-muted-foreground">รายการถัดไป</p>
           <p className="truncate text-lg font-semibold">
             {next?.title || "— จบโชว์ —"}
