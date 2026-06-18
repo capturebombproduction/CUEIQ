@@ -49,8 +49,10 @@ const INITIAL: LiveState = {
 };
 
 function blockSeconds(it: SetlistItem) {
+  // A negative buffer_before is a lead-in for overlapping the PREVIOUS track, not
+  // part of this item's own countdown — clamp it to 0 here.
   return (
-    (it.buffer_before_seconds || 0) +
+    Math.max(0, it.buffer_before_seconds || 0) +
     (it.duration_seconds || 0) +
     (it.buffer_after_seconds || 0)
   );
@@ -84,8 +86,11 @@ export function LiveMode({
       : String(Math.random())
   );
 
-  // audio state
+  // audio state — two elements so an incoming track can overlap (negative buffer)
+  // without cutting the current one. audioRef = primary (drives the UI scrubber).
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const audioRef2 = useRef<HTMLAudioElement | null>(null);
+  const overlapNextIdRef = useRef<string | null>(null); // item pre-rolling on secondary
   const fileInputRef = useRef<HTMLInputElement>(null);
   const loadTargetRef = useRef<string | null>(null);
   const [audioUrls, setAudioUrls] = useState<Record<string, string>>({}); // itemId → objectURL
@@ -105,26 +110,51 @@ export function LiveMode({
     return () => clearInterval(id);
   }, []);
 
-  // audio element — create once
+  // two audio elements — create once. UI-updating listeners only act for whichever
+  // element is currently the primary (audioRef.current).
   useEffect(() => {
-    const audio = new Audio();
-    audio.addEventListener("ended", () => {
-      setPlayingId(null);
-      setAudioPlaying(false);
-    });
-    audio.addEventListener("timeupdate", () => {
-      setAudioCurrent(audio.currentTime);
-    });
-    audio.addEventListener("loadedmetadata", () => {
-      setAudioDuration(audio.duration);
-    });
-    audioRef.current = audio;
+    const make = () => {
+      const a = new Audio();
+      a.addEventListener("ended", () => {
+        if (a === audioRef.current) {
+          setPlayingId(null);
+          setAudioPlaying(false);
+        }
+      });
+      a.addEventListener("timeupdate", () => {
+        if (a === audioRef.current) setAudioCurrent(a.currentTime);
+      });
+      a.addEventListener("loadedmetadata", () => {
+        if (a === audioRef.current) setAudioDuration(a.duration);
+      });
+      return a;
+    };
+    const a = make();
+    const b = make();
+    audioRef.current = a;
+    audioRef2.current = b;
     return () => {
-      audio.pause();
-      audio.src = "";
+      a.pause();
+      a.src = "";
+      b.pause();
+      b.src = "";
       audioRef.current = null;
+      audioRef2.current = null;
     };
   }, []);
+
+  // promote the overlapping secondary element to primary (after a negative-buffer
+  // pre-roll) and refresh the scrubber from it.
+  function swapAudio() {
+    const tmp = audioRef.current;
+    audioRef.current = audioRef2.current;
+    audioRef2.current = tmp;
+    const p = audioRef.current;
+    if (p) {
+      setAudioCurrent(p.currentTime);
+      setAudioDuration(isFinite(p.duration) ? p.duration : 0);
+    }
+  }
 
   // cleanup object URLs on unmount
   const audioUrlsRef = useRef(audioUrls);
@@ -190,30 +220,30 @@ export function LiveMode({
     autoAdvanceForRef.current = null;
   }, [state.currentIndex]);
 
-  // negative buffer: auto-play next item's audio when remaining ≤ |buffer_before|
+  // negative buffer (Auto): pre-roll the NEXT track on the secondary element so it
+  // overlaps the current one — current keeps playing, next "เล่นสวนขึ้นมา" |lead| sec early.
   useEffect(() => {
-    if (!state.running || !state.itemStartedAt) return;
+    if (state.mode !== "auto" || !state.running || !state.itemStartedAt) return;
     const cur = items[state.currentIndex];
     const nxt = items[state.currentIndex + 1];
     if (!cur || !nxt) return;
-    const nextBefore = nxt.buffer_before_seconds ?? 0;
-    if (nextBefore >= 0) return; // only for negative buffer
+    const lead = -(nxt.buffer_before_seconds ?? 0);
+    if (lead <= 0) return; // only negative buffer overlaps
 
     const rem = blockSeconds(cur) - (now - state.itemStartedAt) / 1000;
     const triggerKey = `${cur.id}→${nxt.id}`;
     if (autoTriggeredForRef.current === triggerKey) return;
 
-    if (rem > 0 && rem <= Math.abs(nextBefore)) {
+    if (rem > 0 && rem <= lead) {
       autoTriggeredForRef.current = triggerKey;
       const url = audioUrls[nxt.id];
-      if (url && audioRef.current) {
-        const audio = audioRef.current;
-        audio.pause();
-        audio.src = url;
-        audio.currentTime = 0;
-        audio.play().catch(() => {});
-        setPlayingId(nxt.id);
-        setAudioPlaying(true);
+      const sec = audioRef2.current;
+      if (url && sec) {
+        sec.pause();
+        sec.src = url;
+        sec.currentTime = 0;
+        sec.play().catch(() => {});
+        overlapNextIdRef.current = nxt.id; // promoted to primary on advance
       }
     }
   }, [now, state, items, audioUrls]);
@@ -427,9 +457,11 @@ export function LiveMode({
       const first = items[0];
       if (first) playItemAudio(first.id);
     } else {
-      // Manual: accumulated (show clock) starts now at START SHOW. Only the
-      // per-item countdown + audio wait for รันโชว์ / play.
-      apply({ running: false, begun: true, startedAt: ts, itemStartedAt: null, itemElapsedAtPause: 0, currentIndex: 0, mode: "manual" });
+      // Manual: the FIRST song plays + its countdown runs right away (a natural
+      // "go"). Accumulated starts now. Subsequent items are manual (cue + play).
+      apply({ running: true, begun: true, startedAt: ts, itemStartedAt: ts, itemElapsedAtPause: null, currentIndex: 0, mode: "manual" });
+      const first = items[0];
+      if (first) playItemAudio(first.id);
     }
   }
   function setMode(mode: ShowMode) {
@@ -489,6 +521,24 @@ export function LiveMode({
       return;
     }
     if (state.mode === "auto") {
+      // Overlap hand-off: the next track has been pre-rolling on the secondary
+      // element (negative buffer). Promote it instead of restarting from 0.
+      if (it && overlapNextIdRef.current === it.id) {
+        const lead = -(it.buffer_before_seconds ?? 0);
+        swapAudio();
+        setPlayingId(it.id);
+        setAudioPlaying(true);
+        overlapNextIdRef.current = null;
+        apply({
+          ...state,
+          currentIndex: index,
+          itemStartedAt: Date.now() - Math.max(0, lead) * 1000, // audio already |lead| in
+          itemElapsedAtPause: null,
+          running: true,
+          startedAt: state.startedAt ?? Date.now(),
+        });
+        return;
+      }
       // Auto: jump + play new track + run countdown
       apply({
         ...state,
@@ -514,6 +564,8 @@ export function LiveMode({
   }
   function reset() {
     audioRef.current?.pause();
+    audioRef2.current?.pause();
+    overlapNextIdRef.current = null;
     setPlayingId(null);
     setAudioPlaying(false);
     apply({ ...INITIAL, mode: state.mode }); // keep chosen mode after reset

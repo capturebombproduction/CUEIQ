@@ -657,11 +657,11 @@ export function SetlistBuilder({
                 </div>
                 <div className="space-y-1 sm:col-span-2">
                   <Label className="text-xs text-muted-foreground">
-                    Buffer ก่อน (วิ)
+                    Buffer ก่อน (วิ · ติดลบ = เล่นซ้อน)
                   </Label>
                   <Input
                     type="number"
-                    min={0}
+                    min={-300}
                     className="tabular-nums"
                     value={it.buffer_before_seconds}
                     disabled={!editable}
