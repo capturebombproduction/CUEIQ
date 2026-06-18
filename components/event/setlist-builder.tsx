@@ -193,27 +193,37 @@ function MicSlotsDialog({
                 <span className="self-center text-xs text-muted-foreground">
                   เพิ่มเร็ว:
                 </span>
-                {members.map((m) => (
-                  <Button
-                    key={m.id}
-                    type="button"
-                    variant="secondary"
-                    size="sm"
-                    className="h-7"
-                    onClick={() =>
-                      setSlots((prev) => [
-                        ...prev,
-                        {
-                          mic: m.mic_number != null ? String(m.mic_number) : "",
-                          member: m.nickname || m.name,
-                        },
-                      ])
-                    }
-                  >
-                    {m.mic_number != null ? `${m.mic_number} ` : ""}
-                    {m.nickname || m.name}
-                  </Button>
-                ))}
+                {members.map((m) => {
+                  const label = m.nickname || m.name;
+                  // already on this item — don't let the same person be added twice
+                  const added = slots.some(
+                    (s) =>
+                      s.member.trim().toLowerCase() === label.trim().toLowerCase()
+                  );
+                  return (
+                    <Button
+                      key={m.id}
+                      type="button"
+                      variant="secondary"
+                      size="sm"
+                      disabled={added}
+                      title={added ? "เพิ่มแล้ว" : undefined}
+                      className="h-7 disabled:opacity-40"
+                      onClick={() =>
+                        setSlots((prev) => [
+                          ...prev,
+                          {
+                            mic: m.mic_number != null ? String(m.mic_number) : "",
+                            member: label,
+                          },
+                        ])
+                      }
+                    >
+                      {m.mic_number != null ? `${m.mic_number} ` : ""}
+                      {label}
+                    </Button>
+                  );
+                })}
               </div>
             )}
           </div>
@@ -229,7 +239,20 @@ function MicSlotsDialog({
             <Button
               type="button"
               onClick={() => {
-                onSave(slots.filter((s) => s.mic.trim() || s.member.trim()));
+                const filled = slots.filter((s) => s.mic.trim() || s.member.trim());
+                // drop rows that repeat a member already listed on this item
+                const seen = new Set<string>();
+                const deduped = filled.filter((s) => {
+                  const key = s.member.trim().toLowerCase();
+                  if (!key) return true; // mic-only row — nothing to dedup
+                  if (seen.has(key)) return false;
+                  seen.add(key);
+                  return true;
+                });
+                const removed = filled.length - deduped.length;
+                if (removed > 0)
+                  toast.success(`รวมไมค์ซ้ำ — ลบออก ${removed} รายการ`);
+                onSave(deduped);
                 setOpen(false);
               }}
             >
