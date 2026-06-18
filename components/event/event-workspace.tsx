@@ -121,19 +121,24 @@ export function EventWorkspace({
         )}
       </Tabs>
 
-      {/* Bottom summary + refresh — mirrors the top bar for convenience after editing */}
-      <div className="flex flex-wrap items-center gap-2 border-t pt-4">
-        <Button
-          type="button"
-          size="lg"
-          variant={view === "summary" ? "default" : "outline"}
-          onClick={() => setView("summary")}
-          className="font-semibold"
-        >
-          <ClipboardList className="h-5 w-5" /> Summary
-        </Button>
-        <RefreshButton />
-      </div>
+      {/* Bottom action bar — mirrors the top so you don't have to scroll back up
+          after editing. Edits auto-save on blur; อัปเดต re-loads fresh data. */}
+      {view !== "summary" && (
+        <div className="mt-2 flex flex-wrap items-center gap-2 rounded-lg border bg-muted/30 p-3">
+          <span className="mr-1 text-xs text-muted-foreground">
+            บันทึกอัตโนมัติทุกครั้งที่แก้ไข
+          </span>
+          <RefreshButton label="อัปเดตข้อมูล" variant="secondary" />
+          <Button
+            type="button"
+            variant="default"
+            onClick={() => setView("summary")}
+            className="font-semibold"
+          >
+            <ClipboardList className="h-4 w-4" /> ดูสรุปงาน
+          </Button>
+        </div>
+      )}
     </div>
   );
 }
