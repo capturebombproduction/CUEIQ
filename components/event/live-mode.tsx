@@ -13,6 +13,7 @@ import {
   Music2,
   Volume2,
   Volume1,
+  VolumeX,
   Hand,
   Sparkles,
   Eye,
@@ -110,7 +111,9 @@ export function LiveMode({
   const [audioPlaying, setAudioPlaying] = useState(false);
   const [audioCurrent, setAudioCurrent] = useState(0);
   const [audioDuration, setAudioDuration] = useState(0);
-  const [volume, setVolume] = useState(100); // 0–100, applies to both audio elements
+  const [volumes, setVolumes] = useState<Record<string, number>>({}); // itemId → 0–100 (default 100), set per track
+  const volumesRef = useRef(volumes); // stable read for the overlap pre-roll effect
+  volumesRef.current = volumes;
   const fadeRef = useRef<number | null>(null); // rAF id for the volume fade animation
   // tracks which "currentId→nextId" pair already had auto-trigger fired
   const autoTriggeredForRef = useRef<string | null>(null);
@@ -123,12 +126,12 @@ export function LiveMode({
     return () => clearInterval(id);
   }, []);
 
-  // apply volume to both audio elements whenever it changes
+  // apply the PLAYING track's own volume to the primary element (per-track)
   useEffect(() => {
-    const v = Math.min(1, Math.max(0, volume / 100));
-    if (audioRef.current) audioRef.current.volume = v;
-    if (audioRef2.current) audioRef2.current.volume = v;
-  }, [volume]);
+    if (!audioRef.current || !playingId) return;
+    const v = (volumes[playingId] ?? 100) / 100;
+    audioRef.current.volume = Math.min(1, Math.max(0, v));
+  }, [volumes, playingId]);
 
   // stop any running fade on unmount
   useEffect(() => {
@@ -292,6 +295,7 @@ export function LiveMode({
         sec.pause();
         sec.src = url;
         sec.currentTime = 0;
+        sec.volume = Math.min(1, Math.max(0, (volumesRef.current[nxt.id] ?? 100) / 100));
         sec.play().catch(() => {});
         overlapNextIdRef.current = nxt.id; // promoted to primary on advance
       }
@@ -411,8 +415,9 @@ export function LiveMode({
   }
 
   // Remove a loaded audio file from this device (e.g. wrong file picked). Clears the
-  // object URL + IndexedDB copy; if it's the one playing, stop it.
+  // object URL + IndexedDB copy. Guarded so the track that's on air can't be deleted.
   function removeAudioFile(itemId: string) {
+    if (playingId === itemId) return; // never delete the track that's loaded/playing
     const url = audioUrls[itemId];
     if (url) URL.revokeObjectURL(url);
     setAudioUrls((prev) => {
@@ -426,29 +431,29 @@ export function LiveMode({
       return n;
     });
     deleteAudio(eventId, itemId).catch(() => {});
-    if (playingId === itemId) {
-      audioRef.current?.pause();
-      setPlayingId(null);
-      setAudioPlaying(false);
-      setAudioCurrent(0);
-    }
   }
 
-  // Set the music volume now (cancels any running fade). MC preset uses 30%.
-  function applyVolume(to: number) {
+  // Set one track's volume now (cancels any running fade). Used by the slider.
+  function setVolumeFor(itemId: string, to: number) {
     if (fadeRef.current) cancelAnimationFrame(fadeRef.current);
-    setVolume(Math.min(100, Math.max(0, Math.round(to))));
+    const v = Math.min(100, Math.max(0, Math.round(to)));
+    setVolumes((prev) => ({ ...prev, [itemId]: v }));
   }
 
-  // Smoothly bring the music back up to 100% over `ms` — e.g. when the MC finishes.
-  function fadeUp(ms = 3000) {
+  // Smoothly fade the CURRENT item's volume to `target` over `ms` (default 2s).
+  // Auto Mute = 0, MC = 30, Auto Loudness = 100.
+  function fadeVolumeTo(target: number, ms = 2000) {
     if (fadeRef.current) cancelAnimationFrame(fadeRef.current);
-    const start = volume;
-    if (start >= 100) return;
+    const cur = items[state.currentIndex];
+    if (!cur) return;
+    const id = cur.id;
+    const start = volumes[id] ?? 100;
+    if (start === target) return;
     const t0 = performance.now();
     const step = (t: number) => {
       const p = Math.min(1, (t - t0) / ms);
-      setVolume(Math.round(start + (100 - start) * p));
+      const v = Math.round(start + (target - start) * p);
+      setVolumes((prev) => ({ ...prev, [id]: v }));
       fadeRef.current = p < 1 ? requestAnimationFrame(step) : null;
     };
     fadeRef.current = requestAnimationFrame(step);
@@ -899,7 +904,7 @@ export function LiveMode({
                   </span>
                 </div>
 
-                {/* volume + MC ducking — controls this device's audio output */}
+                {/* per-track volume slider — set each track's level (in advance too) */}
                 <div className="flex items-center gap-2">
                   <Volume1 className="h-4 w-4 shrink-0 opacity-80" />
                   <input
@@ -907,27 +912,38 @@ export function LiveMode({
                     min={0}
                     max={100}
                     step={1}
-                    value={volume}
-                    onChange={(e) => applyVolume(Number(e.target.value))}
-                    title="ความดังเพลง"
+                    value={volumes[current.id] ?? 100}
+                    onChange={(e) => setVolumeFor(current.id, Number(e.target.value))}
+                    title="ความดังของแทร็คนี้ (ตั้งล่วงหน้าได้)"
                     className="h-1.5 flex-1 cursor-pointer accent-white"
                   />
                   <span className="w-9 shrink-0 text-right text-xs tabular-nums opacity-80">
-                    {volume}%
+                    {volumes[current.id] ?? 100}%
                   </span>
+                </div>
+
+                {/* big one-tap auto-fade buttons (2s) */}
+                <div className="grid grid-cols-3 gap-2">
                   <button
-                    onClick={() => applyVolume(30)}
-                    title="ลดเสียงสำหรับช่วง MC (~30%)"
-                    className="shrink-0 rounded-md bg-white/15 px-2 py-1 text-[11px] font-medium hover:bg-white/25"
+                    onClick={() => fadeVolumeTo(0)}
+                    title="ค่อย ๆ ปิดเสียงเป็น 0% ใน 2 วินาที"
+                    className="flex items-center justify-center gap-1.5 rounded-lg bg-white/15 py-2.5 text-sm font-semibold hover:bg-white/25"
                   >
-                    MC 30%
+                    <VolumeX className="h-4 w-4" /> Auto Mute
                   </button>
                   <button
-                    onClick={() => fadeUp(3000)}
-                    title="ค่อย ๆ ดังกลับเป็น 100% ใน 3 วินาที"
-                    className="flex shrink-0 items-center gap-1 rounded-md bg-white/15 px-2 py-1 text-[11px] font-medium hover:bg-white/25"
+                    onClick={() => fadeVolumeTo(30)}
+                    title="ค่อย ๆ ลดเสียงลงเป็น 30% ใน 2 วินาที (ช่วง MC)"
+                    className="flex items-center justify-center gap-1.5 rounded-lg bg-white/15 py-2.5 text-sm font-semibold hover:bg-white/25"
                   >
-                    <Volume2 className="h-3.5 w-3.5" /> ดังกลับ
+                    <Volume1 className="h-4 w-4" /> MC
+                  </button>
+                  <button
+                    onClick={() => fadeVolumeTo(100)}
+                    title="ค่อย ๆ เพิ่มเสียงกลับเป็น 100% ใน 2 วินาที"
+                    className="flex items-center justify-center gap-1.5 rounded-lg bg-white/15 py-2.5 text-sm font-semibold hover:bg-white/25"
+                  >
+                    <Volume2 className="h-4 w-4" /> Auto Loudness
                   </button>
                 </div>
 
@@ -936,13 +952,15 @@ export function LiveMode({
                     <Music2 className="mr-1 inline h-3 w-3" />
                     {audioNames[current.id]}
                   </p>
-                  <button
-                    onClick={() => removeAudioFile(current.id)}
-                    title="ลบไฟล์เพลงนี้ออกจากเครื่อง"
-                    className="flex shrink-0 items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] opacity-70 hover:bg-white/15 hover:opacity-100"
-                  >
-                    <Trash2 className="h-3 w-3" /> ลบไฟล์
-                  </button>
+                  {playingId !== current.id && (
+                    <button
+                      onClick={() => removeAudioFile(current.id)}
+                      title="ลบไฟล์เพลงนี้ออกจากเครื่อง"
+                      className="flex shrink-0 items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] opacity-70 hover:bg-white/15 hover:opacity-100"
+                    >
+                      <Trash2 className="h-3 w-3" /> ลบไฟล์
+                    </button>
+                  )}
                 </div>
               </div>
             ) : (
@@ -1157,8 +1175,8 @@ export function LiveMode({
                 >
                   <FolderOpen className="h-3.5 w-3.5" />
                 </button>
-                {/* clear file — only when one is loaded */}
-                {hasFile && (
+                {/* clear file — only when one is loaded and NOT the playing track */}
+                {hasFile && it.id !== playingId && (
                   <button
                     onClick={() => removeAudioFile(it.id)}
                     title="ลบไฟล์เพลงนี้"
