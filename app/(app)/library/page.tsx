@@ -2,6 +2,7 @@ import { getSongs, getWorkspace } from "@/lib/queries";
 import { JoinDemo } from "@/components/join-demo";
 import { SongLibrary } from "@/components/song/song-library";
 import { RefreshButton } from "@/components/refresh-button";
+import { ConfirmSavedBar } from "@/components/confirm-saved-bar";
 import { canEdit } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
@@ -31,6 +32,9 @@ export default async function LibraryPage() {
         initialSongs={songs}
         editable={canEdit(ws.membership.role)}
       />
+      {canEdit(ws.membership.role) && (
+        <ConfirmSavedBar note="เพลงบันทึกอัตโนมัติทุกครั้งที่เพิ่ม/แก้ — ปุ่มนี้ยืนยัน + โหลดข้อมูลล่าสุด" />
+      )}
     </div>
   );
 }

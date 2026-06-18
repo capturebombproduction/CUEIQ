@@ -196,15 +196,13 @@ function MicSlotsDialog({
                 </span>
                 {members.map((m) => {
                   const label = m.nickname || m.name;
-                  const micStr = m.mic_number != null ? String(m.mic_number) : "";
-                  // already on this item — block re-adding the same person OR a mic
-                  // number that's already taken (one mic can't go to two people).
-                  const added = slots.some((s) => {
-                    const sameMember =
-                      s.member.trim().toLowerCase() === label.trim().toLowerCase();
-                    const sameMic = micStr !== "" && s.mic.trim() === micStr;
-                    return sameMember || sameMic;
-                  });
+                  // already on this item — don't let the SAME PERSON be added twice.
+                  // (Mic numbers CAN repeat on purpose — mics get shared/passed around
+                  // when there are guests and mics run out.)
+                  const added = slots.some(
+                    (s) =>
+                      s.member.trim().toLowerCase() === label.trim().toLowerCase()
+                  );
                   return (
                     <Button
                       key={m.id}
@@ -212,7 +210,7 @@ function MicSlotsDialog({
                       variant="secondary"
                       size="sm"
                       disabled={added}
-                      title={added ? "เพิ่มแล้ว / ไมค์ถูกใช้แล้ว" : undefined}
+                      title={added ? "เพิ่มแล้ว" : undefined}
                       className="h-7 disabled:opacity-40"
                       onClick={() =>
                         setSlots((prev) => [
@@ -245,21 +243,19 @@ function MicSlotsDialog({
               type="button"
               onClick={() => {
                 const filled = slots.filter((s) => s.mic.trim() || s.member.trim());
-                // drop rows that repeat a member OR a mic number already listed here
-                const seenMember = new Set<string>();
-                const seenMic = new Set<string>();
+                // drop rows that repeat a member already listed on this item.
+                // (Mic numbers CAN repeat — mics get shared when guests run them out.)
+                const seen = new Set<string>();
                 const deduped = filled.filter((s) => {
-                  const mKey = s.member.trim().toLowerCase();
-                  const micKey = s.mic.trim();
-                  if (mKey && seenMember.has(mKey)) return false;
-                  if (micKey && seenMic.has(micKey)) return false;
-                  if (mKey) seenMember.add(mKey);
-                  if (micKey) seenMic.add(micKey);
+                  const key = s.member.trim().toLowerCase();
+                  if (!key) return true; // mic-only row — nothing to dedup
+                  if (seen.has(key)) return false;
+                  seen.add(key);
                   return true;
                 });
                 const removed = filled.length - deduped.length;
                 if (removed > 0)
-                  toast.success(`รวมไมค์ซ้ำ — ลบออก ${removed} รายการ`);
+                  toast.success(`รวมสมาชิกซ้ำ — ลบออก ${removed} รายการ`);
                 onSave(deduped);
                 setOpen(false);
               }}
