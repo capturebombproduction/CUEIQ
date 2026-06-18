@@ -16,6 +16,7 @@ import {
   Sparkles,
 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
+import { saveAudio, loadAudioForEvent } from "@/lib/audio-store";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
@@ -166,6 +167,28 @@ export function LiveMode({
       );
     };
   }, []);
+
+  // restore on-device audio files saved for this event (survives refresh)
+  useEffect(() => {
+    let cancelled = false;
+    loadAudioForEvent(eventId)
+      .then((saved) => {
+        if (cancelled || saved.length === 0) return;
+        const urls: Record<string, string> = {};
+        const names: Record<string, string> = {};
+        for (const s of saved) {
+          urls[s.itemId] = URL.createObjectURL(s.blob);
+          names[s.itemId] = s.name;
+        }
+        // a file the user loaded during this async read wins over the restored one
+        setAudioUrls((prev) => ({ ...urls, ...prev }));
+        setAudioNames((prev) => ({ ...names, ...prev }));
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [eventId]);
 
   // Wake Lock — keep screen on while running
   const wakeLockRef = useRef<WakeLockSentinel | null>(null);
@@ -325,6 +348,8 @@ export function LiveMode({
     const url = URL.createObjectURL(file);
     setAudioUrls((prev) => ({ ...prev, [itemId]: url }));
     setAudioNames((prev) => ({ ...prev, [itemId]: file.name }));
+    // persist on-device so it survives a refresh (not uploaded anywhere)
+    saveAudio(eventId, itemId, file, file.name).catch(() => {});
     e.target.value = "";
   }
 
@@ -906,6 +931,11 @@ export function LiveMode({
           );
         })}
       </div>
+
+      <p className="px-1 text-center text-[11px] text-muted-foreground">
+        <FolderOpen className="mr-1 inline h-3 w-3" />
+        ไฟล์เพลงเก็บไว้ในเครื่องนี้ (ไม่ได้อัปโหลด) — เปิดใหม่/รีเฟรชแล้วยังอยู่
+      </p>
     </div>
   );
 }
