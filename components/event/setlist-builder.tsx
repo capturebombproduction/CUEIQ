@@ -14,6 +14,7 @@ import {
   ListMusic,
   GripVertical,
   Radio,
+  RotateCcw,
 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { deleteAudio } from "@/lib/audio-store";
@@ -195,11 +196,15 @@ function MicSlotsDialog({
                 </span>
                 {members.map((m) => {
                   const label = m.nickname || m.name;
-                  // already on this item — don't let the same person be added twice
-                  const added = slots.some(
-                    (s) =>
-                      s.member.trim().toLowerCase() === label.trim().toLowerCase()
-                  );
+                  const micStr = m.mic_number != null ? String(m.mic_number) : "";
+                  // already on this item — block re-adding the same person OR a mic
+                  // number that's already taken (one mic can't go to two people).
+                  const added = slots.some((s) => {
+                    const sameMember =
+                      s.member.trim().toLowerCase() === label.trim().toLowerCase();
+                    const sameMic = micStr !== "" && s.mic.trim() === micStr;
+                    return sameMember || sameMic;
+                  });
                   return (
                     <Button
                       key={m.id}
@@ -207,7 +212,7 @@ function MicSlotsDialog({
                       variant="secondary"
                       size="sm"
                       disabled={added}
-                      title={added ? "เพิ่มแล้ว" : undefined}
+                      title={added ? "เพิ่มแล้ว / ไมค์ถูกใช้แล้ว" : undefined}
                       className="h-7 disabled:opacity-40"
                       onClick={() =>
                         setSlots((prev) => [
@@ -240,13 +245,16 @@ function MicSlotsDialog({
               type="button"
               onClick={() => {
                 const filled = slots.filter((s) => s.mic.trim() || s.member.trim());
-                // drop rows that repeat a member already listed on this item
-                const seen = new Set<string>();
+                // drop rows that repeat a member OR a mic number already listed here
+                const seenMember = new Set<string>();
+                const seenMic = new Set<string>();
                 const deduped = filled.filter((s) => {
-                  const key = s.member.trim().toLowerCase();
-                  if (!key) return true; // mic-only row — nothing to dedup
-                  if (seen.has(key)) return false;
-                  seen.add(key);
+                  const mKey = s.member.trim().toLowerCase();
+                  const micKey = s.mic.trim();
+                  if (mKey && seenMember.has(mKey)) return false;
+                  if (micKey && seenMic.has(micKey)) return false;
+                  if (mKey) seenMember.add(mKey);
+                  if (micKey) seenMic.add(micKey);
                   return true;
                 });
                 const removed = filled.length - deduped.length;
@@ -432,6 +440,10 @@ export function SetlistBuilder({
     persist(id, partial);
   }
 
+  // Remember each item's duration right before "เวลาที่เหลือ" overwrote it, so the
+  // user can undo and not lose a real song length (in-session; clears on reload).
+  const [prevDuration, setPrevDuration] = useState<Record<string, number>>({});
+
   // Set this item's duration to all the time left until Hard Out (e.g. final MC).
   // startSec is this row's clock-of-day start (already includes its buffer_before).
   function fillRemaining(itemId: string, startSec: number, bufferAfter: number) {
@@ -443,8 +455,23 @@ export function SetlistBuilder({
       });
       return;
     }
+    const old = items.find((i) => i.id === itemId)?.duration_seconds ?? 0;
+    setPrevDuration((p) => ({ ...p, [itemId]: old }));
     update(itemId, { duration_seconds: dur });
     toast.success(`ตั้งเป็นเวลาที่เหลือ ${formatDuration(dur)}`);
+  }
+
+  // Restore the duration captured before "เวลาที่เหลือ" was pressed.
+  function restoreDuration(itemId: string) {
+    const old = prevDuration[itemId];
+    if (old == null) return;
+    update(itemId, { duration_seconds: old });
+    setPrevDuration((p) => {
+      const n = { ...p };
+      delete n[itemId];
+      return n;
+    });
+    toast.success(`คืนความยาวเดิม ${formatDuration(old)}`);
   }
 
   async function insertItem(extra: Partial<SetlistItem> & { kind: SetlistKind }) {
@@ -756,18 +783,37 @@ export function SetlistBuilder({
                     disabled={!rowEditable}
                     onCommit={(s) => update(it.id, { duration_seconds: s })}
                   />
-                  {rowEditable && hardOutSec != null && t && (
+                  {/* "เวลาที่เหลือ" only on the LAST item — it fills to Hard Out, which
+                      only makes sense for the closing row (e.g. final MC). */}
+                  {rowEditable &&
+                    hardOutSec != null &&
+                    t &&
+                    idx === items.length - 1 && (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() =>
+                          fillRemaining(it.id, t.startSec, it.buffer_after_seconds)
+                        }
+                        title="ตั้งความยาว = เวลาที่เหลือจนถึง Hard Out (เช่น MC ปิดท้าย)"
+                        className="h-8 w-full gap-1 text-xs"
+                      >
+                        <AlarmClock className="h-3.5 w-3.5" /> เวลาที่เหลือ
+                      </Button>
+                    )}
+                  {/* undo — restore the duration from before "เวลาที่เหลือ" was pressed */}
+                  {rowEditable && prevDuration[it.id] != null && (
                     <Button
                       type="button"
-                      variant="outline"
+                      variant="ghost"
                       size="sm"
-                      onClick={() =>
-                        fillRemaining(it.id, t.startSec, it.buffer_after_seconds)
-                      }
-                      title="ตั้งความยาว = เวลาที่เหลือจนถึง Hard Out (เช่น MC ปิดท้าย)"
-                      className="h-8 w-full gap-1 text-xs"
+                      onClick={() => restoreDuration(it.id)}
+                      title="คืนความยาวก่อนกด 'เวลาที่เหลือ'"
+                      className="h-8 w-full gap-1 text-xs text-muted-foreground"
                     >
-                      <AlarmClock className="h-3.5 w-3.5" /> เวลาที่เหลือ
+                      <RotateCcw className="h-3.5 w-3.5" /> คืนค่าเดิม{" "}
+                      {formatDuration(prevDuration[it.id])}
                     </Button>
                   )}
                 </div>
