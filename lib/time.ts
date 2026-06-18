@@ -129,7 +129,8 @@ export function computeSetlistTimes(
     const ba = Math.max(0, it.buffer_after_seconds || 0);
     const dur = Math.max(0, it.duration_seconds || 0);
     const slotStartSec = cursor;
-    const startSec = slotStartSec + bb;
+    // a big overlap must not pull the clock before the show start
+    const startSec = Math.max(showStartSec, slotStartSec + bb);
     const endSec = startSec + dur;
     const slotEndSec = endSec + ba;
     cursor = slotEndSec;
