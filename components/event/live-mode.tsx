@@ -1904,32 +1904,35 @@ export function LiveMode({
           )
         )}
 
-        {/* Per-device sound output — BIG, easy to tap, available on EVERY device
-            (local, not broadcast). The PA device stays ON; remotes turn it OFF to
-            stay silent without muting the PA. */}
-        <button
-          type="button"
-          onClick={() => setSoundOutput((v) => !v)}
-          className={cn(
-            "mb-2 flex w-full items-center justify-center gap-2 rounded-xl border-2 px-4 py-3.5 text-base font-bold shadow-sm transition-colors",
-            soundOutput
-              ? "border-green-600 bg-green-600 text-white hover:bg-green-700"
-              : "border-muted-foreground/30 bg-muted text-muted-foreground hover:bg-muted/70"
-          )}
-        >
-          {soundOutput ? (
-            <>
-              <Volume2 className="h-5 w-5 shrink-0" /> เสียงออกเครื่องนี้ — เปิด
-            </>
-          ) : (
-            <>
-              <VolumeX className="h-5 w-5 shrink-0" /> เครื่องนี้เงียบอยู่ — แตะให้เสียงออก
-            </>
-          )}
-        </button>
-
-        {/* mode toggle — switchable anytime, even mid-show */}
-        <div className="mb-2 grid grid-cols-2 gap-2">
+        {/* control row — per-device sound output (left) + run mode. Sound is LOCAL
+            per device (not broadcast): the PA device ON, a remote OFF to stay silent
+            without muting the PA. Mode is controller-only. */}
+        <div className="mb-2 grid grid-cols-3 gap-2">
+          <button
+            type="button"
+            onClick={() => setSoundOutput((v) => !v)}
+            title={
+              soundOutput
+                ? "เสียงออกที่เครื่องนี้ — แตะเพื่อปิดเสียงเฉพาะเครื่องนี้"
+                : "เครื่องนี้เงียบอยู่ — แตะเพื่อให้เสียงออก"
+            }
+            className={cn(
+              "flex h-9 items-center justify-center gap-1.5 rounded-md border px-2 text-sm font-semibold transition-colors",
+              soundOutput
+                ? "border-green-600 bg-green-600 text-white hover:bg-green-700"
+                : "border-muted-foreground/30 bg-muted text-muted-foreground hover:bg-muted/70"
+            )}
+          >
+            {soundOutput ? (
+              <>
+                <Volume2 className="h-4 w-4 shrink-0" /> เสียงออก
+              </>
+            ) : (
+              <>
+                <VolumeX className="h-4 w-4 shrink-0" /> ปิดเสียง
+              </>
+            )}
+          </button>
           <Button
             variant={state.mode === "manual" ? "default" : "outline"}
             size="sm"
@@ -1944,7 +1947,7 @@ export function LiveMode({
             onClick={() => setMode("auto")}
             disabled={!isController}
           >
-            <Sparkles className="h-4 w-4" /> Run Script (Auto)
+            <Sparkles className="h-4 w-4" /> Auto
           </Button>
         </div>
 
