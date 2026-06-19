@@ -6,6 +6,7 @@ import { cn } from "@/lib/utils";
 
 const LINKS = [
   { href: "/dashboard", label: "Events", short: "Events" },
+  { href: "/overview", label: "ภาพรวมค่าย", short: "ภาพรวม" },
   { href: "/library", label: "Music Library", short: "Library" },
   { href: "/groups", label: "Artists", short: "Artists" },
 ];

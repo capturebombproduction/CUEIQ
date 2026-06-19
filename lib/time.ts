@@ -83,6 +83,28 @@ export function nowClock(date = new Date()): string {
   )}`;
 }
 
+export type DeadlineTone = "overdue" | "urgent" | "soon" | "ok";
+
+/** Human status for a setlist deadline. null = no deadline set. */
+export function deadlineInfo(
+  deadline: string | null | undefined,
+  now = new Date()
+): { label: string; tone: DeadlineTone } | null {
+  if (!deadline) return null;
+  const d = new Date(deadline);
+  if (isNaN(d.getTime())) return null;
+  const diffH = (d.getTime() - now.getTime()) / 3_600_000;
+  const dateStr = d.toLocaleDateString("th-TH", {
+    day: "2-digit",
+    month: "short",
+  });
+  if (diffH < 0) return { label: "เลยกำหนดแล้ว", tone: "overdue" };
+  if (diffH < 24) return { label: `ด่วน! เหลือ ${Math.round(diffH)} ชม.`, tone: "urgent" };
+  if (diffH < 72)
+    return { label: `เหลือ ${Math.ceil(diffH / 24)} วัน`, tone: "soon" };
+  return { label: `ครบกำหนด ${dateStr}`, tone: "ok" };
+}
+
 // ---------------------------------------------------------------------------
 // Setlist run-time engine
 // ---------------------------------------------------------------------------

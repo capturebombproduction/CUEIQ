@@ -65,6 +65,8 @@ export function EventForm({
   const [mapUrl, setMapUrl] = useState(event?.map_url ?? "");
   const [costumeTheme, setCostumeTheme] = useState(event?.costume_theme ?? "");
   const [status, setStatus] = useState<GroupStatus>(event?.status ?? "draft");
+  const [deadline, setDeadline] = useState(event?.deadline?.slice(0, 10) ?? "");
+  const [deadlineNote, setDeadlineNote] = useState(event?.deadline_note ?? "");
   const [notes, setNotes] = useState(event?.notes ?? "");
   const [loading, setLoading] = useState(false);
 
@@ -101,6 +103,8 @@ export function EventForm({
       notes: notes.trim() || null,
       map_url: mapUrl.trim() || null,
       costume_theme: costumeTheme.trim() || null,
+      deadline: deadline ? new Date(`${deadline}T23:59:00`).toISOString() : null,
+      deadline_note: deadlineNote.trim() || null,
     };
 
     if (mode === "create") {
@@ -293,6 +297,27 @@ export function EventForm({
                 value={costumeTheme}
                 onChange={(e) => setCostumeTheme(e.target.value)}
                 placeholder="เช่น All Black"
+              />
+            </div>
+          </div>
+
+          <div className="grid gap-4 sm:grid-cols-2">
+            <div className="space-y-2">
+              <Label htmlFor="deadline">เดดไลน์ (ส่งเซ็ตลิสต์)</Label>
+              <Input
+                id="deadline"
+                type="date"
+                value={deadline}
+                onChange={(e) => setDeadline(e.target.value)}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="deadline_note">หมายเหตุเดดไลน์</Label>
+              <Input
+                id="deadline_note"
+                value={deadlineNote}
+                onChange={(e) => setDeadlineNote(e.target.value)}
+                placeholder="เช่น ส่งให้ค่ายตรวจก่อน"
               />
             </div>
           </div>

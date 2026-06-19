@@ -263,6 +263,8 @@ export interface EventRow {
   map_url: string | null;
   costume_theme: string | null;
   share_token: string | null; // public read-only run-sheet link token (null = not shared)
+  deadline: string | null; // when the setlist must be finalized (ISO; null = none)
+  deadline_note: string | null;
   created_by: string | null;
   created_at: string;
   updated_at: string;

@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from "react";
 import Link from "next/link";
-import { CalendarDays, MapPin, Music2, Search, Radio } from "lucide-react";
+import { CalendarDays, MapPin, Music2, Search, Radio, AlarmClock } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { StatusBadge } from "@/components/status-badge";
 import { DuplicateEventButton } from "@/components/event/duplicate-event-button";
@@ -12,10 +12,22 @@ import {
   type EventType,
   type GroupStatus,
 } from "@/lib/types";
-import { shortClock } from "@/lib/time";
+import { shortClock, deadlineInfo } from "@/lib/time";
+import { cn } from "@/lib/utils";
 
 type EventWithGroup = EventRow & {
-  groups: { name: string; color: string | null } | null;
+  groups: {
+    name: string;
+    color: string | null;
+    exempt_from_deadline?: boolean;
+  } | null;
+};
+
+const DEADLINE_TONE: Record<string, string> = {
+  overdue: "bg-destructive text-destructive-foreground",
+  urgent: "bg-orange-500 text-white",
+  soon: "bg-amber-400 text-black",
+  ok: "bg-muted text-muted-foreground",
 };
 
 function formatDate(date: string | null): string {
@@ -90,6 +102,21 @@ function EventCard({
               {EVENT_TYPES[ev.event_type as EventType]?.label ?? ev.event_type}
             </p>
           </div>
+          {(() => {
+            if (ev.groups?.exempt_from_deadline) return null;
+            const dl = deadlineInfo(ev.deadline);
+            if (!dl) return null;
+            return (
+              <span
+                className={cn(
+                  "inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-xs font-medium",
+                  DEADLINE_TONE[dl.tone]
+                )}
+              >
+                <AlarmClock className="h-3.5 w-3.5" /> {dl.label}
+              </span>
+            );
+          })()}
         </CardContent>
       </Card>
     </Link>

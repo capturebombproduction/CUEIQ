@@ -6,10 +6,12 @@ import {
   MapPin,
   Music2,
   Pencil,
+  AlarmClock,
 } from "lucide-react";
 import { getEventBundle } from "@/lib/queries";
 import { canEdit, EVENT_TYPES, type EventType, type GroupStatus } from "@/lib/types";
-import { shortClock } from "@/lib/time";
+import { shortClock, deadlineInfo } from "@/lib/time";
+import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { StatusBadge } from "@/components/status-badge";
 import { EventWorkspace } from "@/components/event/event-workspace";
@@ -17,6 +19,13 @@ import { ExportButton } from "@/components/event/export-button";
 import { BandSkin } from "@/components/band-skin";
 
 export const dynamic = "force-dynamic";
+
+const DEADLINE_BADGE: Record<string, string> = {
+  overdue: "bg-destructive text-destructive-foreground",
+  urgent: "bg-orange-500 text-white",
+  soon: "bg-amber-400 text-black",
+  ok: "bg-muted text-muted-foreground",
+};
 
 function formatDate(date: string | null): string {
   if (!date) return "ยังไม่ระบุวันที่";
@@ -58,6 +67,22 @@ export default async function EventPage({
             <div className="flex flex-wrap items-center gap-3">
               <h1 className="text-2xl font-bold tracking-tight">{event.name}</h1>
               <StatusBadge status={event.status as GroupStatus} />
+              {!event.group?.exempt_from_deadline &&
+                (() => {
+                  const dl = deadlineInfo(event.deadline);
+                  if (!dl) return null;
+                  return (
+                    <span
+                      className={cn(
+                        "inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-xs font-medium",
+                        DEADLINE_BADGE[dl.tone]
+                      )}
+                      title={event.deadline_note ?? undefined}
+                    >
+                      <AlarmClock className="h-3.5 w-3.5" /> {dl.label}
+                    </span>
+                  );
+                })()}
             </div>
             <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-muted-foreground">
               <span className="flex items-center gap-1.5">
