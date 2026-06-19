@@ -169,7 +169,19 @@ export default async function SharePage({ params }: { params: { token: string } 
                   {s.end_time ? `–${shortClock(s.end_time)}` : ""}
                 </span>
                 <span className="text-sm font-medium">
-                  {s.label || SCHEDULE_KIND_LABELS[s.kind] || s.kind}
+                  {/* show the appointment KIND (e.g. "Photo Session"), then the
+                      custom label as a detail — a custom label must add to, not
+                      replace, the kind. "other" has no meaningful kind name, so
+                      its label stands alone. */}
+                  {s.kind === "other" && s.label
+                    ? s.label
+                    : SCHEDULE_KIND_LABELS[s.kind] ?? s.kind}
+                  {s.kind !== "other" && s.label && (
+                    <span className="font-normal text-muted-foreground">
+                      {" · "}
+                      {s.label}
+                    </span>
+                  )}
                 </span>
                 {s.location && (
                   <span className="text-sm text-muted-foreground">@ {s.location}</span>
