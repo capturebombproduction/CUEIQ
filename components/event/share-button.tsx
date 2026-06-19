@@ -20,11 +20,14 @@ import {
 export function ShareButton({
   eventId,
   initialToken,
+  initialExpiresAt,
 }: {
   eventId: string;
   initialToken: string | null;
+  initialExpiresAt: string | null;
 }) {
   const [token, setToken] = useState<string | null>(initialToken);
+  const [expiresAt, setExpiresAt] = useState<string | null>(initialExpiresAt);
   const [busy, setBusy] = useState(false);
   const [copied, setCopied] = useState(false);
 
@@ -56,7 +59,24 @@ export function ShareButton({
       return;
     }
     setToken(next);
+    if (!enabled) setExpiresAt(null);
     toast.success(enabled ? "เปิดลิงก์แชร์แล้ว" : "ปิดลิงก์แชร์แล้ว");
+  }
+
+  async function setExpiry(days: number | null) {
+    const next = days == null ? null : new Date(Date.now() + days * 86400000).toISOString();
+    setBusy(true);
+    const { error } = await createClient()
+      .from("events")
+      .update({ share_expires_at: next })
+      .eq("id", eventId);
+    setBusy(false);
+    if (error) {
+      toast.error("ตั้งวันหมดอายุไม่สำเร็จ", { description: error.message });
+      return;
+    }
+    setExpiresAt(next);
+    toast.success(days == null ? "ตั้งเป็นไม่หมดอายุ" : `หมดอายุใน ${days} วัน`);
   }
 
   async function copy() {
@@ -99,6 +119,28 @@ export function ShareButton({
                 {copied ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
               </Button>
             </div>
+
+            <div className="space-y-1.5">
+              <p className="text-xs text-muted-foreground">
+                {expiresAt
+                  ? new Date(expiresAt) < new Date()
+                    ? "⚠️ ลิงก์หมดอายุแล้ว — ตั้งใหม่ด้านล่าง"
+                    : `หมดอายุ ${new Date(expiresAt).toLocaleString("th-TH", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })}`
+                  : "ลิงก์นี้ไม่มีวันหมดอายุ"}
+              </p>
+              <div className="flex flex-wrap gap-1.5">
+                <Button type="button" variant="outline" size="sm" disabled={busy} onClick={() => setExpiry(7)}>
+                  7 วัน
+                </Button>
+                <Button type="button" variant="outline" size="sm" disabled={busy} onClick={() => setExpiry(30)}>
+                  30 วัน
+                </Button>
+                <Button type="button" variant="outline" size="sm" disabled={busy} onClick={() => setExpiry(null)}>
+                  ไม่หมดอายุ
+                </Button>
+              </div>
+            </div>
+
             <Button
               type="button"
               variant="ghost"

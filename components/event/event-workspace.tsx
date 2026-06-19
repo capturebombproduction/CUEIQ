@@ -96,7 +96,11 @@ export function EventWorkspace({
         </Button>
         <RefreshButton />
         {editable && (
-          <ShareButton eventId={eventId} initialToken={event.share_token} />
+          <ShareButton
+            eventId={eventId}
+            initialToken={event.share_token}
+            initialExpiresAt={event.share_expires_at}
+          />
         )}
       </div>
 
