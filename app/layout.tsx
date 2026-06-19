@@ -6,7 +6,9 @@ import { Toaster } from "@/components/ui/sonner";
 // Kanit — the brand Thai font (covers Latin too); self-hosted via next/font.
 const kanit = Kanit({
   subsets: ["latin", "thai"],
-  weight: ["300", "400", "500", "600", "700"],
+  // only the weights actually used (font-medium/semibold/bold) — Thai glyph sets are
+  // heavy, so don't ship weights nothing references.
+  weight: ["400", "500", "600", "700"],
   variable: "--font-kanit",
   display: "swap",
 });

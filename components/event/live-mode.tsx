@@ -145,9 +145,10 @@ export function LiveMode({
     anchor: number | null;
   } | null>(null);
 
-  // ticking clock
+  // ticking clock — 500ms is plenty for a whole-second countdown and halves the
+  // re-render rate of this (large) component vs 250ms.
   useEffect(() => {
-    const id = setInterval(() => setNow(Date.now()), 250);
+    const id = setInterval(() => setNow(Date.now()), 500);
     return () => clearInterval(id);
   }, []);
 
@@ -666,10 +667,20 @@ export function LiveMode({
       return;
     }
     const t0 = performance.now();
+    let lastSet = 0;
     const step = (t: number) => {
       const p = Math.min(1, (t - t0) / ms);
       const v = Math.round(start + (target - start) * p);
-      setVolumes((prev) => ({ ...prev, [itemId]: v }));
+      // drive the audio smoothly EVERY frame (imperative — no React re-render)
+      if (playingIdRef.current === itemId && audioRef.current) {
+        audioRef.current.volume = Math.min(1, Math.max(0, v / 100));
+      }
+      // refresh the on-screen slider ~12x/sec (and at the end) instead of ~60x/sec,
+      // so a 2–3s fade doesn't re-render this whole component on every frame
+      if (p >= 1 || t - lastSet >= 80) {
+        lastSet = t;
+        setVolumes((prev) => ({ ...prev, [itemId]: v }));
+      }
       fadeRef.current = p < 1 ? requestAnimationFrame(step) : null;
     };
     fadeRef.current = requestAnimationFrame(step);
@@ -1087,7 +1098,7 @@ export function LiveMode({
         <h2 className="mb-3 break-words px-1 text-xl font-bold leading-tight sm:text-2xl">
           {current?.title || "—"}
         </h2>
-        <p className="text-5xl font-black tabular-nums sm:text-6xl lg:text-7xl">
+        <p className="text-5xl font-bold tabular-nums sm:text-6xl lg:text-7xl">
           {formatCountdown(Math.round(remaining))}
         </p>
         <p className="mt-2 text-sm opacity-80">
