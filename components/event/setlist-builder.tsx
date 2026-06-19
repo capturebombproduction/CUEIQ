@@ -442,7 +442,9 @@ export function SetlistBuilder({
       if (error) throw error;
       old.forEach((it) => {
         deleteAudio(eventId, it.id).catch(() => {});
-        if (it.audio_path) removeEventAudio(it.audio_path).catch(() => {});
+        // only legacy ad-hoc per-item audio is the item's to delete; a library-linked
+        // item (song_id) shares the song's file — leave it to the library.
+        if (it.audio_path && !it.song_id) removeEventAudio(it.audio_path).catch(() => {});
       });
     }
     setItems(inserted.sort((a, b) => a.sort_order - b.sort_order));
@@ -585,7 +587,9 @@ export function SetlistBuilder({
       setItems(snapshot);
     } else {
       deleteAudio(eventId, id).catch(() => {}); // local cache
-      if (removed?.audio_path) removeEventAudio(removed.audio_path).catch(() => {}); // online object
+      // don't delete a library song's file when removing a linked row (library owns it)
+      if (removed?.audio_path && !removed.song_id)
+        removeEventAudio(removed.audio_path).catch(() => {}); // legacy ad-hoc only
       notifyLive();
     }
   }
