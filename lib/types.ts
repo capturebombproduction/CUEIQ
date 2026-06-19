@@ -231,6 +231,7 @@ export interface Group {
   tenant_id: string;
   name: string;
   color: string | null;
+  skin: string | null; // brand hex that themes the app on this band's pages (null = none)
   exempt_from_deadline: boolean;
   created_at: string;
 }

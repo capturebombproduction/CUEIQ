@@ -202,6 +202,44 @@ export function GroupManager({
                   className="h-9 max-w-xs flex-1 text-base font-semibold"
                 />
                 <Badge variant="secondary">{gm.length} คน</Badge>
+                {editable &&
+                  (g.skin ? (
+                    <div className="flex items-center gap-1 text-xs text-muted-foreground">
+                      <span>ธีมแอป</span>
+                      <input
+                        type="color"
+                        value={g.skin}
+                        onChange={(e) => setGroupLocal(g.id, { skin: e.target.value })}
+                        onBlur={(e) => persistGroup(g.id, { skin: e.target.value })}
+                        className="h-7 w-7 shrink-0 cursor-pointer rounded border bg-transparent"
+                        aria-label="สีธีมทั้งแอปของวง"
+                        title="สีธีมทั้งแอปเวลาดูงานของวงนี้"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setGroupLocal(g.id, { skin: null });
+                          persistGroup(g.id, { skin: null });
+                        }}
+                        className="rounded px-1.5 py-0.5 hover:bg-muted"
+                      >
+                        ปิด
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const hex = g.color ?? "#7c3aed";
+                        setGroupLocal(g.id, { skin: hex });
+                        persistGroup(g.id, { skin: hex });
+                      }}
+                      className="rounded border px-2 py-1 text-xs text-muted-foreground hover:bg-muted"
+                      title="ทำให้ทั้งแอปเป็นธีมสีวงนี้เวลาดูงานของวง"
+                    >
+                      + ธีมแอปวง
+                    </button>
+                  ))}
                 {editable && (
                   <Button
                     variant="ghost"

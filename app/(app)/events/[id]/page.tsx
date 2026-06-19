@@ -14,6 +14,7 @@ import { Button } from "@/components/ui/button";
 import { StatusBadge } from "@/components/status-badge";
 import { EventWorkspace } from "@/components/event/event-workspace";
 import { ExportButton } from "@/components/event/export-button";
+import { BandSkin } from "@/components/band-skin";
 
 export const dynamic = "force-dynamic";
 
@@ -41,6 +42,7 @@ export default async function EventPage({
 
   return (
     <div className="space-y-6">
+      <BandSkin hex={event.group?.skin} />
       <div className="no-print">
         <Button asChild variant="ghost" size="sm" className="-ml-2 mb-2">
           <Link href="/dashboard">

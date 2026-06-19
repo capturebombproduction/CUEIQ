@@ -1,5 +1,6 @@
 import { CalendarDays, MapPin, Music2, Clock, Users, Shirt } from "lucide-react";
 import { PrintButton } from "@/components/print-button";
+import { BandSkin } from "@/components/band-skin";
 import { createClient } from "@/lib/supabase/server";
 import {
   computeSetlistTimes,
@@ -34,7 +35,7 @@ interface SharedBundle {
     map_url: string | null;
     costume_theme: string | null;
   };
-  group: { id: string; name: string; color: string | null } | null;
+  group: { id: string; name: string; color: string | null; skin: string | null } | null;
   schedule: {
     id: string;
     kind: ScheduleKind;
@@ -109,6 +110,7 @@ export default async function SharePage({ params }: { params: { token: string } 
 
   return (
     <main className="mx-auto max-w-3xl space-y-6 p-4 sm:p-6">
+      <BandSkin hex={group?.skin} />
       {/* print / save-pdf (hidden on the printed page itself) */}
       <div className="no-print flex justify-end">
         <PrintButton />
