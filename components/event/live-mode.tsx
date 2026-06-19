@@ -742,9 +742,10 @@ export function LiveMode({
     });
   }
 
-  // Pick a file → play it immediately on this device, then upload it to the private
-  // Storage bucket and record the path on the setlist item so EVERY device of this
+  // Pick a file → play it immediately on this device, then upload it to private
+  // R2 storage and record the path on the setlist item so EVERY device of this
   // tenant can play it. IndexedDB keeps a local cache so refresh is instant.
+  // R2 has no per-file size cap, so the full WAV masters (27–88MB) upload as-is.
   async function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     const itemId = loadTargetRef.current;
@@ -752,15 +753,6 @@ export function LiveMode({
     if (!file || !itemId) return;
     const item = itemsRef.current.find((it) => it.id === itemId);
     if (!item) return;
-
-    // Supabase free tier rejects uploads over 50MB. WAV masters are usually bigger
-    // — warn (we still play it locally + try the upload, which works on Pro).
-    if (file.size > 50 * 1024 * 1024) {
-      toast.warning(
-        `ไฟล์ ${Math.round(file.size / 1048576)}MB ใหญ่เกิน 50MB — อัปออนไลน์ไม่ได้บนแพ็กฟรี (เล่นเครื่องนี้ได้) แนะนำบีบเป็น MP3/AAC ก่อน`,
-        { duration: 7000 }
-      );
-    }
 
     // instant local playback
     if (audioUrls[itemId]) URL.revokeObjectURL(audioUrls[itemId]);
