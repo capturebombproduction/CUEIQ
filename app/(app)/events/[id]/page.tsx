@@ -49,7 +49,10 @@ export default async function EventPage({
         </Button>
 
         <div className="flex flex-wrap items-start justify-between gap-4">
-          <div className="space-y-2">
+          <div
+            className="space-y-2 border-l-4 pl-3"
+            style={event.group?.color ? { borderLeftColor: event.group.color } : undefined}
+          >
             <div className="flex flex-wrap items-center gap-3">
               <h1 className="text-2xl font-bold tracking-tight">{event.name}</h1>
               <StatusBadge status={event.status as GroupStatus} />

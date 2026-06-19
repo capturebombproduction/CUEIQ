@@ -19,13 +19,13 @@ export default async function DashboardPage() {
   const supabase = createClient();
   const { data } = await supabase
     .from("events")
-    .select("*, groups(name)")
+    .select("*, groups(name, color)")
     .eq("tenant_id", ws.membership.tenant_id)
     .order("event_date", { ascending: false, nullsFirst: false })
     .order("created_at", { ascending: false });
 
   const events = (data ?? []) as (EventRow & {
-    groups: { name: string } | null;
+    groups: { name: string; color: string | null } | null;
   })[];
   const editable = canEdit(ws.membership.role);
 

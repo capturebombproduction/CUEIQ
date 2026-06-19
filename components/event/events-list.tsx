@@ -14,7 +14,9 @@ import {
 } from "@/lib/types";
 import { shortClock } from "@/lib/time";
 
-type EventWithGroup = EventRow & { groups: { name: string } | null };
+type EventWithGroup = EventRow & {
+  groups: { name: string; color: string | null } | null;
+};
 
 function formatDate(date: string | null): string {
   if (!date) return "ยังไม่ระบุวันที่";
@@ -43,7 +45,10 @@ function EventCard({
 }) {
   return (
     <Link href={`/events/${ev.id}`} className="group">
-      <Card className="relative h-full transition-shadow group-hover:shadow-md">
+      <Card
+        className="relative h-full overflow-hidden border-l-4 transition-shadow group-hover:shadow-md"
+        style={ev.groups?.color ? { borderLeftColor: ev.groups.color } : undefined}
+      >
         {editable && <DuplicateEventButton eventId={ev.id} />}
         <CardContent className="space-y-3 p-5">
           <div className="flex items-start justify-between gap-2">
