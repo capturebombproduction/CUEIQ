@@ -2,7 +2,7 @@
 
 import { useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
-import { Plus, Pencil, Trash2, Music2, FileAudio, Loader2 } from "lucide-react";
+import { Plus, Pencil, Trash2, Music2, FileAudio, Loader2, Search } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { detectAudioDuration } from "@/lib/audio";
 import { formatDuration, parseDurationToSeconds } from "@/lib/time";
@@ -85,6 +85,8 @@ export function SongLibrary({
   const supabase = createClient();
   const [songs, setSongs] = useState<Song[]>(initialSongs);
   const [groupFilter, setGroupFilter] = useState<string>("all");
+  const [query, setQuery] = useState("");
+  const [copyFilter, setCopyFilter] = useState<string>("all");
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState<FormState>(emptyForm(groups[0]?.id ?? ""));
   const [saving, setSaving] = useState(false);
@@ -96,13 +98,21 @@ export function SongLibrary({
     [groups]
   );
 
-  const visible = useMemo(
-    () =>
-      groupFilter === "all"
-        ? songs
-        : songs.filter((s) => s.group_id === groupFilter),
-    [songs, groupFilter]
-  );
+  const visible = useMemo(() => {
+    const needle = query.trim().toLowerCase();
+    return songs.filter((s) => {
+      if (groupFilter !== "all" && s.group_id !== groupFilter) return false;
+      if (copyFilter !== "all" && s.copyright_status !== copyFilter) return false;
+      if (
+        needle &&
+        ![s.title, s.category, s.file_name]
+          .filter(Boolean)
+          .some((x) => (x as string).toLowerCase().includes(needle))
+      )
+        return false;
+      return true;
+    });
+  }, [songs, groupFilter, copyFilter, query]);
 
   function openAdd() {
     setForm(emptyForm(groups[0]?.id ?? ""));
@@ -215,9 +225,18 @@ export function SongLibrary({
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        {groups.length > 1 ? (
-          <div className="w-56">
+      <div className="flex flex-wrap items-center gap-3">
+        <div className="relative w-full sm:w-64">
+          <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="ค้นหาเพลง / หมวดหมู่…"
+            className="pl-9"
+          />
+        </div>
+        {groups.length > 1 && (
+          <div className="w-40">
             <Select value={groupFilter} onValueChange={setGroupFilter}>
               <SelectTrigger>
                 <SelectValue />
@@ -232,24 +251,46 @@ export function SongLibrary({
               </SelectContent>
             </Select>
           </div>
-        ) : (
-          <span />
         )}
-        {editable && (
-          <Button onClick={openAdd}>
-            <Plus className="h-4 w-4" /> เพิ่มเพลง
-          </Button>
-        )}
+        <div className="w-40">
+          <Select value={copyFilter} onValueChange={setCopyFilter}>
+            <SelectTrigger>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">ลิขสิทธิ์: ทั้งหมด</SelectItem>
+              <SelectItem value="cleared">✅ ถูกต้อง</SelectItem>
+              <SelectItem value="pending">🕒 รอตรวจ</SelectItem>
+              <SelectItem value="rejected">⛔ ถูกปฏิเสธ</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="ml-auto flex items-center gap-2">
+          <span className="tabular-nums text-xs text-muted-foreground">
+            {visible.length} เพลง
+          </span>
+          {editable && (
+            <Button onClick={openAdd}>
+              <Plus className="h-4 w-4" /> เพิ่มเพลง
+            </Button>
+          )}
+        </div>
       </div>
 
       {visible.length === 0 ? (
         <div className="flex flex-col items-center justify-center gap-3 rounded-lg border border-dashed py-16 text-center">
           <Music2 className="h-10 w-10 text-muted-foreground" />
-          <p className="text-muted-foreground">ยังไม่มีเพลงในคลัง</p>
-          {editable && (
-            <Button variant="outline" onClick={openAdd}>
-              <Plus className="h-4 w-4" /> เพิ่มเพลงแรก
-            </Button>
+          {songs.length === 0 ? (
+            <>
+              <p className="text-muted-foreground">ยังไม่มีเพลงในคลัง</p>
+              {editable && (
+                <Button variant="outline" onClick={openAdd}>
+                  <Plus className="h-4 w-4" /> เพิ่มเพลงแรก
+                </Button>
+              )}
+            </>
+          ) : (
+            <p className="text-muted-foreground">ไม่พบเพลงที่ตรงกับการค้นหา / ตัวกรอง</p>
           )}
         </div>
       ) : (
