@@ -19,5 +19,20 @@ export function SwRegister() {
     if (document.readyState === "complete") register();
     else window.addEventListener("load", register, { once: true });
   }, []);
+
+  // Ask the browser NOT to evict our storage (IndexedDB audio cache + the SW app
+  // shell) to free space — otherwise a low-storage phone could quietly drop a
+  // downloaded track mid-show. Best-effort, runs in dev too; only requests if
+  // not already persisted (some browsers auto-grant by engagement).
+  useEffect(() => {
+    if (typeof navigator === "undefined" || !navigator.storage?.persist) return;
+    navigator.storage
+      .persisted()
+      .then((already) => {
+        if (!already) navigator.storage.persist().catch(() => {});
+      })
+      .catch(() => {});
+  }, []);
+
   return null;
 }
