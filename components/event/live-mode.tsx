@@ -126,6 +126,12 @@ export function LiveMode({
   const volumesRef = useRef(volumes); // stable read for the overlap pre-roll effect
   volumesRef.current = volumes;
   const fadeRef = useRef<number | null>(null); // rAF id for the volume fade animation
+  // throttle state for volume broadcasts (slider drag would otherwise flood the channel)
+  const volBcastRef = useRef<{
+    last: number;
+    timer: ReturnType<typeof setTimeout> | null;
+    pending: { itemId: string; target: number; ms: number } | null;
+  }>({ last: 0, timer: null, pending: null });
   // tracks which "currentId→nextId" pair already had auto-trigger fired
   const autoTriggeredForRef = useRef<string | null>(null);
   // tracks which item already triggered an auto-advance (no-audio items)
@@ -184,10 +190,12 @@ export function LiveMode({
     return () => clearTimeout(id);
   }, [volumes, eventId]);
 
-  // stop any running fade on unmount
+  // stop any running fade / pending volume broadcast on unmount
   useEffect(() => {
+    const vb = volBcastRef.current; // stable object (never reassigned, only mutated)
     return () => {
       if (fadeRef.current) cancelAnimationFrame(fadeRef.current);
+      if (vb.timer) clearTimeout(vb.timer);
     };
   }, []);
 
@@ -648,13 +656,34 @@ export function LiveMode({
 
   // Mirror a volume change to the other devices so the controller can ride the
   // speaker device's levels by remote (Auto Mute / MC / Auto Loudness / slider).
+  // The slider's onChange fires on every drag pixel, so coalesce to ~8/sec with a
+  // trailing send (the final value always lands) — a raw send per pixel would flood
+  // the channel. Single calls (the fade buttons) go out immediately.
   function broadcastVolume(itemId: string, target: number, ms: number) {
     if (!isControllerRef.current) return;
-    channelRef.current?.send({
-      type: "broadcast",
-      event: "volume",
-      payload: { sender: meId.current, itemId, target, ms },
-    });
+    const send = (p: { itemId: string; target: number; ms: number }) =>
+      channelRef.current?.send({
+        type: "broadcast",
+        event: "volume",
+        payload: { sender: meId.current, ...p },
+      });
+    const r = volBcastRef.current;
+    const now = performance.now();
+    const GAP = 120;
+    if (now - r.last >= GAP) {
+      r.last = now;
+      send({ itemId, target, ms });
+    } else {
+      r.pending = { itemId, target, ms };
+      if (!r.timer) {
+        r.timer = setTimeout(() => {
+          r.timer = null;
+          r.last = performance.now();
+          if (r.pending) send(r.pending);
+          r.pending = null;
+        }, GAP - (now - r.last));
+      }
+    }
   }
 
   // Fade ONE track's volume to `target` over `ms` (ms<=0 = set instantly). Shared by
@@ -1024,6 +1053,89 @@ export function LiveMode({
   const wallClock = useMemo(() => nowClock(new Date(now)), [now]);
 
   const currentAudioUrl = current ? audioUrls[current.id] : undefined;
+
+  // The upcoming list doesn't depend on the clock or the audio scrubber position, so
+  // memoize it — otherwise every 500ms tick and every audio timeupdate would re-render
+  // all N rows. Recompute only when the setlist or the playback selection changes.
+  // (Handlers read state/playingId/items/audioUrls — all in the dep list.)
+  const upcomingRows = useMemo(
+    () =>
+      items.map((it, i) => {
+        const hasFile = !!audioUrls[it.id];
+        const isPlayingThis = playingId === it.id && audioPlaying;
+        const locked = state.mode === "auto" || !isController;
+        return (
+          <div
+            key={it.id}
+            className={cn(
+              "flex w-full items-center gap-2 border-b px-3 py-2 last:border-0",
+              i === state.currentIndex && "bg-primary/10"
+            )}
+          >
+            <button
+              onClick={() => goto(i)}
+              disabled={locked}
+              title={
+                state.mode === "auto"
+                  ? "Auto mode — สลับเป็น Manual ก่อนถึงจะเลือกเองได้"
+                  : undefined
+              }
+              className={cn(
+                "flex min-w-0 flex-1 items-center gap-2 text-left text-sm",
+                locked && "cursor-default"
+              )}
+            >
+              <span className="w-5 shrink-0 text-center text-xs text-muted-foreground tabular-nums">
+                {i + 1}
+              </span>
+              <Badge variant="outline" className="shrink-0">
+                {SETLIST_KIND_SHORT[it.kind as SetlistKind]}
+              </Badge>
+              <span
+                className={cn(
+                  "min-w-0 flex-1 truncate",
+                  i === state.currentIndex && "font-medium"
+                )}
+              >
+                {it.title || "—"}
+              </span>
+              <span className="shrink-0 tabular-nums text-xs text-muted-foreground">
+                {formatDuration(it.duration_seconds)}
+              </span>
+            </button>
+
+            <div className="flex shrink-0 items-center gap-1">
+              {isPlayingThis && (
+                <Volume2 className="h-3.5 w-3.5 animate-pulse text-primary" />
+              )}
+              <button
+                onClick={() => openFilePicker(it.id)}
+                title={hasFile ? "เปลี่ยนไฟล์เพลง" : "โหลดไฟล์เพลง"}
+                className={cn(
+                  "flex h-7 w-7 items-center justify-center rounded-md transition-colors hover:bg-muted",
+                  hasFile
+                    ? "text-primary"
+                    : "text-muted-foreground/40 hover:text-muted-foreground"
+                )}
+              >
+                <FolderOpen className="h-3.5 w-3.5" />
+              </button>
+              {hasFile && it.id !== playingId && (
+                <button
+                  onClick={() => removeAudioFile(it.id)}
+                  title="ลบไฟล์เพลงนี้"
+                  className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground/50 transition-colors hover:bg-muted hover:text-destructive"
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                </button>
+              )}
+            </div>
+          </div>
+        );
+      }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [items, state, playingId, audioPlaying, audioUrls, isController]
+  );
 
   if (items.length === 0) {
     return (
@@ -1530,90 +1642,8 @@ export function LiveMode({
         </p>
       </div>
 
-      {/* upcoming list */}
-      <div className="rounded-xl border bg-card">
-        {items.map((it, i) => {
-          const hasFile = !!audioUrls[it.id];
-          const isPlayingThis = playingId === it.id && audioPlaying;
-          // Auto locks navigation; viewers can't navigate either (read-only).
-          // In Manual a controller can select any row (current = no-op,
-          // playing track = resync, others = cue).
-          const locked = state.mode === "auto" || !isController;
-          return (
-            <div
-              key={it.id}
-              className={cn(
-                "flex w-full items-center gap-2 border-b px-3 py-2 last:border-0",
-                i === state.currentIndex && "bg-primary/10"
-              )}
-            >
-              {/* go-to button — locked in Auto and for the current/playing track */}
-              <button
-                onClick={() => goto(i)}
-                disabled={locked}
-                title={
-                  state.mode === "auto"
-                    ? "Auto mode — สลับเป็น Manual ก่อนถึงจะเลือกเองได้"
-                    : undefined
-                }
-                className={cn(
-                  "flex min-w-0 flex-1 items-center gap-2 text-left text-sm",
-                  locked && "cursor-default"
-                )}
-              >
-                <span className="w-5 shrink-0 text-center text-xs text-muted-foreground tabular-nums">
-                  {i + 1}
-                </span>
-                <Badge variant="outline" className="shrink-0">
-                  {SETLIST_KIND_SHORT[it.kind as SetlistKind]}
-                </Badge>
-                <span
-                  className={cn(
-                    "min-w-0 flex-1 truncate",
-                    i === state.currentIndex && "font-medium"
-                  )}
-                >
-                  {it.title || "—"}
-                </span>
-                <span className="shrink-0 tabular-nums text-xs text-muted-foreground">
-                  {formatDuration(it.duration_seconds)}
-                </span>
-              </button>
-
-              {/* audio controls — load file only; playback is via START/NEXT/player */}
-              <div className="flex shrink-0 items-center gap-1">
-                {/* playing indicator (not a button) */}
-                {isPlayingThis && (
-                  <Volume2 className="h-3.5 w-3.5 animate-pulse text-primary" />
-                )}
-                {/* load file */}
-                <button
-                  onClick={() => openFilePicker(it.id)}
-                  title={hasFile ? "เปลี่ยนไฟล์เพลง" : "โหลดไฟล์เพลง"}
-                  className={cn(
-                    "flex h-7 w-7 items-center justify-center rounded-md transition-colors hover:bg-muted",
-                    hasFile
-                      ? "text-primary"
-                      : "text-muted-foreground/40 hover:text-muted-foreground"
-                  )}
-                >
-                  <FolderOpen className="h-3.5 w-3.5" />
-                </button>
-                {/* clear file — only when one is loaded and NOT the playing track */}
-                {hasFile && it.id !== playingId && (
-                  <button
-                    onClick={() => removeAudioFile(it.id)}
-                    title="ลบไฟล์เพลงนี้"
-                    className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground/50 transition-colors hover:bg-muted hover:text-destructive"
-                  >
-                    <Trash2 className="h-3.5 w-3.5" />
-                  </button>
-                )}
-              </div>
-            </div>
-          );
-        })}
-      </div>
+      {/* upcoming list (memoized — see upcomingRows) */}
+      <div className="rounded-xl border bg-card">{upcomingRows}</div>
 
       <p className="px-1 text-center text-[11px] text-muted-foreground">
         <FolderOpen className="mr-1 inline h-3 w-3" />
