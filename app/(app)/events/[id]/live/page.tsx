@@ -16,6 +16,11 @@ export default async function LivePage({
   const bundle = await getEventBundle(params.id);
   if (!bundle) notFound();
 
+  // song_id → audio, so Live Mode can play a library-linked item's song file.
+  const songAudio = Object.fromEntries(
+    bundle.songs.map((s) => [s.id, { path: s.audio_path ?? null, name: s.audio_name ?? null }])
+  );
+
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
@@ -31,6 +36,7 @@ export default async function LivePage({
         groupId={bundle.event.group_id}
         eventName={bundle.event.name}
         items={bundle.setlist}
+        songAudio={songAudio}
       />
     </div>
   );

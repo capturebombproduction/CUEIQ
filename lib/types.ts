@@ -296,8 +296,9 @@ export interface SetlistItem {
   mic_slots: MicSlot[];
   notes: string | null;
   sort_order: number;
-  audio_path?: string | null; // Storage object key for this item's audio (null = none)
-  audio_name?: string | null; // original filename, for display across devices
+  song_id?: string | null; // linked library song — the audio source (null = ad-hoc/none)
+  audio_path?: string | null; // legacy: per-item R2 key (older items; new audio lives on the song)
+  audio_name?: string | null; // legacy: original filename for the per-item audio
 }
 
 export interface MicAssignment {
@@ -348,6 +349,9 @@ export interface Song {
   category: string | null;
   copyright_status: CopyrightStatus;
   notes: string | null;
+  audio_path?: string | null; // R2 object key for this song's audio (null = no file yet)
+  audio_name?: string | null; // original filename, for display
+  audio_expires_at?: string | null; // null = permanent; timestamp = temp (ad-hoc), auto-cleaned after
   created_at: string;
   updated_at: string;
 }

@@ -1,10 +1,27 @@
 "use client";
 
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
-import { Plus, Pencil, Trash2, Music2, FileAudio, Loader2, Search } from "lucide-react";
+import {
+  Plus,
+  Pencil,
+  Trash2,
+  Music2,
+  FileAudio,
+  Loader2,
+  Search,
+  CloudUpload,
+  Volume2,
+  Clock3,
+  Lock,
+} from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { detectAudioDuration } from "@/lib/audio";
+import {
+  buildSongAudioPath,
+  uploadEventAudio,
+  removeEventAudio,
+} from "@/lib/audio-remote";
 import { formatDuration, parseDurationToSeconds } from "@/lib/time";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -92,11 +109,34 @@ export function SongLibrary({
   const [saving, setSaving] = useState(false);
   const [detecting, setDetecting] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
+  // per-song audio upload (to R2). audioBusy[songId] = which op is running.
+  const [audioBusy, setAudioBusy] = useState<Record<string, "up" | "del">>({});
+  const audioFileRef = useRef<HTMLInputElement>(null);
+  const audioTargetRef = useRef<Song | null>(null);
 
   const groupName = useMemo(
     () => Object.fromEntries(groups.map((g) => [g.id, g.name])),
     [groups]
   );
+
+  // Lazy cleanup: a temporary (ad-hoc) song past its expiry is purged when the
+  // library is opened — file from R2 + the row (linked setlist items lose the
+  // link via on-delete-set-null). No background job needed.
+  useEffect(() => {
+    const now = Date.now();
+    const isExpired = (s: Song) =>
+      !!s.audio_expires_at && new Date(s.audio_expires_at).getTime() < now;
+    const expired = initialSongs.filter(isExpired);
+    if (expired.length === 0) return;
+    (async () => {
+      for (const s of expired) {
+        if (s.audio_path) removeEventAudio(s.audio_path).catch(() => {});
+        await supabase.from("songs").delete().eq("id", s.id);
+      }
+      setSongs((prev) => prev.filter((s) => !isExpired(s)));
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const visible = useMemo(() => {
     const needle = query.trim().toLowerCase();
@@ -213,14 +253,26 @@ export function SongLibrary({
   }
 
   async function onDelete(song: Song) {
-    if (!window.confirm(`ลบเพลง "${song.title}" ออกจากคลัง?`)) return;
+    // Warn if this song is linked into any setlist — those rows lose their file.
+    const { count } = await supabase
+      .from("setlist_items")
+      .select("id", { count: "exact", head: true })
+      .eq("song_id", song.id);
+    const used = count ?? 0;
+    const warn =
+      used > 0
+        ? `\n\n⚠️ เพลงนี้ถูกใช้อยู่ใน ${used} รายการของงาน — ลบแล้วงานพวกนั้นจะไม่มีไฟล์เพลงนี้`
+        : "";
+    if (!window.confirm(`ลบเพลง "${song.title}" ออกจากคลัง?${warn}`)) return;
     const snapshot = songs;
     setSongs((prev) => prev.filter((s) => s.id !== song.id));
     const { error } = await supabase.from("songs").delete().eq("id", song.id);
     if (error) {
       toast.error("ลบไม่สำเร็จ", { description: error.message });
       setSongs(snapshot);
+      return;
     }
+    if (song.audio_path) removeEventAudio(song.audio_path).catch(() => {});
   }
 
   // Quick copyright triage inline in the table — no need to open the edit dialog.
@@ -243,8 +295,114 @@ export function SongLibrary({
     }
   }
 
+  // Upload (or replace) a song's audio to R2. A library upload is PERMANENT, so
+  // we also clear any temp-expiry the song carried (e.g. it was first created
+  // ad-hoc from Live Mode).
+  async function uploadSongAudio(song: Song, file: File) {
+    setAudioBusy((b) => ({ ...b, [song.id]: "up" }));
+    try {
+      const prevPath = song.audio_path ?? null;
+      const path = buildSongAudioPath(song.tenant_id, song.group_id, song.id, file.name);
+      await uploadEventAudio(path, file, file.type);
+      const { error } = await supabase
+        .from("songs")
+        .update({ audio_path: path, audio_name: file.name, audio_expires_at: null })
+        .eq("id", song.id);
+      if (error) throw error;
+      setSongs((prev) =>
+        prev.map((s) =>
+          s.id === song.id
+            ? { ...s, audio_path: path, audio_name: file.name, audio_expires_at: null }
+            : s
+        )
+      );
+      if (prevPath && prevPath !== path) removeEventAudio(prevPath).catch(() => {});
+      toast.success("อัปโหลดไฟล์เพลงขึ้นคลังแล้ว 🎵");
+    } catch (e) {
+      toast.error("อัปโหลดไม่สำเร็จ", {
+        description: e instanceof Error ? e.message : String(e),
+      });
+    } finally {
+      setAudioBusy((b) => {
+        const n = { ...b };
+        delete n[song.id];
+        return n;
+      });
+    }
+  }
+
+  async function onPickAudioFile(file: File | undefined) {
+    const song = audioTargetRef.current;
+    if (audioFileRef.current) audioFileRef.current.value = "";
+    if (!file || !song) return;
+    await uploadSongAudio(song, file);
+  }
+
+  async function removeSongAudio(song: Song) {
+    if (!song.audio_path) return;
+    if (!window.confirm(`ลบไฟล์เสียงของ "${song.title}"? (ข้อมูลเพลงยังอยู่)`)) return;
+    setAudioBusy((b) => ({ ...b, [song.id]: "del" }));
+    const path = song.audio_path;
+    try {
+      const { error } = await supabase
+        .from("songs")
+        .update({ audio_path: null, audio_name: null, audio_expires_at: null })
+        .eq("id", song.id);
+      if (error) throw error;
+      setSongs((prev) =>
+        prev.map((s) =>
+          s.id === song.id
+            ? { ...s, audio_path: null, audio_name: null, audio_expires_at: null }
+            : s
+        )
+      );
+      removeEventAudio(path).catch(() => {});
+      toast.success("ลบไฟล์เสียงแล้ว");
+    } catch (e) {
+      toast.error("ลบไฟล์ไม่สำเร็จ", {
+        description: e instanceof Error ? e.message : String(e),
+      });
+    } finally {
+      setAudioBusy((b) => {
+        const n = { ...b };
+        delete n[song.id];
+        return n;
+      });
+    }
+  }
+
+  // Promote a temporary (ad-hoc) song to permanent — keep its file forever.
+  async function promoteSong(song: Song) {
+    setSongs((prev) =>
+      prev.map((s) => (s.id === song.id ? { ...s, audio_expires_at: null } : s))
+    );
+    const { error } = await supabase
+      .from("songs")
+      .update({ audio_expires_at: null })
+      .eq("id", song.id);
+    if (error) {
+      toast.error("เก็บถาวรไม่สำเร็จ", { description: error.message });
+      setSongs((prev) =>
+        prev.map((s) =>
+          s.id === song.id ? { ...s, audio_expires_at: song.audio_expires_at } : s
+        )
+      );
+    } else {
+      toast.success("เก็บเป็นเพลงถาวรแล้ว");
+    }
+  }
+
   return (
     <div className="space-y-4">
+      {/* hidden input for per-song audio upload to R2 (separate from the
+          dialog's duration-detect picker) */}
+      <input
+        ref={audioFileRef}
+        type="file"
+        accept="audio/*"
+        className="hidden"
+        onChange={(e) => onPickAudioFile(e.target.files?.[0])}
+      />
       <div className="flex flex-wrap items-center gap-3">
         <div className="relative w-full sm:w-64">
           <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
@@ -322,6 +480,7 @@ export function SongLibrary({
                 <TableHead className="w-24 text-right tabular-nums">
                   ความยาว
                 </TableHead>
+                <TableHead className="w-44">เสียง (คลาวด์)</TableHead>
                 <TableHead className="w-20">ภาษา</TableHead>
                 <TableHead className="w-32">หมวดหมู่</TableHead>
                 <TableHead className="w-28">ลิขสิทธิ์</TableHead>
@@ -332,6 +491,17 @@ export function SongLibrary({
             <TableBody>
               {visible.map((song) => {
                 const cr = COPYRIGHT_META[song.copyright_status];
+                const busy = audioBusy[song.id];
+                const hasAudio = !!song.audio_path;
+                const tempLeft = song.audio_expires_at
+                  ? Math.max(
+                      0,
+                      Math.ceil(
+                        (new Date(song.audio_expires_at).getTime() - Date.now()) /
+                          86400000
+                      )
+                    )
+                  : null;
                 return (
                   <TableRow key={song.id}>
                     <TableCell>
@@ -347,6 +517,76 @@ export function SongLibrary({
                       {song.duration_seconds
                         ? formatDuration(song.duration_seconds)
                         : "—"}
+                    </TableCell>
+                    <TableCell>
+                      {busy ? (
+                        <span className="flex items-center gap-1 text-xs text-muted-foreground">
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                          {busy === "up" ? "กำลังอัป…" : "กำลังลบ…"}
+                        </span>
+                      ) : hasAudio ? (
+                        <div className="flex items-center gap-1.5">
+                          {tempLeft != null ? (
+                            <Badge variant="secondary" className="gap-1">
+                              <Clock3 className="h-3 w-3" /> ชั่วคราว {tempLeft}ว.
+                            </Badge>
+                          ) : (
+                            <span className="flex items-center gap-1 text-xs font-medium text-green-600">
+                              <Volume2 className="h-3.5 w-3.5" /> มีไฟล์
+                            </span>
+                          )}
+                          {editable && (
+                            <>
+                              {tempLeft != null && (
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
+                                  className="h-7 w-7"
+                                  title="เก็บเป็นเพลงถาวร (ไม่ให้หมดอายุ)"
+                                  onClick={() => promoteSong(song)}
+                                >
+                                  <Lock className="h-3.5 w-3.5" />
+                                </Button>
+                              )}
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-7 w-7"
+                                title="เปลี่ยนไฟล์เสียง"
+                                onClick={() => {
+                                  audioTargetRef.current = song;
+                                  audioFileRef.current?.click();
+                                }}
+                              >
+                                <CloudUpload className="h-3.5 w-3.5" />
+                              </Button>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-7 w-7 text-destructive hover:text-destructive"
+                                title="ลบไฟล์เสียง"
+                                onClick={() => removeSongAudio(song)}
+                              >
+                                <Trash2 className="h-3.5 w-3.5" />
+                              </Button>
+                            </>
+                          )}
+                        </div>
+                      ) : editable ? (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="h-7"
+                          onClick={() => {
+                            audioTargetRef.current = song;
+                            audioFileRef.current?.click();
+                          }}
+                        >
+                          <CloudUpload className="h-3.5 w-3.5" /> อัปไฟล์
+                        </Button>
+                      ) : (
+                        <span className="text-xs text-muted-foreground">—</span>
+                      )}
                     </TableCell>
                     <TableCell className="text-muted-foreground">
                       {song.language

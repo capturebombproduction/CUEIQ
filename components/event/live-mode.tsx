@@ -17,15 +17,14 @@ import {
   Hand,
   Sparkles,
   Eye,
-  Trash2,
   Loader2,
   CloudUpload,
 } from "lucide-react";
 import { toast } from "sonner";
 import { createClient } from "@/lib/supabase/client";
-import { saveAudio, loadAudioForEvent, deleteAudio } from "@/lib/audio-store";
+import { saveAudio, loadAudioForEvent } from "@/lib/audio-store";
 import {
-  buildAudioPath,
+  buildSongAudioPath,
   uploadEventAudio,
   downloadEventAudio,
   removeEventAudio,
@@ -78,24 +77,42 @@ function fmtTime(sec: number) {
   return `${m}:${s.toString().padStart(2, "0")}`;
 }
 
+type SongAudioMap = Record<string, { path: string | null; name: string | null }>;
+
+// Resolve a setlist item's EFFECTIVE audio: a library-linked item (song_id) plays
+// its SONG's file; an unlinked legacy item keeps its own audio_path. Normalizing
+// here lets the rest of Live Mode keep reading it.audio_path / it.audio_name as-is.
+function resolveItemAudio(it: SetlistItem, songAudio: SongAudioMap): SetlistItem {
+  if (!it.song_id) return it;
+  const sa = songAudio[it.song_id];
+  return { ...it, audio_path: sa?.path ?? null, audio_name: sa?.name ?? null };
+}
+
 export function LiveMode({
   eventId,
   groupId,
   eventName,
   items: initialItems,
+  songAudio,
 }: {
   eventId: string;
   groupId: string;
   eventName: string;
   items: SetlistItem[];
+  songAudio: SongAudioMap;
 }) {
   const [state, setState] = useState<LiveState>(INITIAL);
   // The setlist is held in state (seeded from the server prop) so edits made on
   // ANOTHER device — broadcast as "setlist-changed" — can update Live Mode mid-show
   // without a reload. currentIndex is remapped by item id so the show keeps its place.
-  const [items, setItems] = useState<SetlistItem[]>(initialItems);
+  const [items, setItems] = useState<SetlistItem[]>(() =>
+    initialItems.map((it) => resolveItemAudio(it, songAudio))
+  );
   const itemsRef = useRef(items);
   itemsRef.current = items;
+  // song_id → audio (seeded from the bundle; refreshed on setlist-changed). The
+  // resolver reads this so library-linked items play the library song's file.
+  const songAudioRef = useRef<SongAudioMap>(songAudio);
   const [now, setNow] = useState(() => Date.now());
   const [syncReady, setSyncReady] = useState(false);
   const [syncStatus, setSyncStatus] = useState<string>("init"); // raw channel status, for diagnosing sync issues
@@ -748,13 +765,30 @@ export function LiveMode({
   // running show keeps its place and timers (startedAt/itemStartedAt) are untouched.
   async function refetchItems() {
     const supabase = createClient();
-    const { data } = await supabase
-      .from("setlist_items")
-      .select("*")
-      .eq("event_id", eventId)
-      .order("sort_order", { ascending: true });
-    if (!data) return;
-    const newItems = data as SetlistItem[];
+    // refresh songs too, so a library file uploaded on another device resolves
+    const [itemsRes, songsRes] = await Promise.all([
+      supabase
+        .from("setlist_items")
+        .select("*")
+        .eq("event_id", eventId)
+        .order("sort_order", { ascending: true }),
+      supabase.from("songs").select("id, audio_path, audio_name").eq("group_id", groupId),
+    ]);
+    if (!itemsRes.data) return;
+    if (songsRes.data) {
+      const map: SongAudioMap = {};
+      for (const s of songsRes.data as {
+        id: string;
+        audio_path: string | null;
+        audio_name: string | null;
+      }[]) {
+        map[s.id] = { path: s.audio_path, name: s.audio_name };
+      }
+      songAudioRef.current = map;
+    }
+    const newItems = (itemsRes.data as SetlistItem[]).map((it) =>
+      resolveItemAudio(it, songAudioRef.current)
+    );
     const s = stateRef.current;
     const curId = itemsRef.current[s.currentIndex]?.id;
     setItems(newItems);
@@ -800,10 +834,12 @@ export function LiveMode({
     });
   }
 
-  // Pick a file → play it immediately on this device, then upload it to private
-  // R2 storage and record the path on the setlist item so EVERY device of this
-  // tenant can play it. IndexedDB keeps a local cache so refresh is instant.
-  // R2 has no per-file size cap, so the full WAV masters (27–88MB) upload as-is.
+  // Pick a file in Live Mode = the QUICK/ad-hoc path (you forgot to prep in the
+  // library). Plays instantly on this device, then uploads to R2 as a TEMPORARY
+  // library song (auto-cleans after 3 days) and LINKS this item to it — so all
+  // audio lives in the library, every device can play it, and you can promote it
+  // to permanent in the library. (Deleting/managing audio is done in the library,
+  // not here.) R2 has no per-file size cap, so full WAV masters upload as-is.
   async function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     const itemId = loadTargetRef.current;
@@ -820,26 +856,48 @@ export function LiveMode({
 
     setAudioBusy((prev) => ({ ...prev, [itemId]: "up" }));
     try {
-      const prevPath = item.audio_path ?? null;
-      const path = buildAudioPath(item.tenant_id, groupId, eventId, itemId, file.name);
-      await uploadEventAudio(path, file, file.type);
-      // record on the row so other devices learn about it on the next refetch
       const supabase = createClient();
-      const { error } = await supabase
-        .from("setlist_items")
+      const legacyPath = item.song_id ? null : item.audio_path ?? null; // pre-library file to clean up
+      // create a TEMPORARY library song (auto-clean in 3 days) + link the item
+      const expires = new Date(Date.now() + 3 * 86400000).toISOString();
+      const { data: song, error: songErr } = await supabase
+        .from("songs")
+        .insert({
+          tenant_id: item.tenant_id,
+          group_id: groupId,
+          title: item.title || file.name,
+          duration_seconds: item.duration_seconds,
+          audio_expires_at: expires,
+          copyright_status: "pending",
+        })
+        .select("id")
+        .single();
+      if (songErr || !song) throw songErr ?? new Error("สร้างเพลงในคลังไม่สำเร็จ");
+      const songId = (song as { id: string }).id;
+      const path = buildSongAudioPath(item.tenant_id, groupId, songId, file.name);
+      await uploadEventAudio(path, file, file.type);
+      await supabase
+        .from("songs")
         .update({ audio_path: path, audio_name: file.name })
+        .eq("id", songId);
+      const { error: linkErr } = await supabase
+        .from("setlist_items")
+        .update({ song_id: songId })
         .eq("id", itemId);
-      if (error) throw error;
+      if (linkErr) throw linkErr;
+      songAudioRef.current[songId] = { path, name: file.name };
       cachedPathRef.current[itemId] = path;
       setItems((prev) =>
         prev.map((it) =>
-          it.id === itemId ? { ...it, audio_path: path, audio_name: file.name } : it
+          it.id === itemId
+            ? { ...it, song_id: songId, audio_path: path, audio_name: file.name }
+            : it
         )
       );
       saveAudio(eventId, itemId, file, file.name, path).catch(() => {});
-      if (prevPath && prevPath !== path) removeEventAudio(prevPath).catch(() => {});
+      if (legacyPath) removeEventAudio(legacyPath).catch(() => {});
       bcastSetlistChanged();
-      toast.success("อัปโหลดไฟล์เพลงขึ้นคลาวด์แล้ว — ทุกเครื่องเล่นได้");
+      toast.success("อัปขึ้นคลังเป็นเพลงชั่วคราว (3 วัน) — เก็บถาวรได้ในคลังเพลง");
     } catch (err) {
       // online upload failed — still keep a local-only copy so THIS device can play
       saveAudio(eventId, itemId, file, file.name).catch(() => {});
@@ -852,46 +910,6 @@ export function LiveMode({
         delete n[itemId];
         return n;
       });
-    }
-  }
-
-  // Remove the audio for an item: clears it on this device AND from Storage + the
-  // row, then tells other devices. Guarded so the track that's on air can't be cut.
-  async function removeAudioFile(itemId: string) {
-    if (playingId === itemId) return; // never delete the track that's loaded/playing
-    const item = itemsRef.current.find((it) => it.id === itemId);
-    const url = audioUrls[itemId];
-    if (url) URL.revokeObjectURL(url);
-    setAudioUrls((prev) => {
-      const n = { ...prev };
-      delete n[itemId];
-      return n;
-    });
-    setAudioNames((prev) => {
-      const n = { ...prev };
-      delete n[itemId];
-      return n;
-    });
-    cachedPathRef.current[itemId] = null;
-    deleteAudio(eventId, itemId).catch(() => {});
-
-    const path = item?.audio_path ?? null;
-    if (!path) return; // local-only file, nothing online to clear
-    try {
-      removeEventAudio(path).catch(() => {});
-      const supabase = createClient();
-      await supabase
-        .from("setlist_items")
-        .update({ audio_path: null, audio_name: null })
-        .eq("id", itemId);
-      setItems((prev) =>
-        prev.map((it) =>
-          it.id === itemId ? { ...it, audio_path: null, audio_name: null } : it
-        )
-      );
-      bcastSetlistChanged();
-    } catch {
-      /* row update failed — the local copy is already gone; ignore */
     }
   }
 
@@ -1440,15 +1458,6 @@ export function LiveMode({
                   <FolderOpen className="h-3.5 w-3.5" />
                 )}
               </button>
-              {hasFile && it.id !== playingId && !busy && (
-                <button
-                  onClick={() => removeAudioFile(it.id)}
-                  title="ลบไฟล์เพลงนี้ (ออกจากคลาวด์และทุกเครื่อง)"
-                  className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground/50 transition-colors hover:bg-muted hover:text-destructive"
-                >
-                  <Trash2 className="h-3.5 w-3.5" />
-                </button>
-              )}
             </div>
           </div>
         );
@@ -1683,20 +1692,11 @@ export function LiveMode({
                 </div>
 
                 {currentAudioUrl ? (
-                  <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
                     <p className="min-w-0 flex-1 truncate text-left text-[10px] opacity-60">
                       <Music2 className="mr-1 inline h-3 w-3" />
                       {audioNames[current.id]}
                     </p>
-                    {playingId !== current.id && (
-                      <button
-                        onClick={() => removeAudioFile(current.id)}
-                        title="ลบไฟล์เพลงนี้ออกจากเครื่อง"
-                        className="flex shrink-0 items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] opacity-70 hover:bg-white/15 hover:opacity-100"
-                      >
-                        <Trash2 className="h-3 w-3" /> ลบไฟล์
-                      </button>
-                    )}
                   </div>
                 ) : currentBusy === "down" ? (
                   // an online file exists; this device is fetching it

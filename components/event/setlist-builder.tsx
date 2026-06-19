@@ -556,6 +556,7 @@ export function SetlistBuilder({
       kind: "song",
       title: song.title,
       duration_seconds: song.duration_seconds,
+      song_id: song.id, // link → Live Mode plays the library song's audio
     });
     toast.success(`เพิ่ม "${song.title}" จากคลังแล้ว`);
   }

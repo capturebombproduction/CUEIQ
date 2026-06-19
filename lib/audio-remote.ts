@@ -52,6 +52,20 @@ export function buildAudioPath(
   return `${tenantId}/${groupId}/${eventId}/${itemId}-${token()}.${extOf(fileName)}`;
 }
 
+/**
+ * Object key for a LIBRARY song's audio: <tenant>/<group>/songs/<song>-<rand>.<ext>.
+ * Same tenant-first convention so the presign route authorizes identically; the
+ * "songs" segment groups all library audio under one prefix per band.
+ */
+export function buildSongAudioPath(
+  tenantId: string,
+  groupId: string,
+  songId: string,
+  fileName: string
+): string {
+  return `${tenantId}/${groupId}/songs/${songId}-${token()}.${extOf(fileName)}`;
+}
+
 async function presign(key: string, op: "get" | "put"): Promise<string> {
   const res = await fetch(PRESIGN_ENDPOINT, {
     method: "POST",
