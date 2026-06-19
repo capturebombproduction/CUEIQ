@@ -25,7 +25,7 @@ export function OfflineBanner() {
 
   if (!offline) return null;
   return (
-    <div className="fixed inset-x-0 top-0 z-[100] flex items-center justify-center gap-2 bg-amber-500 px-3 py-1.5 text-center text-xs font-semibold text-black shadow-md">
+    <div className="no-print fixed inset-x-0 top-0 z-[100] flex items-center justify-center gap-2 bg-amber-500 px-3 py-1.5 text-center text-xs font-semibold text-black shadow-md">
       <WifiOff className="h-3.5 w-3.5 shrink-0" />
       ออฟไลน์ — กำลังใช้ข้อมูลและไฟล์เพลงที่บันทึกไว้ในเครื่อง
     </div>

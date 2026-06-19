@@ -41,7 +41,7 @@ export default async function EventPage({
 
   return (
     <div className="space-y-6">
-      <div>
+      <div className="no-print">
         <Button asChild variant="ghost" size="sm" className="-ml-2 mb-2">
           <Link href="/dashboard">
             <ArrowLeft className="h-4 w-4" /> All Events

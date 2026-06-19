@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { PrintButton } from "@/components/print-button";
 import {
   Table,
   TableBody,
@@ -243,8 +244,8 @@ export function EventSummary({
 
   return (
     <div className="space-y-4">
-      {/* Action bar — not included in the exported image */}
-      <div className="flex flex-wrap items-center gap-2">
+      {/* Action bar — not included in the exported image / print */}
+      <div className="no-print flex flex-wrap items-center gap-2">
         <Button asChild>
           <Link href={`/events/${event.id}/live`}>
             <Radio className="h-4 w-4" /> เข้า Live Mode
@@ -258,15 +259,16 @@ export function EventSummary({
           )}
           บันทึกเป็นรูป (JPG)
         </Button>
+        <PrintButton />
         <p className="self-center text-xs text-muted-foreground">
           หน้านี้เป็นสรุปอย่างเดียว — แก้ข้อมูลที่แท็บ/ปุ่มด้านล่าง
         </p>
       </div>
 
-      {/* Captured summary */}
+      {/* Captured summary — also the printable run sheet */}
       <div
         ref={captureRef}
-        className="space-y-5 rounded-lg border bg-card p-6 text-foreground"
+        className="print-flat space-y-5 rounded-lg border bg-card p-6 text-foreground"
       >
         {/* Heading */}
         <div className="space-y-1 border-b pb-3">
@@ -302,7 +304,7 @@ export function EventSummary({
             </div>
           )}
           {mapQuery && !isCapturing && (
-            <div className="overflow-hidden rounded-md border">
+            <div className="no-print overflow-hidden rounded-md border">
               <iframe
                 title="map"
                 src={mapsEmbedUrl(mapQuery)}
@@ -474,7 +476,7 @@ export function EventSummary({
       </div>
 
       {/* Bottom quick menu — jump to edit tabs / live mode */}
-      <div className="flex flex-wrap items-center gap-2 border-t pt-4">
+      <div className="no-print flex flex-wrap items-center gap-2 border-t pt-4">
         <span className="self-center text-sm font-medium text-muted-foreground">
           ไปแก้ไข:
         </span>

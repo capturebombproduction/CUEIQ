@@ -81,7 +81,7 @@ export function EventWorkspace({
   return (
     <div className="w-full space-y-4">
       {/* Big Summary button (default view) + refresh */}
-      <div className="flex flex-wrap items-center gap-2">
+      <div className="no-print flex flex-wrap items-center gap-2">
         <Button
           type="button"
           size="lg"
@@ -98,7 +98,7 @@ export function EventWorkspace({
       </div>
 
       <Tabs value={view} onValueChange={changeView} className="w-full">
-        <TabsList className="flex h-auto w-full flex-wrap justify-start">
+        <TabsList className="no-print flex h-auto w-full flex-wrap justify-start">
           <TabsTrigger value="setlist">Setlist + Run Time</TabsTrigger>
           <TabsTrigger value="schedule">นัดหมาย</TabsTrigger>
           {modules.micMap && <TabsTrigger value="mic">Mic Map</TabsTrigger>}
@@ -154,7 +154,7 @@ export function EventWorkspace({
       {/* Bottom action bar — the "save" button STAYS on the current tab and just
           confirms with a toast (data already auto-saves). No page bounce. */}
       {view !== "summary" && (
-        <div className="mt-2 flex flex-wrap items-center gap-2 rounded-lg border bg-muted/30 p-3">
+        <div className="no-print mt-2 flex flex-wrap items-center gap-2 rounded-lg border bg-muted/30 p-3">
           <Button
             type="button"
             variant="default"
