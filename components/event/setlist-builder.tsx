@@ -20,6 +20,10 @@ import {
 import { createClient } from "@/lib/supabase/client";
 import { deleteAudio } from "@/lib/audio-store";
 import { removeEventAudio } from "@/lib/audio-remote";
+import {
+  SetlistVersions,
+  type SnapshotItem,
+} from "@/components/event/setlist-versions";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -407,6 +411,42 @@ export function SetlistBuilder({
       event: "setlist-changed",
       payload: { at: Date.now() },
     });
+  }
+
+  // Restore a saved snapshot: insert the snapshot rows first (so a failure leaves
+  // the current setlist intact), then delete the old rows + their audio.
+  async function restoreSnapshot(snapshot: SnapshotItem[]) {
+    const old = items;
+    let inserted: SetlistItem[] = [];
+    if (snapshot.length) {
+      const rows = snapshot.map((s) => ({
+        tenant_id: tenantId,
+        event_id: eventId,
+        ...s,
+      }));
+      const { data, error } = await supabase
+        .from("setlist_items")
+        .insert(rows)
+        .select("*");
+      if (error) throw error;
+      inserted = data as SetlistItem[];
+    }
+    if (old.length) {
+      const { error } = await supabase
+        .from("setlist_items")
+        .delete()
+        .in(
+          "id",
+          old.map((it) => it.id)
+        );
+      if (error) throw error;
+      old.forEach((it) => {
+        deleteAudio(eventId, it.id).catch(() => {});
+        if (it.audio_path) removeEventAudio(it.audio_path).catch(() => {});
+      });
+    }
+    setItems(inserted.sort((a, b) => a.sort_order - b.sort_order));
+    notifyLive();
   }
 
   const showStartSec = parseClockToSeconds(showStartTime);
@@ -944,6 +984,13 @@ export function SetlistBuilder({
           <Button type="button" variant="outline" onClick={() => addItem("guest")}>
             <Plus className="h-4 w-4" /> Guest
           </Button>
+          <span className="mx-1 self-center text-muted-foreground/40">|</span>
+          <SetlistVersions
+            eventId={eventId}
+            tenantId={tenantId}
+            items={items}
+            onRestore={restoreSnapshot}
+          />
         </div>
       )}
     </div>
