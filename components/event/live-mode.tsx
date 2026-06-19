@@ -138,6 +138,10 @@ export function LiveMode({
   const [audioCurrent, setAudioCurrent] = useState(0);
   const [audioDuration, setAudioDuration] = useState(0);
   const [volumes, setVolumes] = useState<Record<string, number>>({}); // itemId → 0–100 (default 100), set per track
+  // Per-DEVICE sound output (local, NOT broadcast): is this device the one that
+  // actually makes sound (e.g. plugged into the PA)? A remote/control device sets
+  // this OFF so it stays silent without muting the PA device. Default ON.
+  const [soundOutput, setSoundOutput] = useState(true);
   const volumesRef = useRef(volumes); // stable read for the overlap pre-roll effect
   volumesRef.current = volumes;
   const fadeRef = useRef<number | null>(null); // rAF id for the volume fade animation
@@ -165,6 +169,9 @@ export function LiveMode({
     playing: boolean;
     anchor: number | null;
   } | null>(null);
+  // ref mirror so the always-on timeupdate listener can read it (continuous sync)
+  const remoteAudioRef = useRef(remoteAudio);
+  remoteAudioRef.current = remoteAudio;
 
   // ticking clock — 500ms is plenty for a whole-second countdown and halves the
   // re-render rate of this (large) component vs 250ms.
@@ -276,7 +283,32 @@ export function LiveMode({
         }
       });
       a.addEventListener("timeupdate", () => {
-        if (a === audioRef.current) setAudioCurrent(a.currentTime);
+        if (a !== audioRef.current) return;
+        setAudioCurrent(a.currentTime);
+        // Viewer-side CONTINUOUS sync: gently converge toward the controller's
+        // clock so two devices stay aligned mid-track without an audible jump.
+        // Same anchor math as the on-command resync. Controller stays at 1x.
+        const ra = remoteAudioRef.current;
+        if (
+          !isControllerRef.current &&
+          ra &&
+          ra.playing &&
+          ra.anchor != null &&
+          ra.id === playingIdRef.current
+        ) {
+          const pos = (Date.now() - ra.anchor) / 1000;
+          const drift = a.currentTime - pos; // +ve = we're ahead of the controller
+          if (Math.abs(drift) > 1.0) {
+            a.currentTime = Math.max(0, pos); // big gap → snap (a jump is acceptable)
+            a.playbackRate = 1;
+          } else if (Math.abs(drift) > 0.15) {
+            a.playbackRate = drift > 0 ? 0.97 : 1.03; // ahead→slow, behind→speed up
+          } else {
+            a.playbackRate = 1;
+          }
+        } else if (a.playbackRate !== 1) {
+          a.playbackRate = 1; // controller / not syncing → always natural speed
+        }
       });
       a.addEventListener("loadedmetadata", () => {
         if (a === audioRef.current) setAudioDuration(a.duration);
@@ -296,6 +328,28 @@ export function LiveMode({
       audioRef2.current = null;
     };
   }, []);
+
+  // Load this device's sound-output preference once (per-device, survives reload).
+  useEffect(() => {
+    try {
+      if (localStorage.getItem("cueiq:soundOutput") === "0") setSoundOutput(false);
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  // Apply sound-output to BOTH elements (muted is a persistent element property, so
+  // this covers every src change / play / overlap) + persist the choice. When OFF
+  // the device still runs the whole show + countdown, just silently.
+  useEffect(() => {
+    if (audioRef.current) audioRef.current.muted = !soundOutput;
+    if (audioRef2.current) audioRef2.current.muted = !soundOutput;
+    try {
+      localStorage.setItem("cueiq:soundOutput", soundOutput ? "1" : "0");
+    } catch {
+      /* ignore */
+    }
+  }, [soundOutput]);
 
   // promote the overlapping secondary element to primary (after a negative-buffer
   // pre-roll) and refresh the scrubber from it.
@@ -499,9 +553,11 @@ export function LiveMode({
         audio.play().catch(() => {});
         if (!audioPlaying) setAudioPlaying(true);
       } else {
-        // same track — resync only if we've drifted from the controller's clock
-        if (Math.abs(audio.currentTime - pos) > 0.7) {
+        // same track — hard-seek only a big gap; the timeupdate handler does the
+        // continuous fine convergence (playbackRate nudge) so this won't glitch.
+        if (Math.abs(audio.currentTime - pos) > 1.0) {
           audio.currentTime = Math.max(0, pos);
+          audio.playbackRate = 1;
         }
         if (audio.paused) audio.play().catch(() => {});
         if (!audioPlaying) setAudioPlaying(true);
@@ -1847,6 +1903,30 @@ export function LiveMode({
             </p>
           )
         )}
+
+        {/* Per-device sound output — BIG, easy to tap, available on EVERY device
+            (local, not broadcast). The PA device stays ON; remotes turn it OFF to
+            stay silent without muting the PA. */}
+        <button
+          type="button"
+          onClick={() => setSoundOutput((v) => !v)}
+          className={cn(
+            "mb-2 flex w-full items-center justify-center gap-2 rounded-xl border-2 px-4 py-3.5 text-base font-bold shadow-sm transition-colors",
+            soundOutput
+              ? "border-green-600 bg-green-600 text-white hover:bg-green-700"
+              : "border-muted-foreground/30 bg-muted text-muted-foreground hover:bg-muted/70"
+          )}
+        >
+          {soundOutput ? (
+            <>
+              <Volume2 className="h-5 w-5 shrink-0" /> เสียงออกเครื่องนี้ — เปิด
+            </>
+          ) : (
+            <>
+              <VolumeX className="h-5 w-5 shrink-0" /> เครื่องนี้เงียบอยู่ — แตะให้เสียงออก
+            </>
+          )}
+        </button>
 
         {/* mode toggle — switchable anytime, even mid-show */}
         <div className="mb-2 grid grid-cols-2 gap-2">
