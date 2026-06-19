@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { StatusBadge } from "@/components/status-badge";
 import { JoinDemo } from "@/components/join-demo";
+import { DuplicateEventButton } from "@/components/event/duplicate-event-button";
 import {
   canEdit,
   EVENT_TYPES,
@@ -84,7 +85,8 @@ export default async function DashboardPage() {
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {events.map((ev) => (
             <Link key={ev.id} href={`/events/${ev.id}`} className="group">
-              <Card className="h-full transition-shadow group-hover:shadow-md">
+              <Card className="relative h-full transition-shadow group-hover:shadow-md">
+                {editable && <DuplicateEventButton eventId={ev.id} />}
                 <CardContent className="space-y-3 p-5">
                   <div className="flex items-start justify-between gap-2">
                     <h2 className="font-semibold leading-tight group-hover:text-primary">
