@@ -2,6 +2,8 @@ import type { Metadata, Viewport } from "next";
 import { Kanit } from "next/font/google";
 import "./globals.css";
 import { Toaster } from "@/components/ui/sonner";
+import { SwRegister } from "@/components/sw-register";
+import { OfflineBanner } from "@/components/offline-banner";
 
 // Kanit — the brand Thai font (covers Latin too); self-hosted via next/font.
 const kanit = Kanit({
@@ -55,8 +57,10 @@ export default function RootLayout({
             __html: `try{if(localStorage.getItem('cueiq:theme')==='light')document.documentElement.classList.remove('dark')}catch(e){}try{var a=JSON.parse(localStorage.getItem('cueiq:accent')||'null');if(a&&a.css){var st=document.createElement('style');st.id='cueiq-skin';st.textContent=a.css;document.head.appendChild(st);}}catch(e){}`,
           }}
         />
+        <OfflineBanner />
         {children}
         <Toaster richColors position="top-center" />
+        <SwRegister />
       </body>
     </html>
   );
