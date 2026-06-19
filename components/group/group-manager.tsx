@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { toast } from "sonner";
 import { Plus, Trash2, Users } from "lucide-react";
+import { BulkAddMembers } from "@/components/group/bulk-add-members";
 import { createClient } from "@/lib/supabase/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -101,6 +102,35 @@ export function GroupManager({
       return;
     }
     setMembers((prev) => [...prev, data as Member]);
+  }
+
+  async function bulkAddMembers(groupId: string, text: string) {
+    const lines = text
+      .split("\n")
+      .map((l) => l.trim())
+      .filter(Boolean);
+    if (!lines.length) return;
+    const gm = membersOf(groupId);
+    let sort = gm.length ? Math.max(...gm.map((m) => m.sort_order)) + 1 : 1;
+    const rows = lines.map((line) => {
+      const [name, nickname, micStr] = line.split(",").map((s) => s.trim());
+      const mic = micStr ? parseInt(micStr, 10) : NaN;
+      return {
+        tenant_id: tenantId,
+        group_id: groupId,
+        name: name || "",
+        nickname: nickname || null,
+        mic_number: Number.isNaN(mic) ? null : mic,
+        sort_order: sort++,
+      };
+    });
+    const { data, error } = await supabase.from("members").insert(rows).select("*");
+    if (error || !data) {
+      toast.error("เพิ่มสมาชิกไม่สำเร็จ", { description: error?.message });
+      return;
+    }
+    setMembers((prev) => [...prev, ...(data as Member[])]);
+    toast.success(`เพิ่ม ${data.length} คนแล้ว`);
   }
 
   function setMemberLocal(id: string, partial: Partial<Member>) {
@@ -261,14 +291,17 @@ export function GroupManager({
                   </div>
                 ))}
                 {editable && (
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => addMember(g.id)}
-                    className="mt-1"
-                  >
-                    <Plus className="h-4 w-4" /> เพิ่มสมาชิก
-                  </Button>
+                  <div className="flex flex-wrap gap-2">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => addMember(g.id)}
+                      className="mt-1"
+                    >
+                      <Plus className="h-4 w-4" /> เพิ่มสมาชิก
+                    </Button>
+                    <BulkAddMembers onAdd={(text) => bulkAddMembers(g.id, text)} />
+                  </div>
                 )}
               </CardContent>
             </Card>
