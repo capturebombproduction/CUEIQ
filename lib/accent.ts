@@ -1,28 +1,29 @@
-// Band "DNA color" / skin support. We override the app's --primary (+ ring +
-// foreground) CSS variables with the chosen color so every primary CTA, badge and
-// focus ring takes on the band's identity. Stored per-device for now (localStorage);
-// the future paid feature would persist a skin per band in the DB.
+// Band "DNA color" / skin support. A skin recolors the app's --primary AND washes
+// the neutral surfaces (background / card / border …) with the brand hue, in BOTH
+// light and dark, by injecting a <style id="cueiq-skin"> with :root + .dark rules.
+// Stored per-device for now (localStorage); the future paid feature persists a skin
+// per band in the DB.
 
 export const ACCENT_STORAGE_KEY = "cueiq:accent";
+export const SKIN_STYLE_ID = "cueiq-skin";
 
 export interface AccentPreset {
   name: string;
   hex: string;
 }
 
-// A starter palette of common idol/artist "DNA" colors. Pick a custom one for an
-// exact brand match.
+// Starter palette incl. the Seishin Kakumei brand colors (from their CI guide).
 export const ACCENT_PRESETS: AccentPreset[] = [
   { name: "CueIQ (เริ่มต้น)", hex: "#4f46e5" }, // indigo — the app default
-  { name: "Seishin Kakumei", hex: "#a62a1c" }, // band DNA red (brand-guide #A62A1C)
-  { name: "Seishin Gold", hex: "#c8b99c" }, // band DNA neutral (#C8B99C)
+  { name: "Seishin Kakumei", hex: "#a62a1c" }, // band DNA red (#A62A1C)
+  { name: "Seishin Gold", hex: "#8a7436" }, // band DNA olive-gold (#8A7436)
+  { name: "Seishin Green", hex: "#15a65a" }, // band secondary green (#15A65A)
   { name: "Crimson", hex: "#e11d48" },
   { name: "Sunset", hex: "#f97316" },
-  { name: "Gold", hex: "#d4af37" },
   { name: "Emerald", hex: "#10b981" },
   { name: "Sky", hex: "#0ea5e9" },
   { name: "Royal", hex: "#2563eb" },
-  { name: "Violet", hex: "#7c3aed" },
+  { name: "Sakura", hex: "#ec4899" },
 ];
 
 export const DEFAULT_ACCENT_HEX = ACCENT_PRESETS[0].hex;
@@ -63,52 +64,46 @@ export function hexToHsl(hex: string): { h: number; s: number; l: number } {
   return { h: Math.round(h), s: Math.round(s * 100), l: Math.round(l * 100) };
 }
 
-export interface AccentVars {
-  primary: string; // "H S% L%"
-  fg: string; // primary-foreground "H S% L%"
-}
-
-/** Compute the CSS-variable triplets for a hex accent. */
-export function accentVars(hex: string): AccentVars {
+/** Build the skin CSS (light + dark variable overrides) for an accent hex. */
+export function skinCss(hex: string): string {
   const { h, s, l } = hexToHsl(hex);
-  return {
-    primary: `${h} ${s}% ${l}%`,
-    // white text on darker colors, near-black on light/bright ones
-    fg: l < 62 ? "0 0% 100%" : "222 47% 11%",
-  };
+  const fg = l < 62 ? "0 0% 100%" : "222 47% 11%";
+  // dark-mode primary reads a touch lighter than a very dark accent
+  const darkL = Math.min(70, Math.max(46, l));
+  const sat = Math.min(85, s); // keep CTAs vivid but not neon
+  // low-saturation brand wash for the neutral surfaces
+  const wash = Math.min(26, Math.round(s * 0.4));
+  return `:root{--primary:${h} ${s}% ${l}%;--ring:${h} ${s}% ${l}%;--primary-foreground:${fg};--accent:${h} ${Math.round(
+    s * 0.35
+  )}% 95%;--accent-foreground:${h} ${s}% 30%;--background:${h} ${Math.min(
+    18,
+    wash
+  )}% 99%;--card:0 0% 100%;--popover:0 0% 100%;--secondary:${h} ${wash}% 96%;--muted:${h} ${wash}% 96%;--border:${h} ${wash}% 90%;--input:${h} ${wash}% 90%;}.dark{--primary:${h} ${sat}% ${darkL}%;--ring:${h} ${sat}% ${darkL}%;--primary-foreground:${fg};--accent:${h} ${wash}% 22%;--accent-foreground:0 0% 98%;--background:${h} ${wash}% 7%;--card:${h} ${wash}% 11%;--popover:${h} ${wash}% 11%;--secondary:${h} ${wash}% 16%;--muted:${h} ${wash}% 16%;--border:${h} ${wash}% 21%;--input:${h} ${wash}% 23%;}`;
 }
 
-/** Apply the accent to the live document (both light + dark, via inline override). */
-export function applyAccent(hex: string) {
-  const v = accentVars(hex);
-  const s = document.documentElement.style;
-  s.setProperty("--primary", v.primary);
-  s.setProperty("--ring", v.primary);
-  s.setProperty("--primary-foreground", v.fg);
+/** Inject / replace the live skin <style>. */
+function injectSkinCss(css: string) {
+  let el = document.getElementById(SKIN_STYLE_ID) as HTMLStyleElement | null;
+  if (!el) {
+    el = document.createElement("style");
+    el.id = SKIN_STYLE_ID;
+    document.head.appendChild(el);
+  }
+  el.textContent = css;
 }
 
-/** Clear the override → back to the app's built-in indigo. */
-export function clearAccent() {
-  const s = document.documentElement.style;
-  s.removeProperty("--primary");
-  s.removeProperty("--ring");
-  s.removeProperty("--primary-foreground");
-}
-
-/** Apply + remember the accent (the pre-paint script reads this on next load). */
+/** Apply + remember the skin (the pre-paint script re-injects it on next load). */
 export function saveAccent(hex: string) {
-  applyAccent(hex);
+  const css = skinCss(hex);
+  injectSkinCss(css);
   try {
-    localStorage.setItem(
-      ACCENT_STORAGE_KEY,
-      JSON.stringify({ hex, ...accentVars(hex) })
-    );
+    localStorage.setItem(ACCENT_STORAGE_KEY, JSON.stringify({ hex, css }));
   } catch {}
 }
 
-/** Reset to default + forget the stored accent. */
+/** Reset to default + forget the stored skin. */
 export function resetAccent() {
-  clearAccent();
+  document.getElementById(SKIN_STYLE_ID)?.remove();
   try {
     localStorage.removeItem(ACCENT_STORAGE_KEY);
   } catch {}

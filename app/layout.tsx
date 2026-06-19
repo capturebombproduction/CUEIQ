@@ -1,6 +1,15 @@
 import type { Metadata, Viewport } from "next";
+import { Kanit } from "next/font/google";
 import "./globals.css";
 import { Toaster } from "@/components/ui/sonner";
+
+// Kanit — the brand Thai font (covers Latin too); self-hosted via next/font.
+const kanit = Kanit({
+  subsets: ["latin", "thai"],
+  weight: ["300", "400", "500", "600", "700"],
+  variable: "--font-kanit",
+  display: "swap",
+});
 
 export const metadata: Metadata = {
   title: {
@@ -35,13 +44,13 @@ export default function RootLayout({
   children,
 }: Readonly<{ children: React.ReactNode }>) {
   return (
-    <html lang="th" className="dark" suppressHydrationWarning>
+    <html lang="th" className={`dark ${kanit.variable}`} suppressHydrationWarning>
       <body className="min-h-screen bg-background font-sans antialiased">
         {/* Pre-paint, no-flash setup: (1) default dark — only flip to light if the
             user chose it; (2) apply the saved band accent color if any. */}
         <script
           dangerouslySetInnerHTML={{
-            __html: `try{if(localStorage.getItem('cueiq:theme')==='light')document.documentElement.classList.remove('dark')}catch(e){}try{var a=JSON.parse(localStorage.getItem('cueiq:accent')||'null');if(a&&a.primary){var s=document.documentElement.style;s.setProperty('--primary',a.primary);s.setProperty('--ring',a.primary);s.setProperty('--primary-foreground',a.fg);}}catch(e){}`,
+            __html: `try{if(localStorage.getItem('cueiq:theme')==='light')document.documentElement.classList.remove('dark')}catch(e){}try{var a=JSON.parse(localStorage.getItem('cueiq:accent')||'null');if(a&&a.css){var st=document.createElement('style');st.id='cueiq-skin';st.textContent=a.css;document.head.appendChild(st);}}catch(e){}`,
           }}
         />
         {children}
