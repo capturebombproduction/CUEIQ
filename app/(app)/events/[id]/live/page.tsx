@@ -3,6 +3,7 @@ import Link from "next/link";
 import { ArrowLeft } from "lucide-react";
 import { getEventBundle } from "@/lib/queries";
 import { LiveMode } from "@/components/event/live-mode";
+import { FullscreenButton } from "@/components/fullscreen-button";
 import { Button } from "@/components/ui/button";
 
 export const dynamic = "force-dynamic";
@@ -17,11 +18,14 @@ export default async function LivePage({
 
   return (
     <div className="space-y-4">
-      <Button asChild variant="ghost" size="sm" className="-ml-2">
-        <Link href={`/events/${params.id}`}>
-          <ArrowLeft className="h-4 w-4" /> กลับไปหน้างาน
-        </Link>
-      </Button>
+      <div className="flex items-center justify-between">
+        <Button asChild variant="ghost" size="sm" className="-ml-2">
+          <Link href={`/events/${params.id}`}>
+            <ArrowLeft className="h-4 w-4" /> กลับไปหน้างาน
+          </Link>
+        </Button>
+        <FullscreenButton />
+      </div>
       <LiveMode
         eventId={bundle.event.id}
         eventName={bundle.event.name}
