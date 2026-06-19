@@ -1,4 +1,5 @@
 import { CalendarDays, MapPin, Music2, Clock, Users, Shirt } from "lucide-react";
+import { PrintButton } from "@/components/print-button";
 import { createClient } from "@/lib/supabase/server";
 import {
   computeSetlistTimes,
@@ -108,8 +109,13 @@ export default async function SharePage({ params }: { params: { token: string } 
 
   return (
     <main className="mx-auto max-w-3xl space-y-6 p-4 sm:p-6">
+      {/* print / save-pdf (hidden on the printed page itself) */}
+      <div className="no-print flex justify-end">
+        <PrintButton />
+      </div>
+
       {/* header */}
-      <header className="space-y-3 rounded-2xl border bg-card p-5 shadow-sm">
+      <header className="space-y-3 rounded-2xl border bg-card p-5 shadow-sm print-flat">
         <div className="flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
           <span
             className="inline-block h-2.5 w-2.5 rounded-full"
@@ -149,7 +155,7 @@ export default async function SharePage({ params }: { params: { token: string } 
 
       {/* schedule */}
       {schedule.length > 0 && (
-        <section className="space-y-2 rounded-2xl border bg-card p-5 shadow-sm">
+        <section className="space-y-2 rounded-2xl border bg-card p-5 shadow-sm print-flat">
           <h2 className="flex items-center gap-2 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
             <Clock className="h-4 w-4" /> กำหนดการ / นัดหมาย
           </h2>
@@ -177,7 +183,7 @@ export default async function SharePage({ params }: { params: { token: string } 
 
       {/* setlist run sheet */}
       {setlist.length > 0 && (
-        <section className="space-y-2 rounded-2xl border bg-card p-5 shadow-sm">
+        <section className="space-y-2 rounded-2xl border bg-card p-5 shadow-sm print-flat">
           <h2 className="flex items-center gap-2 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
             <Music2 className="h-4 w-4" /> เซ็ตลิสต์ / Run Sheet
             <span className="ml-auto font-normal normal-case tabular-nums text-muted-foreground">
@@ -244,7 +250,7 @@ export default async function SharePage({ params }: { params: { token: string } 
 
       {/* members */}
       {members.length > 0 && (
-        <section className="space-y-2 rounded-2xl border bg-card p-5 shadow-sm">
+        <section className="space-y-2 rounded-2xl border bg-card p-5 shadow-sm print-flat">
           <h2 className="flex items-center gap-2 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
             <Users className="h-4 w-4" /> สมาชิก
           </h2>
