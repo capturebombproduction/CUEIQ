@@ -19,6 +19,7 @@ import {
   Eye,
   Trash2,
 } from "lucide-react";
+import { toast } from "sonner";
 import { createClient } from "@/lib/supabase/client";
 import { saveAudio, loadAudioForEvent, deleteAudio } from "@/lib/audio-store";
 import { Button } from "@/components/ui/button";
@@ -189,6 +190,54 @@ export function LiveMode({
     }, 400);
     return () => clearTimeout(id);
   }, [volumes, eventId]);
+
+  // Crash/reload recovery: restore a recently-running show so an accidental refresh
+  // (or a browser crash) doesn't reset the live position + accumulated time. The
+  // timestamps are absolute, so the clock resumes as if nothing happened; a live
+  // controller on another device still overrides this via the realtime sync.
+  const liveRestoredRef = useRef(false);
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(`cueiq:live:${eventId}`);
+      if (raw) {
+        const snap = JSON.parse(raw);
+        const fresh =
+          typeof snap?.savedAt === "number" &&
+          Date.now() - snap.savedAt < 6 * 60 * 60 * 1000; // within 6h
+        if (snap?.state?.begun && fresh) {
+          committedRef.current = snap.committed ?? { id: null, anchor: null };
+          setState(snap.state as LiveState);
+          toast.message("กู้คืนสถานะโชว์ที่ค้างไว้", {
+            description: "เวลาเดินต่อจากเดิม — กดรีเซ็ตถ้าจะเริ่มใหม่",
+          });
+        }
+      }
+    } catch {}
+    liveRestoredRef.current = true;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [eventId]);
+
+  // persist the running show (debounced); a reset (begun=false) clears it
+  useEffect(() => {
+    if (!liveRestoredRef.current) return; // don't write before the restore check ran
+    const id = setTimeout(() => {
+      try {
+        if (state.begun) {
+          localStorage.setItem(
+            `cueiq:live:${eventId}`,
+            JSON.stringify({
+              state,
+              committed: committedRef.current,
+              savedAt: Date.now(),
+            })
+          );
+        } else {
+          localStorage.removeItem(`cueiq:live:${eventId}`);
+        }
+      } catch {}
+    }, 500);
+    return () => clearTimeout(id);
+  }, [state, eventId]);
 
   // stop any running fade / pending volume broadcast on unmount
   useEffect(() => {
@@ -416,11 +465,16 @@ export function LiveMode({
     });
     ch.on("broadcast", { event: "state" }, ({ payload }) => {
       if (!payload || payload.sender === meId.current) return;
-      // Receiving another device's state means someone else is driving → this
-      // device steps down to a read-only viewer so it can't fight the controller.
-      // We do NOT pause audio here: a device wired to the speakers keeps playing and
-      // follows the new controller's commands (see the viewer audio-sync effect).
-      if (isControllerRef.current) {
+      const fromController = !!payload.fromController;
+      // A viewer's sync-reply (fromController=false) is only useful to a device that
+      // hasn't picked up the show yet — never let it overwrite or demote an active
+      // session. This is what keeps the controller in control after a reconnect:
+      // its own sync-request gets viewer replies, which we now ignore.
+      if (!fromController && stateRef.current.begun) return;
+      // An ACTIVE controller is driving → step down to a read-only viewer so we can't
+      // fight it. (We do NOT pause audio: a speaker-wired device keeps playing and
+      // follows the new controller's commands — see the viewer audio-sync effect.)
+      if (fromController && isControllerRef.current) {
         isControllerRef.current = false;
         setIsController(false);
         audioRef2.current?.pause(); // stop only any overlap pre-roll on the secondary
@@ -476,6 +530,7 @@ export function LiveMode({
             ...s,
             sender: meId.current,
             sentAt: Date.now(),
+            fromController: isControllerRef.current,
             currentItemId: curId,
             ...af,
           },
@@ -543,6 +598,9 @@ export function LiveMode({
       ...s,
       sender: meId.current,
       sentAt: Date.now(),
+      // whether THIS device is the active controller — receivers only step down for
+      // a real controller, never for a viewer's sync-reply (survives reconnects).
+      fromController: isControllerRef.current,
       currentItemId: itemsRef.current[s.currentIndex]?.id ?? null,
       ...audioFields(s),
     };
