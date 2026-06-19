@@ -291,6 +291,8 @@ export interface SetlistItem {
   mic_slots: MicSlot[];
   notes: string | null;
   sort_order: number;
+  audio_path?: string | null; // Storage object key for this item's audio (null = none)
+  audio_name?: string | null; // original filename, for display across devices
 }
 
 export interface MicAssignment {

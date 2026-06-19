@@ -18,10 +18,18 @@ import {
   Sparkles,
   Eye,
   Trash2,
+  Loader2,
+  CloudUpload,
 } from "lucide-react";
 import { toast } from "sonner";
 import { createClient } from "@/lib/supabase/client";
 import { saveAudio, loadAudioForEvent, deleteAudio } from "@/lib/audio-store";
+import {
+  buildAudioPath,
+  uploadEventAudio,
+  downloadEventAudio,
+  removeEventAudio,
+} from "@/lib/audio-remote";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
@@ -114,6 +122,10 @@ export function LiveMode({
   const loadTargetRef = useRef<string | null>(null);
   const [audioUrls, setAudioUrls] = useState<Record<string, string>>({}); // itemId → objectURL
   const [audioNames, setAudioNames] = useState<Record<string, string>>({}); // itemId → filename
+  // online sync: which Storage path this device currently holds locally (per item),
+  // and which items are busy uploading/downloading (for the UI spinner).
+  const cachedPathRef = useRef<Record<string, string | null>>({});
+  const [audioBusy, setAudioBusy] = useState<Record<string, "up" | "down">>({});
   const [playingId, setPlayingId] = useState<string | null>(null);
   const playingIdRef = useRef(playingId); // for the "ended" listener's stale closure
   playingIdRef.current = playingId;
@@ -307,7 +319,9 @@ export function LiveMode({
     };
   }, []);
 
-  // restore on-device audio files saved for this event (survives refresh)
+  // restore the local IndexedDB cache for this event (instant, survives refresh).
+  // The download effect below then fills in anything this device hasn't cached yet
+  // from Storage (e.g. a file another device uploaded).
   useEffect(() => {
     let cancelled = false;
     loadAudioForEvent(eventId)
@@ -318,6 +332,7 @@ export function LiveMode({
         for (const s of saved) {
           urls[s.itemId] = URL.createObjectURL(s.blob);
           names[s.itemId] = s.name;
+          cachedPathRef.current[s.itemId] = s.path; // remember which online version we hold
         }
         // a file the user loaded during this async read wins over the restored one
         setAudioUrls((prev) => ({ ...urls, ...prev }));
@@ -328,6 +343,46 @@ export function LiveMode({
       cancelled = true;
     };
   }, [eventId]);
+
+  // Download any online audio this device doesn't already hold (or holds a stale
+  // version of). Runs whenever the setlist changes — so a file uploaded on another
+  // device appears here after the "setlist-changed" refetch. Best-effort: a failure
+  // just leaves whatever local copy exists.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      for (const it of items) {
+        const path = it.audio_path;
+        if (!path) continue;
+        // already holding this exact version locally? skip.
+        if (cachedPathRef.current[it.id] === path && audioUrlsRef.current[it.id]) continue;
+        setAudioBusy((prev) => ({ ...prev, [it.id]: "down" }));
+        try {
+          const blob = await downloadEventAudio(path);
+          if (cancelled) return;
+          const url = URL.createObjectURL(blob);
+          if (audioUrlsRef.current[it.id]) URL.revokeObjectURL(audioUrlsRef.current[it.id]);
+          const name = it.audio_name ?? "เพลง";
+          setAudioUrls((prev) => ({ ...prev, [it.id]: url }));
+          setAudioNames((prev) => ({ ...prev, [it.id]: name }));
+          cachedPathRef.current[it.id] = path;
+          saveAudio(eventId, it.id, blob, name, path).catch(() => {});
+        } catch {
+          /* keep any existing local copy */
+        } finally {
+          if (!cancelled)
+            setAudioBusy((prev) => {
+              const n = { ...prev };
+              delete n[it.id];
+              return n;
+            });
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [items, eventId]);
 
   // Wake Lock — keep screen on while running
   const wakeLockRef = useRef<WakeLockSentinel | null>(null);
@@ -679,24 +734,73 @@ export function LiveMode({
     fileInputRef.current?.click();
   }
 
-  function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
+  function bcastSetlistChanged() {
+    channelRef.current?.send({
+      type: "broadcast",
+      event: "setlist-changed",
+      payload: { sender: meId.current },
+    });
+  }
+
+  // Pick a file → play it immediately on this device, then upload it to the private
+  // Storage bucket and record the path on the setlist item so EVERY device of this
+  // tenant can play it. IndexedDB keeps a local cache so refresh is instant.
+  async function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     const itemId = loadTargetRef.current;
+    e.target.value = "";
     if (!file || !itemId) return;
-    // revoke old URL
+    const item = itemsRef.current.find((it) => it.id === itemId);
+    if (!item) return;
+
+    // instant local playback
     if (audioUrls[itemId]) URL.revokeObjectURL(audioUrls[itemId]);
     const url = URL.createObjectURL(file);
     setAudioUrls((prev) => ({ ...prev, [itemId]: url }));
     setAudioNames((prev) => ({ ...prev, [itemId]: file.name }));
-    // persist on-device so it survives a refresh (not uploaded anywhere)
-    saveAudio(eventId, itemId, file, file.name).catch(() => {});
-    e.target.value = "";
+
+    setAudioBusy((prev) => ({ ...prev, [itemId]: "up" }));
+    try {
+      const prevPath = item.audio_path ?? null;
+      const path = buildAudioPath(item.tenant_id, eventId, itemId, file.name);
+      await uploadEventAudio(path, file, file.type);
+      // record on the row so other devices learn about it on the next refetch
+      const supabase = createClient();
+      const { error } = await supabase
+        .from("setlist_items")
+        .update({ audio_path: path, audio_name: file.name })
+        .eq("id", itemId);
+      if (error) throw error;
+      cachedPathRef.current[itemId] = path;
+      setItems((prev) =>
+        prev.map((it) =>
+          it.id === itemId ? { ...it, audio_path: path, audio_name: file.name } : it
+        )
+      );
+      saveAudio(eventId, itemId, file, file.name, path).catch(() => {});
+      if (prevPath && prevPath !== path) removeEventAudio(prevPath).catch(() => {});
+      bcastSetlistChanged();
+      toast.success("อัปโหลดไฟล์เพลงขึ้นคลาวด์แล้ว — ทุกเครื่องเล่นได้");
+    } catch (err) {
+      // online upload failed — still keep a local-only copy so THIS device can play
+      saveAudio(eventId, itemId, file, file.name).catch(() => {});
+      toast.error("อัปโหลดออนไลน์ไม่สำเร็จ — ไฟล์ยังเล่นได้เฉพาะเครื่องนี้", {
+        description: err instanceof Error ? err.message : undefined,
+      });
+    } finally {
+      setAudioBusy((prev) => {
+        const n = { ...prev };
+        delete n[itemId];
+        return n;
+      });
+    }
   }
 
-  // Remove a loaded audio file from this device (e.g. wrong file picked). Clears the
-  // object URL + IndexedDB copy. Guarded so the track that's on air can't be deleted.
-  function removeAudioFile(itemId: string) {
+  // Remove the audio for an item: clears it on this device AND from Storage + the
+  // row, then tells other devices. Guarded so the track that's on air can't be cut.
+  async function removeAudioFile(itemId: string) {
     if (playingId === itemId) return; // never delete the track that's loaded/playing
+    const item = itemsRef.current.find((it) => it.id === itemId);
     const url = audioUrls[itemId];
     if (url) URL.revokeObjectURL(url);
     setAudioUrls((prev) => {
@@ -709,7 +813,27 @@ export function LiveMode({
       delete n[itemId];
       return n;
     });
+    cachedPathRef.current[itemId] = null;
     deleteAudio(eventId, itemId).catch(() => {});
+
+    const path = item?.audio_path ?? null;
+    if (!path) return; // local-only file, nothing online to clear
+    try {
+      removeEventAudio(path).catch(() => {});
+      const supabase = createClient();
+      await supabase
+        .from("setlist_items")
+        .update({ audio_path: null, audio_name: null })
+        .eq("id", itemId);
+      setItems((prev) =>
+        prev.map((it) =>
+          it.id === itemId ? { ...it, audio_path: null, audio_name: null } : it
+        )
+      );
+      bcastSetlistChanged();
+    } catch {
+      /* row update failed — the local copy is already gone; ignore */
+    }
   }
 
   // Mirror a volume change to the other devices so the controller can ride the
@@ -1135,6 +1259,8 @@ export function LiveMode({
   const wallClock = useMemo(() => nowClock(new Date(now)), [now]);
 
   const currentAudioUrl = current ? audioUrls[current.id] : undefined;
+  const currentBusy = current ? audioBusy[current.id] : undefined;
+  const currentHasOnline = current ? !!current.audio_path : false;
 
   // The upcoming list doesn't depend on the clock or the audio scrubber position, so
   // memoize it — otherwise every 500ms tick and every audio timeupdate would re-render
@@ -1143,7 +1269,9 @@ export function LiveMode({
   const upcomingRows = useMemo(
     () =>
       items.map((it, i) => {
-        const hasFile = !!audioUrls[it.id];
+        const hasLocal = !!audioUrls[it.id];
+        const hasFile = hasLocal || !!it.audio_path; // online file counts even if not downloaded yet
+        const busy = audioBusy[it.id];
         const isPlayingThis = playingId === it.id && audioPlaying;
         const locked = state.mode === "auto" || !isController;
         return (
@@ -1192,20 +1320,35 @@ export function LiveMode({
               )}
               <button
                 onClick={() => openFilePicker(it.id)}
-                title={hasFile ? "เปลี่ยนไฟล์เพลง" : "โหลดไฟล์เพลง"}
+                disabled={!!busy}
+                title={
+                  busy === "up"
+                    ? "กำลังอัปโหลดขึ้นคลาวด์…"
+                    : busy === "down"
+                      ? "กำลังดาวน์โหลดจากคลาวด์…"
+                      : it.audio_path && !hasLocal
+                        ? "มีไฟล์บนคลาวด์ (จะดาวน์โหลดให้อัตโนมัติ) — แตะเพื่อเปลี่ยนไฟล์"
+                        : hasFile
+                          ? "เปลี่ยนไฟล์เพลง (อัปโหลดขึ้นคลาวด์)"
+                          : "โหลดไฟล์เพลง (อัปโหลดขึ้นคลาวด์)"
+                }
                 className={cn(
-                  "flex h-7 w-7 items-center justify-center rounded-md transition-colors hover:bg-muted",
+                  "flex h-7 w-7 items-center justify-center rounded-md transition-colors hover:bg-muted disabled:cursor-default disabled:hover:bg-transparent",
                   hasFile
                     ? "text-primary"
                     : "text-muted-foreground/40 hover:text-muted-foreground"
                 )}
               >
-                <FolderOpen className="h-3.5 w-3.5" />
+                {busy ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <FolderOpen className="h-3.5 w-3.5" />
+                )}
               </button>
-              {hasFile && it.id !== playingId && (
+              {hasFile && it.id !== playingId && !busy && (
                 <button
                   onClick={() => removeAudioFile(it.id)}
-                  title="ลบไฟล์เพลงนี้"
+                  title="ลบไฟล์เพลงนี้ (ออกจากคลาวด์และทุกเครื่อง)"
                   className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground/50 transition-colors hover:bg-muted hover:text-destructive"
                 >
                   <Trash2 className="h-3.5 w-3.5" />
@@ -1216,7 +1359,7 @@ export function LiveMode({
         );
       }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [items, state, playingId, audioPlaying, audioUrls, isController]
+    [items, state, playingId, audioPlaying, audioUrls, audioBusy, isController]
   );
 
   if (items.length === 0) {
@@ -1460,6 +1603,13 @@ export function LiveMode({
                       </button>
                     )}
                   </div>
+                ) : currentBusy === "down" ? (
+                  // an online file exists; this device is fetching it
+                  <div className="flex items-center gap-2">
+                    <p className="min-w-0 flex-1 truncate text-left text-[10px] opacity-60">
+                      <Loader2 className="mr-1 inline h-3 w-3 animate-spin" /> กำลังดาวน์โหลดเพลงจากคลาวด์…
+                    </p>
+                  </div>
                 ) : (
                   // controller with no local file: these controls ride the speaker
                   // device's volume by remote
@@ -1469,7 +1619,7 @@ export function LiveMode({
                     </p>
                     <button
                       onClick={() => openFilePicker(current.id)}
-                      title="โหลดไฟล์เพลงลงเครื่องนี้ด้วย"
+                      title="เปลี่ยน/อัปโหลดไฟล์เพลงสำหรับรายการนี้"
                       className="flex shrink-0 items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] opacity-70 hover:bg-white/15 hover:opacity-100"
                     >
                       <FolderOpen className="h-3 w-3" /> โหลดไฟล์ที่นี่
@@ -1477,6 +1627,11 @@ export function LiveMode({
                   </div>
                 )}
               </div>
+            ) : currentBusy === "down" || currentHasOnline ? (
+              // an online file exists for this item — it auto-downloads to this device
+              <span className="flex items-center gap-1.5 rounded-lg border border-white/20 bg-black/10 px-3 py-1.5 text-xs opacity-70">
+                <Loader2 className="h-3.5 w-3.5 animate-spin" /> กำลังเตรียมไฟล์เพลงจากคลาวด์…
+              </span>
             ) : (
               <button
                 onClick={() => openFilePicker(current.id)}
@@ -1582,6 +1737,10 @@ export function LiveMode({
                 {audioUrls[next.id] ? (
                   <>
                     <Music2 className="mr-1 inline h-3 w-3" /> ไฟล์เพลงพร้อมบนเครื่องนี้
+                  </>
+                ) : audioBusy[next.id] === "down" || next.audio_path ? (
+                  <>
+                    <Loader2 className="mr-1 inline h-3 w-3 animate-spin" /> กำลังเตรียมไฟล์จากคลาวด์…
                   </>
                 ) : (
                   <>
@@ -1746,8 +1905,8 @@ export function LiveMode({
       <div className="rounded-xl border bg-card">{upcomingRows}</div>
 
       <p className="px-1 text-center text-[11px] text-muted-foreground">
-        <FolderOpen className="mr-1 inline h-3 w-3" />
-        ไฟล์เพลงเก็บไว้ในเครื่องนี้ (ไม่ได้อัปโหลด) — เปิดใหม่/รีเฟรชแล้วยังอยู่
+        <CloudUpload className="mr-1 inline h-3 w-3" />
+        ไฟล์เพลงเก็บออนไลน์แบบส่วนตัว (เฉพาะคนที่ล็อกอิน) — ทุกเครื่องเล่นได้ และลบได้
       </p>
     </div>
   );

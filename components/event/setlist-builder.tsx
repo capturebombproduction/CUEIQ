@@ -18,6 +18,7 @@ import {
 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { deleteAudio } from "@/lib/audio-store";
+import { removeEventAudio } from "@/lib/audio-remote";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -520,13 +521,15 @@ export function SetlistBuilder({
 
   async function removeItem(id: string) {
     const snapshot = items;
+    const removed = snapshot.find((it) => it.id === id);
     setItems((prev) => prev.filter((it) => it.id !== id));
     const { error } = await supabase.from("setlist_items").delete().eq("id", id);
     if (error) {
       toast.error("ลบไม่สำเร็จ", { description: error.message });
       setItems(snapshot);
     } else {
-      deleteAudio(eventId, id).catch(() => {}); // clean up on-device audio blob
+      deleteAudio(eventId, id).catch(() => {}); // local cache
+      if (removed?.audio_path) removeEventAudio(removed.audio_path).catch(() => {}); // online object
       notifyLive();
     }
   }

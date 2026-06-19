@@ -1,5 +1,8 @@
-// Persist Live Mode audio files on-device with IndexedDB so they survive a page
-// refresh / app reopen. Files are NOT uploaded anywhere — they stay in the browser.
+// Local cache for Live Mode audio files (IndexedDB) so they survive a page
+// refresh / app reopen and a device need not re-download from Storage every time.
+// The authoritative copy now lives ONLINE in Supabase Storage (see lib/audio-remote.ts);
+// each cached record also stores the object `path` so a replaced file (new path)
+// invalidates the stale cache.
 
 const DB_NAME = "cueiq-audio";
 const STORE = "files";
@@ -29,12 +32,13 @@ export async function saveAudio(
   eventId: string,
   itemId: string,
   blob: Blob,
-  name: string
+  name: string,
+  path?: string | null
 ): Promise<void> {
   const db = await openDB();
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE, "readwrite");
-    tx.objectStore(STORE).put({ blob, name }, keyFor(eventId, itemId));
+    tx.objectStore(STORE).put({ blob, name, path: path ?? null }, keyFor(eventId, itemId));
     tx.oncomplete = () => {
       db.close();
       resolve();
@@ -66,6 +70,7 @@ export interface SavedAudio {
   itemId: string;
   blob: Blob;
   name: string;
+  path: string | null; // Storage object path this cached blob came from (null = local-only legacy)
 }
 
 export async function loadAudioForEvent(eventId: string): Promise<SavedAudio[]> {
@@ -81,11 +86,12 @@ export async function loadAudioForEvent(eventId: string): Promise<SavedAudio[]> 
       if (cursor) {
         const k = String(cursor.key);
         if (k.startsWith(prefix)) {
-          const val = cursor.value as { blob: Blob; name: string };
+          const val = cursor.value as { blob: Blob; name: string; path?: string | null };
           results.push({
             itemId: k.slice(prefix.length),
             blob: val.blob,
             name: val.name,
+            path: val.path ?? null,
           });
         }
         cursor.continue();
