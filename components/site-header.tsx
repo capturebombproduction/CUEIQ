@@ -3,6 +3,7 @@ import { Brand } from "@/components/brand";
 import { Badge } from "@/components/ui/badge";
 import { SignOutButton } from "@/components/sign-out-button";
 import { MainNav } from "@/components/main-nav";
+import { ThemeToggle } from "@/components/theme-toggle";
 import { ROLE_SHORT, type Role } from "@/lib/types";
 
 export function SiteHeader({
@@ -32,6 +33,7 @@ export function SiteHeader({
               {name}
             </span>
           )}
+          <ThemeToggle />
           <SignOutButton />
         </div>
       </div>

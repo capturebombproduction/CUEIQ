@@ -1164,7 +1164,8 @@ export function LiveMode({
                 </div>
                 )}
 
-                {/* per-track volume slider — set each track's level (in advance too) */}
+                {/* per-track volume slider — set each track's level (in advance too).
+                    View-only devices can see the level but only the controller sets it. */}
                 <div className="flex items-center gap-2">
                   <Volume1 className="h-4 w-4 shrink-0 opacity-80" />
                   <input
@@ -1174,34 +1175,47 @@ export function LiveMode({
                     step={1}
                     value={volumes[current.id] ?? 100}
                     onChange={(e) => setVolumeFor(current.id, Number(e.target.value))}
-                    title="ความดังของแทร็คนี้ (ตั้งล่วงหน้าได้)"
-                    className="h-1.5 flex-1 cursor-pointer accent-white"
+                    disabled={!isController}
+                    title={
+                      isController
+                        ? "ความดังของแทร็คนี้ (ตั้งล่วงหน้าได้)"
+                        : "ดูอย่างเดียว — คุมความดังที่เครื่องคุม"
+                    }
+                    className={cn(
+                      "h-1.5 flex-1 accent-white",
+                      isController
+                        ? "cursor-pointer"
+                        : "cursor-not-allowed opacity-50"
+                    )}
                   />
                   <span className="w-9 shrink-0 text-right text-xs tabular-nums opacity-80">
                     {volumes[current.id] ?? 100}%
                   </span>
                 </div>
 
-                {/* big one-tap auto-fade buttons */}
+                {/* big one-tap auto-fade buttons — controller only */}
                 <div className="grid grid-cols-3 gap-2">
                   <button
                     onClick={() => fadeVolumeTo(0, 3000)}
+                    disabled={!isController}
                     title="ค่อย ๆ ปิดเสียงเป็น 0% ใน 3 วินาที"
-                    className="flex items-center justify-center gap-1.5 rounded-lg bg-rose-600/85 py-3 text-sm font-bold text-white shadow-sm ring-1 ring-rose-400/40 hover:bg-rose-600"
+                    className="flex items-center justify-center gap-1.5 rounded-lg bg-rose-600/85 py-3 text-sm font-bold text-white shadow-sm ring-1 ring-rose-400/40 hover:bg-rose-600 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-rose-600/85"
                   >
                     <VolumeX className="h-4 w-4" /> Auto Mute
                   </button>
                   <button
                     onClick={() => fadeVolumeTo(30)}
+                    disabled={!isController}
                     title="ค่อย ๆ ลดเสียงลงเป็น 30% ใน 2 วินาที (ช่วง MC)"
-                    className="flex items-center justify-center gap-1.5 rounded-lg bg-amber-400/90 py-3 text-sm font-bold text-black shadow-sm ring-1 ring-amber-300/50 hover:bg-amber-400"
+                    className="flex items-center justify-center gap-1.5 rounded-lg bg-amber-400/90 py-3 text-sm font-bold text-black shadow-sm ring-1 ring-amber-300/50 hover:bg-amber-400 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-amber-400/90"
                   >
                     <Volume1 className="h-4 w-4" /> MC
                   </button>
                   <button
                     onClick={() => fadeVolumeTo(100, 2500)}
+                    disabled={!isController}
                     title="ค่อย ๆ เพิ่มเสียงกลับเป็น 100% ใน 2.5 วินาที"
-                    className="flex items-center justify-center gap-1.5 rounded-lg bg-emerald-600/85 py-3 text-sm font-bold text-white shadow-sm ring-1 ring-emerald-400/40 hover:bg-emerald-600"
+                    className="flex items-center justify-center gap-1.5 rounded-lg bg-emerald-600/85 py-3 text-sm font-bold text-white shadow-sm ring-1 ring-emerald-400/40 hover:bg-emerald-600 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-emerald-600/85"
                   >
                     <Volume2 className="h-4 w-4" /> Auto Loudness
                   </button>
@@ -1329,8 +1343,16 @@ export function LiveMode({
                   step={1}
                   value={volumes[next.id] ?? 100}
                   onChange={(e) => setVolumeFor(next.id, Number(e.target.value))}
-                  title="ตั้งระดับเสียงของเพลงถัดไปล่วงหน้า (ซิงค์ไปเครื่องที่เล่นไฟล์)"
-                  className="h-1.5 w-full cursor-pointer accent-primary"
+                  disabled={!isController}
+                  title={
+                    isController
+                      ? "ตั้งระดับเสียงของเพลงถัดไปล่วงหน้า (ซิงค์ไปเครื่องที่เล่นไฟล์)"
+                      : "ดูอย่างเดียว — คุมความดังที่เครื่องคุม"
+                  }
+                  className={cn(
+                    "h-1.5 w-full accent-primary",
+                    isController ? "cursor-pointer" : "cursor-not-allowed opacity-50"
+                  )}
                 />
               </div>
               <p className="mt-auto pt-4 text-xs text-muted-foreground">

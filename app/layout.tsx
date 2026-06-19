@@ -35,8 +35,15 @@ export default function RootLayout({
   children,
 }: Readonly<{ children: React.ReactNode }>) {
   return (
-    <html lang="th" suppressHydrationWarning>
+    <html lang="th" className="dark" suppressHydrationWarning>
       <body className="min-h-screen bg-background font-sans antialiased">
+        {/* Default to dark (venues are dark). Runs before paint: only flip to light
+            if the user explicitly chose it — so the default has no flash. */}
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `try{if(localStorage.getItem('cueiq:theme')==='light')document.documentElement.classList.remove('dark')}catch(e){}`,
+          }}
+        />
         {children}
         <Toaster richColors position="top-center" />
       </body>
