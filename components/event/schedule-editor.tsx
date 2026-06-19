@@ -2,8 +2,9 @@
 
 import { useRef, useState } from "react";
 import { toast } from "sonner";
-import { GripVertical, Trash2, Plus } from "lucide-react";
+import { GripVertical, Trash2, Plus, Clock } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
+import { shortClock } from "@/lib/time";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -138,12 +139,35 @@ export function ScheduleEditor({
     }
   }
 
+  // Day span: earliest start → latest end (end falls back to its start time).
+  const starts = items.map((i) => i.start_time).filter(Boolean) as string[];
+  const ends = items
+    .map((i) => i.end_time || i.start_time)
+    .filter(Boolean) as string[];
+  const firstStart = starts.length ? starts.reduce((a, b) => (a < b ? a : b)) : null;
+  const lastEnd = ends.length ? ends.reduce((a, b) => (a > b ? a : b)) : null;
+
   return (
     <div className="space-y-3">
       {items.length === 0 && (
         <p className="rounded-lg border border-dashed py-8 text-center text-sm text-muted-foreground">
           No call time entries yet
         </p>
+      )}
+
+      {items.length > 0 && (
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 rounded-lg border bg-muted/30 px-3 py-2 text-sm">
+          <span className="flex items-center gap-1.5 font-medium">
+            <Clock className="h-4 w-4 text-muted-foreground" />
+            {items.length} รายการ
+          </span>
+          {firstStart && (
+            <span className="tabular-nums text-muted-foreground">
+              {shortClock(firstStart)}
+              {lastEnd && lastEnd !== firstStart ? `–${shortClock(lastEnd)}` : ""}
+            </span>
+          )}
+        </div>
       )}
 
       {items.map((it, idx) => (
