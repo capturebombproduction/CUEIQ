@@ -11,6 +11,7 @@ import { ShareButton } from "@/components/event/share-button";
 import { ScheduleEditor } from "@/components/event/schedule-editor";
 import { SetlistBuilder } from "@/components/event/setlist-builder";
 import { MicMapEditor } from "@/components/event/mic-map-editor";
+import { LineupEditor } from "@/components/event/lineup-editor";
 import { EventSummary } from "@/components/event/event-summary";
 import {
   EVENT_TYPES,
@@ -37,6 +38,7 @@ export function EventWorkspace({
   micMap,
   members,
   songs,
+  lineup,
 }: {
   event: EventRow & { group: Group | null };
   eventId: string;
@@ -50,6 +52,7 @@ export function EventWorkspace({
   micMap: MicAssignment[];
   members: Member[];
   songs: Song[];
+  lineup: string[];
 }) {
   const modules = EVENT_TYPES[eventType]?.modules ?? EVENT_TYPES.idol.modules;
   const router = useRouter();
@@ -59,7 +62,7 @@ export function EventWorkspace({
   const [view, setView] = useState<string>("summary");
   useEffect(() => {
     const h = window.location.hash.replace("#", "");
-    if (["summary", "setlist", "schedule", "mic"].includes(h)) setView(h);
+    if (["summary", "setlist", "schedule", "mic", "lineup"].includes(h)) setView(h);
   }, []);
 
   function changeView(v: string) {
@@ -102,6 +105,7 @@ export function EventWorkspace({
           <TabsTrigger value="setlist">Setlist + Run Time</TabsTrigger>
           <TabsTrigger value="schedule">นัดหมาย</TabsTrigger>
           {modules.micMap && <TabsTrigger value="mic">Mic Map</TabsTrigger>}
+          <TabsTrigger value="lineup">รายชื่อวันนี้</TabsTrigger>
         </TabsList>
 
         <TabsContent value="summary">
@@ -112,6 +116,7 @@ export function EventWorkspace({
             members={members}
             showMic={modules.micMap}
             onNavigate={changeView}
+            lineup={lineup}
           />
         </TabsContent>
 
@@ -134,6 +139,16 @@ export function EventWorkspace({
             tenantId={tenantId}
             editable={editable}
             initialItems={schedule}
+          />
+        </TabsContent>
+
+        <TabsContent value="lineup">
+          <LineupEditor
+            eventId={eventId}
+            tenantId={tenantId}
+            editable={editable}
+            members={members}
+            initialLineup={lineup}
           />
         </TabsContent>
 

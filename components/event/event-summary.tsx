@@ -33,6 +33,7 @@ import {
   shortClock,
 } from "@/lib/time";
 import { mapsEmbedUrl } from "@/lib/venues";
+import { cn } from "@/lib/utils";
 import {
   SETLIST_KIND_SHORT,
   type EventRow,
@@ -149,6 +150,7 @@ export function EventSummary({
   members,
   showMic,
   onNavigate,
+  lineup = [],
 }: {
   event: EventRow & { group: Group | null };
   schedule: ScheduleItem[];
@@ -156,6 +158,7 @@ export function EventSummary({
   members: Member[];
   showMic: boolean;
   onNavigate: (view: string) => void;
+  lineup?: string[];
 }) {
   const captureRef = useRef<HTMLDivElement>(null);
   const [exporting, setExporting] = useState(false);
@@ -463,13 +466,28 @@ export function EventSummary({
 
         {members.length > 0 && !isCapturing && (
           <Section title="Members & Mics">
+            {lineup.length > 0 && (
+              <p className="mb-1.5 text-xs text-muted-foreground">
+                มางานนี้ {lineup.length}/{members.length} คน
+              </p>
+            )}
             <div className="flex flex-wrap gap-1.5">
-              {members.map((m) => (
-                <Badge key={m.id} variant="secondary" className="font-normal">
-                  {m.mic_number != null ? `${m.mic_number} · ` : ""}
-                  {m.nickname || m.name}
-                </Badge>
-              ))}
+              {members.map((m) => {
+                const present = lineup.length === 0 || lineup.includes(m.id);
+                return (
+                  <Badge
+                    key={m.id}
+                    variant="secondary"
+                    className={cn(
+                      "font-normal",
+                      !present && "opacity-40 line-through"
+                    )}
+                  >
+                    {m.mic_number != null ? `${m.mic_number} · ` : ""}
+                    {m.nickname || m.name}
+                  </Badge>
+                );
+              })}
             </div>
           </Section>
         )}
