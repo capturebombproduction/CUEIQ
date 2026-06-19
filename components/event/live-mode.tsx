@@ -872,6 +872,12 @@ export function LiveMode({
   const current = items[state.currentIndex];
   const next = items[state.currentIndex + 1];
 
+  // Running + this device holds the sounding track's file, but audio isn't playing —
+  // e.g. after a reload (browsers block autoplay without a user gesture). Offer a tap.
+  const soundingId = committedRef.current.id ?? current?.id ?? null;
+  const needsAudioResume =
+    state.running && !audioPlaying && !!soundingId && !!audioUrls[soundingId];
+
   const elapsedItem = state.running && state.itemStartedAt
     ? (now - state.itemStartedAt) / 1000
     : (state.itemElapsedAtPause ?? 0);
@@ -920,6 +926,24 @@ export function LiveMode({
       setAudioCurrent(0);
       setAudioDuration(0);
     }
+  }
+
+  // Resume audio after a reload / autoplay-block: load the sounding track and seek to
+  // the current position. The user's tap supplies the gesture browsers require to play.
+  function resumeAudio() {
+    const audio = audioRef.current;
+    const sid = committedRef.current.id ?? items[state.currentIndex]?.id ?? null;
+    const url = sid ? audioUrls[sid] : undefined;
+    if (!audio || !sid || !url) return;
+    const anchor = committedRef.current.anchor ?? state.itemStartedAt;
+    const pos = anchor ? (Date.now() - anchor) / 1000 : 0;
+    if (playingId !== sid) audio.src = url;
+    audio.currentTime = Math.max(0, pos);
+    setPlayingId(sid);
+    audio
+      .play()
+      .then(() => setAudioPlaying(true))
+      .catch(() => {});
   }
 
   // show-level controls
@@ -1244,6 +1268,24 @@ export function LiveMode({
           </p>
         </div>
       </div>
+
+      {/* Audio needs a tap to (re)start — after a reload / autoplay block. Big target. */}
+      {needsAudioResume && (
+        <button
+          onClick={resumeAudio}
+          className="flex w-full items-center justify-center gap-2 rounded-xl border border-amber-400 bg-amber-500 px-4 py-3 text-base font-bold text-black shadow-sm animate-pulse hover:bg-amber-400"
+        >
+          <Volume2 className="h-5 w-5" /> แตะเพื่อเล่นเสียงต่อ (ตำแหน่งปัจจุบัน)
+        </button>
+      )}
+
+      {/* Realtime dropped mid-show — make it obvious; the local show keeps running */}
+      {state.begun && !syncReady && (
+        <div className="flex items-center justify-center gap-2 rounded-xl border border-amber-300 bg-amber-50 px-4 py-2 text-sm font-medium text-amber-900">
+          <span className="h-2 w-2 shrink-0 animate-pulse rounded-full bg-amber-500" />
+          การเชื่อมต่อหลุด — กำลังต่อใหม่ (โชว์ยังเดินต่อ)
+        </div>
+      )}
 
       {/* current item + next-up prep — stacked in portrait, side by side in
           landscape (e.g. iPad) so the crew can ready the next item's mics/props */}
