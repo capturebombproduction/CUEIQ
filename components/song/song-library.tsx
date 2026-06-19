@@ -223,6 +223,26 @@ export function SongLibrary({
     }
   }
 
+  // Quick copyright triage inline in the table — no need to open the edit dialog.
+  async function updateCopyright(song: Song, status: CopyrightStatus) {
+    if (status === song.copyright_status) return;
+    setSongs((prev) =>
+      prev.map((s) => (s.id === song.id ? { ...s, copyright_status: status } : s))
+    );
+    const { error } = await supabase
+      .from("songs")
+      .update({ copyright_status: status })
+      .eq("id", song.id);
+    if (error) {
+      toast.error("เปลี่ยนสถานะไม่สำเร็จ", { description: error.message });
+      setSongs((prev) =>
+        prev.map((s) =>
+          s.id === song.id ? { ...s, copyright_status: song.copyright_status } : s
+        )
+      );
+    }
+  }
+
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-3">
@@ -337,9 +357,33 @@ export function SongLibrary({
                       {song.category || "—"}
                     </TableCell>
                     <TableCell>
-                      <Badge variant={cr.variant}>
-                        {cr.emoji} {cr.label}
-                      </Badge>
+                      {editable ? (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const order: CopyrightStatus[] = [
+                              "pending",
+                              "cleared",
+                              "rejected",
+                            ];
+                            const next =
+                              order[(order.indexOf(song.copyright_status) + 1) % 3];
+                            updateCopyright(song, next);
+                          }}
+                          title="คลิกเพื่อเปลี่ยนสถานะลิขสิทธิ์ (รอตรวจ → ถูกต้อง → ถูกปฏิเสธ)"
+                        >
+                          <Badge
+                            variant={cr.variant}
+                            className="cursor-pointer transition hover:opacity-80"
+                          >
+                            {cr.emoji} {cr.label}
+                          </Badge>
+                        </button>
+                      ) : (
+                        <Badge variant={cr.variant}>
+                          {cr.emoji} {cr.label}
+                        </Badge>
+                      )}
                     </TableCell>
                     {groups.length > 1 && (
                       <TableCell className="text-muted-foreground">
