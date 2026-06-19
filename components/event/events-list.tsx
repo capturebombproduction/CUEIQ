@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from "react";
 import Link from "next/link";
-import { CalendarDays, MapPin, Music2, Search } from "lucide-react";
+import { CalendarDays, MapPin, Music2, Search, Radio } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { StatusBadge } from "@/components/status-badge";
 import { DuplicateEventButton } from "@/components/event/duplicate-event-button";
@@ -34,6 +34,19 @@ function todayKey(): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(
     d.getDate()
   ).padStart(2, "0")}`;
+}
+
+function daysUntil(dateStr: string): number {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const d = new Date(`${dateStr}T00:00:00`);
+  return Math.round((d.getTime() - today.getTime()) / 86400000);
+}
+
+function countdownLabel(n: number): string {
+  if (n <= 0) return "วันนี้!";
+  if (n === 1) return "พรุ่งนี้";
+  return `อีก ${n} วัน`;
 }
 
 function EventCard({
@@ -112,9 +125,51 @@ export function EventsList({
   }, [events, q]);
 
   const noResults = upcoming.length === 0 && past.length === 0;
+  // soonest dated upcoming event (upcoming is already sorted soonest-first)
+  const nextShow = !q.trim() ? upcoming.find((e) => !!e.event_date) : undefined;
 
   return (
     <div className="space-y-6">
+      {nextShow && nextShow.event_date && (
+        <div
+          className="flex flex-wrap items-center gap-x-5 gap-y-3 rounded-xl border border-l-4 bg-card p-4 shadow-sm"
+          style={nextShow.groups?.color ? { borderLeftColor: nextShow.groups.color } : undefined}
+        >
+          <div className="min-w-0 flex-1">
+            <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+              งานถัดไป
+            </div>
+            <div className="truncate text-lg font-bold leading-tight">{nextShow.name}</div>
+            <div className="truncate text-sm text-muted-foreground">
+              {formatDate(nextShow.event_date)}
+              {nextShow.show_start_time && (
+                <span className="tabular-nums"> · {shortClock(nextShow.show_start_time)}</span>
+              )}
+              {nextShow.venue && <span> · {nextShow.venue}</span>}
+            </div>
+          </div>
+          <div className="shrink-0 text-right">
+            <div className="text-xl font-extrabold text-primary">
+              {countdownLabel(daysUntil(nextShow.event_date))}
+            </div>
+          </div>
+          <div className="flex shrink-0 gap-2">
+            <Link
+              href={`/events/${nextShow.id}`}
+              className="rounded-md border px-3 py-1.5 text-sm font-medium transition hover:bg-muted"
+            >
+              ดูงาน
+            </Link>
+            <Link
+              href={`/events/${nextShow.id}/live`}
+              className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-sm font-semibold text-primary-foreground transition hover:opacity-90"
+            >
+              <Radio className="h-4 w-4" /> Live Mode
+            </Link>
+          </div>
+        </div>
+      )}
+
       <div className="relative max-w-sm">
         <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
         <input
