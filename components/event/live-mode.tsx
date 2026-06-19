@@ -114,6 +114,11 @@ export function LiveMode({
   const [audioUrls, setAudioUrls] = useState<Record<string, string>>({}); // itemId → objectURL
   const [audioNames, setAudioNames] = useState<Record<string, string>>({}); // itemId → filename
   const [playingId, setPlayingId] = useState<string | null>(null);
+  const playingIdRef = useRef(playingId); // for the "ended" listener's stale closure
+  playingIdRef.current = playingId;
+  // the item whose audio reached its NATURAL end — a viewer must not loop-restart it
+  // (the show item can outlast the file via buffer_after). Cleared on the next command.
+  const endedItemRef = useRef<string | null>(null);
   const [audioPlaying, setAudioPlaying] = useState(false);
   const [audioCurrent, setAudioCurrent] = useState(0);
   const [audioDuration, setAudioDuration] = useState(0);
@@ -192,6 +197,8 @@ export function LiveMode({
       const a = new Audio();
       a.addEventListener("ended", () => {
         if (a === audioRef.current) {
+          // remember which item finished so the viewer sync won't loop-restart it
+          endedItemRef.current = playingIdRef.current;
           setPlayingId(null);
           setAudioPlaying(false);
         }
@@ -361,6 +368,13 @@ export function LiveMode({
     const url = cmd?.id ? audioUrls[cmd.id] : undefined;
 
     if (cmd && cmd.id && cmd.playing && url) {
+      // this track already played to its natural end — don't loop-restart it (the
+      // show item can run past the file via buffer_after); wait for the next command.
+      if (endedItemRef.current === cmd.id) {
+        if (!audio.paused) audio.pause();
+        if (audioPlaying) setAudioPlaying(false);
+        return;
+      }
       const pos = cmd.anchor != null ? (Date.now() - cmd.anchor) / 1000 : 0;
       if (playingId !== cmd.id) {
         // controller committed a new track we have a file for — switch + seek to it
@@ -426,6 +440,9 @@ export function LiveMode({
           : null;
       const audioId = payload.audioItemId ?? null;
       const audioPlaying = !!payload.audioPlaying;
+      // a fresh command from the controller (advance/seek/commit) clears the
+      // natural-end guard so the next play isn't blocked.
+      endedItemRef.current = null;
       setRemoteAudio({ id: audioId, playing: audioPlaying, anchor });
       if (audioPlaying && audioId) {
         committedRef.current = { id: audioId, anchor };
@@ -459,6 +476,11 @@ export function LiveMode({
     // another device edited the setlist (title/duration/mic/order) → refetch & merge
     ch.on("broadcast", { event: "setlist-changed" }, () => {
       refetchRef.current();
+    });
+    // controller rode a volume control (Auto Mute / MC / Loudness / slider) → mirror it
+    ch.on("broadcast", { event: "volume" }, ({ payload }) => {
+      if (!payload || payload.sender === meId.current) return;
+      fadeVolumeForRef.current(payload.itemId, payload.target, payload.ms ?? 0);
     });
     // set immediately so SDK can queue messages sent before SUBSCRIBED
     channelRef.current = ch;
@@ -623,30 +645,52 @@ export function LiveMode({
     deleteAudio(eventId, itemId).catch(() => {});
   }
 
-  // Set one track's volume now (cancels any running fade). Used by the slider.
-  function setVolumeFor(itemId: string, to: number) {
-    if (fadeRef.current) cancelAnimationFrame(fadeRef.current);
-    const v = Math.min(100, Math.max(0, Math.round(to)));
-    setVolumes((prev) => ({ ...prev, [itemId]: v }));
+  // Mirror a volume change to the other devices so the controller can ride the
+  // speaker device's levels by remote (Auto Mute / MC / Auto Loudness / slider).
+  function broadcastVolume(itemId: string, target: number, ms: number) {
+    if (!isControllerRef.current) return;
+    channelRef.current?.send({
+      type: "broadcast",
+      event: "volume",
+      payload: { sender: meId.current, itemId, target, ms },
+    });
   }
 
-  // Smoothly fade the CURRENT item's volume to `target` over `ms` (default 2s).
-  // Auto Mute = 0, MC = 30, Auto Loudness = 100.
-  function fadeVolumeTo(target: number, ms = 2000) {
+  // Fade ONE track's volume to `target` over `ms` (ms<=0 = set instantly). Shared by
+  // the local buttons/slider and by the viewer mirroring a remote volume command.
+  function fadeVolumeFor(itemId: string, target: number, ms: number) {
     if (fadeRef.current) cancelAnimationFrame(fadeRef.current);
-    const cur = items[state.currentIndex];
-    if (!cur) return;
-    const id = cur.id;
-    const start = volumes[id] ?? 100;
-    if (start === target) return;
+    const start = volumesRef.current[itemId] ?? 100;
+    if (ms <= 0 || start === target) {
+      setVolumes((prev) => ({ ...prev, [itemId]: target }));
+      return;
+    }
     const t0 = performance.now();
     const step = (t: number) => {
       const p = Math.min(1, (t - t0) / ms);
       const v = Math.round(start + (target - start) * p);
-      setVolumes((prev) => ({ ...prev, [id]: v }));
+      setVolumes((prev) => ({ ...prev, [itemId]: v }));
       fadeRef.current = p < 1 ? requestAnimationFrame(step) : null;
     };
     fadeRef.current = requestAnimationFrame(step);
+  }
+  const fadeVolumeForRef = useRef(fadeVolumeFor);
+  fadeVolumeForRef.current = fadeVolumeFor;
+
+  // Set one track's volume now (cancels any running fade). Used by the slider.
+  function setVolumeFor(itemId: string, to: number) {
+    const v = Math.min(100, Math.max(0, Math.round(to)));
+    fadeVolumeFor(itemId, v, 0);
+    broadcastVolume(itemId, v, 0);
+  }
+
+  // Smoothly fade the CURRENT item's volume to `target` over `ms` (default 2s).
+  // Auto Mute = 0, MC = 30, Auto Loudness = 100. Mirrors to the speaker device.
+  function fadeVolumeTo(target: number, ms = 2000) {
+    const cur = items[state.currentIndex];
+    if (!cur) return;
+    fadeVolumeFor(cur.id, target, ms);
+    broadcastVolume(cur.id, target, ms);
   }
 
   // RUN / pause the show — the deliberate "go live" action. In BOTH modes it
@@ -1072,8 +1116,10 @@ export function LiveMode({
         {/* Audio player for current item */}
         {current && (
           <div className="mt-4 flex items-center justify-center gap-2">
-            {currentAudioUrl ? (
+            {currentAudioUrl || (isController && state.begun) ? (
               <div className="w-full space-y-1.5 rounded-lg bg-black/10 px-3 py-2">
+                {/* scrubber — only when THIS device holds the audio file */}
+                {currentAudioUrl && (
                 <div className="flex items-center gap-2">
                   {/* status glyph only — play/pause is controlled by the รันโชว์ button */}
                   <span
@@ -1116,6 +1162,7 @@ export function LiveMode({
                       : fmtTime(audioDuration)}
                   </span>
                 </div>
+                )}
 
                 {/* per-track volume slider — set each track's level (in advance too) */}
                 <div className="flex items-center gap-2">
@@ -1160,21 +1207,38 @@ export function LiveMode({
                   </button>
                 </div>
 
-                <div className="flex items-center justify-between gap-2">
-                  <p className="min-w-0 flex-1 truncate text-left text-[10px] opacity-60">
-                    <Music2 className="mr-1 inline h-3 w-3" />
-                    {audioNames[current.id]}
-                  </p>
-                  {playingId !== current.id && (
+                {currentAudioUrl ? (
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="min-w-0 flex-1 truncate text-left text-[10px] opacity-60">
+                      <Music2 className="mr-1 inline h-3 w-3" />
+                      {audioNames[current.id]}
+                    </p>
+                    {playingId !== current.id && (
+                      <button
+                        onClick={() => removeAudioFile(current.id)}
+                        title="ลบไฟล์เพลงนี้ออกจากเครื่อง"
+                        className="flex shrink-0 items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] opacity-70 hover:bg-white/15 hover:opacity-100"
+                      >
+                        <Trash2 className="h-3 w-3" /> ลบไฟล์
+                      </button>
+                    )}
+                  </div>
+                ) : (
+                  // controller with no local file: these controls ride the speaker
+                  // device's volume by remote
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="min-w-0 flex-1 truncate text-left text-[10px] opacity-60">
+                      <Volume2 className="mr-1 inline h-3 w-3" /> คุมเสียงของเครื่องที่เล่นไฟล์ (รีโมท)
+                    </p>
                     <button
-                      onClick={() => removeAudioFile(current.id)}
-                      title="ลบไฟล์เพลงนี้ออกจากเครื่อง"
+                      onClick={() => openFilePicker(current.id)}
+                      title="โหลดไฟล์เพลงลงเครื่องนี้ด้วย"
                       className="flex shrink-0 items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] opacity-70 hover:bg-white/15 hover:opacity-100"
                     >
-                      <Trash2 className="h-3 w-3" /> ลบไฟล์
+                      <FolderOpen className="h-3 w-3" /> โหลดไฟล์ที่นี่
                     </button>
-                  )}
-                </div>
+                  </div>
+                )}
               </div>
             ) : (
               <button
