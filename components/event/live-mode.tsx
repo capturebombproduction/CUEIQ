@@ -1265,13 +1265,29 @@ export function LiveMode({
                   {SETLIST_KIND_SHORT[next.kind as SetlistKind]}
                 </Badge>
                 <span className="tabular-nums text-xs text-muted-foreground">
-                  {state.currentIndex + 2} / {items.length} ·{" "}
-                  {formatDuration(next.duration_seconds)}
+                  {state.currentIndex + 2} / {items.length}
                 </span>
               </div>
               <h3 className="mb-3 break-words text-xl font-bold leading-tight">
                 {next.title || "—"}
               </h3>
+              {/* time slot — the FULL block (buffers included) + the bare song length */}
+              <div className="mb-3 grid grid-cols-2 gap-2">
+                <div className="rounded-lg bg-muted/50 px-3 py-2">
+                  <p className="text-[10px] text-muted-foreground">
+                    เวลาเต็ม (รวมบัฟเฟอร์)
+                  </p>
+                  <p className="text-lg font-bold tabular-nums">
+                    {formatDuration(blockSeconds(next))}
+                  </p>
+                </div>
+                <div className="rounded-lg bg-muted/50 px-3 py-2">
+                  <p className="text-[10px] text-muted-foreground">ความยาวเพลง</p>
+                  <p className="text-lg font-bold tabular-nums">
+                    {formatDuration(next.duration_seconds)}
+                  </p>
+                </div>
+              </div>
               {next.mic_slots?.length > 0 ? (
                 <div>
                   <p className="mb-1.5 flex items-center gap-1 text-xs font-medium text-muted-foreground">
@@ -1295,6 +1311,28 @@ export function LiveMode({
                   📝 {next.notes}
                 </p>
               )}
+              {/* pre-set the next track's volume — syncs to the speaker device so the
+                  crew can dial the next song's level before it even starts */}
+              <div className="mt-3">
+                <div className="mb-1.5 flex items-center justify-between">
+                  <p className="flex items-center gap-1 text-xs font-medium text-muted-foreground">
+                    <Volume1 className="h-3 w-3" /> ตั้งความดังล่วงหน้า
+                  </p>
+                  <span className="text-xs font-semibold tabular-nums">
+                    {volumes[next.id] ?? 100}%
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  min={0}
+                  max={100}
+                  step={1}
+                  value={volumes[next.id] ?? 100}
+                  onChange={(e) => setVolumeFor(next.id, Number(e.target.value))}
+                  title="ตั้งระดับเสียงของเพลงถัดไปล่วงหน้า (ซิงค์ไปเครื่องที่เล่นไฟล์)"
+                  className="h-1.5 w-full cursor-pointer accent-primary"
+                />
+              </div>
               <p className="mt-auto pt-4 text-xs text-muted-foreground">
                 {audioUrls[next.id] ? (
                   <>
