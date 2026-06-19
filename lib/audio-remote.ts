@@ -32,19 +32,24 @@ function token(): string {
 }
 
 /**
- * Build the object key: <tenant>/<event>/<item>-<rand>.<ext>.
- * The FIRST segment is the tenant id so the presign route can authorize off it,
- * and the random suffix means a replaced file gets a NEW key → caches invalidate
- * and there's no object staleness. (Unchanged from the Storage backend, so old
- * audio_path values keep the same shape.)
+ * Build the object key: <tenant>/<group>/<event>/<item>-<rand>.<ext>.
+ * The FIRST segment is the tenant id so the presign route can authorize off it
+ * (the group/event/item segments are just organisation — auth never depends on
+ * them). The group segment keeps each band's audio under its own prefix so files
+ * can be listed/measured/cleared per band as the label grows. The random suffix
+ * means a replaced file gets a NEW key → caches invalidate, no object staleness.
+ *
+ * Older keys are 3-segment (<tenant>/<event>/<item>); both still authorize fine
+ * since tenant is always segment 0, and stored audio_path values are used as-is.
  */
 export function buildAudioPath(
   tenantId: string,
+  groupId: string,
   eventId: string,
   itemId: string,
   fileName: string
 ): string {
-  return `${tenantId}/${eventId}/${itemId}-${token()}.${extOf(fileName)}`;
+  return `${tenantId}/${groupId}/${eventId}/${itemId}-${token()}.${extOf(fileName)}`;
 }
 
 async function presign(key: string, op: "get" | "put"): Promise<string> {

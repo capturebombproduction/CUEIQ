@@ -28,6 +28,7 @@ export default async function LivePage({
       </div>
       <LiveMode
         eventId={bundle.event.id}
+        groupId={bundle.event.group_id}
         eventName={bundle.event.name}
         items={bundle.setlist}
       />

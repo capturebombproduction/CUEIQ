@@ -80,10 +80,12 @@ function fmtTime(sec: number) {
 
 export function LiveMode({
   eventId,
+  groupId,
   eventName,
   items: initialItems,
 }: {
   eventId: string;
+  groupId: string;
   eventName: string;
   items: SetlistItem[];
 }) {
@@ -763,7 +765,7 @@ export function LiveMode({
     setAudioBusy((prev) => ({ ...prev, [itemId]: "up" }));
     try {
       const prevPath = item.audio_path ?? null;
-      const path = buildAudioPath(item.tenant_id, eventId, itemId, file.name);
+      const path = buildAudioPath(item.tenant_id, groupId, eventId, itemId, file.name);
       await uploadEventAudio(path, file, file.type);
       // record on the row so other devices learn about it on the next refetch
       const supabase = createClient();
