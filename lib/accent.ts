@@ -14,15 +14,15 @@ export interface AccentPreset {
 // exact brand match.
 export const ACCENT_PRESETS: AccentPreset[] = [
   { name: "CueIQ (เริ่มต้น)", hex: "#4f46e5" }, // indigo — the app default
+  { name: "Seishin Kakumei", hex: "#a62a1c" }, // band DNA red (brand-guide #A62A1C)
+  { name: "Seishin Gold", hex: "#c8b99c" }, // band DNA neutral (#C8B99C)
   { name: "Crimson", hex: "#e11d48" },
   { name: "Sunset", hex: "#f97316" },
   { name: "Gold", hex: "#d4af37" },
   { name: "Emerald", hex: "#10b981" },
-  { name: "Teal", hex: "#0d9488" },
   { name: "Sky", hex: "#0ea5e9" },
   { name: "Royal", hex: "#2563eb" },
   { name: "Violet", hex: "#7c3aed" },
-  { name: "Sakura", hex: "#ec4899" },
 ];
 
 export const DEFAULT_ACCENT_HEX = ACCENT_PRESETS[0].hex;
