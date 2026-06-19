@@ -7,6 +7,7 @@ import {
   ChevronUp,
   ChevronDown,
   Trash2,
+  Copy,
   Plus,
   Mic,
   AlarmClock,
@@ -519,6 +520,20 @@ export function SetlistBuilder({
     toast.success(`เพิ่ม "${song.title}" จากคลังแล้ว`);
   }
 
+  /** Clone a row (appended at the end — drag into place). Audio is not copied. */
+  async function duplicateItem(it: SetlistItem) {
+    await insertItem({
+      kind: it.kind,
+      title: it.title,
+      duration_seconds: it.duration_seconds,
+      buffer_before_seconds: it.buffer_before_seconds,
+      buffer_after_seconds: it.buffer_after_seconds,
+      mic_slots: it.mic_slots,
+      notes: it.notes,
+    });
+    toast.success("ก๊อปรายการแล้ว — ลากไปจัดตำแหน่งได้");
+  }
+
   async function removeItem(id: string) {
     const snapshot = items;
     const removed = snapshot.find((it) => it.id === id);
@@ -738,6 +753,15 @@ export function SetlistBuilder({
                       disabled={idx === items.length - 1}
                     >
                       <ChevronDown className="h-4 w-4" />
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      title="ก๊อปรายการนี้"
+                      onClick={() => duplicateItem(it)}
+                    >
+                      <Copy className="h-4 w-4" />
                     </Button>
                     <Button
                       type="button"
