@@ -261,6 +261,7 @@ export interface EventRow {
   notes: string | null;
   map_url: string | null;
   costume_theme: string | null;
+  share_token: string | null; // public read-only run-sheet link token (null = not shared)
   created_by: string | null;
   created_at: string;
   updated_at: string;

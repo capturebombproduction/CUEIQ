@@ -7,6 +7,7 @@ import { ClipboardList, Check } from "lucide-react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { RefreshButton } from "@/components/refresh-button";
+import { ShareButton } from "@/components/event/share-button";
 import { ScheduleEditor } from "@/components/event/schedule-editor";
 import { SetlistBuilder } from "@/components/event/setlist-builder";
 import { MicMapEditor } from "@/components/event/mic-map-editor";
@@ -91,6 +92,9 @@ export function EventWorkspace({
           <ClipboardList className="h-5 w-5" /> สรุปงาน (Summary)
         </Button>
         <RefreshButton />
+        {editable && (
+          <ShareButton eventId={eventId} initialToken={event.share_token} />
+        )}
       </div>
 
       <Tabs value={view} onValueChange={changeView} className="w-full">
