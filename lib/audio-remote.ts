@@ -1,19 +1,22 @@
 // ---------------------------------------------------------------------------
-// Online audio files — Supabase Storage (private bucket "event-audio").
+// Online audio files — Cloudflare R2 (private bucket, via presigned URLs).
 //
 // Live Mode used to keep audio only on the device that picked the file
-// (IndexedDB). These helpers move the bytes into a PRIVATE bucket so a file
-// uploaded on one device plays on every logged-in device of the same tenant.
-// Access is gated by Storage RLS keyed off the first path segment (tenant id) —
-// see supabase/migrations/0004_audio_storage.sql. IndexedDB stays as a cache.
+// (IndexedDB). These helpers move the bytes into PRIVATE R2 object storage so a
+// file uploaded on one device plays on every logged-in device of the same
+// tenant. The real WAV masters are 27–88 MB, so the bytes travel browser ↔ R2
+// directly through short-lived presigned URLs — they never pass through our
+// serverless function, and R2 charges zero egress.
 //
-// We download to a Blob (not a streaming signed URL) so playback survives a
-// flaky venue network and a long show with no URL expiry.
+// Access is gated by /api/audio/presign, which checks the Supabase session and
+// the tenant (first path segment) with the same is_tenant_member /
+// can_edit_tenant predicates the old Storage RLS used. IndexedDB stays a cache.
+//
+// This is the single transport seam: live-mode.tsx and setlist-builder.tsx call
+// the four functions below and don't care whether the backend is R2 or Storage.
 // ---------------------------------------------------------------------------
 
-import { createClient } from "@/lib/supabase/client";
-
-const BUCKET = "event-audio";
+const PRESIGN_ENDPOINT = "/api/audio/presign";
 
 function extOf(fileName: string): string {
   const m = /\.([a-z0-9]+)$/i.exec(fileName);
@@ -30,9 +33,10 @@ function token(): string {
 
 /**
  * Build the object key: <tenant>/<event>/<item>-<rand>.<ext>.
- * The FIRST segment is the tenant id so Storage RLS can key off it, and the
- * random suffix means a replaced file gets a NEW path → caches invalidate and
- * no CDN/object staleness.
+ * The FIRST segment is the tenant id so the presign route can authorize off it,
+ * and the random suffix means a replaced file gets a NEW key → caches invalidate
+ * and there's no object staleness. (Unchanged from the Storage backend, so old
+ * audio_path values keep the same shape.)
  */
 export function buildAudioPath(
   tenantId: string,
@@ -43,29 +47,51 @@ export function buildAudioPath(
   return `${tenantId}/${eventId}/${itemId}-${token()}.${extOf(fileName)}`;
 }
 
+async function presign(key: string, op: "get" | "put"): Promise<string> {
+  const res = await fetch(PRESIGN_ENDPOINT, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ key, op }),
+  });
+  if (!res.ok) {
+    throw new Error(`ขอลิงก์ ${op} ไม่สำเร็จ (${res.status})`);
+  }
+  const data = (await res.json()) as { url?: string };
+  if (!data.url) throw new Error("presign: missing url");
+  return data.url;
+}
+
 export async function uploadEventAudio(
   path: string,
   file: File | Blob,
   contentType?: string
 ): Promise<void> {
-  const supabase = createClient();
-  const { error } = await supabase.storage.from(BUCKET).upload(path, file, {
-    upsert: true,
-    cacheControl: "3600",
-    contentType: contentType || (file as File).type || undefined,
+  const url = await presign(path, "put");
+  const type = contentType || (file as File).type || "";
+  const res = await fetch(url, {
+    method: "PUT",
+    body: file,
+    // Content-Type is NOT part of the presigned signature (we sign only host), so
+    // sending it is safe and lets R2 store a sensible type for playback.
+    headers: type ? { "Content-Type": type } : undefined,
   });
-  if (error) throw error;
+  if (!res.ok) throw new Error(`อัปโหลดไฟล์เสียงไม่สำเร็จ (${res.status})`);
 }
 
 export async function downloadEventAudio(path: string): Promise<Blob> {
-  const supabase = createClient();
-  const { data, error } = await supabase.storage.from(BUCKET).download(path);
-  if (error || !data) throw error ?? new Error("ดาวน์โหลดไฟล์เสียงไม่สำเร็จ");
-  return data;
+  const url = await presign(path, "get");
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`ดาวน์โหลดไฟล์เสียงไม่สำเร็จ (${res.status})`);
+  return res.blob();
 }
 
 export async function removeEventAudio(path: string): Promise<void> {
-  const supabase = createClient();
-  const { error } = await supabase.storage.from(BUCKET).remove([path]);
-  if (error) throw error;
+  // DELETE runs server-side (no presigned URL) so the browser needs no R2 CORS
+  // entry for it and the key is re-validated against the session.
+  const res = await fetch(PRESIGN_ENDPOINT, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ key: path, op: "delete" }),
+  });
+  if (!res.ok) throw new Error(`ลบไฟล์เสียงไม่สำเร็จ (${res.status})`);
 }

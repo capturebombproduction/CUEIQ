@@ -10,6 +10,8 @@
     "migrate": "node --env-file=.env.local scripts/migrate.mjs"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1072.0",
+    "@aws-sdk/s3-request-presigner": "^3.1072.0",
     "@radix-ui/react-dialog": "^1.1.17",
     "@radix-ui/react-label": "^2.1.10",
     "@radix-ui/react-select": "^2.3.1",
