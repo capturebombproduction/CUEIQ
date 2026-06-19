@@ -42,6 +42,31 @@ import {
   type SetlistItem,
 } from "@/lib/types";
 
+// Light-theme variable overrides forced on the captured element during export, so
+// the JPG is always a clean dark-on-white run-sheet regardless of the app's theme/skin
+// (otherwise dark-mode white text lands on the white export background = invisible).
+const EXPORT_LIGHT_VARS: Record<string, string> = {
+  "--background": "0 0% 100%",
+  "--foreground": "222 47% 11%",
+  "--card": "0 0% 100%",
+  "--card-foreground": "222 47% 11%",
+  "--popover": "0 0% 100%",
+  "--popover-foreground": "222 47% 11%",
+  "--primary": "243 75% 59%",
+  "--primary-foreground": "0 0% 100%",
+  "--secondary": "220 14% 96%",
+  "--secondary-foreground": "222 47% 11%",
+  "--muted": "220 14% 96%",
+  "--muted-foreground": "220 9% 46%",
+  "--accent": "243 75% 96%",
+  "--accent-foreground": "243 75% 30%",
+  "--border": "220 13% 91%",
+  "--destructive": "0 72% 51%",
+  "--destructive-foreground": "0 0% 100%",
+  "--success": "142 71% 45%",
+  "--success-foreground": "0 0% 100%",
+};
+
 function fmtDate(date: string | null): string {
   if (!date) return "—";
   const d = new Date(`${date}T00:00:00`);
@@ -62,6 +87,39 @@ function Line({ label, value }: { label: string; value?: string | null }) {
         {label}
       </span>
       <span className="font-medium">{value}</span>
+    </div>
+  );
+}
+
+// An appointment line that surfaces all the detail entered on a schedule item —
+// time + label + location on the first line, notes underneath. Hidden if empty.
+function Appt({
+  label,
+  time,
+  item,
+}: {
+  label: string;
+  time?: string | null;
+  item?: ScheduleItem;
+}) {
+  const loc = item?.location?.trim() || null;
+  const note = item?.notes?.trim() || null;
+  const lbl = item?.label?.trim() || null;
+  const detail = [time, lbl, loc].filter(Boolean).join(" · ");
+  if (!detail && !note) return null;
+  return (
+    <div className="text-sm">
+      <div className="flex gap-2">
+        <span className="min-w-[120px] shrink-0 font-medium text-muted-foreground">
+          {label}
+        </span>
+        <span className="min-w-0 font-medium">{detail || "—"}</span>
+      </div>
+      {note && (
+        <p className="ml-[128px] mt-0.5 text-xs font-normal text-muted-foreground">
+          📝 {note}
+        </p>
+      )}
     </div>
   );
 }
@@ -136,6 +194,10 @@ export function EventSummary({
       const { toJpeg } = await import("html-to-image");
       // Force 600px reflow before capture so text doesn't wrap at mobile width
       el.style.width = "600px";
+      // force a light palette so dark-mode text isn't white-on-white in the export
+      for (const [k, v] of Object.entries(EXPORT_LIGHT_VARS)) {
+        el.style.setProperty(k, v);
+      }
       await new Promise((r) => setTimeout(r, 80)); // wait for browser reflow
       const dataUrl = await toJpeg(el, {
         pixelRatio: 2,
@@ -173,6 +235,7 @@ export function EventSummary({
       });
     } finally {
       el.style.width = prevWidth; // always restore — even if capture threw
+      for (const k of Object.keys(EXPORT_LIGHT_VARS)) el.style.removeProperty(k);
       setIsCapturing(false);
       setExporting(false);
     }
@@ -253,24 +316,43 @@ export function EventSummary({
 
         {/* Appointments */}
         <Section title="Call Time">
-          <Line
+          <Appt
             label="On Location"
-            value={shortClock(sched("on_location")?.start_time)}
+            time={shortClock(sched("on_location")?.start_time)}
+            item={sched("on_location")}
           />
-          <Line label="Dressing Room" value={sched("dressing_room")?.location} />
-          <Line
+          <Appt
+            label="Dressing Room"
+            time={shortClock(sched("dressing_room")?.start_time)}
+            item={sched("dressing_room")}
+          />
+          <Appt
+            label="Sound Check"
+            time={shortClock(sched("sound_check")?.start_time)}
+            item={sched("sound_check")}
+          />
+          <Appt
             label="Photo Session"
-            value={shortClock(sched("photo")?.start_time)}
+            time={shortClock(sched("photo")?.start_time)}
+            item={sched("photo")}
+          />
+          <Appt
+            label="Costume"
+            time={shortClock(sched("costume")?.start_time)}
+            item={sched("costume")}
           />
           <Line label="Costume Theme" value={event.costume_theme} />
         </Section>
 
         {/* Stage & Booth */}
         <Section title="Showtime">
-          <Line label="Standby Time" value={shortClock(sched("stb")?.start_time)} />
+          <Appt
+            label="Standby Time"
+            time={shortClock(sched("stb")?.start_time)}
+            item={sched("stb")}
+          />
           <Line label="Stage" value={showWindow} />
-          <Line label="Booth" value={range(booth)} />
-          <Line label="Booth Location" value={booth?.location} />
+          <Appt label="Booth" time={range(booth)} item={booth} />
         </Section>
 
         {/* Setlist — detailed table */}
