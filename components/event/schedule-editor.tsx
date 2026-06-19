@@ -22,6 +22,17 @@ import {
 
 const KIND_KEYS = Object.keys(SCHEDULE_KIND_LABELS) as ScheduleKind[];
 
+// One-click presets for the most common call-time entries (short labels for chips).
+const QUICK_KINDS: { kind: ScheduleKind; label: string }[] = [
+  { kind: "on_location", label: "ถึงสถานที่" },
+  { kind: "dressing_room", label: "ห้องแต่งตัว" },
+  { kind: "sound_check", label: "Sound Check" },
+  { kind: "stb", label: "STB" },
+  { kind: "stage", label: "ขึ้นเวที" },
+  { kind: "photo", label: "ถ่ายรูป" },
+  { kind: "booth", label: "บูธ/แฟนไซน์" },
+];
+
 export function ScheduleEditor({
   eventId,
   tenantId,
@@ -55,7 +66,7 @@ export function ScheduleEditor({
     if (error) toast.error("Save failed", { description: error.message });
   }
 
-  async function addItem() {
+  async function addItem(kind: ScheduleKind = "other") {
     setBusy(true);
     const sort = items.length
       ? Math.max(...items.map((i) => i.sort_order)) + 1
@@ -65,7 +76,7 @@ export function ScheduleEditor({
       .insert({
         tenant_id: tenantId,
         event_id: eventId,
-        kind: "other",
+        kind,
         sort_order: sort,
       })
       .select("*")
@@ -269,15 +280,32 @@ export function ScheduleEditor({
       ))}
 
       {editable && (
-        <Button
-          type="button"
-          variant="outline"
-          onClick={addItem}
-          disabled={busy}
-          className="w-full"
-        >
-          <Plus className="h-4 w-4" /> Add Call Time Entry
-        </Button>
+        <div className="space-y-2">
+          <p className="text-xs text-muted-foreground">เพิ่มด่วน:</p>
+          <div className="flex flex-wrap gap-2">
+            {QUICK_KINDS.map((q) => (
+              <Button
+                key={q.kind}
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => addItem(q.kind)}
+                disabled={busy}
+              >
+                <Plus className="h-3.5 w-3.5" /> {q.label}
+              </Button>
+            ))}
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => addItem("other")}
+              disabled={busy}
+            >
+              <Plus className="h-3.5 w-3.5" /> แถวว่าง
+            </Button>
+          </div>
+        </div>
       )}
     </div>
   );
