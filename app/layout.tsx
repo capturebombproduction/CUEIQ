@@ -37,11 +37,11 @@ export default function RootLayout({
   return (
     <html lang="th" className="dark" suppressHydrationWarning>
       <body className="min-h-screen bg-background font-sans antialiased">
-        {/* Default to dark (venues are dark). Runs before paint: only flip to light
-            if the user explicitly chose it — so the default has no flash. */}
+        {/* Pre-paint, no-flash setup: (1) default dark — only flip to light if the
+            user chose it; (2) apply the saved band accent color if any. */}
         <script
           dangerouslySetInnerHTML={{
-            __html: `try{if(localStorage.getItem('cueiq:theme')==='light')document.documentElement.classList.remove('dark')}catch(e){}`,
+            __html: `try{if(localStorage.getItem('cueiq:theme')==='light')document.documentElement.classList.remove('dark')}catch(e){}try{var a=JSON.parse(localStorage.getItem('cueiq:accent')||'null');if(a&&a.primary){var s=document.documentElement.style;s.setProperty('--primary',a.primary);s.setProperty('--ring',a.primary);s.setProperty('--primary-foreground',a.fg);}}catch(e){}`,
           }}
         />
         {children}

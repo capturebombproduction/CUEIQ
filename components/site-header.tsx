@@ -4,6 +4,7 @@ import { Badge } from "@/components/ui/badge";
 import { SignOutButton } from "@/components/sign-out-button";
 import { MainNav } from "@/components/main-nav";
 import { ThemeToggle } from "@/components/theme-toggle";
+import { AccentPicker } from "@/components/accent-picker";
 import { ROLE_SHORT, type Role } from "@/lib/types";
 
 export function SiteHeader({
@@ -33,6 +34,7 @@ export function SiteHeader({
               {name}
             </span>
           )}
+          <AccentPicker />
           <ThemeToggle />
           <SignOutButton />
         </div>
