@@ -1256,6 +1256,42 @@ export function LiveMode({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [now, state, remaining, audioUrls, items]);
 
+  // Operator keyboard shortcuts (controller only): Space = START / run-pause,
+  // →/N = next, ← = previous. Ignored while typing in a field. Re-assigned every
+  // render so it sees fresh state; calls the SAME guarded handlers as the buttons,
+  // so Auto-mode locks and bounds still apply.
+  const keyActionRef = useRef<(e: KeyboardEvent) => void>(() => {});
+  keyActionRef.current = (e: KeyboardEvent) => {
+    if (!isControllerRef.current) return;
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    const el = e.target as HTMLElement | null;
+    const tag = el?.tagName;
+    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || el?.isContentEditable)
+      return;
+    const s = stateRef.current;
+    const n = itemsRef.current.length;
+    if (e.code === "Space") {
+      e.preventDefault();
+      if (!s.begun) start();
+      else toggleShowRun();
+    } else if (e.key === "ArrowRight" || e.key === "n" || e.key === "N") {
+      if (s.begun && s.mode === "manual" && s.currentIndex < n - 1) {
+        e.preventDefault();
+        goto(s.currentIndex + 1);
+      }
+    } else if (e.key === "ArrowLeft") {
+      if (s.begun && s.mode === "manual" && s.currentIndex > 0) {
+        e.preventDefault();
+        goto(s.currentIndex - 1);
+      }
+    }
+  };
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => keyActionRef.current(e);
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
   const wallClock = useMemo(() => nowClock(new Date(now)), [now]);
 
   const currentAudioUrl = current ? audioUrls[current.id] : undefined;
@@ -1899,6 +1935,13 @@ export function LiveMode({
             ? "Auto: เปลี่ยนรายการเองเมื่อเพลงจบ — กด Manual เพื่อคุมเอง"
             : "Manual: กด NEXT เพื่อข้ามรายการ — ซิงค์หลายเครื่องอัตโนมัติ"}
         </p>
+        {isController && (
+          <p className="mt-1 hidden text-center text-[11px] text-muted-foreground/70 sm:block">
+            ⌨️ คีย์ลัด: <kbd className="rounded border px-1">Space</kbd> เริ่ม/รัน ·{" "}
+            <kbd className="rounded border px-1">→</kbd>/<kbd className="rounded border px-1">N</kbd> ถัดไป ·{" "}
+            <kbd className="rounded border px-1">←</kbd> ย้อน
+          </p>
+        )}
       </div>
 
       {/* upcoming list (memoized — see upcomingRows) */}
