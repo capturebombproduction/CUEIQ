@@ -1,12 +1,25 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { CalendarDays, MapPin, Music2, Search, Radio, AlarmClock, Timer } from "lucide-react";
+import {
+  CalendarDays,
+  MapPin,
+  Music2,
+  Search,
+  Radio,
+  AlarmClock,
+  Timer,
+  CheckCircle2,
+  HardDriveDownload,
+} from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { StatusBadge } from "@/components/status-badge";
 import { DuplicateEventButton } from "@/components/event/duplicate-event-button";
 import { AutoPrefetch } from "@/components/event/auto-prefetch";
+import { createClient } from "@/lib/supabase/client";
+import { getReadiness, type Readiness } from "@/lib/audio-prefetch";
+import { resolveAudioTargets, type SongAudioMap } from "@/lib/audio-targets";
 import {
   EVENT_TYPES,
   type EventRow,
@@ -62,12 +75,44 @@ function countdownLabel(n: number): string {
   return `อีก ${n} วัน`;
 }
 
+function OfflineReadyBadge({ r }: { r: { ready: number; total: number } }) {
+  if (r.total === 0) return null;
+  const done = r.ready >= r.total;
+  return (
+    <span
+      className={cn(
+        "inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-xs font-medium",
+        done
+          ? "bg-green-600/10 text-green-700 dark:text-green-400"
+          : "bg-muted text-muted-foreground"
+      )}
+      title={
+        done
+          ? "ไฟล์เพลงของงานนี้อยู่ในเครื่องนี้ครบแล้ว เล่นได้แม้เน็ตหลุด"
+          : "เครื่องนี้ยังโหลดเพลงไม่ครบ — เปิดงานแล้วกด ‘เตรียมเครื่องนี้’"
+      }
+    >
+      {done ? (
+        <>
+          <CheckCircle2 className="h-3.5 w-3.5" /> พร้อมออฟไลน์
+        </>
+      ) : (
+        <>
+          <HardDriveDownload className="h-3.5 w-3.5" /> เพลง {r.ready}/{r.total}
+        </>
+      )}
+    </span>
+  );
+}
+
 function EventCard({
   ev,
   editable,
+  readiness,
 }: {
   ev: EventWithGroup;
   editable: boolean;
+  readiness?: { ready: number; total: number };
 }) {
   return (
     <Link href={`/events/${ev.id}`} className="group">
@@ -112,21 +157,24 @@ function EventCard({
               </p>
             )}
           </div>
-          {(() => {
-            if (ev.groups?.exempt_from_deadline) return null;
-            const dl = deadlineInfo(ev.deadline);
-            if (!dl) return null;
-            return (
-              <span
-                className={cn(
-                  "inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-xs font-medium",
-                  DEADLINE_TONE[dl.tone]
-                )}
-              >
-                <AlarmClock className="h-3.5 w-3.5" /> {dl.label}
-              </span>
-            );
-          })()}
+          <div className="flex flex-wrap items-center gap-1.5">
+            {(() => {
+              if (ev.groups?.exempt_from_deadline) return null;
+              const dl = deadlineInfo(ev.deadline);
+              if (!dl) return null;
+              return (
+                <span
+                  className={cn(
+                    "inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-xs font-medium",
+                    DEADLINE_TONE[dl.tone]
+                  )}
+                >
+                  <AlarmClock className="h-3.5 w-3.5" /> {dl.label}
+                </span>
+              );
+            })()}
+            {readiness && <OfflineReadyBadge r={readiness} />}
+          </div>
         </CardContent>
       </Card>
     </Link>
@@ -164,6 +212,71 @@ export function EventsList({
   const noResults = upcoming.length === 0 && past.length === 0;
   // soonest dated upcoming event (upcoming is already sorted soonest-first)
   const nextShow = !q.trim() ? upcoming.find((e) => !!e.event_date) : undefined;
+
+  // Per-device offline-readiness badge on each upcoming card: does THIS device
+  // already hold the event's audio? Two batched queries (items + songs) cover all
+  // upcoming events, then readiness is compared against the IndexedDB cache.
+  const [readiness, setReadiness] = useState<
+    Record<string, { ready: number; total: number }>
+  >({});
+
+  const computeReadiness = useCallback(async () => {
+    const today = todayKey();
+    const wanted = events.filter(
+      (e) => e.group_id && (!e.event_date || e.event_date >= today)
+    );
+    if (wanted.length === 0) return;
+    const eventIds = wanted.map((e) => e.id);
+    const groupIds = Array.from(new Set(wanted.map((e) => e.group_id as string)));
+    try {
+      const supabase = createClient();
+      const [itemsRes, songsRes] = await Promise.all([
+        supabase
+          .from("setlist_items")
+          .select("id, song_id, audio_path, audio_name, event_id")
+          .in("event_id", eventIds),
+        supabase
+          .from("songs")
+          .select("id, audio_path, audio_name")
+          .in("group_id", groupIds),
+      ]);
+      const songAudio: SongAudioMap = Object.fromEntries(
+        (songsRes.data ?? []).map((s) => [
+          s.id,
+          { path: s.audio_path ?? null, name: s.audio_name ?? null },
+        ])
+      );
+      const byEvent: Record<string, NonNullable<typeof itemsRes.data>> = {};
+      for (const it of itemsRes.data ?? []) {
+        (byEvent[it.event_id] ??= []).push(it);
+      }
+      const out: Record<string, { ready: number; total: number }> = {};
+      await Promise.all(
+        wanted.map(async (e) => {
+          const targets = resolveAudioTargets(byEvent[e.id] ?? [], songAudio);
+          if (targets.length === 0) return;
+          const r: Readiness = await getReadiness(e.id, targets);
+          out[e.id] = { ready: r.ready, total: r.total };
+        })
+      );
+      setReadiness(out);
+    } catch {
+      /* best-effort — no badge on failure */
+    }
+  }, [events]);
+
+  useEffect(() => {
+    computeReadiness();
+    const onVisible = () => {
+      if (document.visibilityState === "visible") computeReadiness();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("online", computeReadiness);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("online", computeReadiness);
+    };
+  }, [computeReadiness]);
 
   return (
     <div className="space-y-6">
@@ -233,7 +346,12 @@ export function EventsList({
               </h2>
               <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
                 {upcoming.map((ev) => (
-                  <EventCard key={ev.id} ev={ev} editable={editable} />
+                  <EventCard
+                    key={ev.id}
+                    ev={ev}
+                    editable={editable}
+                    readiness={readiness[ev.id]}
+                  />
                 ))}
               </div>
             </section>
