@@ -17,14 +17,17 @@ export function SiteHeader({
 }) {
   return (
     <header className="no-print sticky top-0 z-40 border-b bg-background/80 backdrop-blur supports-[backdrop-filter]:bg-background/60">
-      <div className="container flex h-14 items-center justify-between gap-4">
-        <div className="flex items-center gap-2 sm:gap-4">
+      <div className="container flex h-14 items-center justify-between gap-3">
+        <div className="flex min-w-0 items-center gap-2 sm:gap-4">
           <Link href="/dashboard" className="shrink-0">
             <Brand subtitle="Designed by PatzNutthapat" />
           </Link>
-          <MainNav />
+          {/* nav is inline here on desktop; on mobile it drops to its own row below */}
+          <div className="hidden md:block">
+            <MainNav />
+          </div>
         </div>
-        <div className="flex items-center gap-2 sm:gap-3">
+        <div className="flex shrink-0 items-center gap-2 sm:gap-3">
           {role && (
             <Badge variant="secondary" className="hidden sm:inline-flex">
               {ROLE_SHORT[role]}
@@ -39,6 +42,12 @@ export function SiteHeader({
           <AccentPicker />
           <ThemeToggle />
           <SignOutButton />
+        </div>
+      </div>
+      {/* mobile nav row — keeps all links visible without overflowing the header */}
+      <div className="container -mt-1 pb-2 md:hidden">
+        <div className="overflow-x-auto">
+          <MainNav />
         </div>
       </div>
     </header>
