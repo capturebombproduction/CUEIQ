@@ -22,6 +22,9 @@ import {
   Repeat,
   ChevronUp,
   ChevronDown,
+  Flag,
+  Timer,
+  GripVertical,
 } from "lucide-react";
 import { toast } from "sonner";
 import { createClient } from "@/lib/supabase/client";
@@ -143,6 +146,10 @@ export function LiveMode({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const loadTargetRef = useRef<string | null>(null);
   const [audioUrls, setAudioUrls] = useState<Record<string, string>>({}); // itemId → objectURL
+  // "เวลาโชว์ล่าสุด" — the accumulated time saved when จบโชว์ was pressed. Kept apart
+  // from the live state (localStorage per event) so a normal Reset Show doesn't erase
+  // it; it has its own clear button. Seeded on mount.
+  const [lastRun, setLastRun] = useState<{ seconds: number; at: number } | null>(null);
   const [audioNames, setAudioNames] = useState<Record<string, string>>({}); // itemId → filename
   // online sync: which Storage path this device currently holds locally (per item),
   // and which items are busy uploading/downloading (for the UI spinner).
@@ -357,6 +364,16 @@ export function LiveMode({
       /* ignore */
     }
   }, []);
+
+  // Seed the saved "last show time" record for this event.
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(`cueiq:lastRun:${eventId}`);
+      if (raw) setLastRun(JSON.parse(raw));
+    } catch {
+      /* ignore */
+    }
+  }, [eventId]);
 
   // Apply sound-output to BOTH elements (muted is a persistent element property, so
   // this covers every src change / play / overlap) + persist the choice. When OFF
@@ -949,6 +966,71 @@ export function LiveMode({
     bcastSetlistChanged();
   }
 
+  // "จบโชว์" — freeze the accumulated clock + SAVE it as the last-show record (kept
+  // apart from the live state so a normal Reset Show doesn't erase it). Not a real
+  // end: the show just pauses; Reset Show later clears it for the next run.
+  function endShow() {
+    const s = stateRef.current;
+    const seconds = s.startedAt ? Math.round((Date.now() - s.startedAt) / 1000) : 0;
+    const rec = { seconds, at: Date.now() };
+    setLastRun(rec);
+    try {
+      localStorage.setItem(`cueiq:lastRun:${eventId}`, JSON.stringify(rec));
+    } catch {
+      /* ignore */
+    }
+    // pause so the accumulated clock stops (does NOT reset the show)
+    if (s.running) {
+      const frozenItem = s.itemStartedAt
+        ? (Date.now() - s.itemStartedAt) / 1000
+        : (s.itemElapsedAtPause ?? 0);
+      apply({ ...s, running: false, itemElapsedAtPause: frozenItem });
+      audioRef.current?.pause();
+      audioRef2.current?.pause();
+      setAudioPlaying(false);
+    }
+    toast.success(`บันทึกเวลาโชว์ล่าสุด ${formatDuration(seconds)} แล้ว`);
+  }
+
+  function clearLastRun() {
+    setLastRun(null);
+    try {
+      localStorage.removeItem(`cueiq:lastRun:${eventId}`);
+    } catch {
+      /* ignore */
+    }
+  }
+
+  // Drag-drop reorder (desktop; touch uses the ▲▼ buttons since native HTML5 DnD
+  // doesn't fire on touch). Move an item from one index to another, renumber, persist
+  // the changed rows, keep currentIndex on the same item, broadcast.
+  const dragIndexRef = useRef<number | null>(null);
+  async function reorderTo(from: number, to: number) {
+    if (from === to) return;
+    const orig = itemsRef.current;
+    const arr = [...orig];
+    const [moved] = arr.splice(from, 1);
+    arr.splice(to, 0, moved);
+    const renumbered = arr.map((it, i) => ({ ...it, sort_order: i + 1 }));
+    const curId = orig[stateRef.current.currentIndex]?.id;
+    setItems(renumbered);
+    if (curId) {
+      const newIdx = renumbered.findIndex((it) => it.id === curId);
+      if (newIdx >= 0 && newIdx !== stateRef.current.currentIndex) {
+        setState((p) => ({ ...p, currentIndex: newIdx }));
+      }
+    }
+    const supabase = createClient();
+    await Promise.all(
+      renumbered
+        .filter((it) => orig.find((o) => o.id === it.id)?.sort_order !== it.sort_order)
+        .map((it) =>
+          supabase.from("setlist_items").update({ sort_order: it.sort_order }).eq("id", it.id)
+        )
+    );
+    bcastSetlistChanged();
+  }
+
   // Pick a file in Live Mode = the QUICK/ad-hoc path (you forgot to prep in the
   // library). Plays instantly on this device, then uploads to R2 as a TEMPORARY
   // library song (auto-cleans after 3 days) and LINKS this item to it — so all
@@ -1537,11 +1619,35 @@ export function LiveMode({
         return (
           <div
             key={it.id}
+            onDragOver={(e) => {
+              if (!locked && dragIndexRef.current !== null) e.preventDefault();
+            }}
+            onDrop={() => {
+              if (!locked && dragIndexRef.current !== null && dragIndexRef.current !== i) {
+                reorderTo(dragIndexRef.current, i);
+              }
+              dragIndexRef.current = null;
+            }}
             className={cn(
               "flex w-full items-center gap-2 border-b px-3 py-2 last:border-0",
               i === state.currentIndex && "bg-primary/10"
             )}
           >
+            {!locked && (
+              <span
+                draggable
+                onDragStart={() => {
+                  dragIndexRef.current = i;
+                }}
+                onDragEnd={() => {
+                  dragIndexRef.current = null;
+                }}
+                title="ลากเพื่อสลับลำดับ (เดสก์ท็อป) — มือถือใช้ปุ่ม ▲▼"
+                className="-ml-1 shrink-0 cursor-grab text-muted-foreground/40 hover:text-muted-foreground active:cursor-grabbing"
+              >
+                <GripVertical className="h-4 w-4" />
+              </span>
+            )}
             <button
               onClick={() => goto(i)}
               disabled={locked}
@@ -2204,6 +2310,19 @@ export function LiveMode({
             </Button>
           </div>
         )}
+        {/* จบโชว์ — freezes + saves the accumulated time as the last-show record below.
+            Not a reset: Reset Show (↺) still clears the live state separately. */}
+        {state.begun && isController && (
+          <Button
+            variant="outline"
+            size="sm"
+            className="mt-2 w-full"
+            onClick={endShow}
+            title="หยุดนับเวลาสะสม + บันทึกเป็นเวลาโชว์ล่าสุด (ไม่ใช่รีเซ็ต)"
+          >
+            <Flag className="h-4 w-4" /> จบโชว์ · บันทึกเวลาสะสม
+          </Button>
+        )}
         <p className="mt-2 text-center text-xs text-muted-foreground">
           <Radio className="mr-1 inline h-3 w-3" />
           {state.mode === "auto"
@@ -2221,6 +2340,39 @@ export function LiveMode({
 
       {/* upcoming list (memoized — see upcomingRows) */}
       <div className="rounded-xl border bg-card">{upcomingRows}</div>
+
+      {/* last-show time record — saved by จบโชว์, survives a normal Reset Show,
+          cleared only by its own ล้าง button. (Stored per device.) */}
+      {lastRun && (
+        <div className="flex items-center justify-between gap-2 rounded-xl border bg-card px-4 py-3">
+          <div className="min-w-0">
+            <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
+              <Timer className="h-3.5 w-3.5" /> เวลาโชว์ล่าสุด (บันทึกไว้)
+            </p>
+            <p className="text-xl font-bold tabular-nums">
+              {formatDuration(lastRun.seconds)}
+              <span className="ml-2 text-[11px] font-normal text-muted-foreground">
+                ·{" "}
+                {new Date(lastRun.at).toLocaleString("th-TH", {
+                  day: "2-digit",
+                  month: "short",
+                  hour: "2-digit",
+                  minute: "2-digit",
+                })}
+              </span>
+            </p>
+          </div>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={clearLastRun}
+            className="shrink-0 text-muted-foreground"
+            title="ล้างเวลาโชว์ล่าสุดที่บันทึกไว้"
+          >
+            ล้าง
+          </Button>
+        </div>
+      )}
 
       <p className="px-1 text-center text-[11px] text-muted-foreground">
         <CloudUpload className="mr-1 inline h-3 w-3" />
