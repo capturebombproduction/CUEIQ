@@ -1211,32 +1211,24 @@ export function LiveMode({
     // after a detour into Manual.
     if (mode === "auto" && state.begun) {
       const audio = audioRef.current;
-      // Anchor Auto to the track that's ACTUALLY sounding — not wherever the user
-      // browsed to in Manual. e.g. song 1 is playing, you peek at song 2's info in
-      // Manual, then switch back to Auto → it should resume song 1 (the live track),
-      // NOT jump to song 2. The sounding track is playingId locally, or committedRef
-      // when we're a file-less remote driving the speaker device (no local playingId).
+      // Resume Auto from the item you NAVIGATED to in Manual (currentIndex): skip
+      // ahead to song 4, switch to Auto → it continues from song 4 (then song 5),
+      // not wherever the old track was. If that item is the one still sounding, sync
+      // to its live position; if you skipped to a different row, start it from the top.
       const committed = committedRef.current;
-      const soundingId = playingId ?? committed.id;
-      const soundIdx = soundingId
-        ? items.findIndex((it) => it.id === soundingId)
-        : -1;
-      const haveLocalAudio = !!playingId && !!audio && !audio.paused;
-      const idx = soundIdx >= 0 ? soundIdx : state.currentIndex;
+      const idx = state.currentIndex;
       const cur = items[idx];
-      // how far into the sounding item we are
-      const offset =
-        soundIdx >= 0
-          ? haveLocalAudio
-            ? audio!.currentTime // resume from the live audio position
-            : committed.anchor != null
-              ? (Date.now() - committed.anchor) / 1000 // remote sounding position
-              : 0
-          : state.running
-            ? state.itemStartedAt
-              ? (Date.now() - state.itemStartedAt) / 1000
-              : 0
-            : (state.itemElapsedAtPause ?? 0);
+      const curIsSounding =
+        !!cur && (cur.id === playingId || cur.id === committed.id);
+      const haveLocalAudio =
+        !!cur && cur.id === playingId && !!audio && !audio.paused;
+      const offset = curIsSounding
+        ? haveLocalAudio
+          ? audio!.currentTime // resume from the live audio position
+          : committed.anchor != null
+            ? (Date.now() - committed.anchor) / 1000 // remote sounding position
+            : 0
+        : 0; // skipped to a different row → start that item from the top
       apply({
         ...state,
         mode,
