@@ -20,6 +20,8 @@ import {
   Loader2,
   CloudUpload,
   Repeat,
+  ChevronUp,
+  ChevronDown,
 } from "lucide-react";
 import { toast } from "sonner";
 import { createClient } from "@/lib/supabase/client";
@@ -368,6 +370,34 @@ export function LiveMode({
       /* ignore */
     }
   }, [soundOutput]);
+
+  // Lock the SOUND device into Live Mode while a show is live: leaving would cut the
+  // audio. Block in-app navigation (back / header nav / logo) + warn on refresh/close.
+  // To leave, turn off "เสียงออกเครื่องนี้" first (then edit on a remote with sound off).
+  useEffect(() => {
+    if (!(soundOutput && state.begun)) return;
+    const livePath = `/events/${eventId}/live`;
+    const onClick = (e: MouseEvent) => {
+      const a = (e.target as HTMLElement)?.closest?.("a[href]") as HTMLAnchorElement | null;
+      if (a && !(a.getAttribute("href") ?? "").includes(livePath)) {
+        e.preventDefault();
+        e.stopPropagation();
+        toast.warning("ปิด “เสียงออกเครื่องนี้” ก่อนถึงจะออกจาก Live Mode ได้", {
+          description: "กันเสียงดับกลางโชว์ — แก้ละเอียดให้ใช้อีกเครื่อง (รีโมท ปิดเสียง)",
+        });
+      }
+    };
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = "";
+    };
+    document.addEventListener("click", onClick, true);
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => {
+      document.removeEventListener("click", onClick, true);
+      window.removeEventListener("beforeunload", onBeforeUnload);
+    };
+  }, [soundOutput, state.begun, eventId]);
 
   // promote the overlapping secondary element to primary (after a negative-buffer
   // pre-roll) and refresh the scrubber from it.
@@ -845,6 +875,15 @@ export function LiveMode({
       event: "state",
       payload: statePayload(stateRef.current),
     });
+    // Default is sound ON, so a remote that takes control would suddenly also blare
+    // the BGM. Remind them to mute this device if it's only meant to drive the show.
+    if (soundOutput) {
+      toast("เครื่องนี้กำลังคุมโชว์ + เปิดเสียงอยู่", {
+        description: "ถ้าจะใช้เป็นรีโมท (ไม่ออกเสียง) แตะเพื่อปิดเสียงเครื่องนี้",
+        action: { label: "ปิดเสียงเครื่องนี้", onClick: () => setSoundOutput(false) },
+        duration: 8000,
+      });
+    }
   }
 
   // audio controls
@@ -873,6 +912,40 @@ export function LiveMode({
     );
     const supabase = createClient();
     await supabase.from("setlist_items").update({ loop_audio: next }).eq("id", itemId);
+    bcastSetlistChanged();
+  }
+
+  // Quick-reorder a row in Live Mode (Manual + controller only): swap sort_order
+  // with the neighbour, keep currentIndex on the same item, persist + broadcast so
+  // every device re-syncs. Detailed edits (time/mic/buffers) stay in the editor.
+  async function moveItem(index: number, dir: -1 | 1) {
+    const arr = itemsRef.current;
+    const j = index + dir;
+    if (j < 0 || j >= arr.length) return;
+    const a = arr[index];
+    const b = arr[j];
+    const curId = arr[stateRef.current.currentIndex]?.id;
+    const reordered = arr
+      .map((it) =>
+        it.id === a.id
+          ? { ...it, sort_order: b.sort_order }
+          : it.id === b.id
+            ? { ...it, sort_order: a.sort_order }
+            : it
+      )
+      .sort((x, y) => x.sort_order - y.sort_order);
+    setItems(reordered);
+    if (curId) {
+      const newIdx = reordered.findIndex((it) => it.id === curId);
+      if (newIdx >= 0 && newIdx !== stateRef.current.currentIndex) {
+        setState((prev) => ({ ...prev, currentIndex: newIdx }));
+      }
+    }
+    const supabase = createClient();
+    await Promise.all([
+      supabase.from("setlist_items").update({ sort_order: b.sort_order }).eq("id", a.id),
+      supabase.from("setlist_items").update({ sort_order: a.sort_order }).eq("id", b.id),
+    ]);
     bcastSetlistChanged();
   }
 
@@ -1498,6 +1571,27 @@ export function LiveMode({
             </button>
 
             <div className="flex shrink-0 items-center gap-1">
+              {/* quick reorder — Manual + controller only (detailed edits = setlist editor) */}
+              {!locked && (
+                <div className="flex flex-col">
+                  <button
+                    onClick={() => moveItem(i, -1)}
+                    disabled={i === 0}
+                    title="เลื่อนขึ้น"
+                    className="flex h-3.5 w-5 items-center justify-center rounded text-muted-foreground/50 hover:text-foreground disabled:opacity-20"
+                  >
+                    <ChevronUp className="h-3.5 w-3.5" />
+                  </button>
+                  <button
+                    onClick={() => moveItem(i, 1)}
+                    disabled={i === items.length - 1}
+                    title="เลื่อนลง"
+                    className="flex h-3.5 w-5 items-center justify-center rounded text-muted-foreground/50 hover:text-foreground disabled:opacity-20"
+                  >
+                    <ChevronDown className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              )}
               {isPlayingThis && (
                 <Volume2 className="h-3.5 w-3.5 animate-pulse text-primary" />
               )}
