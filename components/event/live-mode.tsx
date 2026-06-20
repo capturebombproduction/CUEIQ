@@ -1467,8 +1467,12 @@ export function LiveMode({
       loopFadeRef.current = { id: cur.id, prevVol: volumesRef.current[cur.id] ?? 100 };
       fadeVolumeTo(0, Math.max(200, Math.round(remaining * 1000)));
     }
-    // moved off the faded item → restore its volume for a possible re-cue
-    if (loopFadeRef.current && loopFadeRef.current.id !== playingId) {
+    // moved off the faded item OR paused mid-fade → restore its volume so it isn't
+    // left stuck silent on a re-cue / resume (then the fade re-arms if still near end).
+    if (
+      loopFadeRef.current &&
+      (loopFadeRef.current.id !== playingId || !state.running)
+    ) {
       const { id, prevVol } = loopFadeRef.current;
       loopFadeRef.current = null;
       setVolumeFor(id, prevVol);
