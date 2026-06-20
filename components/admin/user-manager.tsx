@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
-import { Plus, Pencil, Trash2, Loader2, UserPlus, ShieldCheck } from "lucide-react";
+import { Plus, Pencil, Trash2, Loader2, UserPlus, ShieldCheck, Lock } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -31,6 +31,7 @@ import {
   type Role,
 } from "@/lib/types";
 import { displayLoginId } from "@/lib/username";
+import { isMasterAdminEmail } from "@/lib/master-admin";
 
 export interface ManagedUser {
   user_id: string;
@@ -212,6 +213,7 @@ export function UserManager({
       <div className="space-y-2">
         {users.map((u) => {
           const level = levelOf(u);
+          const isMaster = isMasterAdminEmail(u.email);
           return (
             <Card key={u.user_id}>
               <CardContent className="flex flex-wrap items-center gap-3 p-4">
@@ -223,6 +225,12 @@ export function UserManager({
                     {u.user_id === currentUserId && (
                       <Badge variant="outline" className="text-[10px]">
                         คุณ
+                      </Badge>
+                    )}
+                    {isMaster && (
+                      <Badge className="gap-1 text-[10px]">
+                        <Lock className="h-3 w-3" />
+                        Master
                       </Badge>
                     )}
                   </div>
@@ -245,10 +253,12 @@ export function UserManager({
                   </div>
                 </div>
                 <div className="flex shrink-0 items-center gap-1">
-                  <Button variant="ghost" size="icon" onClick={() => openEdit(u)}>
-                    <Pencil className="h-4 w-4" />
-                  </Button>
-                  {u.user_id !== currentUserId && (
+                  {(!isMaster || u.user_id === currentUserId) && (
+                    <Button variant="ghost" size="icon" onClick={() => openEdit(u)}>
+                      <Pencil className="h-4 w-4" />
+                    </Button>
+                  )}
+                  {u.user_id !== currentUserId && !isMaster && (
                     <Button
                       variant="ghost"
                       size="icon"

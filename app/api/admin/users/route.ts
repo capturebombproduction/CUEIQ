@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient, hasServiceRole } from "@/lib/supabase/admin";
 import { isValidLoginId, loginIdToEmail } from "@/lib/username";
+import { isMasterAdminEmail } from "@/lib/master-admin";
 import type { GroupRole, Role } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
@@ -78,6 +79,19 @@ async function tenantGroupIdSet(
 ): Promise<Set<string>> {
   const { data } = await admin.from("groups").select("id").eq("tenant_id", tenantId);
   return new Set((data ?? []).map((g) => g.id as string));
+}
+
+/** Look up a user's (synthetic) email — used for Master Admin protection. */
+async function targetEmail(
+  admin: ReturnType<typeof createAdminClient>,
+  userId: string
+): Promise<string | null> {
+  const { data } = await admin
+    .from("profiles")
+    .select("email")
+    .eq("id", userId)
+    .maybeSingle();
+  return (data?.email as string | null) ?? null;
 }
 
 // ---------------------------------------------------------------------------
@@ -230,6 +244,15 @@ export async function PATCH(req: Request) {
   }
 
   const admin = createAdminClient();
+
+  // Master Admin can only be modified by itself — block other admins.
+  if (userId !== gate.callerId && isMasterAdminEmail(await targetEmail(admin, userId))) {
+    return NextResponse.json(
+      { error: "บัญชี Master Admin ถูกป้องกันไว้ คนอื่นแก้ไขไม่ได้" },
+      { status: 403 }
+    );
+  }
+
   const { tenantId } = gate;
   const groupIds = await tenantGroupIdSet(admin, tenantId);
   const groupRoles = sanitizeGroupRoles(body?.groupRoles, groupIds);
@@ -281,6 +304,14 @@ export async function DELETE(req: Request) {
 
   const admin = createAdminClient();
   const { tenantId } = gate;
+
+  // Master Admin is protected — no one (not even other admins) can delete it.
+  if (isMasterAdminEmail(await targetEmail(admin, userId))) {
+    return NextResponse.json(
+      { error: "บัญชี Master Admin ถูกป้องกันไว้ ลบไม่ได้" },
+      { status: 403 }
+    );
+  }
 
   await admin.from("group_roles").delete().eq("tenant_id", tenantId).eq("user_id", userId);
   await admin.from("tenant_members").delete().eq("tenant_id", tenantId).eq("user_id", userId);
