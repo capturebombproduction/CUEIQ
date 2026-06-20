@@ -1,42 +1,29 @@
-import Link from "next/link";
-import { LayoutGrid, AlarmClock, Users } from "lucide-react";
+import { LayoutGrid } from "lucide-react";
 import { getWorkspace } from "@/lib/queries";
 import { createClient } from "@/lib/supabase/server";
 import { JoinDemo } from "@/components/join-demo";
-import { EventStatusActions } from "@/components/overview/event-status-actions";
-import { StatusBadge } from "@/components/status-badge";
-import { canApprove } from "@/lib/permissions";
-import { cn } from "@/lib/utils";
-import { shortClock, deadlineInfo } from "@/lib/time";
 import {
-  type EventRow,
-  type GroupStatus,
-  type Member,
-} from "@/lib/types";
+  canApprove,
+  canEditPhotoTime,
+  isLabelWideUser,
+  canOpenEventDetail,
+} from "@/lib/permissions";
+import {
+  OverviewClient,
+  type OverviewEvent,
+  type OverviewBand,
+} from "@/components/overview/overview-client";
+import { type EventRow, type Member } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 
-const DEADLINE_BADGE: Record<string, string> = {
-  overdue: "bg-destructive text-destructive-foreground",
-  urgent: "bg-orange-500 text-white",
-  soon: "bg-amber-400 text-black",
-  ok: "bg-muted text-muted-foreground",
-};
-
-function fmtDate(date: string | null): string {
-  if (!date) return "—";
-  const d = new Date(`${date}T00:00:00`);
-  if (isNaN(d.getTime())) return date;
-  return d.toLocaleDateString("en-GB", { day: "2-digit", month: "short" });
-}
-
-interface GroupRow {
+type SchedRow = {
   id: string;
-  name: string;
-  color: string | null;
-  exempt_from_deadline: boolean;
-}
-type SchedRow = { event_id: string; kind: string; start_time: string | null };
+  event_id: string;
+  kind: string;
+  start_time: string | null;
+  sort_order: number;
+};
 
 export default async function OverviewPage() {
   const ws = await getWorkspace();
@@ -46,39 +33,111 @@ export default async function OverviewPage() {
   const canApproveEvents = canApprove(ws.perms);
   const supabase = createClient();
 
-  const [evRes, schedRes, memRes] = await Promise.all([
+  const [evRes, schedRes, memRes, slRes, songRes] = await Promise.all([
     supabase
       .from("events")
-      .select("*, groups(name, color, exempt_from_deadline)")
+      .select("*")
       .eq("tenant_id", tid)
+      .eq("is_template", false) // templates are not real shows
       .order("event_date", { ascending: true, nullsFirst: false }),
     supabase
       .from("schedule_items")
-      .select("event_id, kind, start_time")
+      .select("id, event_id, kind, start_time, sort_order")
       .eq("tenant_id", tid),
     supabase
       .from("members")
       .select("*")
       .eq("tenant_id", tid)
       .order("sort_order", { ascending: true }),
+    supabase
+      .from("setlist_items")
+      .select("event_id, song_id")
+      .eq("tenant_id", tid),
+    supabase
+      .from("songs")
+      .select("id, copyright_status")
+      .eq("tenant_id", tid),
   ]);
 
-  const events = (evRes.data ?? []) as (EventRow & { groups: GroupRow | null })[];
+  const eventRows = (evRes.data ?? []) as EventRow[];
   const sched = (schedRes.data ?? []) as SchedRow[];
   const members = (memRes.data ?? []) as Member[];
+  const slRows = (slRes.data ?? []) as { event_id: string; song_id: string | null }[];
+  const songRows = (songRes.data ?? []) as { id: string; copyright_status: string }[];
 
+  // Per-event copyright rollup — count the distinct library songs used in each
+  // event's setlist that are pending / rejected, so approvers spot issues here.
+  const songStatus = new Map(songRows.map((s) => [s.id, s.copyright_status]));
+  const usedByEvent = new Map<string, Set<string>>();
+  for (const r of slRows) {
+    if (!r.song_id) continue;
+    const set = usedByEvent.get(r.event_id) ?? new Set<string>();
+    set.add(r.song_id);
+    usedByEvent.set(r.event_id, set);
+  }
+  const copyrightOf = (eventId: string) => {
+    let pending = 0;
+    let rejected = 0;
+    for (const id of Array.from(usedByEvent.get(eventId) ?? [])) {
+      const st = songStatus.get(id);
+      if (st === "pending") pending++;
+      else if (st === "rejected") rejected++;
+    }
+    return { pending, rejected };
+  };
+
+  const groupById = new Map(ws.groups.map((g) => [g.id, g]));
   const timeOf = (eventId: string, kind: string) =>
     sched.find((s) => s.event_id === eventId && s.kind === kind)?.start_time ?? null;
+  const photoOf = (eventId: string) =>
+    sched.find((s) => s.event_id === eventId && s.kind === "photo") ?? null;
+  const maxSortOf = (eventId: string) =>
+    sched.reduce(
+      (m, s) => (s.event_id === eventId && s.sort_order > m ? s.sort_order : m),
+      0
+    );
 
-  // bands present (from the tenant's groups), each with its events + members
-  const bands = ws.groups.map((g) => ({
-    group: g,
-    events: events.filter((e) => e.group_id === g.id),
-    members: members.filter((m) => m.group_id === g.id),
+  const events: OverviewEvent[] = eventRows.map((e) => {
+    const g = groupById.get(e.group_id);
+    const photoRow = photoOf(e.id);
+    const cr = copyrightOf(e.id);
+    return {
+      id: e.id,
+      name: e.name,
+      group_id: e.group_id,
+      group_name: g?.name ?? "—",
+      group_color: g?.color ?? null,
+      exempt_from_deadline: g?.exempt_from_deadline ?? false,
+      event_date: e.event_date,
+      status: e.status,
+      deadline: e.deadline,
+      stage: timeOf(e.id, "stage"),
+      booth: timeOf(e.id, "booth"),
+      photo: photoRow?.start_time ?? null,
+      tenant_id: e.tenant_id,
+      canEditPhoto: g ? canEditPhotoTime(ws.perms, e.group_id, g.self_photo) : false,
+      photoItemId: photoRow?.id ?? null,
+      photoSortOrder: maxSortOf(e.id) + 1,
+      copyrightPending: cr.pending,
+      copyrightRejected: cr.rejected,
+    };
+  });
+
+  const bands: OverviewBand[] = ws.groups.map((g) => ({
+    id: g.id,
+    name: g.name,
+    color: g.color,
+    members: members
+      .filter((m) => m.group_id === g.id)
+      .map((m) => ({
+        id: m.id,
+        label: m.nickname || m.name,
+        mic_number: m.mic_number,
+      })),
   }));
 
   return (
-    <div className="space-y-8">
+    <div className="space-y-6">
       <div>
         <h1 className="flex items-center gap-2 text-2xl font-bold tracking-tight">
           <LayoutGrid className="h-6 w-6" /> ภาพรวมค่าย
@@ -93,112 +152,13 @@ export default async function OverviewPage() {
           ยังไม่มีวง — เพิ่มที่หน้า “วง”
         </p>
       ) : (
-        bands.map(({ group, events: gevents, members: gmembers }) => (
-          <section key={group.id} className="space-y-3">
-            <div className="flex items-center gap-2">
-              <span
-                className="inline-block h-3 w-3 rounded-full"
-                style={{ background: group.color || "var(--primary)" }}
-              />
-              <h2 className="text-lg font-semibold">{group.name}</h2>
-              <span className="text-sm text-muted-foreground">
-                · {gevents.length} งาน · {gmembers.length} คน
-              </span>
-            </div>
-
-            {gevents.length > 0 && (
-              <div className="overflow-x-auto rounded-lg border">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="border-b bg-muted/40 text-left text-xs text-muted-foreground">
-                      <th className="px-3 py-2 font-medium">งาน</th>
-                      <th className="px-3 py-2 font-medium">วันที่</th>
-                      <th className="px-3 py-2 font-medium tabular-nums">Stage</th>
-                      <th className="px-3 py-2 font-medium tabular-nums">Booth</th>
-                      <th className="px-3 py-2 font-medium tabular-nums">Photo</th>
-                      <th className="px-3 py-2 font-medium">เดดไลน์</th>
-                      <th className="px-3 py-2 font-medium">สถานะ</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {gevents.map((ev) => {
-                      const dl = group.exempt_from_deadline
-                        ? null
-                        : deadlineInfo(ev.deadline);
-                      return (
-                        <tr key={ev.id} className="border-b last:border-0 align-middle">
-                          <td className="px-3 py-2">
-                            <Link
-                              href={`/events/${ev.id}`}
-                              className="font-medium hover:text-primary hover:underline"
-                            >
-                              {ev.name}
-                            </Link>
-                          </td>
-                          <td className="px-3 py-2 text-muted-foreground">
-                            {fmtDate(ev.event_date)}
-                          </td>
-                          <td className="px-3 py-2 tabular-nums text-muted-foreground">
-                            {shortClock(timeOf(ev.id, "stage")) || "—"}
-                          </td>
-                          <td className="px-3 py-2 tabular-nums text-muted-foreground">
-                            {shortClock(timeOf(ev.id, "booth")) || "—"}
-                          </td>
-                          <td className="px-3 py-2 tabular-nums text-muted-foreground">
-                            {shortClock(timeOf(ev.id, "photo")) || "—"}
-                          </td>
-                          <td className="px-3 py-2">
-                            {dl ? (
-                              <span
-                                className={cn(
-                                  "inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs font-medium",
-                                  DEADLINE_BADGE[dl.tone]
-                                )}
-                              >
-                                <AlarmClock className="h-3 w-3" /> {dl.label}
-                              </span>
-                            ) : (
-                              <span className="text-xs text-muted-foreground">—</span>
-                            )}
-                          </td>
-                          <td className="px-3 py-2">
-                            {canApproveEvents ? (
-                              <EventStatusActions
-                                eventId={ev.id}
-                                initialStatus={ev.status as GroupStatus}
-                              />
-                            ) : (
-                              <StatusBadge status={ev.status as GroupStatus} />
-                            )}
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            )}
-
-            {gmembers.length > 0 && (
-              <div className="flex flex-wrap items-center gap-1.5">
-                <Users className="h-4 w-4 text-muted-foreground" />
-                {gmembers.map((m) => (
-                  <span
-                    key={m.id}
-                    className="rounded-full border px-2 py-0.5 text-xs"
-                  >
-                    {m.mic_number != null && (
-                      <span className="mr-1 font-semibold tabular-nums">
-                        {m.mic_number}
-                      </span>
-                    )}
-                    {m.nickname || m.name}
-                  </span>
-                ))}
-              </div>
-            )}
-          </section>
-        ))
+        <OverviewClient
+          events={events}
+          bands={bands}
+          canApproveEvents={canApproveEvents}
+          isLabelWide={isLabelWideUser(ws.perms)}
+          canOpenDetail={canOpenEventDetail(ws.perms)}
+        />
       )}
     </div>
   );

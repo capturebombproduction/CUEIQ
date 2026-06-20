@@ -12,6 +12,7 @@ import {
   Clock,
   AlarmClock,
   CheckCircle2,
+  AlertTriangle,
   Pencil,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -43,6 +44,7 @@ import {
   type ScheduleKind,
   type SetlistItem,
 } from "@/lib/types";
+import { type CompletenessResult } from "@/lib/completeness";
 
 // Light-theme variable overrides forced on the captured element during export, so
 // the JPG is always a clean dark-on-white run-sheet regardless of the app's theme/skin
@@ -151,6 +153,8 @@ export function EventSummary({
   showMic,
   onNavigate,
   lineup = [],
+  completeness,
+  editable = false,
 }: {
   event: EventRow & { group: Group | null };
   schedule: ScheduleItem[];
@@ -159,6 +163,8 @@ export function EventSummary({
   showMic: boolean;
   onNavigate: (view: string) => void;
   lineup?: string[];
+  completeness?: CompletenessResult;
+  editable?: boolean;
 }) {
   const captureRef = useRef<HTMLDivElement>(null);
   const [exporting, setExporting] = useState(false);
@@ -267,6 +273,43 @@ export function EventSummary({
           หน้านี้เป็นสรุปอย่างเดียว — แก้ข้อมูลที่แท็บ/ปุ่มด้านล่าง
         </p>
       </div>
+
+      {/* Completeness gate — editors only, while the event is editable
+          (draft / pending_review / rejected). Approved is locked. */}
+      {editable &&
+        completeness &&
+        !event.is_template &&
+        (event.status === "draft" ||
+          event.status === "pending_review" ||
+          event.status === "rejected") && (
+          <div className="no-print">
+            {completeness.complete ? (
+              <div className="flex items-center gap-2 rounded-lg border border-success/40 bg-success/10 p-3 text-sm">
+                <CheckCircle2 className="h-5 w-5 shrink-0 text-success" />
+                <span className="font-medium">
+                  ข้อมูลครบแล้ว
+                  {event.status === "pending_review"
+                    ? " — ส่งขออนุมัติแล้ว (รออนุมัติ 🟠)"
+                    : event.status === "rejected"
+                    ? " — กด “ส่งขออนุมัติอีกครั้ง” ด้านบน"
+                    : ""}
+                </span>
+              </div>
+            ) : (
+              <div className="rounded-lg border border-amber-400/50 bg-amber-50 p-3 text-sm dark:bg-amber-950/30">
+                <div className="flex items-center gap-2 font-semibold text-amber-700 dark:text-amber-400">
+                  <AlertTriangle className="h-5 w-5 shrink-0" />
+                  ยังขาดข้อมูลก่อนส่งขออนุมัติ ({completeness.missing.length})
+                </div>
+                <ul className="ml-7 mt-1.5 list-disc space-y-0.5 text-muted-foreground">
+                  {completeness.missing.map((m) => (
+                    <li key={m.key}>{m.label}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
+        )}
 
       {/* Captured summary — also the printable run sheet */}
       <div

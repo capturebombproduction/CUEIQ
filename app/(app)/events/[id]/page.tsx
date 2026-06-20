@@ -7,15 +7,18 @@ import {
   Music2,
   Pencil,
   AlarmClock,
+  AlertTriangle,
 } from "lucide-react";
 import { getEventBundle, getWorkspace } from "@/lib/queries";
-import { canEditGroup, canOpenEventDetail } from "@/lib/permissions";
+import { canEditGroup, canOpenEventDetail, canApprove } from "@/lib/permissions";
+import { eventCompleteness } from "@/lib/completeness";
 import { EVENT_TYPES, type EventType, type GroupStatus } from "@/lib/types";
 import { shortClock, deadlineInfo } from "@/lib/time";
 import { cn } from "@/lib/utils";
 import { resolveAudioTargets, type SongAudioMap } from "@/lib/audio-targets";
 import { Button } from "@/components/ui/button";
 import { StatusBadge } from "@/components/status-badge";
+import { ApprovalControl } from "@/components/event/approval-control";
 import { EventWorkspace } from "@/components/event/event-workspace";
 import { ExportButton } from "@/components/event/export-button";
 import { PrepareDeviceButton } from "@/components/event/prepare-device-button";
@@ -54,7 +57,23 @@ export default async function EventPage({
   if (!canOpenEventDetail(ws.perms)) redirect("/overview");
 
   const { event } = bundle;
-  const editable = canEditGroup(ws.perms, event.group_id);
+
+  // Completeness drives the auto-transition (draft ↔ pending_review) + the
+  // "ยังขาด…" panel on the Summary. Single source of truth = lib/completeness.
+  const completeness = eventCompleteness({
+    event,
+    schedule: bundle.schedule,
+    setlist: bundle.setlist,
+    micCount: bundle.micMap.length,
+  });
+
+  // Approved = LOCKED: read-only for everyone until reverted. The band's editor
+  // (admin / Ar) or an approver may revert it to pending_review to make changes;
+  // a rejected event's editor may resubmit once it's complete again.
+  const canEdit = canEditGroup(ws.perms, event.group_id);
+  const editable = canEdit && event.status !== "approved";
+  const canRevert = canEdit || canApprove(ws.perms);
+  const canResubmit = canEdit && completeness.complete;
 
   // Resolve which audio files this event plays so the device can pre-cache them.
   const songAudio: SongAudioMap = Object.fromEntries(
@@ -64,6 +83,15 @@ export default async function EventPage({
     ])
   );
   const audioTargets = resolveAudioTargets(bundle.setlist, songAudio);
+
+  // Reject warning — songs used in THIS event's setlist whose copyright was
+  // rejected. Surfaced to the band's Ar working on the event (warn only).
+  const usedSongIds = new Set(
+    bundle.setlist.map((s) => s.song_id).filter(Boolean) as string[]
+  );
+  const rejectedSongs = bundle.songs.filter(
+    (s) => usedSongIds.has(s.id) && s.copyright_status === "rejected"
+  );
 
   return (
     <div className="space-y-6">
@@ -140,15 +168,39 @@ export default async function EventPage({
                 </Link>
               </Button>
             )}
+            <ApprovalControl
+              eventId={event.id}
+              status={event.status as GroupStatus}
+              canRevert={canRevert}
+              canResubmit={canResubmit}
+            />
           </div>
         </div>
       </div>
+
+      {rejectedSongs.length > 0 && (
+        <div className="no-print rounded-lg border border-destructive/50 bg-destructive/10 p-3">
+          <div className="flex items-center gap-2 font-semibold text-destructive">
+            <AlertTriangle className="h-5 w-5 shrink-0" />
+            เพลงในงานนี้ถูกปฏิเสธลิขสิทธิ์ ({rejectedSongs.length})
+          </div>
+          <ul className="ml-7 mt-1.5 list-disc space-y-0.5 text-sm text-muted-foreground">
+            {rejectedSongs.map((s) => (
+              <li key={s.id}>
+                <span className="font-medium text-foreground">{s.title}</span> —
+                ควรเปลี่ยนเพลงหรือตรวจสอบลิขสิทธิ์ก่อนแสดง
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       <EventWorkspace
         event={event}
         eventId={event.id}
         tenantId={event.tenant_id}
         editable={editable}
+        completeness={completeness}
         eventType={event.event_type as EventType}
         showStartTime={event.show_start_time}
         hardOutTime={event.hard_out_time}

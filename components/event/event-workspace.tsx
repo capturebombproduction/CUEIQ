@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { ClipboardList, Check } from "lucide-react";
@@ -13,11 +13,14 @@ import { SetlistBuilder } from "@/components/event/setlist-builder";
 import { MicMapEditor } from "@/components/event/mic-map-editor";
 import { LineupEditor } from "@/components/event/lineup-editor";
 import { EventSummary } from "@/components/event/event-summary";
+import { createClient } from "@/lib/supabase/client";
+import { type CompletenessResult } from "@/lib/completeness";
 import {
   EVENT_TYPES,
   type EventRow,
   type EventType,
   type Group,
+  type GroupStatus,
   type Member,
   type MicAssignment,
   type ScheduleItem,
@@ -30,6 +33,7 @@ export function EventWorkspace({
   eventId,
   tenantId,
   editable,
+  completeness,
   eventType,
   showStartTime,
   hardOutTime,
@@ -44,6 +48,7 @@ export function EventWorkspace({
   eventId: string;
   tenantId: string;
   editable: boolean;
+  completeness: CompletenessResult;
   eventType: EventType;
   showStartTime: string | null;
   hardOutTime: string | null;
@@ -57,6 +62,39 @@ export function EventWorkspace({
   const modules = EVENT_TYPES[eventType]?.modules ?? EVENT_TYPES.idol.modules;
   const router = useRouter();
   const [saving, setSaving] = useState(false);
+
+  // Auto-transition the event between draft ↔ pending_review based on
+  // completeness. Only editors (admin / the band's Ar) can write status (RLS),
+  // and only the draft/pending_review window is auto-managed — approved/rejected
+  // are left to the explicit approval flow. A ref guards against double-firing
+  // before router.refresh() lands the new status.
+  const status = event.status as GroupStatus;
+  const syncing = useRef(false);
+  useEffect(() => {
+    if (!editable || event.is_template || syncing.current) return;
+    let next: GroupStatus | null = null;
+    if (status === "draft" && completeness.complete) next = "pending_review";
+    else if (status === "pending_review" && !completeness.complete) next = "draft";
+    if (!next) return;
+    syncing.current = true;
+    const target = next;
+    (async () => {
+      const { error } = await createClient()
+        .from("events")
+        .update({ status: target })
+        .eq("id", eventId);
+      if (error) {
+        syncing.current = false; // RLS or transient — let a later render retry
+        return;
+      }
+      toast.success(
+        target === "pending_review"
+          ? "ข้อมูลครบแล้ว — ส่งขออนุมัติให้อัตโนมัติ 🟠"
+          : "ข้อมูลไม่ครบ — กลับเป็นแบบร่าง (Draft)"
+      );
+      router.refresh();
+    })();
+  }, [editable, status, completeness.complete, eventId, router, event.is_template]);
   // remember the tab in the URL hash so a reload returns here (not back to Summary).
   // Read it AFTER mount to avoid a hydration mismatch.
   const [view, setView] = useState<string>("summary");
@@ -121,6 +159,8 @@ export function EventWorkspace({
             showMic={modules.micMap}
             onNavigate={changeView}
             lineup={lineup}
+            completeness={completeness}
+            editable={editable}
           />
         </TabsContent>
 

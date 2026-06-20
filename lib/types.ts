@@ -248,6 +248,7 @@ export interface Group {
   color: string | null;
   skin: string | null; // brand hex that themes the app on this band's pages (null = none)
   exempt_from_deadline: boolean;
+  self_photo: boolean; // true = band sets its own photo time (has own photographer); false = label staff fills it
   created_at: string;
 }
 
@@ -283,6 +284,7 @@ export interface EventRow {
   deadline_note: string | null;
   last_run_seconds: number | null; // accumulated run time saved by "จบโชว์" (null = none)
   last_run_at: string | null; // when that run time was saved (ISO)
+  is_template: boolean; // true = a "แม่แบบ" reference event (hidden from lists, no completeness churn)
   created_by: string | null;
   created_at: string;
   updated_at: string;

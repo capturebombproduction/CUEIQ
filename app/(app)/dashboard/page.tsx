@@ -6,7 +6,8 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { JoinDemo } from "@/components/join-demo";
 import { EventsList } from "@/components/event/events-list";
-import { canCreateAnyEvent, canEditGroup } from "@/lib/permissions";
+import { CreateFromTemplateButton } from "@/components/event/create-from-template-button";
+import { canCreateAnyEvent, canEditGroup, canViewGroup } from "@/lib/permissions";
 import { type EventRow } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
@@ -18,12 +19,23 @@ export default async function DashboardPage() {
   }
 
   const supabase = createClient();
-  const { data } = await supabase
-    .from("events")
-    .select("*, groups(name, color, exempt_from_deadline)")
-    .eq("tenant_id", ws.membership.tenant_id)
-    .order("event_date", { ascending: false, nullsFirst: false })
-    .order("created_at", { ascending: false });
+  const tid = ws.membership.tenant_id;
+  const [{ data }, { data: tplRow }] = await Promise.all([
+    supabase
+      .from("events")
+      .select("*, groups(name, color, exempt_from_deadline)")
+      .eq("tenant_id", tid)
+      .eq("is_template", false) // templates live outside the normal event list
+      .order("event_date", { ascending: false, nullsFirst: false })
+      .order("created_at", { ascending: false }),
+    supabase
+      .from("events")
+      .select("id, group_id")
+      .eq("tenant_id", tid)
+      .eq("is_template", true)
+      .limit(1)
+      .maybeSingle(),
+  ]);
 
   const events = (data ?? []) as (EventRow & {
     groups: {
@@ -34,9 +46,18 @@ export default async function DashboardPage() {
   })[];
   // admin can create + duplicate anywhere; an Ar only for the band(s) they manage.
   const canCreate = canCreateAnyEvent(ws.perms);
-  const editableGroupIds = ws.groups
+  const editableGroups = ws.groups
     .filter((g) => canEditGroup(ws.perms, g.id))
-    .map((g) => g.id);
+    .map((g) => ({ id: g.id, name: g.name }));
+  const editableGroupIds = editableGroups.map((g) => g.id);
+  // "create from template" needs a template the user can READ (RLS: admin, or the
+  // template band's own editor) and at least one band they can create in.
+  const template = tplRow as { id: string; group_id: string } | null;
+  const showTemplate =
+    !!template &&
+    canCreate &&
+    editableGroups.length > 0 &&
+    canViewGroup(ws.perms, template.group_id);
 
   return (
     <div className="space-y-6">
@@ -48,13 +69,22 @@ export default async function DashboardPage() {
             {events.length === 1 ? "Event" : "Events"}
           </p>
         </div>
-        {canCreate && (
-          <Button asChild>
-            <Link href="/events/new">
-              <Plus className="h-4 w-4" /> New Event
-            </Link>
-          </Button>
-        )}
+        <div className="flex flex-wrap items-center gap-2">
+          {showTemplate && template && (
+            <CreateFromTemplateButton
+              templateId={template.id}
+              templateGroupId={template.group_id}
+              groups={editableGroups}
+            />
+          )}
+          {canCreate && (
+            <Button asChild>
+              <Link href="/events/new">
+                <Plus className="h-4 w-4" /> New Event
+              </Link>
+            </Button>
+          )}
+        </div>
       </div>
 
       {events.length === 0 ? (
