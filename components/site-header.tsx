@@ -8,7 +8,20 @@ import { ThemeToggle } from "@/components/theme-toggle";
 import { AccentPicker } from "@/components/accent-picker";
 import { InstallButton } from "@/components/install-button";
 import { ROLE_SHORT, type Role } from "@/lib/types";
-import { type Perms } from "@/lib/permissions";
+import { isLabelWideUser, type Perms } from "@/lib/permissions";
+
+/**
+ * What role to show in the header. Band-scoped accounts all carry an inert
+ * tenant role of `member`, so for them we surface their REAL per-band role
+ * (Ar if they manage any band, otherwise สมาชิก) instead of the misleading
+ * tenant label. Label-wide accounts (admin/ceo/label_staff) show the tenant role.
+ */
+function roleLabel(role: Role | null | undefined, perms?: Perms): string | null {
+  if (perms && !isLabelWideUser(perms) && perms.groupRoles.length > 0) {
+    return perms.groupRoles.some((g) => g.role === "artist_manager") ? "Ar" : "สมาชิก";
+  }
+  return role ? ROLE_SHORT[role] : null;
+}
 
 export function SiteHeader({
   name,
@@ -19,6 +32,7 @@ export function SiteHeader({
   role?: Role | null;
   perms?: Perms;
 }) {
+  const shownRole = roleLabel(role, perms);
   return (
     <header className="no-print sticky top-0 z-40 border-b bg-background/80 backdrop-blur supports-[backdrop-filter]:bg-background/60">
       <div className="container flex h-14 items-center justify-between gap-3">
@@ -32,9 +46,9 @@ export function SiteHeader({
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-2 sm:gap-3">
-          {role && (
+          {shownRole && (
             <Badge variant="secondary" className="hidden sm:inline-flex">
-              {ROLE_SHORT[role]}
+              {shownRole}
             </Badge>
           )}
           {name && (
@@ -49,8 +63,21 @@ export function SiteHeader({
           <SignOutButton />
         </div>
       </div>
-      {/* mobile nav row — keeps all links visible without overflowing the header */}
-      <div className="container -mt-1 pb-2 md:hidden">
+      {/* mobile nav row — keeps all links visible without overflowing the header.
+          Identity (role + name) lives here on phones since the top row hides it. */}
+      <div className="container -mt-1 space-y-1.5 pb-2 md:hidden">
+        {(shownRole || name) && (
+          <div className="flex items-center gap-2 text-xs">
+            {shownRole && (
+              <Badge variant="secondary" className="text-[10px]">
+                {shownRole}
+              </Badge>
+            )}
+            {name && (
+              <span className="min-w-0 truncate font-medium">{name}</span>
+            )}
+          </div>
+        )}
         <div className="overflow-x-auto">
           <MainNav perms={perms} />
         </div>

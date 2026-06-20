@@ -16,11 +16,16 @@ const LINKS: NavLink[] = [
 
 export function MainNav({ perms }: { perms?: Perms }) {
   const pathname = usePathname();
-  // /overview is a label-wide surface; /admin is admin-only. Hide what a role
-  // can't use (RLS still enforces — this just declutters the nav).
-  const links: NavLink[] = LINKS.filter(
-    (l) => l.href !== "/overview" || (perms && isLabelWideUser(perms))
-  );
+  // /overview is a label-wide surface; /admin is admin-only. label_staff is
+  // overview-only for events, so they don't get the /dashboard ("Events") link —
+  // overview becomes their first/primary tab. Hide what a role can't use (RLS
+  // still enforces — this just declutters the nav).
+  const labelStaff = perms?.tenantRole === "label_staff";
+  const links: NavLink[] = LINKS.filter((l) => {
+    if (l.href === "/overview") return !!perms && isLabelWideUser(perms);
+    if (l.href === "/dashboard") return !labelStaff;
+    return true;
+  });
   if (perms && isAdmin(perms)) {
     links.push({ href: "/admin", label: "ผู้ใช้ & สิทธิ์", short: "ผู้ใช้" });
   }

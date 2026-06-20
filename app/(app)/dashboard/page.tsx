@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { redirect } from "next/navigation";
 import { Plus, Music2 } from "lucide-react";
 import { getWorkspace } from "@/lib/queries";
 import { createClient } from "@/lib/supabase/server";
@@ -17,6 +18,8 @@ export default async function DashboardPage() {
   if (!ws.membership || !ws.tenant) {
     return <JoinDemo />;
   }
+  // label_staff is overview-only — send them to their primary surface.
+  if (ws.perms.tenantRole === "label_staff") redirect("/overview");
 
   const supabase = createClient();
   const tid = ws.membership.tenant_id;

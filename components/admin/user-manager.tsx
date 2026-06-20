@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
-import { Plus, Pencil, Trash2, Loader2, UserPlus, ShieldCheck, Lock, KeyRound } from "lucide-react";
+import { Plus, Pencil, Trash2, Loader2, UserPlus, ShieldCheck, Lock, KeyRound, Copy } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -86,6 +86,16 @@ function randomPassword(len = 12): string {
   return Array.from(arr, (n) => chars[n % chars.length]).join("");
 }
 
+async function copyText(text: string) {
+  if (!text) return;
+  try {
+    await navigator.clipboard.writeText(text);
+    toast.success("คัดลอกรหัสผ่านแล้ว");
+  } catch {
+    toast.error("คัดลอกไม่สำเร็จ");
+  }
+}
+
 export function UserManager({
   currentUserId,
   groups,
@@ -104,11 +114,30 @@ export function UserManager({
   const [pwTarget, setPwTarget] = useState<ManagedUser | null>(null);
   const [newPw, setNewPw] = useState("");
   const [pwBusy, setPwBusy] = useState(false);
+  const [query, setQuery] = useState("");
 
   const groupName = useMemo(
     () => Object.fromEntries(groups.map((g) => [g.id, g.name])),
     [groups]
   );
+
+  // Filter by username, display name, band name, or access level — so an admin
+  // can find a band's Ar/Member fast when handing out or resetting credentials.
+  const visibleUsers = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return users;
+    return users.filter((u) => {
+      const hay = [
+        displayLoginId(u.email),
+        u.full_name ?? "",
+        levelOf(u) === "band" ? "เฉพาะวง band" : ROLE_SHORT[u.tenantRole] ?? "",
+        ...u.groupRoles.map((gr) => `${groupName[gr.group_id] ?? ""} ${gr.role === "artist_manager" ? "ar" : "สมาชิก member"}`),
+      ]
+        .join(" ")
+        .toLowerCase();
+      return hay.includes(q);
+    });
+  }, [users, query, groupName]);
 
   function openCreate() {
     setEditing(null);
@@ -242,15 +271,30 @@ export function UserManager({
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <span className="text-sm text-muted-foreground">{users.length} บัญชี</span>
+      <div className="flex items-center justify-between gap-3">
+        <span className="shrink-0 text-sm text-muted-foreground">
+          {query.trim() ? `${visibleUsers.length}/${users.length}` : users.length} บัญชี
+        </span>
         <Button onClick={openCreate}>
           <UserPlus className="h-4 w-4" /> สร้างบัญชีใหม่
         </Button>
       </div>
 
+      <Input
+        type="text"
+        value={query}
+        onChange={(e) => setQuery(e.target.value)}
+        placeholder="ค้นหา: ชื่อผู้ใช้ / ชื่อ / วง / สิทธิ์"
+        className="max-w-sm"
+      />
+
       <div className="space-y-2">
-        {users.map((u) => {
+        {visibleUsers.length === 0 && (
+          <p className="py-6 text-center text-sm text-muted-foreground">
+            ไม่พบบัญชีที่ตรงกับ &ldquo;{query.trim()}&rdquo;
+          </p>
+        )}
+        {visibleUsers.map((u) => {
           const level = levelOf(u);
           const isMaster = isMasterAdminEmail(u.email);
           return (
@@ -355,29 +399,49 @@ export function UserManager({
                     ใช้ชื่อผู้ใช้สั้น ๆ ก็ได้ ไม่จำเป็นต้องเป็นอีเมลจริง — ผู้ใช้ล็อกอินด้วยชื่อนี้
                   </p>
                 </div>
-                <div className="grid grid-cols-2 gap-3">
-                  <div className="space-y-2">
-                    <Label htmlFor="u-name">ชื่อ</Label>
-                    <Input
-                      id="u-name"
-                      value={form.full_name}
-                      onChange={(e) =>
-                        setForm((f) => ({ ...f, full_name: e.target.value }))
-                      }
-                      placeholder="ชื่อที่แสดง"
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="u-pass">รหัสผ่าน *</Label>
+                <div className="space-y-2">
+                  <Label htmlFor="u-name">ชื่อ</Label>
+                  <Input
+                    id="u-name"
+                    value={form.full_name}
+                    onChange={(e) =>
+                      setForm((f) => ({ ...f, full_name: e.target.value }))
+                    }
+                    placeholder="ชื่อที่แสดง"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="u-pass">รหัสผ่าน *</Label>
+                  <div className="flex gap-2">
                     <Input
                       id="u-pass"
                       type="text"
+                      autoCapitalize="none"
+                      spellCheck={false}
                       value={form.password}
                       onChange={(e) =>
                         setForm((f) => ({ ...f, password: e.target.value }))
                       }
                       placeholder="อย่างน้อย 8 ตัว"
                     />
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="shrink-0"
+                      onClick={() => setForm((f) => ({ ...f, password: randomPassword() }))}
+                    >
+                      สุ่ม
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="icon"
+                      className="shrink-0"
+                      title="คัดลอกรหัสผ่าน"
+                      onClick={() => copyText(form.password)}
+                    >
+                      <Copy className="h-4 w-4" />
+                    </Button>
                   </div>
                 </div>
               </>
@@ -495,6 +559,16 @@ export function UserManager({
                 onClick={() => setNewPw(randomPassword())}
               >
                 สุ่ม
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="icon"
+                className="shrink-0"
+                title="คัดลอกรหัสผ่าน"
+                onClick={() => copyText(newPw)}
+              >
+                <Copy className="h-4 w-4" />
               </Button>
             </div>
             <p className="text-xs text-muted-foreground">
