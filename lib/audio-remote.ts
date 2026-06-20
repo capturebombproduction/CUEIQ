@@ -80,28 +80,57 @@ async function presign(key: string, op: "get" | "put"): Promise<string> {
   return data.url;
 }
 
+/**
+ * Retry a transfer a few times with linear backoff. Venue Wi-Fi drops packets,
+ * and the WAVs are big, so a single transient failure shouldn't doom a file.
+ * Each attempt re-presigns (a fresh 15-min URL) so an expired/edge-cached URL
+ * isn't reused. On persistent failure it throws the last error, same as before.
+ */
+async function withRetry<T>(
+  fn: () => Promise<T>,
+  attempts = 3,
+  delayMs = 700
+): Promise<T> {
+  let lastErr: unknown;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      return await fn();
+    } catch (e) {
+      lastErr = e;
+      if (i < attempts - 1) {
+        await new Promise((r) => setTimeout(r, delayMs * (i + 1)));
+      }
+    }
+  }
+  throw lastErr;
+}
+
 export async function uploadEventAudio(
   path: string,
   file: File | Blob,
   contentType?: string
 ): Promise<void> {
-  const url = await presign(path, "put");
-  const type = contentType || (file as File).type || "";
-  const res = await fetch(url, {
-    method: "PUT",
-    body: file,
-    // Content-Type is NOT part of the presigned signature (we sign only host), so
-    // sending it is safe and lets R2 store a sensible type for playback.
-    headers: type ? { "Content-Type": type } : undefined,
+  await withRetry(async () => {
+    const url = await presign(path, "put");
+    const type = contentType || (file as File).type || "";
+    const res = await fetch(url, {
+      method: "PUT",
+      body: file,
+      // Content-Type is NOT part of the presigned signature (we sign only host), so
+      // sending it is safe and lets R2 store a sensible type for playback.
+      headers: type ? { "Content-Type": type } : undefined,
+    });
+    if (!res.ok) throw new Error(`อัปโหลดไฟล์เสียงไม่สำเร็จ (${res.status})`);
   });
-  if (!res.ok) throw new Error(`อัปโหลดไฟล์เสียงไม่สำเร็จ (${res.status})`);
 }
 
 export async function downloadEventAudio(path: string): Promise<Blob> {
-  const url = await presign(path, "get");
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`ดาวน์โหลดไฟล์เสียงไม่สำเร็จ (${res.status})`);
-  return res.blob();
+  return withRetry(async () => {
+    const url = await presign(path, "get");
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`ดาวน์โหลดไฟล์เสียงไม่สำเร็จ (${res.status})`);
+    return res.blob();
+  });
 }
 
 export async function removeEventAudio(path: string): Promise<void> {
