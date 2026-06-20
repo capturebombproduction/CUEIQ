@@ -1,9 +1,3 @@
-"use client";
-
-import { useState } from "react";
-import { toast } from "sonner";
-import { createClient } from "@/lib/supabase/client";
-import { Button } from "@/components/ui/button";
 import {
   Card,
   CardContent,
@@ -12,47 +6,24 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 
+// Self-service tenant join is CLOSED (RBAC lockdown, supabase/migrations/0016).
+// A signed-in account that isn't yet attached to a tenant/band sees this notice —
+// an admin must provision their access.
 export function JoinDemo() {
-  const [loading, setLoading] = useState(false);
-
-  async function join() {
-    setLoading(true);
-    const { error } = await createClient().rpc("join_demo");
-    setLoading(false);
-    if (error) {
-      toast.error("เข้าร่วม workspace ไม่สำเร็จ", {
-        description:
-          error.message +
-          " — ตรวจสอบว่าได้รัน supabase/migrations + supabase/seed.sql แล้ว",
-      });
-      return;
-    }
-    toast.success("เข้าร่วม Capture Bomb Production แล้ว 🎉");
-    window.location.href = "/dashboard";
-  }
-
   return (
     <div className="mx-auto max-w-md py-10">
       <Card>
         <CardHeader>
-          <CardTitle>ยังไม่ได้อยู่ใน Workspace</CardTitle>
+          <CardTitle>บัญชียังไม่ได้รับสิทธิ์เข้าวง</CardTitle>
           <CardDescription>
-            บัญชีของคุณยังไม่ถูกผูกกับค่าย/ทีมใด เข้าร่วม Demo Workspace
-            (Capture Bomb Production) เพื่อดูข้อมูลตัวอย่าง VANTAFLARE
+            บัญชีของคุณเข้าสู่ระบบแล้ว แต่ยังไม่ถูกกำหนดให้เข้าวง/ค่ายใด
+            กรุณาติดต่อแอดมินค่ายเพื่อขอสิทธิ์ (วงและบทบาทของคุณ)
           </CardDescription>
         </CardHeader>
-        <CardContent className="space-y-4">
-          <Button onClick={join} disabled={loading} className="w-full">
-            {loading ? "กำลังเข้าร่วม…" : "เข้าร่วม Demo Workspace"}
-          </Button>
+        <CardContent>
           <p className="text-xs text-muted-foreground">
-            ถ้ากดแล้วไม่สำเร็จ แปลว่ายังไม่ได้ตั้งค่าฐานข้อมูล —
-            เปิด Supabase SQL Editor แล้วรัน{" "}
-            <code className="rounded bg-muted px-1">
-              supabase/migrations/0001_init.sql
-            </code>{" "}
-            ตามด้วย{" "}
-            <code className="rounded bg-muted px-1">supabase/seed.sql</code>
+            แอดมินจะกำหนดบทบาทให้คุณ (Artist Manager / สมาชิกวง / ทีมค่าย)
+            จากหน้าจัดการสิทธิ์ แล้วคุณจะเห็นข้อมูลของวงที่ได้รับมอบหมาย
           </p>
         </CardContent>
       </Card>

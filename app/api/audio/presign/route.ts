@@ -56,11 +56,18 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "bad request" }, { status: 400 });
   }
 
-  // The first path segment is the tenant id — gate access on it.
-  const tenantId = key.split("/")[0];
+  // Key layout (see lib/audio-remote.ts buildAudioPath / buildSongAudioPath):
+  //   new:    <tenant>/<group>/<event>/<item>   and  <tenant>/<group>/songs/<song>
+  //   legacy: <tenant>/<event>/<item>           (pre-RBAC, no group segment)
+  // The first segment is always the tenant id; segment 1 is the band id when the
+  // key is the new 4-part form. Gate per-BAND when we have a group, so a member of
+  // one band can't fetch another band's audio (RBAC, supabase/migrations/0016).
+  const segs = key.split("/");
+  const tenantId = segs[0];
   if (!UUID.test(tenantId)) {
     return NextResponse.json({ error: "bad key" }, { status: 400 });
   }
+  const groupId = segs.length >= 4 && UUID.test(segs[1]) ? segs[1] : null;
 
   const supabase = createClient();
   const {
@@ -70,12 +77,19 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   }
 
-  // Reads need membership; writes/deletes need edit rights — same predicates as
-  // the old Storage RLS, evaluated under the caller's auth.uid().
-  const rpc = op === "get" ? "is_tenant_member" : "can_edit_tenant";
-  const { data: allowed, error: rpcErr } = await supabase.rpc(rpc, {
-    tid: tenantId,
-  });
+  // Reads need view rights; writes/deletes need edit rights — evaluated under the
+  // caller's auth.uid() via the SECURITY DEFINER RLS helpers. Group-scoped keys
+  // gate on the band; legacy keys fall back to the tenant-level predicates.
+  const { rpc, arg } = groupId
+    ? {
+        rpc: op === "get" ? "can_view_group" : "can_edit_group",
+        arg: { gid: groupId },
+      }
+    : {
+        rpc: op === "get" ? "is_tenant_member" : "can_edit_tenant",
+        arg: { tid: tenantId },
+      };
+  const { data: allowed, error: rpcErr } = await supabase.rpc(rpc, arg);
   if (rpcErr) {
     return NextResponse.json(
       { error: "permission check failed" },

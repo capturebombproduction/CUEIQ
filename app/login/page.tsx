@@ -1,4 +1,3 @@
-import Link from "next/link";
 import { Brand } from "@/components/brand";
 import { LoginForm } from "@/components/auth/login-form";
 
@@ -20,13 +19,7 @@ export default function LoginPage({
         </div>
         <LoginForm next={searchParams.next} />
         <p className="mt-6 text-center text-sm text-muted-foreground">
-          ยังไม่มีบัญชี?{" "}
-          <Link
-            href="/register"
-            className="font-medium text-primary hover:underline"
-          >
-            สมัครสมาชิก
-          </Link>
+          ต้องการบัญชีเข้าใช้งาน? ติดต่อแอดมินค่าย
         </p>
       </div>
     </main>

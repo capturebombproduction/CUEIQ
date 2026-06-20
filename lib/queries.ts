@@ -11,12 +11,17 @@ import type {
   Song,
   Tenant,
 } from "@/lib/types";
+import { makePerms, type GroupRoleRow, type Perms } from "@/lib/permissions";
 
 export interface Workspace {
   user: { id: string; email: string | null; name: string | null } | null;
   membership: { tenant_id: string; role: Role } | null;
   tenant: Tenant | null;
   groups: Group[];
+  /** The user's per-band roles (group_roles rows the user owns). */
+  groupRoles: GroupRoleRow[];
+  /** Effective permissions for the UI (mirror of the DB's RLS helpers). */
+  perms: Perms;
 }
 
 /**
@@ -32,7 +37,14 @@ export const getWorkspace = cache(async (): Promise<Workspace> => {
   } = await supabase.auth.getUser();
 
   if (!user) {
-    return { user: null, membership: null, tenant: null, groups: [] };
+    return {
+      user: null,
+      membership: null,
+      tenant: null,
+      groups: [],
+      groupRoles: [],
+      perms: makePerms(null),
+    };
   }
 
   const name =
@@ -50,30 +62,48 @@ export const getWorkspace = cache(async (): Promise<Workspace> => {
     .maybeSingle();
 
   if (!memberRow) {
-    return { user: base, membership: null, tenant: null, groups: [] };
+    return {
+      user: base,
+      membership: null,
+      tenant: null,
+      groups: [],
+      groupRoles: [],
+      perms: makePerms(null),
+    };
   }
 
-  const [{ data: tenant }, { data: groups }] = await Promise.all([
-    supabase
-      .from("tenants")
-      .select("*")
-      .eq("id", memberRow.tenant_id)
-      .maybeSingle(),
-    supabase
-      .from("groups")
-      .select("*")
-      .eq("tenant_id", memberRow.tenant_id)
-      .order("created_at", { ascending: true }),
-  ]);
+  const role = memberRow.role as Role;
+
+  const [{ data: tenant }, { data: groups }, { data: groupRoleRows }] =
+    await Promise.all([
+      supabase
+        .from("tenants")
+        .select("*")
+        .eq("id", memberRow.tenant_id)
+        .maybeSingle(),
+      supabase
+        .from("groups")
+        .select("*")
+        .eq("tenant_id", memberRow.tenant_id)
+        .order("created_at", { ascending: true }),
+      supabase
+        .from("group_roles")
+        .select("group_id, role")
+        .eq("user_id", user.id),
+    ]);
+
+  const groupRoles = (groupRoleRows ?? []) as GroupRoleRow[];
 
   return {
     user: base,
     membership: {
       tenant_id: memberRow.tenant_id as string,
-      role: memberRow.role as Role,
+      role,
     },
     tenant: (tenant as Tenant) ?? null,
     groups: (groups ?? []) as Group[],
+    groupRoles,
+    perms: makePerms(role, groupRoles),
   };
 });
 

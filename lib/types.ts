@@ -1,54 +1,69 @@
 // ---------------------------------------------------------------------------
-// Roles & permissions
+// Roles & permissions  (Phase 1 RBAC — two-tier model)
+//
+// TENANT tier (tenant_members.role) = label-wide standing:
+//   admin / ceo / label_staff have real label-wide power (see ADMIN/LABEL_WIDE/
+//   APPROVER role sets). artist_manager / member at the TENANT level are an INERT
+//   baseline — a band-scoped user keeps one of these so they belong to the tenant,
+//   but their real power comes from their per-band group_roles row.
+// GROUP tier (group_roles.role) = per-band standing: artist_manager (Ar) | member.
+// See lib/permissions.ts for the effective per-group permission helpers.
 // ---------------------------------------------------------------------------
 export type Role =
-  | "platform_admin"
-  | "tenant_owner"
+  | "admin"
+  | "ceo"
   | "label_staff"
   | "artist_manager"
-  | "sound_engineer"
-  | "lighting"
-  | "general_staff";
+  | "member";
+
+/** Per-band role stored in group_roles.role. */
+export type GroupRole = "artist_manager" | "member";
 
 export const ROLE_LABELS: Record<Role, string> = {
-  platform_admin: "Platform Admin",
-  tenant_owner: "Tenant Owner (เจ้าของค่าย)",
+  admin: "Admin (ผู้ดูแลระบบ)",
+  ceo: "CEO (ผู้บริหาร)",
   label_staff: "Label Staff (ทีมค่าย)",
   artist_manager: "Artist Manager (ผู้จัดการวง)",
-  sound_engineer: "Sound Engineer (ซาวด์)",
-  lighting: "Lighting (ไฟ)",
-  general_staff: "General Staff (ทีมงาน)",
+  member: "Member (สมาชิกวง)",
 };
 
 export const ROLE_SHORT: Record<Role, string> = {
-  platform_admin: "Admin",
-  tenant_owner: "Owner",
+  admin: "Admin",
+  ceo: "CEO",
   label_staff: "Label",
-  artist_manager: "Manager",
-  sound_engineer: "Sound",
-  lighting: "Light",
-  general_staff: "Staff",
+  artist_manager: "Ar",
+  member: "Member",
 };
 
-/** Roles allowed to sign up themselves in the MVP. */
-export const SIGNUP_ROLES: Role[] = [
-  "artist_manager",
-  "label_staff",
-  "sound_engineer",
-  "lighting",
-  "general_staff",
-];
+export const GROUP_ROLE_LABELS: Record<GroupRole, string> = {
+  artist_manager: "Artist Manager (ผู้จัดการวง)",
+  member: "Member (สมาชิกวง)",
+};
 
-/** Roles that can create / edit shows. Others are read-only. */
-export const EDITOR_ROLES: Role[] = [
-  "platform_admin",
-  "tenant_owner",
-  "label_staff",
-  "artist_manager",
-];
+/** Tenant roles with full label-wide edit power. */
+export const ADMIN_ROLES: Role[] = ["admin"];
+/** Tenant roles that can SEE every band (label-wide visibility). */
+export const LABEL_WIDE_ROLES: Role[] = ["admin", "ceo", "label_staff"];
+/** Tenant roles that can approve/reject songs + events. */
+export const APPROVER_ROLES: Role[] = ["admin", "label_staff"];
 
+export function isTenantAdmin(role: Role | null | undefined): boolean {
+  return !!role && ADMIN_ROLES.includes(role);
+}
+export function isLabelWide(role: Role | null | undefined): boolean {
+  return !!role && LABEL_WIDE_ROLES.includes(role);
+}
+export function isApprover(role: Role | null | undefined): boolean {
+  return !!role && APPROVER_ROLES.includes(role);
+}
+
+/**
+ * Tenant-tier editor check. Under the new model only `admin` has blanket
+ * label-wide edit rights — per-band Ar editing is resolved in lib/permissions.ts.
+ * Phase 2 replaces remaining UI call sites with the group-aware helpers.
+ */
 export function canEdit(role: Role | null | undefined): boolean {
-  return !!role && EDITOR_ROLES.includes(role);
+  return isTenantAdmin(role);
 }
 
 // ---------------------------------------------------------------------------
