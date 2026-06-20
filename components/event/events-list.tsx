@@ -19,6 +19,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { StatusBadge } from "@/components/status-badge";
 import { DuplicateEventButton } from "@/components/event/duplicate-event-button";
 import { AutoPrefetch } from "@/components/event/auto-prefetch";
+import { DeviceStorage } from "@/components/event/device-storage";
 import { createClient } from "@/lib/supabase/client";
 import {
   getReadiness,
@@ -219,6 +220,14 @@ export function EventsList({
   const noResults = upcoming.length === 0 && past.length === 0;
   // soonest dated upcoming event (upcoming is already sorted soonest-first)
   const nextShow = !q.trim() ? upcoming.find((e) => !!e.event_date) : undefined;
+
+  // all past events (search-independent) — for clearing their cached audio
+  const allPastIds = useMemo(() => {
+    const today = todayKey();
+    return events
+      .filter((e) => e.event_date && e.event_date < today)
+      .map((e) => e.id);
+  }, [events]);
 
   // Per-device offline-readiness badge on each upcoming card: does THIS device
   // already hold the event's audio? Two batched queries (items + songs) cover all
@@ -437,6 +446,8 @@ export function EventsList({
           )}
         </>
       )}
+
+      <DeviceStorage pastEventIds={allPastIds} onChanged={computeReadiness} />
     </div>
   );
 }
