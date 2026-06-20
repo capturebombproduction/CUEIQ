@@ -231,12 +231,27 @@ export async function PATCH(req: Request) {
 
   const body = await req.json().catch(() => null);
   const userId = typeof body?.user_id === "string" ? body.user_id : "";
+  // Two independent edits, either or both: change role/band roles, and/or reset
+  // the password. The role fields are only validated/applied when provided, so a
+  // pure password reset doesn't need to round-trip the role.
+  const roleProvided = body?.tenantRole !== undefined && body?.tenantRole !== null;
   const tenantRole = body?.tenantRole as Role;
-  if (!userId || !TENANT_ROLES.includes(tenantRole)) {
+  const password = typeof body?.password === "string" ? body.password : undefined;
+
+  if (!userId) {
     return NextResponse.json({ error: "ข้อมูลไม่ครบ" }, { status: 400 });
   }
+  if (!roleProvided && password === undefined) {
+    return NextResponse.json({ error: "ไม่มีอะไรให้แก้ไข" }, { status: 400 });
+  }
+  if (roleProvided && !TENANT_ROLES.includes(tenantRole)) {
+    return NextResponse.json({ error: "ระดับสิทธิ์ไม่ถูกต้อง" }, { status: 400 });
+  }
+  if (password !== undefined && password.length < 8) {
+    return NextResponse.json({ error: "รหัสผ่านต้องยาวอย่างน้อย 8 ตัวอักษร" }, { status: 400 });
+  }
   // don't let an admin strip their OWN admin rights (self-lockout guard)
-  if (userId === gate.callerId && tenantRole !== "admin") {
+  if (roleProvided && userId === gate.callerId && tenantRole !== "admin") {
     return NextResponse.json(
       { error: "เปลี่ยนสิทธิ์ตัวเองออกจากแอดมินไม่ได้" },
       { status: 400 }
@@ -245,7 +260,8 @@ export async function PATCH(req: Request) {
 
   const admin = createAdminClient();
 
-  // Master Admin can only be modified by itself — block other admins.
+  // Master Admin can only be modified by itself — block other admins (covers both
+  // the role change and the password reset).
   if (userId !== gate.callerId && isMasterAdminEmail(await targetEmail(admin, userId))) {
     return NextResponse.json(
       { error: "บัญชี Master Admin ถูกป้องกันไว้ คนอื่นแก้ไขไม่ได้" },
@@ -253,35 +269,44 @@ export async function PATCH(req: Request) {
     );
   }
 
-  const { tenantId } = gate;
-  const groupIds = await tenantGroupIdSet(admin, tenantId);
-  const groupRoles = sanitizeGroupRoles(body?.groupRoles, groupIds);
+  // password reset — service-role sets it directly (synthetic @cueiq.local accounts
+  // can't self-serve an email reset), takes effect on the user's next login.
+  if (password !== undefined) {
+    const { error: pwErr } = await admin.auth.admin.updateUserById(userId, { password });
+    if (pwErr) return NextResponse.json({ error: pwErr.message }, { status: 400 });
+  }
 
-  const { error: memErr } = await admin
-    .from("tenant_members")
-    .upsert({ tenant_id: tenantId, user_id: userId, role: tenantRole }, {
-      onConflict: "tenant_id,user_id",
-    });
-  if (memErr) return NextResponse.json({ error: memErr.message }, { status: 400 });
+  if (roleProvided) {
+    const { tenantId } = gate;
+    const groupIds = await tenantGroupIdSet(admin, tenantId);
+    const groupRoles = sanitizeGroupRoles(body?.groupRoles, groupIds);
 
-  // replace the user's band roles wholesale
-  const { error: delErr } = await admin
-    .from("group_roles")
-    .delete()
-    .eq("tenant_id", tenantId)
-    .eq("user_id", userId);
-  if (delErr) return NextResponse.json({ error: delErr.message }, { status: 400 });
+    const { error: memErr } = await admin
+      .from("tenant_members")
+      .upsert({ tenant_id: tenantId, user_id: userId, role: tenantRole }, {
+        onConflict: "tenant_id,user_id",
+      });
+    if (memErr) return NextResponse.json({ error: memErr.message }, { status: 400 });
 
-  if (groupRoles.length) {
-    const { error: grErr } = await admin.from("group_roles").insert(
-      groupRoles.map((g) => ({
-        tenant_id: tenantId,
-        group_id: g.group_id,
-        user_id: userId,
-        role: g.role,
-      }))
-    );
-    if (grErr) return NextResponse.json({ error: grErr.message }, { status: 400 });
+    // replace the user's band roles wholesale
+    const { error: delErr } = await admin
+      .from("group_roles")
+      .delete()
+      .eq("tenant_id", tenantId)
+      .eq("user_id", userId);
+    if (delErr) return NextResponse.json({ error: delErr.message }, { status: 400 });
+
+    if (groupRoles.length) {
+      const { error: grErr } = await admin.from("group_roles").insert(
+        groupRoles.map((g) => ({
+          tenant_id: tenantId,
+          group_id: g.group_id,
+          user_id: userId,
+          role: g.role,
+        }))
+      );
+      if (grErr) return NextResponse.json({ error: grErr.message }, { status: 400 });
+    }
   }
 
   return NextResponse.json({ ok: true });

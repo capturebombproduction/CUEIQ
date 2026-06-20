@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
-import { Plus, Pencil, Trash2, Loader2, UserPlus, ShieldCheck, Lock } from "lucide-react";
+import { Plus, Pencil, Trash2, Loader2, UserPlus, ShieldCheck, Lock, KeyRound } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -78,6 +78,14 @@ function emptyForm(): FormState {
   return { loginId: "", password: "", full_name: "", level: "band", bandRoles: {} };
 }
 
+// Generate a readable random password (no easily-confused chars) for admin resets.
+function randomPassword(len = 12): string {
+  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789";
+  const arr = new Uint32Array(len);
+  crypto.getRandomValues(arr);
+  return Array.from(arr, (n) => chars[n % chars.length]).join("");
+}
+
 export function UserManager({
   currentUserId,
   groups,
@@ -92,6 +100,10 @@ export function UserManager({
   const [editing, setEditing] = useState<ManagedUser | null>(null);
   const [form, setForm] = useState<FormState>(emptyForm());
   const [busy, setBusy] = useState(false);
+  // reset-password dialog (separate from the role-edit dialog)
+  const [pwTarget, setPwTarget] = useState<ManagedUser | null>(null);
+  const [newPw, setNewPw] = useState("");
+  const [pwBusy, setPwBusy] = useState(false);
 
   const groupName = useMemo(
     () => Object.fromEntries(groups.map((g) => [g.id, g.name])),
@@ -201,6 +213,33 @@ export function UserManager({
     }
   }
 
+  function openReset(u: ManagedUser) {
+    setNewPw("");
+    setPwTarget(u);
+  }
+
+  async function submitReset() {
+    if (!pwTarget || newPw.length < 8) return;
+    setPwBusy(true);
+    try {
+      const res = await fetch("/api/admin/users", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ user_id: pwTarget.user_id, password: newPw }),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(json.error ?? "ตั้งรหัสผ่านใหม่ไม่สำเร็จ");
+      toast.success(
+        `ตั้งรหัสผ่านใหม่ให้ ${displayLoginId(pwTarget.email) || pwTarget.user_id} แล้ว`
+      );
+      setPwTarget(null);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e));
+    } finally {
+      setPwBusy(false);
+    }
+  }
+
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
@@ -258,6 +297,16 @@ export function UserManager({
                       <Pencil className="h-4 w-4" />
                     </Button>
                   )}
+                  {(!isMaster || u.user_id === currentUserId) && (
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      title="ตั้งรหัสผ่านใหม่"
+                      onClick={() => openReset(u)}
+                    >
+                      <KeyRound className="h-4 w-4" />
+                    </Button>
+                  )}
                   {u.user_id !== currentUserId && !isMaster && (
                     <Button
                       variant="ghost"
@@ -284,7 +333,7 @@ export function UserManager({
             <DialogDescription>
               {editing
                 ? `${displayLoginId(editing.email) || editing.user_id}`
-                : "ตั้งชื่อผู้ใช้ + รหัสผ่านให้ผู้ใช้ แล้วกำหนดบทบาท (ผู้ใช้เปลี่ยนรหัสเองทีหลังได้)"}
+                : "ตั้งชื่อผู้ใช้ + รหัสผ่านให้ผู้ใช้ แล้วกำหนดบทบาท (รีเซ็ตรหัสผ่านภายหลังได้จากปุ่มรูปกุญแจ)"}
             </DialogDescription>
           </DialogHeader>
 
@@ -413,6 +462,57 @@ export function UserManager({
                 <Plus className="h-4 w-4" />
               )}
               {editing ? "บันทึก" : "สร้างบัญชี"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={!!pwTarget} onOpenChange={(o) => !pwBusy && !o && setPwTarget(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>ตั้งรหัสผ่านใหม่</DialogTitle>
+            <DialogDescription>
+              {pwTarget ? displayLoginId(pwTarget.email) || pwTarget.user_id : ""} — ผู้ใช้จะใช้รหัสใหม่นี้ล็อกอินครั้งต่อไป
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-2">
+            <Label htmlFor="reset-pw">รหัสผ่านใหม่ *</Label>
+            <div className="flex gap-2">
+              <Input
+                id="reset-pw"
+                type="text"
+                autoCapitalize="none"
+                spellCheck={false}
+                value={newPw}
+                onChange={(e) => setNewPw(e.target.value)}
+                placeholder="อย่างน้อย 8 ตัว"
+              />
+              <Button
+                type="button"
+                variant="outline"
+                className="shrink-0"
+                onClick={() => setNewPw(randomPassword())}
+              >
+                สุ่ม
+              </Button>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              คัดลอกรหัสนี้ส่งให้ผู้ใช้เอง — ระบบไม่ส่งอีเมล (บัญชีใช้ชื่อผู้ใช้ ไม่มีอีเมลจริง)
+            </p>
+          </div>
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setPwTarget(null)} disabled={pwBusy}>
+              ยกเลิก
+            </Button>
+            <Button onClick={submitReset} disabled={pwBusy || newPw.length < 8}>
+              {pwBusy ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <KeyRound className="h-4 w-4" />
+              )}
+              ตั้งรหัสผ่าน
             </Button>
           </DialogFooter>
         </DialogContent>
