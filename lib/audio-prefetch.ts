@@ -76,6 +76,13 @@ export async function prefetchEventAudio(
 ): Promise<PrefetchResult> {
   const { onProgress, isCancelled } = opts;
 
+  // Safety: never run the orphan-cleanup with an empty target list — that would
+  // wipe the event's whole cache. Empty here means "nothing to do" (callers that
+  // genuinely have audio always pass a non-empty list), so bail untouched.
+  if (targets.length === 0) {
+    return { totalTargets: 0, fetched: 0, skipped: 0, failed: 0, removedStale: 0 };
+  }
+
   let cached: Record<string, string | null> = {};
   try {
     cached = await listCachedItemPaths(eventId);

@@ -68,6 +68,10 @@ export function AutoPrefetch({
             .eq("group_id", groupId),
         ]);
         if (cancelledRef.current) return;
+        // A partial fetch (e.g. songs failed on flaky Wi-Fi) would yield an
+        // incomplete target list → prefetch's orphan-cleanup could delete good
+        // cached audio. Only act on a fully successful read.
+        if (itemsRes.error || songsRes.error) return;
         const items = itemsRes.data ?? [];
         if (items.length === 0) return;
 

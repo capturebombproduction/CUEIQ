@@ -260,6 +260,9 @@ export function EventsList({
           .select("id, audio_path, audio_name")
           .in("group_id", groupIds),
       ]);
+      // A partial fetch would make targetsByEvent incomplete → a later bulk
+      // "prepare all" would prune good cache as orphans. Skip on any query error.
+      if (itemsRes.error || songsRes.error) return;
       const songAudio: SongAudioMap = Object.fromEntries(
         (songsRes.data ?? []).map((s) => [
           s.id,
