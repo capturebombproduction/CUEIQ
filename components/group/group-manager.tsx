@@ -10,24 +10,30 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
+import { canEditGroup, isAdmin, type Perms } from "@/lib/permissions";
 import type { Group, Member } from "@/lib/types";
 
 export function GroupManager({
   tenantId,
   initialGroups,
   initialMembers,
-  editable,
+  perms,
 }: {
   tenantId: string;
   initialGroups: Group[];
   initialMembers: Member[];
-  editable: boolean;
+  perms: Perms;
 }) {
   const supabase = createClient();
   const [groups, setGroups] = useState<Group[]>(initialGroups);
   const [members, setMembers] = useState<Member[]>(initialMembers);
   const [newGroup, setNewGroup] = useState("");
   const [busy, setBusy] = useState(false);
+
+  // Create/delete a band + its settings (name/color/skin) = admin only.
+  // Editing a band's roster (members) = admin OR that band's Artist Manager.
+  const admin = isAdmin(perms);
+  const canEditRoster = (groupId: string) => canEditGroup(perms, groupId);
 
   const membersOf = (gid: string) =>
     members
@@ -182,7 +188,7 @@ export function GroupManager({
 
   return (
     <div className="space-y-6">
-      {editable && (
+      {admin && (
         <div className="flex gap-2">
           <Input
             value={newGroup}
@@ -213,7 +219,7 @@ export function GroupManager({
                 <input
                   type="color"
                   value={g.color ?? "#7c3aed"}
-                  disabled={!editable}
+                  disabled={!admin}
                   onChange={(e) => setGroupLocal(g.id, { color: e.target.value })}
                   onBlur={(e) => persistGroup(g.id, { color: e.target.value })}
                   className="h-8 w-8 shrink-0 cursor-pointer rounded border bg-transparent"
@@ -221,7 +227,7 @@ export function GroupManager({
                 />
                 <Input
                   value={g.name}
-                  disabled={!editable}
+                  disabled={!admin}
                   onChange={(e) => setGroupLocal(g.id, { name: e.target.value })}
                   onBlur={(e) =>
                     persistGroup(g.id, { name: e.target.value.trim() || g.name })
@@ -229,7 +235,7 @@ export function GroupManager({
                   className="h-9 max-w-xs flex-1 text-base font-semibold"
                 />
                 <Badge variant="secondary">{gm.length} คน</Badge>
-                {editable &&
+                {admin &&
                   (g.skin ? (
                     <div className="flex items-center gap-1 text-xs text-muted-foreground">
                       <span>ธีมแอป</span>
@@ -267,7 +273,7 @@ export function GroupManager({
                       + ธีมแอปวง
                     </button>
                   ))}
-                {editable && (
+                {admin && (
                   <Button
                     variant="ghost"
                     size="icon"
@@ -289,7 +295,7 @@ export function GroupManager({
                   <div key={m.id} className="flex flex-wrap items-center gap-2">
                     <Input
                       value={m.name}
-                      disabled={!editable}
+                      disabled={!canEditRoster(g.id)}
                       placeholder="ชื่อ"
                       className="min-w-[120px] flex-1"
                       onChange={(e) => setMemberLocal(m.id, { name: e.target.value })}
@@ -297,7 +303,7 @@ export function GroupManager({
                     />
                     <Input
                       value={m.nickname ?? ""}
-                      disabled={!editable}
+                      disabled={!canEditRoster(g.id)}
                       placeholder="ชื่อเล่น"
                       className="min-w-[100px] flex-1"
                       onChange={(e) =>
@@ -313,7 +319,7 @@ export function GroupManager({
                       type="number"
                       min={0}
                       value={m.mic_number ?? ""}
-                      disabled={!editable}
+                      disabled={!canEditRoster(g.id)}
                       placeholder="ไมค์"
                       className="w-20 tabular-nums"
                       onChange={(e) =>
@@ -332,7 +338,7 @@ export function GroupManager({
                     <input
                       type="color"
                       value={m.color ?? "#7c3aed"}
-                      disabled={!editable}
+                      disabled={!canEditRoster(g.id)}
                       onChange={(e) =>
                         setMemberLocal(m.id, { color: e.target.value })
                       }
@@ -342,7 +348,7 @@ export function GroupManager({
                       className="h-9 w-9 shrink-0 cursor-pointer rounded border bg-transparent"
                       aria-label="สีสมาชิก"
                     />
-                    {editable && (
+                    {canEditRoster(g.id) && (
                       <Button
                         variant="ghost"
                         size="icon"
@@ -355,7 +361,7 @@ export function GroupManager({
                     )}
                   </div>
                 ))}
-                {editable && (
+                {canEditRoster(g.id) && (
                   <div className="flex flex-wrap gap-2">
                     <Button
                       variant="outline"

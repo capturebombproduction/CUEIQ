@@ -58,6 +58,7 @@ import {
   type Group,
   type Song,
 } from "@/lib/types";
+import { canApprove, canEditGroup, type Perms } from "@/lib/permissions";
 
 const NONE = "__none__";
 const COPYRIGHT_KEYS = Object.keys(COPYRIGHT_META) as CopyrightStatus[];
@@ -92,20 +93,34 @@ export function SongLibrary({
   tenantId,
   groups,
   initialSongs,
-  editable,
+  perms,
 }: {
   tenantId: string;
   groups: Group[];
   initialSongs: Song[];
-  editable: boolean;
+  perms: Perms;
 }) {
   const supabase = createClient();
+  // A song is editable by admin OR the band's Ar; copyright triage is for
+  // approvers (admin / label_staff) only. Gate per-row by the song's band.
+  const editableGroupIds = useMemo(
+    () =>
+      new Set(groups.filter((g) => canEditGroup(perms, g.id)).map((g) => g.id)),
+    [groups, perms]
+  );
+  const editGroups = useMemo(
+    () => groups.filter((g) => editableGroupIds.has(g.id)),
+    [groups, editableGroupIds]
+  );
+  const canEditSong = (song: Song) => editableGroupIds.has(song.group_id);
+  const canEditAny = editableGroupIds.size > 0;
+  const approver = canApprove(perms);
   const [songs, setSongs] = useState<Song[]>(initialSongs);
   const [groupFilter, setGroupFilter] = useState<string>("all");
   const [query, setQuery] = useState("");
   const [copyFilter, setCopyFilter] = useState<string>("all");
   const [open, setOpen] = useState(false);
-  const [form, setForm] = useState<FormState>(emptyForm(groups[0]?.id ?? ""));
+  const [form, setForm] = useState<FormState>(emptyForm(editGroups[0]?.id ?? ""));
   const [saving, setSaving] = useState(false);
   const [detecting, setDetecting] = useState(false);
   // file picked in the add/edit dialog — uploaded to R2 on save (one-step add+upload)
@@ -158,7 +173,7 @@ export function SongLibrary({
 
   function openAdd() {
     setPickedFile(null);
-    setForm(emptyForm(groups[0]?.id ?? ""));
+    setForm(emptyForm(editGroups[0]?.id ?? ""));
     setOpen(true);
   }
 
@@ -476,7 +491,7 @@ export function SongLibrary({
           <span className="tabular-nums text-xs text-muted-foreground">
             {visible.length} เพลง
           </span>
-          {editable && (
+          {canEditAny && (
             <Button onClick={openAdd}>
               <Plus className="h-4 w-4" /> เพิ่มเพลง
             </Button>
@@ -490,7 +505,7 @@ export function SongLibrary({
           {songs.length === 0 ? (
             <>
               <p className="text-muted-foreground">ยังไม่มีเพลงในคลัง</p>
-              {editable && (
+              {canEditAny && (
                 <Button variant="outline" onClick={openAdd}>
                   <Plus className="h-4 w-4" /> เพิ่มเพลงแรก
                 </Button>
@@ -514,7 +529,7 @@ export function SongLibrary({
                 <TableHead className="w-32">หมวดหมู่</TableHead>
                 <TableHead className="w-28">ลิขสิทธิ์</TableHead>
                 {groups.length > 1 && <TableHead className="w-28">วง</TableHead>}
-                {editable && <TableHead className="w-20" />}
+                {canEditAny && <TableHead className="w-20" />}
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -522,6 +537,7 @@ export function SongLibrary({
                 const cr = COPYRIGHT_META[song.copyright_status];
                 const busy = audioBusy[song.id];
                 const hasAudio = !!song.audio_path;
+                const songEditable = canEditSong(song);
                 const tempLeft = song.audio_expires_at
                   ? Math.max(
                       0,
@@ -564,7 +580,7 @@ export function SongLibrary({
                               <Volume2 className="h-3.5 w-3.5" /> มีไฟล์
                             </span>
                           )}
-                          {editable && (
+                          {songEditable && (
                             <>
                               {tempLeft != null && (
                                 <Button
@@ -601,7 +617,7 @@ export function SongLibrary({
                             </>
                           )}
                         </div>
-                      ) : editable ? (
+                      ) : songEditable ? (
                         <Button
                           variant="outline"
                           size="sm"
@@ -626,7 +642,7 @@ export function SongLibrary({
                       {song.category || "—"}
                     </TableCell>
                     <TableCell>
-                      {editable ? (
+                      {approver ? (
                         <button
                           type="button"
                           onClick={() => {
@@ -659,9 +675,11 @@ export function SongLibrary({
                         {groupName[song.group_id] ?? "—"}
                       </TableCell>
                     )}
-                    {editable && (
+                    {canEditAny && (
                       <TableCell>
                         <div className="flex justify-end gap-1">
+                          {songEditable && (
+                          <>
                           <Button
                             variant="ghost"
                             size="icon"
@@ -677,6 +695,8 @@ export function SongLibrary({
                           >
                             <Trash2 className="h-4 w-4" />
                           </Button>
+                          </>
+                          )}
                         </div>
                       </TableCell>
                     )}
@@ -711,7 +731,7 @@ export function SongLibrary({
               />
             </div>
 
-            {groups.length > 1 && (
+            {editGroups.length > 1 && (
               <div className="space-y-2">
                 <Label>วง</Label>
                 <Select
@@ -724,7 +744,7 @@ export function SongLibrary({
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    {groups.map((g) => (
+                    {editGroups.map((g) => (
                       <SelectItem key={g.id} value={g.id}>
                         {g.name}
                       </SelectItem>
@@ -815,6 +835,7 @@ export function SongLibrary({
                 <Label>ลิขสิทธิ์</Label>
                 <Select
                   value={form.copyright_status}
+                  disabled={!approver}
                   onValueChange={(v) =>
                     setForm((f) => ({
                       ...f,
@@ -833,6 +854,11 @@ export function SongLibrary({
                     ))}
                   </SelectContent>
                 </Select>
+                {!approver && (
+                  <p className="text-xs text-muted-foreground">
+                    เฉพาะทีมค่าย/แอดมินเปลี่ยนสถานะลิขสิทธิ์ได้
+                  </p>
+                )}
               </div>
             </div>
 

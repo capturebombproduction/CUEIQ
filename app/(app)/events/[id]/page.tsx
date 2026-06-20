@@ -1,4 +1,4 @@
-import { notFound } from "next/navigation";
+import { notFound, redirect } from "next/navigation";
 import Link from "next/link";
 import {
   ArrowLeft,
@@ -8,8 +8,9 @@ import {
   Pencil,
   AlarmClock,
 } from "lucide-react";
-import { getEventBundle } from "@/lib/queries";
-import { canEdit, EVENT_TYPES, type EventType, type GroupStatus } from "@/lib/types";
+import { getEventBundle, getWorkspace } from "@/lib/queries";
+import { canEditGroup, canOpenEventDetail } from "@/lib/permissions";
+import { EVENT_TYPES, type EventType, type GroupStatus } from "@/lib/types";
 import { shortClock, deadlineInfo } from "@/lib/time";
 import { cn } from "@/lib/utils";
 import { resolveAudioTargets, type SongAudioMap } from "@/lib/audio-targets";
@@ -48,8 +49,12 @@ export default async function EventPage({
   const bundle = await getEventBundle(params.id);
   if (!bundle) notFound();
 
+  // label_staff works from /overview only — the full event workspace is off-limits.
+  const ws = await getWorkspace();
+  if (!canOpenEventDetail(ws.perms)) redirect("/overview");
+
   const { event } = bundle;
-  const editable = canEdit(bundle.role);
+  const editable = canEditGroup(ws.perms, event.group_id);
 
   // Resolve which audio files this event plays so the device can pre-cache them.
   const songAudio: SongAudioMap = Object.fromEntries(

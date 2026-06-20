@@ -2,7 +2,7 @@ import { notFound, redirect } from "next/navigation";
 import Link from "next/link";
 import { ArrowLeft } from "lucide-react";
 import { getEventBundle, getWorkspace } from "@/lib/queries";
-import { canEdit } from "@/lib/types";
+import { canEditGroup, editableGroups } from "@/lib/permissions";
 import { EventForm } from "@/components/event/event-form";
 import { Button } from "@/components/ui/button";
 
@@ -15,8 +15,10 @@ export default async function EditEventPage({
 }) {
   const bundle = await getEventBundle(params.id);
   if (!bundle) notFound();
-  if (!canEdit(bundle.role)) redirect(`/events/${params.id}`);
   const ws = await getWorkspace();
+  if (!canEditGroup(ws.perms, bundle.event.group_id)) {
+    redirect(`/events/${params.id}`);
+  }
 
   return (
     <div className="mx-auto max-w-2xl space-y-6">
@@ -33,7 +35,7 @@ export default async function EditEventPage({
         event={bundle.event}
         tenantId={bundle.event.tenant_id}
         userId={ws.user?.id}
-        groups={ws.groups}
+        groups={editableGroups(ws.perms, ws.groups)}
       />
     </div>
   );

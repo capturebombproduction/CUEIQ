@@ -11,6 +11,7 @@ import {
   isTenantAdmin,
   isLabelWide,
   isApprover,
+  type Group,
   type GroupRole,
   type Role,
 } from "@/lib/types";
@@ -65,6 +66,25 @@ export function canEditGroup(p: Perms, groupId: string): boolean {
 /** Can create a new event for at least one band (drives the "New Event" CTA). */
 export function canCreateAnyEvent(p: Perms): boolean {
   return isAdmin(p) || p.groupRoles.some((g) => g.role === "artist_manager");
+}
+
+/** Can edit at least one band's events/roster (admin, or an Ar somewhere). */
+export function canEditAnyGroup(p: Perms): boolean {
+  return canCreateAnyEvent(p);
+}
+
+/** The subset of `groups` the user may edit (drives band dropdowns + roster). */
+export function editableGroups(p: Perms, groups: Group[]): Group[] {
+  return groups.filter((g) => canEditGroup(p, g.id));
+}
+
+/**
+ * May open a full event detail / editor page. label_staff is OVERVIEW-ONLY
+ * (they act on events from /overview, never the full event workspace); everyone
+ * else who can VIEW the event (admin / ceo / the band's Ar+members) may open it.
+ */
+export function canOpenEventDetail(p: Perms): boolean {
+  return p.tenantRole !== "label_staff";
 }
 
 /** Can edit the photo-time of an event whose band has self_photo = false. */

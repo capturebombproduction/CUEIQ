@@ -7,13 +7,16 @@ import { ThemeToggle } from "@/components/theme-toggle";
 import { AccentPicker } from "@/components/accent-picker";
 import { InstallButton } from "@/components/install-button";
 import { ROLE_SHORT, type Role } from "@/lib/types";
+import { type Perms } from "@/lib/permissions";
 
 export function SiteHeader({
   name,
   role,
+  perms,
 }: {
   name?: string | null;
   role?: Role | null;
+  perms?: Perms;
 }) {
   return (
     <header className="no-print sticky top-0 z-40 border-b bg-background/80 backdrop-blur supports-[backdrop-filter]:bg-background/60">
@@ -24,7 +27,7 @@ export function SiteHeader({
           </Link>
           {/* nav is inline here on desktop; on mobile it drops to its own row below */}
           <div className="hidden md:block">
-            <MainNav />
+            <MainNav perms={perms} />
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-2 sm:gap-3">
@@ -47,7 +50,7 @@ export function SiteHeader({
       {/* mobile nav row — keeps all links visible without overflowing the header */}
       <div className="container -mt-1 pb-2 md:hidden">
         <div className="overflow-x-auto">
-          <MainNav />
+          <MainNav perms={perms} />
         </div>
       </div>
     </header>

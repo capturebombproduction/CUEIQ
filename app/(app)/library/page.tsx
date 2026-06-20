@@ -3,7 +3,7 @@ import { JoinDemo } from "@/components/join-demo";
 import { SongLibrary } from "@/components/song/song-library";
 import { RefreshButton } from "@/components/refresh-button";
 import { ConfirmSavedBar } from "@/components/confirm-saved-bar";
-import { canEdit } from "@/lib/types";
+import { canApprove, canEditAnyGroup } from "@/lib/permissions";
 
 export const dynamic = "force-dynamic";
 
@@ -30,9 +30,9 @@ export default async function LibraryPage() {
         tenantId={ws.membership.tenant_id}
         groups={ws.groups}
         initialSongs={songs}
-        editable={canEdit(ws.membership.role)}
+        perms={ws.perms}
       />
-      {canEdit(ws.membership.role) && (
+      {(canEditAnyGroup(ws.perms) || canApprove(ws.perms)) && (
         <ConfirmSavedBar note="เพลงบันทึกอัตโนมัติทุกครั้งที่เพิ่ม/แก้ — ปุ่มนี้ยืนยัน + โหลดข้อมูลล่าสุด" />
       )}
     </div>

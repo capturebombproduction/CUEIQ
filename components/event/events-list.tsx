@@ -191,12 +191,15 @@ function EventCard({
 
 export function EventsList({
   events,
-  editable,
+  editableGroupIds,
 }: {
   events: EventWithGroup[];
-  editable: boolean;
+  /** Group ids the user may edit — drives the per-card duplicate button. */
+  editableGroupIds: string[];
 }) {
   const [q, setQ] = useState("");
+  const canEditEvent = (ev: EventWithGroup) =>
+    !!ev.group_id && editableGroupIds.includes(ev.group_id);
 
   const { upcoming, past } = useMemo(() => {
     const needle = q.trim().toLowerCase();
@@ -428,7 +431,7 @@ export function EventsList({
                   <EventCard
                     key={ev.id}
                     ev={ev}
-                    editable={editable}
+                    editable={canEditEvent(ev)}
                     readiness={readiness[ev.id]}
                   />
                 ))}
@@ -442,7 +445,7 @@ export function EventsList({
               </h2>
               <div className="grid gap-4 opacity-80 sm:grid-cols-2 lg:grid-cols-3">
                 {past.map((ev) => (
-                  <EventCard key={ev.id} ev={ev} editable={editable} />
+                  <EventCard key={ev.id} ev={ev} editable={canEditEvent(ev)} />
                 ))}
               </div>
             </section>

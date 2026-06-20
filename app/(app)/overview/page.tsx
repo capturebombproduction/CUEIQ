@@ -4,10 +4,11 @@ import { getWorkspace } from "@/lib/queries";
 import { createClient } from "@/lib/supabase/server";
 import { JoinDemo } from "@/components/join-demo";
 import { EventStatusActions } from "@/components/overview/event-status-actions";
+import { StatusBadge } from "@/components/status-badge";
+import { canApprove } from "@/lib/permissions";
 import { cn } from "@/lib/utils";
 import { shortClock, deadlineInfo } from "@/lib/time";
 import {
-  canEdit,
   type EventRow,
   type GroupStatus,
   type Member,
@@ -41,7 +42,8 @@ export default async function OverviewPage() {
   const ws = await getWorkspace();
   if (!ws.membership || !ws.tenant) return <JoinDemo />;
   const tid = ws.membership.tenant_id;
-  const editable = canEdit(ws.membership.role);
+  // Approve/reject is for approvers (admin / label_staff); others see status only.
+  const canApproveEvents = canApprove(ws.perms);
   const supabase = createClient();
 
   const [evRes, schedRes, memRes] = await Promise.all([
@@ -160,13 +162,13 @@ export default async function OverviewPage() {
                             )}
                           </td>
                           <td className="px-3 py-2">
-                            {editable ? (
+                            {canApproveEvents ? (
                               <EventStatusActions
                                 eventId={ev.id}
                                 initialStatus={ev.status as GroupStatus}
                               />
                             ) : (
-                              <span className="text-xs">{ev.status}</span>
+                              <StatusBadge status={ev.status as GroupStatus} />
                             )}
                           </td>
                         </tr>

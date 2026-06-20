@@ -1,7 +1,8 @@
 import { notFound } from "next/navigation";
 import Link from "next/link";
 import { ArrowLeft } from "lucide-react";
-import { getEventBundle } from "@/lib/queries";
+import { getEventBundle, getWorkspace } from "@/lib/queries";
+import { canLiveEdit } from "@/lib/permissions";
 import { LiveMode } from "@/components/event/live-mode";
 import { FullscreenButton } from "@/components/fullscreen-button";
 import { Button } from "@/components/ui/button";
@@ -15,6 +16,11 @@ export default async function LivePage({
 }) {
   const bundle = await getEventBundle(params.id);
   if (!bundle) notFound();
+
+  // Anyone who can VIEW the event may open Live Mode to rehearse (playback only);
+  // in-show editing + saving the "จบโชว์" record is Admin-only.
+  const ws = await getWorkspace();
+  const canEdit = canLiveEdit(ws.perms);
 
   // song_id → audio, so Live Mode can play a library-linked item's song file.
   const songAudio = Object.fromEntries(
@@ -37,6 +43,7 @@ export default async function LivePage({
         eventName={bundle.event.name}
         items={bundle.setlist}
         songAudio={songAudio}
+        canEdit={canEdit}
         lastRunSeconds={bundle.event.last_run_seconds ?? null}
         lastRunAt={bundle.event.last_run_at ?? null}
       />

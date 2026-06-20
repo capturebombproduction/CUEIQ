@@ -3,7 +3,7 @@ import { JoinDemo } from "@/components/join-demo";
 import { GroupManager } from "@/components/group/group-manager";
 import { RefreshButton } from "@/components/refresh-button";
 import { ConfirmSavedBar } from "@/components/confirm-saved-bar";
-import { canEdit } from "@/lib/types";
+import { canEditAnyGroup } from "@/lib/permissions";
 
 export const dynamic = "force-dynamic";
 
@@ -30,9 +30,9 @@ export default async function GroupsPage() {
         tenantId={ws.membership.tenant_id}
         initialGroups={ws.groups}
         initialMembers={members}
-        editable={canEdit(ws.membership.role)}
+        perms={ws.perms}
       />
-      {canEdit(ws.membership.role) && (
+      {canEditAnyGroup(ws.perms) && (
         <ConfirmSavedBar note="ข้อมูลวง/สมาชิกบันทึกอัตโนมัติทุกครั้งที่แก้ — ปุ่มนี้ยืนยัน + โหลดข้อมูลล่าสุด" />
       )}
     </div>

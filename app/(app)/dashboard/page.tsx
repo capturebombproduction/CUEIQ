@@ -6,7 +6,8 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { JoinDemo } from "@/components/join-demo";
 import { EventsList } from "@/components/event/events-list";
-import { canEdit, type EventRow } from "@/lib/types";
+import { canCreateAnyEvent, canEditGroup } from "@/lib/permissions";
+import { type EventRow } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 
@@ -31,7 +32,11 @@ export default async function DashboardPage() {
       exempt_from_deadline: boolean;
     } | null;
   })[];
-  const editable = canEdit(ws.membership.role);
+  // admin can create + duplicate anywhere; an Ar only for the band(s) they manage.
+  const canCreate = canCreateAnyEvent(ws.perms);
+  const editableGroupIds = ws.groups
+    .filter((g) => canEditGroup(ws.perms, g.id))
+    .map((g) => g.id);
 
   return (
     <div className="space-y-6">
@@ -43,7 +48,7 @@ export default async function DashboardPage() {
             {events.length === 1 ? "Event" : "Events"}
           </p>
         </div>
-        {editable && (
+        {canCreate && (
           <Button asChild>
             <Link href="/events/new">
               <Plus className="h-4 w-4" /> New Event
@@ -57,7 +62,7 @@ export default async function DashboardPage() {
           <CardContent className="flex flex-col items-center justify-center gap-3 py-16 text-center">
             <Music2 className="h-10 w-10 text-muted-foreground" />
             <p className="text-muted-foreground">No events yet</p>
-            {editable && (
+            {canCreate && (
               <Button asChild variant="outline">
                 <Link href="/events/new">
                   <Plus className="h-4 w-4" /> Create your first event
@@ -67,7 +72,7 @@ export default async function DashboardPage() {
           </CardContent>
         </Card>
       ) : (
-        <EventsList events={events} editable={editable} />
+        <EventsList events={events} editableGroupIds={editableGroupIds} />
       )}
     </div>
   );

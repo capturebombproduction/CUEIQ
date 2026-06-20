@@ -102,6 +102,7 @@ export function LiveMode({
   eventName,
   items: initialItems,
   songAudio,
+  canEdit,
   lastRunSeconds,
   lastRunAt,
 }: {
@@ -110,6 +111,9 @@ export function LiveMode({
   eventName: string;
   items: SetlistItem[];
   songAudio: SongAudioMap;
+  /** Admin-only: in-show editing (reorder / file change / loop) + saving the
+   * "จบโชว์" record. Members/Ar may rehearse playback but never edit live. */
+  canEdit: boolean;
   lastRunSeconds: number | null;
   lastRunAt: string | null;
 }) {
@@ -909,6 +913,7 @@ export function LiveMode({
 
   // audio controls
   function openFilePicker(itemId: string) {
+    if (!canEdit) return;
     loadTargetRef.current = itemId;
     fileInputRef.current?.click();
   }
@@ -925,6 +930,7 @@ export function LiveMode({
   // The audio loops to fill the item's time and Live Mode fades it out to end on
   // time. Persists + syncs like any setlist edit.
   async function toggleLoop(itemId: string) {
+    if (!canEdit) return;
     const item = itemsRef.current.find((it) => it.id === itemId);
     if (!item) return;
     const next = !item.loop_audio;
@@ -940,6 +946,7 @@ export function LiveMode({
   // with the neighbour, keep currentIndex on the same item, persist + broadcast so
   // every device re-syncs. Detailed edits (time/mic/buffers) stay in the editor.
   async function moveItem(index: number, dir: -1 | 1) {
+    if (!canEdit) return;
     const arr = itemsRef.current;
     const j = index + dir;
     if (j < 0 || j >= arr.length) return;
@@ -974,6 +981,7 @@ export function LiveMode({
   // apart from the live state so a normal Reset Show doesn't erase it). Not a real
   // end: the show just pauses; Reset Show later clears it for the next run.
   function endShow() {
+    if (!canEdit) return;
     const s = stateRef.current;
     const seconds = s.startedAt ? Math.round((Date.now() - s.startedAt) / 1000) : 0;
     const at = Date.now();
@@ -1004,6 +1012,7 @@ export function LiveMode({
   }
 
   function clearLastRun() {
+    if (!canEdit) return;
     setLastRun(null);
     createClient()
       .from("events")
@@ -1022,6 +1031,7 @@ export function LiveMode({
   // the changed rows, keep currentIndex on the same item, broadcast.
   const dragIndexRef = useRef<number | null>(null);
   async function reorderTo(from: number, to: number) {
+    if (!canEdit) return;
     if (from === to) return;
     const orig = itemsRef.current;
     const arr = [...orig];
@@ -1057,6 +1067,7 @@ export function LiveMode({
     const file = e.target.files?.[0];
     const itemId = loadTargetRef.current;
     e.target.value = "";
+    if (!canEdit) return;
     if (!file || !itemId) return;
     const item = itemsRef.current.find((it) => it.id === itemId);
     if (!item) return;
@@ -1659,7 +1670,7 @@ export function LiveMode({
               i === state.currentIndex && "bg-primary/10"
             )}
           >
-            {!locked && (
+            {!locked && canEdit && (
               <span
                 draggable
                 onDragStart={() => {
@@ -1707,8 +1718,8 @@ export function LiveMode({
             </button>
 
             <div className="flex shrink-0 items-center gap-1">
-              {/* quick reorder — Manual + controller only (detailed edits = setlist editor) */}
-              {!locked && (
+              {/* quick reorder — Admin + Manual + controller only (detailed edits = setlist editor) */}
+              {!locked && canEdit && (
                 <div className="flex flex-col">
                   <button
                     onClick={() => moveItem(i, -1)}
@@ -1731,7 +1742,7 @@ export function LiveMode({
               {isPlayingThis && (
                 <Volume2 className="h-3.5 w-3.5 animate-pulse text-primary" />
               )}
-              {hasFile && (
+              {hasFile && canEdit && (
                 <button
                   onClick={() => toggleLoop(it.id)}
                   disabled={locked}
@@ -1752,33 +1763,37 @@ export function LiveMode({
                   <Repeat className="h-3.5 w-3.5" />
                 </button>
               )}
-              <button
-                onClick={() => openFilePicker(it.id)}
-                disabled={!!busy}
-                title={
-                  busy === "up"
-                    ? "กำลังอัปโหลดขึ้นคลาวด์…"
-                    : busy === "down"
-                      ? "กำลังดาวน์โหลดจากคลาวด์…"
-                      : it.audio_path && !hasLocal
-                        ? "มีไฟล์บนคลาวด์ (จะดาวน์โหลดให้อัตโนมัติ) — แตะเพื่อเปลี่ยนไฟล์"
-                        : hasFile
-                          ? "เปลี่ยนไฟล์เพลง (อัปโหลดขึ้นคลาวด์)"
-                          : "โหลดไฟล์เพลง (อัปโหลดขึ้นคลาวด์)"
-                }
-                className={cn(
-                  "flex h-7 w-7 items-center justify-center rounded-md transition-colors hover:bg-muted disabled:cursor-default disabled:hover:bg-transparent",
-                  hasFile
-                    ? "text-primary"
-                    : "text-muted-foreground/40 hover:text-muted-foreground"
-                )}
-              >
-                {busy ? (
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                ) : (
-                  <FolderOpen className="h-3.5 w-3.5" />
-                )}
-              </button>
+              {canEdit ? (
+                <button
+                  onClick={() => openFilePicker(it.id)}
+                  disabled={!!busy}
+                  title={
+                    busy === "up"
+                      ? "กำลังอัปโหลดขึ้นคลาวด์…"
+                      : busy === "down"
+                        ? "กำลังดาวน์โหลดจากคลาวด์…"
+                        : it.audio_path && !hasLocal
+                          ? "มีไฟล์บนคลาวด์ (จะดาวน์โหลดให้อัตโนมัติ) — แตะเพื่อเปลี่ยนไฟล์"
+                          : hasFile
+                            ? "เปลี่ยนไฟล์เพลง (อัปโหลดขึ้นคลาวด์)"
+                            : "โหลดไฟล์เพลง (อัปโหลดขึ้นคลาวด์)"
+                  }
+                  className={cn(
+                    "flex h-7 w-7 items-center justify-center rounded-md transition-colors hover:bg-muted disabled:cursor-default disabled:hover:bg-transparent",
+                    hasFile
+                      ? "text-primary"
+                      : "text-muted-foreground/40 hover:text-muted-foreground"
+                  )}
+                >
+                  {busy ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <FolderOpen className="h-3.5 w-3.5" />
+                  )}
+                </button>
+              ) : busy ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
+              ) : null}
             </div>
           </div>
         );
@@ -1805,6 +1820,13 @@ export function LiveMode({
         className="hidden"
         onChange={handleFileChange}
       />
+
+      {/* rehearsal notice — non-admins may play/รัน to rehearse but never edit live */}
+      {!canEdit && (
+        <div className="rounded-lg border border-amber-400/40 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:bg-amber-950/40 dark:text-amber-200">
+          โหมดซ้อม — เล่น/รันเพื่อซ้อมจับเวลาได้ แต่ปรับลำดับ/เปลี่ยนไฟล์/บันทึก “จบโชว์” สงวนไว้สำหรับแอดมิน
+        </div>
+      )}
 
       {/* top bar */}
       <div className="flex items-center justify-between gap-3 rounded-xl border bg-card px-4 py-3">
@@ -2378,7 +2400,7 @@ export function LiveMode({
         )}
         {/* จบโชว์ — freezes + saves the accumulated time as the last-show record below.
             Not a reset: Reset Show (↺) still clears the live state separately. */}
-        {state.begun && isController && (
+        {state.begun && isController && canEdit && (
           <Button
             variant="outline"
             size="sm"
@@ -2428,15 +2450,17 @@ export function LiveMode({
               </span>
             </p>
           </div>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={clearLastRun}
-            className="shrink-0 text-muted-foreground"
-            title="ล้างเวลาโชว์ล่าสุดที่บันทึกไว้"
-          >
-            ล้าง
-          </Button>
+          {canEdit && (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={clearLastRun}
+              className="shrink-0 text-muted-foreground"
+              title="ล้างเวลาโชว์ล่าสุดที่บันทึกไว้"
+            >
+              ล้าง
+            </Button>
+          )}
         </div>
       )}
 
