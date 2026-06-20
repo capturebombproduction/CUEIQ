@@ -3,6 +3,7 @@ import { Brand } from "@/components/brand";
 import { Badge } from "@/components/ui/badge";
 import { SignOutButton } from "@/components/sign-out-button";
 import { ChangePasswordButton } from "@/components/change-password-button";
+import { NotificationBell } from "@/components/notifications/notification-bell";
 import { MainNav } from "@/components/main-nav";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { AccentPicker } from "@/components/accent-picker";
@@ -27,10 +28,14 @@ export function SiteHeader({
   name,
   role,
   perms,
+  userId,
+  tenantId,
 }: {
   name?: string | null;
   role?: Role | null;
   perms?: Perms;
+  userId?: string | null;
+  tenantId?: string | null;
 }) {
   const shownRole = roleLabel(role, perms);
   return (
@@ -55,6 +60,9 @@ export function SiteHeader({
             <span className="hidden max-w-[16ch] truncate text-sm font-medium md:inline">
               {name}
             </span>
+          )}
+          {userId && tenantId && (
+            <NotificationBell userId={userId} tenantId={tenantId} />
           )}
           <InstallButton />
           <AccentPicker />

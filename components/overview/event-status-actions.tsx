@@ -4,6 +4,7 @@ import { useState } from "react";
 import { Check, X, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { createClient } from "@/lib/supabase/client";
+import { notify } from "@/lib/notify-client";
 import { StatusBadge } from "@/components/status-badge";
 import type { GroupStatus } from "@/lib/types";
 
@@ -33,6 +34,7 @@ export function EventStatusActions({
       setStatus(prev);
     } else {
       toast.success(next === "approved" ? "อนุมัติแล้ว" : "ปฏิเสธแล้ว");
+      notify(next === "approved" ? "event_approved" : "event_rejected", { eventId });
     }
   }
 

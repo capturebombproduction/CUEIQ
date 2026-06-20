@@ -16,6 +16,7 @@ import {
   Lock,
 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
+import { notify } from "@/lib/notify-client";
 import { detectAudioDuration } from "@/lib/audio";
 import {
   buildSongAudioPath,
@@ -276,6 +277,9 @@ export function SongLibrary({
     } else {
       toast.success(form.id ? "บันทึกเพลงแล้ว" : "เพิ่มเพลงแล้ว 🎵");
     }
+    // A newly-added song is forced to copyright 'pending' (DB trigger) for a
+    // non-approver → let the approvers know it's waiting (route no-ops otherwise).
+    if (!form.id && saved) notify("song_pending", { songId: saved.id });
     setPickedFile(null);
     setSaving(false);
     setOpen(false);
@@ -322,6 +326,10 @@ export function SongLibrary({
           s.id === song.id ? { ...s, copyright_status: song.copyright_status } : s
         )
       );
+    } else if (status === "rejected") {
+      notify("song_rejected", { songId: song.id });
+    } else if (status === "cleared") {
+      notify("song_cleared", { songId: song.id });
     }
   }
 

@@ -14,6 +14,7 @@ import { MicMapEditor } from "@/components/event/mic-map-editor";
 import { LineupEditor } from "@/components/event/lineup-editor";
 import { EventSummary } from "@/components/event/event-summary";
 import { createClient } from "@/lib/supabase/client";
+import { notify } from "@/lib/notify-client";
 import { type CompletenessResult } from "@/lib/completeness";
 import {
   EVENT_TYPES,
@@ -92,6 +93,8 @@ export function EventWorkspace({
           ? "ข้อมูลครบแล้ว — ส่งขออนุมัติให้อัตโนมัติ 🟠"
           : "ข้อมูลไม่ครบ — กลับเป็นแบบร่าง (Draft)"
       );
+      // complete → pending_review: notify the approvers it's waiting
+      if (target === "pending_review") notify("event_submitted", { eventId });
       router.refresh();
     })();
   }, [editable, status, completeness.complete, eventId, router, event.is_template]);

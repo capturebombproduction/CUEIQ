@@ -18,6 +18,8 @@ export default async function AppLayout({
         name={ws.user.name}
         role={ws.membership?.role ?? null}
         perms={ws.perms}
+        userId={ws.user.id}
+        tenantId={ws.membership?.tenant_id ?? null}
       />
       <main className="container py-6">{children}</main>
     </div>

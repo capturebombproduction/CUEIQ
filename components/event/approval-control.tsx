@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { Pencil, Send, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { createClient } from "@/lib/supabase/client";
+import { notify } from "@/lib/notify-client";
 import { Button } from "@/components/ui/button";
 import type { GroupStatus } from "@/lib/types";
 
@@ -44,6 +45,8 @@ export function ApprovalControl({
       return;
     }
     toast.success(msg);
+    // resubmit/revert both land on pending_review → ping the approvers
+    if (next === "pending_review") notify("event_submitted", { eventId });
     router.refresh();
   }
 
