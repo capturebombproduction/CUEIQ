@@ -25,6 +25,8 @@ import {
   Flag,
   Timer,
   GripVertical,
+  CheckCircle2,
+  HardDriveDownload,
 } from "lucide-react";
 import { toast } from "sonner";
 import { createClient } from "@/lib/supabase/client";
@@ -1842,6 +1844,46 @@ export function LiveMode({
           การเชื่อมต่อหลุด — กำลังต่อใหม่ (โชว์ยังเดินต่อ)
         </div>
       )}
+
+      {/* Pre-flight audio readiness — read-only: does THIS device hold every track's
+          file so the show plays offline? Before START it always shows; once running it
+          only warns if something's still missing. Derived from existing state. */}
+      {(() => {
+        const audioItems = items.filter((it) => it.audio_path);
+        if (audioItems.length === 0) return null;
+        const total = audioItems.length;
+        const ready = audioItems.filter((it) => audioUrls[it.id]).length;
+        const allReady = ready === total;
+        if (allReady && state.begun) return null; // don't nag once running & all set
+        const downloading = audioItems.some((it) => audioBusy[it.id] === "down");
+        return (
+          <div
+            className={cn(
+              "flex items-center justify-center gap-2 rounded-xl border px-4 py-2 text-sm font-medium",
+              allReady
+                ? "border-green-500/40 bg-green-500/10 text-green-700 dark:text-green-400"
+                : "border-amber-400 bg-amber-500/10 text-amber-800 dark:text-amber-300"
+            )}
+          >
+            {allReady ? (
+              <>
+                <CheckCircle2 className="h-4 w-4 shrink-0" />
+                เสียงพร้อมครบ {total} เพลง — เล่นได้แม้เน็ตหลุด
+              </>
+            ) : downloading ? (
+              <>
+                <Loader2 className="h-4 w-4 shrink-0 animate-spin" />
+                กำลังโหลดเสียงลงเครื่อง {ready}/{total}…
+              </>
+            ) : (
+              <>
+                <HardDriveDownload className="h-4 w-4 shrink-0" />
+                เสียงในเครื่องนี้ {ready}/{total} — อีก {total - ready} เพลงจะดึงจากเน็ตตอนเล่น
+              </>
+            )}
+          </div>
+        );
+      })()}
 
       {/* current item + next-up prep — stacked in portrait, side by side in
           landscape (e.g. iPad) so the crew can ready the next item's mics/props */}
