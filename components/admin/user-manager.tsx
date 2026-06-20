@@ -30,6 +30,7 @@ import {
   type GroupRole,
   type Role,
 } from "@/lib/types";
+import { displayLoginId } from "@/lib/username";
 
 export interface ManagedUser {
   user_id: string;
@@ -65,7 +66,7 @@ function levelOf(u: ManagedUser): AccessLevel {
 }
 
 interface FormState {
-  email: string;
+  loginId: string;
   password: string;
   full_name: string;
   level: AccessLevel;
@@ -73,7 +74,7 @@ interface FormState {
 }
 
 function emptyForm(): FormState {
-  return { email: "", password: "", full_name: "", level: "band", bandRoles: {} };
+  return { loginId: "", password: "", full_name: "", level: "band", bandRoles: {} };
 }
 
 export function UserManager({
@@ -107,7 +108,7 @@ export function UserManager({
     const bandRoles: Record<string, BandRole> = {};
     for (const gr of u.groupRoles) bandRoles[gr.group_id] = gr.role;
     setForm({
-      email: u.email ?? "",
+      loginId: displayLoginId(u.email),
       password: "",
       full_name: u.full_name ?? "",
       level: levelOf(u),
@@ -161,7 +162,7 @@ export function UserManager({
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            email: form.email,
+            loginId: form.loginId,
             password: form.password,
             full_name: form.full_name,
             tenantRole,
@@ -170,7 +171,7 @@ export function UserManager({
         });
         const json = await res.json().catch(() => ({}));
         if (!res.ok) throw new Error(json.error ?? "สร้างบัญชีไม่สำเร็จ");
-        toast.success(`สร้างบัญชี ${form.email} แล้ว`);
+        toast.success(`สร้างบัญชี ${form.loginId} แล้ว`);
       }
       setOpen(false);
       await refresh();
@@ -182,7 +183,7 @@ export function UserManager({
   }
 
   async function remove(u: ManagedUser) {
-    if (!window.confirm(`ลบบัญชี ${u.email ?? u.user_id}? กู้คืนไม่ได้`)) return;
+    if (!window.confirm(`ลบบัญชี ${displayLoginId(u.email) || u.user_id}? กู้คืนไม่ได้`)) return;
     setBusy(true);
     try {
       const res = await fetch(`/api/admin/users?user_id=${encodeURIComponent(u.user_id)}`, {
@@ -217,7 +218,7 @@ export function UserManager({
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2">
                     <span className="truncate font-medium">
-                      {u.full_name || u.email || u.user_id}
+                      {u.full_name || displayLoginId(u.email) || u.user_id}
                     </span>
                     {u.user_id === currentUserId && (
                       <Badge variant="outline" className="text-[10px]">
@@ -226,7 +227,9 @@ export function UserManager({
                     )}
                   </div>
                   {u.email && (
-                    <div className="truncate text-xs text-muted-foreground">{u.email}</div>
+                    <div className="truncate text-xs text-muted-foreground">
+                      {displayLoginId(u.email)}
+                    </div>
                   )}
                   <div className="mt-1 flex flex-wrap items-center gap-1">
                     <Badge variant="secondary" className="gap-1">
@@ -270,8 +273,8 @@ export function UserManager({
             </DialogTitle>
             <DialogDescription>
               {editing
-                ? `${editing.email ?? editing.user_id}`
-                : "ตั้งอีเมล + รหัสผ่านให้ผู้ใช้ แล้วกำหนดบทบาท (ผู้ใช้เปลี่ยนรหัสเองทีหลังได้)"}
+                ? `${displayLoginId(editing.email) || editing.user_id}`
+                : "ตั้งชื่อผู้ใช้ + รหัสผ่านให้ผู้ใช้ แล้วกำหนดบทบาท (ผู้ใช้เปลี่ยนรหัสเองทีหลังได้)"}
             </DialogDescription>
           </DialogHeader>
 
@@ -279,14 +282,19 @@ export function UserManager({
             {!editing && (
               <>
                 <div className="space-y-2">
-                  <Label htmlFor="u-email">อีเมล *</Label>
+                  <Label htmlFor="u-login">ชื่อผู้ใช้ *</Label>
                   <Input
-                    id="u-email"
-                    type="email"
-                    value={form.email}
-                    onChange={(e) => setForm((f) => ({ ...f, email: e.target.value }))}
-                    placeholder="member@example.com"
+                    id="u-login"
+                    type="text"
+                    autoCapitalize="none"
+                    spellCheck={false}
+                    value={form.loginId}
+                    onChange={(e) => setForm((f) => ({ ...f, loginId: e.target.value }))}
+                    placeholder="เช่น ar01"
                   />
+                  <p className="text-xs text-muted-foreground">
+                    ใช้ชื่อผู้ใช้สั้น ๆ ก็ได้ ไม่จำเป็นต้องเป็นอีเมลจริง — ผู้ใช้ล็อกอินด้วยชื่อนี้
+                  </p>
                 </div>
                 <div className="grid grid-cols-2 gap-3">
                   <div className="space-y-2">

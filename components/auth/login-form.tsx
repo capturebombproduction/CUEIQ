@@ -4,6 +4,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { createClient } from "@/lib/supabase/client";
+import { loginIdToEmail } from "@/lib/username";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -16,7 +17,7 @@ import {
 
 export function LoginForm({ next }: { next?: string }) {
   const router = useRouter();
-  const [email, setEmail] = useState("");
+  const [loginId, setLoginId] = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
 
@@ -25,7 +26,7 @@ export function LoginForm({ next }: { next?: string }) {
     setLoading(true);
     const supabase = createClient();
     const { error } = await supabase.auth.signInWithPassword({
-      email: email.trim(),
+      email: loginIdToEmail(loginId),
       password,
     });
     setLoading(false);
@@ -46,15 +47,17 @@ export function LoginForm({ next }: { next?: string }) {
       <CardContent>
         <form onSubmit={onSubmit} className="space-y-4">
           <div className="space-y-2">
-            <Label htmlFor="email">อีเมล</Label>
+            <Label htmlFor="loginId">ชื่อผู้ใช้ หรือ อีเมล</Label>
             <Input
-              id="email"
-              type="email"
-              autoComplete="email"
+              id="loginId"
+              type="text"
+              autoComplete="username"
+              autoCapitalize="none"
+              spellCheck={false}
               required
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              placeholder="you@example.com"
+              value={loginId}
+              onChange={(e) => setLoginId(e.target.value)}
+              placeholder="ar01 หรือ you@example.com"
             />
           </div>
           <div className="space-y-2">

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient, hasServiceRole } from "@/lib/supabase/admin";
+import { isValidLoginId, loginIdToEmail } from "@/lib/username";
 import type { GroupRole, Role } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
@@ -133,14 +134,16 @@ export async function POST(req: Request) {
   if (!hasServiceRole()) return serviceUnavailable();
 
   const body = await req.json().catch(() => null);
-  const email = typeof body?.email === "string" ? body.email.trim().toLowerCase() : "";
+  const loginId = typeof body?.loginId === "string" ? body.loginId.trim().toLowerCase() : "";
   const password = typeof body?.password === "string" ? body.password : "";
   const fullName = typeof body?.full_name === "string" ? body.full_name.trim() : "";
   const tenantRole = body?.tenantRole as Role;
 
-  if (!email || !/.+@.+\..+/.test(email)) {
-    return NextResponse.json({ error: "อีเมลไม่ถูกต้อง" }, { status: 400 });
+  if (!isValidLoginId(loginId)) {
+    return NextResponse.json({ error: "ชื่อผู้ใช้หรืออีเมลไม่ถูกต้อง" }, { status: 400 });
   }
+  // bare usernames get wrapped into a synthetic internal email for GoTrue
+  const email = loginIdToEmail(loginId);
   if (password.length < 8) {
     return NextResponse.json({ error: "รหัสผ่านต้องยาวอย่างน้อย 8 ตัวอักษร" }, { status: 400 });
   }
