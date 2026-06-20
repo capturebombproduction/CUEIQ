@@ -1508,6 +1508,16 @@ export function LiveMode({
     }
   }
   function reset() {
+    // A running show shouldn't be wiped by an accidental tap on the ↺ button —
+    // confirm first (pre-show reset is harmless, so skip the prompt then).
+    if (
+      state.begun &&
+      !window.confirm(
+        "รีเซ็ตโชว์? ตำแหน่งและเวลาจะเริ่มใหม่ทั้งหมด\n(ถ้าต้องการเก็บเวลาโชว์ ให้กด “จบโชว์” ก่อน)"
+      )
+    ) {
+      return;
+    }
     audioRef.current?.pause();
     audioRef2.current?.pause();
     overlapNextIdRef.current = null;
