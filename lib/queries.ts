@@ -1,3 +1,4 @@
+import { cache } from "react";
 import { createClient } from "@/lib/supabase/server";
 import type {
   EventRow,
@@ -18,8 +19,13 @@ export interface Workspace {
   groups: Group[];
 }
 
-/** Resolve the signed-in user's tenant, role and groups (MVP: one tenant). */
-export async function getWorkspace(): Promise<Workspace> {
+/**
+ * Resolve the signed-in user's tenant, role and groups (MVP: one tenant).
+ * Wrapped in React.cache so the (app) layout AND the page can both call it within
+ * one request and it only runs once (dedupes the getUser + workspace queries per
+ * navigation — request-scoped, NOT cross-request, so no staleness).
+ */
+export const getWorkspace = cache(async (): Promise<Workspace> => {
   const supabase = createClient();
   const {
     data: { user },
@@ -69,7 +75,7 @@ export async function getWorkspace(): Promise<Workspace> {
     tenant: (tenant as Tenant) ?? null,
     groups: (groups ?? []) as Group[],
   };
-}
+});
 
 export interface EventBundle {
   event: EventRow & { group: Group | null };
@@ -82,10 +88,11 @@ export interface EventBundle {
   role: Role | null;
 }
 
-/** Load a single event with all of its child data, or null if not accessible. */
-export async function getEventBundle(
+/** Load a single event with all of its child data, or null if not accessible.
+ * cache()-wrapped so repeated calls within one request are deduped. */
+export const getEventBundle = cache(async (
   eventId: string
-): Promise<EventBundle | null> {
+): Promise<EventBundle | null> => {
   const supabase = createClient();
 
   const { data: event } = await supabase
@@ -150,7 +157,7 @@ export async function getEventBundle(
     lineup: ((lineup.data ?? []) as { member_id: string }[]).map((r) => r.member_id),
     role: (membership?.role as Role) ?? null,
   };
-}
+});
 
 /** All members in the tenant, grouped-ordered. */
 export async function getMembers(tenantId: string): Promise<Member[]> {

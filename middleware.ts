@@ -8,8 +8,12 @@ export async function middleware(request: NextRequest) {
 export const config = {
   matcher: [
     /*
-     * Match all request paths except static assets and images.
+     * Match all request paths EXCEPT:
+     * - static assets / images
+     * - /api/* (route handlers do their own auth, e.g. /api/audio/presign — running
+     *   middleware here would be a wasted second getUser() network call)
+     * - /share/* (public run sheet via anon RPC — no session needed)
      */
-    "/((?!_next/static|_next/image|favicon.ico|manifest.webmanifest|sw.js|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico)$).*)",
+    "/((?!api|share|_next/static|_next/image|favicon.ico|manifest.webmanifest|sw.js|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico)$).*)",
   ],
 };
