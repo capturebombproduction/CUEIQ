@@ -19,6 +19,7 @@ import {
   Eye,
   Loader2,
   CloudUpload,
+  Repeat,
 } from "lucide-react";
 import { toast } from "sonner";
 import { createClient } from "@/lib/supabase/client";
@@ -860,6 +861,21 @@ export function LiveMode({
     });
   }
 
+  // Toggle "loop the BGM" for an item (Manual only — must be set before Auto runs).
+  // The audio loops to fill the item's time and Live Mode fades it out to end on
+  // time. Persists + syncs like any setlist edit.
+  async function toggleLoop(itemId: string) {
+    const item = itemsRef.current.find((it) => it.id === itemId);
+    if (!item) return;
+    const next = !item.loop_audio;
+    setItems((prev) =>
+      prev.map((it) => (it.id === itemId ? { ...it, loop_audio: next } : it))
+    );
+    const supabase = createClient();
+    await supabase.from("setlist_items").update({ loop_audio: next }).eq("id", itemId);
+    bcastSetlistChanged();
+  }
+
   // Pick a file in Live Mode = the QUICK/ad-hoc path (you forgot to prep in the
   // library). Plays instantly on this device, then uploads to R2 as a TEMPORARY
   // library song (auto-cleans after 3 days) and LINKS this item to it — so all
@@ -1359,6 +1375,42 @@ export function LiveMode({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [now, state, remaining, audioUrls, items]);
 
+  // Keep the primary element's native loop flag in sync with the sounding item, so
+  // a "loop" item's BGM replays seamlessly to fill its time.
+  useEffect(() => {
+    const playing = items.find((it) => it.id === playingId);
+    if (audioRef.current) audioRef.current.loop = !!playing?.loop_audio;
+  }, [playingId, items]);
+
+  // Loop items: fade the BGM out over the last 3s (= Auto Mute) so it ends right on
+  // the item's set time, then the normal countdown advances/stops it. Restore the
+  // item's volume once we've moved off it, so a re-cue isn't silent.
+  const loopFadeRef = useRef<{ id: string; prevVol: number } | null>(null);
+  useEffect(() => {
+    const cur = items[state.currentIndex];
+    const sounding = !!cur && cur.id === playingId; // current item is the one playing
+    if (
+      cur &&
+      cur.loop_audio &&
+      sounding &&
+      state.running &&
+      audioPlaying &&
+      remaining > 0 &&
+      remaining <= 3 &&
+      loopFadeRef.current?.id !== cur.id
+    ) {
+      loopFadeRef.current = { id: cur.id, prevVol: volumesRef.current[cur.id] ?? 100 };
+      fadeVolumeTo(0, Math.max(200, Math.round(remaining * 1000)));
+    }
+    // moved off the faded item → restore its volume for a possible re-cue
+    if (loopFadeRef.current && loopFadeRef.current.id !== playingId) {
+      const { id, prevVol } = loopFadeRef.current;
+      loopFadeRef.current = null;
+      setVolumeFor(id, prevVol);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [now, remaining, playingId, state.running, audioPlaying]);
+
   // Operator keyboard shortcuts (controller only): Space = START / run-pause,
   // →/N = next, ← = previous. Ignored while typing in a field. Re-assigned every
   // render so it sees fresh state; calls the SAME guarded handlers as the buttons,
@@ -1456,6 +1508,27 @@ export function LiveMode({
             <div className="flex shrink-0 items-center gap-1">
               {isPlayingThis && (
                 <Volume2 className="h-3.5 w-3.5 animate-pulse text-primary" />
+              )}
+              {hasFile && (
+                <button
+                  onClick={() => toggleLoop(it.id)}
+                  disabled={locked}
+                  title={
+                    locked
+                      ? "ตั้ง Loop ได้ตอน Manual เท่านั้น"
+                      : it.loop_audio
+                        ? "Loop เปิด — วนจนครบเวลาแล้วเฟดจบเอง (แตะเพื่อปิด)"
+                        : "Loop ปิด — แตะเพื่อให้วนจนครบเวลา (เฟดจบเอง)"
+                  }
+                  className={cn(
+                    "flex h-7 w-7 items-center justify-center rounded-md transition-colors hover:bg-muted disabled:cursor-default disabled:opacity-40 disabled:hover:bg-transparent",
+                    it.loop_audio
+                      ? "text-primary"
+                      : "text-muted-foreground/40 hover:text-muted-foreground"
+                  )}
+                >
+                  <Repeat className="h-3.5 w-3.5" />
+                </button>
               )}
               <button
                 onClick={() => openFilePicker(it.id)}

@@ -299,6 +299,7 @@ export interface SetlistItem {
   song_id?: string | null; // linked library song — the audio source (null = ad-hoc/none)
   audio_path?: string | null; // legacy: per-item R2 key (older items; new audio lives on the song)
   audio_name?: string | null; // legacy: original filename for the per-item audio
+  loop_audio?: boolean; // loop the BGM to fill this item's time, fading out to end on time (MC etc.)
 }
 
 export interface MicAssignment {
