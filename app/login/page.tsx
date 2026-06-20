@@ -21,6 +21,9 @@ export default function LoginPage({
         <p className="mt-6 text-center text-sm text-muted-foreground">
           ต้องการบัญชีเข้าใช้งาน? ติดต่อแอดมินค่าย
         </p>
+        <p className="mt-1 text-center text-xs text-muted-foreground">
+          ลืมรหัสผ่าน? ติดต่อแอดมินให้รีเซ็ตรหัสผ่านให้ (เข้าระบบแล้วเปลี่ยนรหัสเองได้)
+        </p>
       </div>
     </main>
   );
