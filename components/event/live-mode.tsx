@@ -566,6 +566,7 @@ export function LiveMode({
         // controller committed a new track we have a file for — switch + seek to it
         audio.src = url;
         audio.currentTime = Math.max(0, pos);
+        audio.playbackRate = 1; // clear any leftover sync nudge from the previous track
         setPlayingId(cmd.id);
         audio.play().catch(() => {});
         if (!audioPlaying) setAudioPlaying(true);
