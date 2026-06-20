@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from "react";
 import Link from "next/link";
-import { CalendarDays, MapPin, Music2, Search, Radio, AlarmClock } from "lucide-react";
+import { CalendarDays, MapPin, Music2, Search, Radio, AlarmClock, Timer } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { StatusBadge } from "@/components/status-badge";
 import { DuplicateEventButton } from "@/components/event/duplicate-event-button";
@@ -12,7 +12,7 @@ import {
   type EventType,
   type GroupStatus,
 } from "@/lib/types";
-import { shortClock, deadlineInfo } from "@/lib/time";
+import { shortClock, deadlineInfo, formatDuration } from "@/lib/time";
 import { cn } from "@/lib/utils";
 
 type EventWithGroup = EventRow & {
@@ -101,6 +101,15 @@ function EventCard({
               {ev.groups?.name ?? "—"} ·{" "}
               {EVENT_TYPES[ev.event_type as EventType]?.label ?? ev.event_type}
             </p>
+            {ev.last_run_seconds != null && (
+              <p className="flex items-center gap-2">
+                <Timer className="h-4 w-4 shrink-0" />
+                โชว์ล่าสุดใช้เวลา{" "}
+                <span className="font-medium tabular-nums text-foreground">
+                  {formatDuration(ev.last_run_seconds)}
+                </span>
+              </p>
+            )}
           </div>
           {(() => {
             if (ev.groups?.exempt_from_deadline) return null;

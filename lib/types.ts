@@ -266,6 +266,8 @@ export interface EventRow {
   share_expires_at: string | null; // share link expiry (ISO; null = never)
   deadline: string | null; // when the setlist must be finalized (ISO; null = none)
   deadline_note: string | null;
+  last_run_seconds: number | null; // accumulated run time saved by "จบโชว์" (null = none)
+  last_run_at: string | null; // when that run time was saved (ISO)
   created_by: string | null;
   created_at: string;
   updated_at: string;

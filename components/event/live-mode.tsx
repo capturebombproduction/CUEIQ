@@ -100,12 +100,16 @@ export function LiveMode({
   eventName,
   items: initialItems,
   songAudio,
+  lastRunSeconds,
+  lastRunAt,
 }: {
   eventId: string;
   groupId: string;
   eventName: string;
   items: SetlistItem[];
   songAudio: SongAudioMap;
+  lastRunSeconds: number | null;
+  lastRunAt: string | null;
 }) {
   const [state, setState] = useState<LiveState>(INITIAL);
   // The setlist is held in state (seeded from the server prop) so edits made on
@@ -146,10 +150,14 @@ export function LiveMode({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const loadTargetRef = useRef<string | null>(null);
   const [audioUrls, setAudioUrls] = useState<Record<string, string>>({}); // itemId → objectURL
-  // "เวลาโชว์ล่าสุด" — the accumulated time saved when จบโชว์ was pressed. Kept apart
-  // from the live state (localStorage per event) so a normal Reset Show doesn't erase
-  // it; it has its own clear button. Seeded on mount.
-  const [lastRun, setLastRun] = useState<{ seconds: number; at: number } | null>(null);
+  // "เวลาโชว์ล่าสุด" — accumulated time saved by จบโชว์. Stored on the EVENT (DB) so
+  // it's permanent + shows on every device + the dashboard; kept apart from the live
+  // state so a normal Reset Show doesn't erase it; cleared by its own ล้าง button.
+  const [lastRun, setLastRun] = useState<{ seconds: number; at: number } | null>(() =>
+    lastRunSeconds != null
+      ? { seconds: lastRunSeconds, at: lastRunAt ? new Date(lastRunAt).getTime() : Date.now() }
+      : null
+  );
   const [audioNames, setAudioNames] = useState<Record<string, string>>({}); // itemId → filename
   // online sync: which Storage path this device currently holds locally (per item),
   // and which items are busy uploading/downloading (for the UI spinner).
@@ -364,16 +372,6 @@ export function LiveMode({
       /* ignore */
     }
   }, []);
-
-  // Seed the saved "last show time" record for this event.
-  useEffect(() => {
-    try {
-      const raw = localStorage.getItem(`cueiq:lastRun:${eventId}`);
-      if (raw) setLastRun(JSON.parse(raw));
-    } catch {
-      /* ignore */
-    }
-  }, [eventId]);
 
   // Apply sound-output to BOTH elements (muted is a persistent element property, so
   // this covers every src change / play / overlap) + persist the choice. When OFF
@@ -723,6 +721,10 @@ export function LiveMode({
     ch.on("broadcast", { event: "setlist-changed" }, () => {
       refetchRef.current();
     });
+    // another device saved/cleared the "last show time" → mirror it live
+    ch.on("broadcast", { event: "lastrun" }, ({ payload }) => {
+      setLastRun(payload?.record ?? null);
+    });
     // controller rode a volume control (Auto Mute / MC / Loudness / slider) → mirror it
     ch.on("broadcast", { event: "volume" }, ({ payload }) => {
       if (!payload || payload.sender === meId.current) return;
@@ -972,13 +974,20 @@ export function LiveMode({
   function endShow() {
     const s = stateRef.current;
     const seconds = s.startedAt ? Math.round((Date.now() - s.startedAt) / 1000) : 0;
-    const rec = { seconds, at: Date.now() };
+    const at = Date.now();
+    const rec = { seconds, at };
     setLastRun(rec);
-    try {
-      localStorage.setItem(`cueiq:lastRun:${eventId}`, JSON.stringify(rec));
-    } catch {
-      /* ignore */
-    }
+    // persist on the event (permanent + cross-device) + live-update other devices
+    createClient()
+      .from("events")
+      .update({ last_run_seconds: seconds, last_run_at: new Date(at).toISOString() })
+      .eq("id", eventId)
+      .then(() => {});
+    channelRef.current?.send({
+      type: "broadcast",
+      event: "lastrun",
+      payload: { record: rec },
+    });
     // pause so the accumulated clock stops (does NOT reset the show)
     if (s.running) {
       const frozenItem = s.itemStartedAt
@@ -994,11 +1003,16 @@ export function LiveMode({
 
   function clearLastRun() {
     setLastRun(null);
-    try {
-      localStorage.removeItem(`cueiq:lastRun:${eventId}`);
-    } catch {
-      /* ignore */
-    }
+    createClient()
+      .from("events")
+      .update({ last_run_seconds: null, last_run_at: null })
+      .eq("id", eventId)
+      .then(() => {});
+    channelRef.current?.send({
+      type: "broadcast",
+      event: "lastrun",
+      payload: { record: null },
+    });
   }
 
   // Drag-drop reorder (desktop; touch uses the ▲▼ buttons since native HTML5 DnD

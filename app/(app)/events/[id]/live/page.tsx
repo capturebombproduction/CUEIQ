@@ -37,6 +37,8 @@ export default async function LivePage({
         eventName={bundle.event.name}
         items={bundle.setlist}
         songAudio={songAudio}
+        lastRunSeconds={bundle.event.last_run_seconds ?? null}
+        lastRunAt={bundle.event.last_run_at ?? null}
       />
     </div>
   );
