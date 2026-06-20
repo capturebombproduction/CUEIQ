@@ -5,6 +5,7 @@ import { toast } from "sonner";
 import { Plus, Trash2, Users } from "lucide-react";
 import { BulkAddMembers } from "@/components/group/bulk-add-members";
 import { createClient } from "@/lib/supabase/client";
+import { removeEventAudio } from "@/lib/audio-remote";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
@@ -71,6 +72,29 @@ export function GroupManager({
       )
     )
       return;
+    // Gather the R2 audio keys this delete will orphan BEFORE the DB cascade wipes
+    // the rows: every library song's file + any legacy per-item file on the group's
+    // events. (The cascade only removes DB rows, not the R2 objects.)
+    const r2Keys = new Set<string>();
+    const { data: songRows } = await supabase
+      .from("songs")
+      .select("audio_path")
+      .eq("group_id", g.id);
+    (songRows ?? []).forEach((s) => s.audio_path && r2Keys.add(s.audio_path));
+    const { data: evRows } = await supabase
+      .from("events")
+      .select("id")
+      .eq("group_id", g.id);
+    const evIds = (evRows ?? []).map((e) => e.id as string);
+    if (evIds.length) {
+      const { data: itemRows } = await supabase
+        .from("setlist_items")
+        .select("audio_path")
+        .in("event_id", evIds)
+        .not("audio_path", "is", null);
+      (itemRows ?? []).forEach((i) => i.audio_path && r2Keys.add(i.audio_path));
+    }
+
     const snapG = groups;
     const snapM = members;
     setGroups((prev) => prev.filter((x) => x.id !== g.id));
@@ -80,7 +104,10 @@ export function GroupManager({
       toast.error("ลบไม่สำเร็จ", { description: error.message });
       setGroups(snapG);
       setMembers(snapM);
+      return;
     }
+    // DB cascade done → reclaim the R2 objects (best-effort, after the row is gone).
+    r2Keys.forEach((key) => removeEventAudio(key).catch(() => {}));
   }
 
   // ---- member operations ---------------------------------------------------

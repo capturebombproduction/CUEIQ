@@ -439,7 +439,17 @@ export function SetlistBuilder({
           "id",
           old.map((it) => it.id)
         );
-      if (error) throw error;
+      if (error) {
+        // The snapshot rows are already in; deleting the old ones failed → roll the
+        // insert back so we don't leave BOTH sets (duplicates). Original setlist intact.
+        if (inserted.length) {
+          await supabase
+            .from("setlist_items")
+            .delete()
+            .in("id", inserted.map((it) => it.id));
+        }
+        throw error;
+      }
       old.forEach((it) => {
         deleteAudio(eventId, it.id).catch(() => {});
         // only legacy ad-hoc per-item audio is the item's to delete; a library-linked

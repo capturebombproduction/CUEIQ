@@ -142,6 +142,7 @@ export function computeSetlistTimes(
   hardOutSec: number | null = null
 ): SetlistTiming {
   let cursor = showStartSec;
+  let prevStartSec = showStartSec;
   const rows: RowTiming[] = items.map((it, i) => {
     // Negative buffer_before = this song overlaps the PREVIOUS one (continuous
     // play / no gap) → it pulls the timeline back and shortens the total.
@@ -151,8 +152,13 @@ export function computeSetlistTimes(
     const ba = Math.max(0, it.buffer_after_seconds || 0);
     const dur = Math.max(0, it.duration_seconds || 0);
     const slotStartSec = cursor;
-    // a big overlap must not pull the clock before the show start
-    const startSec = Math.max(showStartSec, slotStartSec + bb);
+    // A big overlap must not pull the clock before the show start, nor before the
+    // PREVIOUS item began (an overlap can at most cover the whole previous item) —
+    // otherwise an absurd negative buffer would make the run-sheet times run
+    // backwards. For normal (small) overlaps slotStartSec+bb already clears both
+    // bounds, so this is a no-op.
+    const startSec = Math.max(showStartSec, prevStartSec, slotStartSec + bb);
+    prevStartSec = startSec;
     const endSec = startSec + dur;
     const slotEndSec = endSec + ba;
     cursor = slotEndSec;
