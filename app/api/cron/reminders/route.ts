@@ -75,6 +75,7 @@ export async function GET(req: Request) {
     .from("events")
     .select("id, name, group_id, tenant_id, event_date, groups(name)")
     .eq("is_template", false)
+    .eq("is_practice", false)
     .gte("event_date", today)
     .lte("event_date", tomorrow);
   for (const ev of shows ?? []) {
@@ -100,6 +101,7 @@ export async function GET(req: Request) {
     .from("events")
     .select("id, name, group_id, tenant_id, deadline, status, groups(name)")
     .eq("is_template", false)
+    .eq("is_practice", false)
     .not("deadline", "is", null)
     .gte("deadline", now.toISOString())
     .lte("deadline", in2days)

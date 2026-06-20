@@ -39,6 +39,7 @@ export default async function OverviewPage() {
       .select("*")
       .eq("tenant_id", tid)
       .eq("is_template", false) // templates are not real shows
+      .eq("is_practice", false) // practice rooms aren't real shows
       .order("event_date", { ascending: true, nullsFirst: false }),
     supabase
       .from("schedule_items")

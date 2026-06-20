@@ -285,6 +285,7 @@ export interface EventRow {
   last_run_seconds: number | null; // accumulated run time saved by "จบโชว์" (null = none)
   last_run_at: string | null; // when that run time was saved (ISO)
   is_template: boolean; // true = a "แม่แบบ" reference event (hidden from lists, no completeness churn)
+  is_practice: boolean; // true = a "ห้องซ้อม" practice room (hidden from lists; opened in the practice player, not Live Mode)
   created_by: string | null;
   created_at: string;
   updated_at: string;

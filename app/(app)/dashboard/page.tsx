@@ -29,6 +29,7 @@ export default async function DashboardPage() {
       .select("*, groups(name, color, exempt_from_deadline)")
       .eq("tenant_id", tid)
       .eq("is_template", false) // templates live outside the normal event list
+      .eq("is_practice", false) // practice rooms live in /practice, not here
       .order("event_date", { ascending: false, nullsFirst: false })
       .order("created_at", { ascending: false }),
     supabase

@@ -11,6 +11,7 @@ const LINKS: NavLink[] = [
   { href: "/dashboard", label: "Events", short: "Events" },
   { href: "/overview", label: "ภาพรวมค่าย", short: "ภาพรวม" },
   { href: "/library", label: "Music Library", short: "Library" },
+  { href: "/practice", label: "โหมดซ้อม", short: "ซ้อม" },
   { href: "/groups", label: "Artists", short: "Artists" },
 ];
 
@@ -24,6 +25,7 @@ export function MainNav({ perms }: { perms?: Perms }) {
   const links: NavLink[] = LINKS.filter((l) => {
     if (l.href === "/overview") return !!perms && isLabelWideUser(perms);
     if (l.href === "/dashboard") return !labelStaff;
+    if (l.href === "/practice") return !labelStaff; // practice is a band activity
     return true;
   });
   if (perms && isAdmin(perms)) {
