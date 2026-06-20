@@ -12,13 +12,20 @@ import {
   Timer,
   CheckCircle2,
   HardDriveDownload,
+  Loader2,
+  DownloadCloud,
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { StatusBadge } from "@/components/status-badge";
 import { DuplicateEventButton } from "@/components/event/duplicate-event-button";
 import { AutoPrefetch } from "@/components/event/auto-prefetch";
 import { createClient } from "@/lib/supabase/client";
-import { getReadiness, type Readiness } from "@/lib/audio-prefetch";
+import {
+  getReadiness,
+  prefetchEventAudio,
+  type Readiness,
+  type PrefetchTarget,
+} from "@/lib/audio-prefetch";
 import { resolveAudioTargets, type SongAudioMap } from "@/lib/audio-targets";
 import {
   EVENT_TYPES,
@@ -219,6 +226,10 @@ export function EventsList({
   const [readiness, setReadiness] = useState<
     Record<string, { ready: number; total: number }>
   >({});
+  const [targetsByEvent, setTargetsByEvent] = useState<
+    Record<string, PrefetchTarget[]>
+  >({});
+  const [bulk, setBulk] = useState<{ done: number; total: number } | null>(null);
 
   const computeReadiness = useCallback(async () => {
     const today = todayKey();
@@ -251,19 +262,52 @@ export function EventsList({
         (byEvent[it.event_id] ??= []).push(it);
       }
       const out: Record<string, { ready: number; total: number }> = {};
+      const outTargets: Record<string, PrefetchTarget[]> = {};
       await Promise.all(
         wanted.map(async (e) => {
           const targets = resolveAudioTargets(byEvent[e.id] ?? [], songAudio);
           if (targets.length === 0) return;
+          outTargets[e.id] = targets;
           const r: Readiness = await getReadiness(e.id, targets);
           out[e.id] = { ready: r.ready, total: r.total };
         })
       );
       setReadiness(out);
+      setTargetsByEvent(outTargets);
     } catch {
       /* best-effort — no badge on failure */
     }
   }, [events]);
+
+  // Files still missing across all upcoming shows, and a one-tap "prepare them all".
+  const notReadyIds = useMemo(
+    () =>
+      Object.keys(targetsByEvent).filter((id) => {
+        const r = readiness[id];
+        return r && r.ready < r.total;
+      }),
+    [targetsByEvent, readiness]
+  );
+
+  const prepareAll = useCallback(async () => {
+    const todo = notReadyIds;
+    if (todo.length === 0) return;
+    const grandTotal = todo.reduce((n, id) => {
+      const r = readiness[id];
+      return n + (r ? r.total - r.ready : 0);
+    }, 0);
+    setBulk({ done: 0, total: grandTotal });
+    let done = 0;
+    for (const id of todo) {
+      await prefetchEventAudio(id, targetsByEvent[id] ?? [], {
+        onProgress: (p) => setBulk({ done: done + p.done, total: grandTotal }),
+      });
+      const r = readiness[id];
+      done += r ? r.total - r.ready : 0;
+    }
+    setBulk(null);
+    computeReadiness();
+  }, [notReadyIds, readiness, targetsByEvent, computeReadiness]);
 
   useEffect(() => {
     computeReadiness();
@@ -323,14 +367,37 @@ export function EventsList({
         </div>
       )}
 
-      <div className="relative max-w-sm">
-        <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-        <input
-          value={q}
-          onChange={(e) => setQ(e.target.value)}
-          placeholder="ค้นหางาน / สถานที่ / วง…"
-          className="w-full rounded-md border bg-background py-2 pl-9 pr-3 text-sm outline-none ring-primary/40 focus:ring-2"
-        />
+      <div className="flex flex-wrap items-center gap-3">
+        <div className="relative max-w-sm flex-1">
+          <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+          <input
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            placeholder="ค้นหางาน / สถานที่ / วง…"
+            className="w-full rounded-md border bg-background py-2 pl-9 pr-3 text-sm outline-none ring-primary/40 focus:ring-2"
+          />
+        </div>
+        {(notReadyIds.length > 0 || bulk) && (
+          <button
+            type="button"
+            onClick={prepareAll}
+            disabled={!!bulk}
+            title="โหลดไฟล์เพลงของทุกงานที่กำลังจะถึงลงเครื่องนี้ไว้ก่อน"
+            className="inline-flex shrink-0 items-center gap-1.5 rounded-md border px-3 py-2 text-sm font-medium text-muted-foreground transition hover:bg-muted hover:text-foreground disabled:opacity-70"
+          >
+            {bulk ? (
+              <>
+                <Loader2 className="h-4 w-4 animate-spin" />
+                กำลังเตรียม {bulk.done}/{bulk.total}
+              </>
+            ) : (
+              <>
+                <DownloadCloud className="h-4 w-4" />
+                เตรียมทุกงานที่จะถึง ({notReadyIds.length})
+              </>
+            )}
+          </button>
+        )}
       </div>
 
       {noResults ? (
