@@ -287,6 +287,7 @@ export function SongLibrary({
       return;
     }
     if (song.audio_path) removeEventAudio(song.audio_path).catch(() => {});
+    broadcastSongsChanged(song.group_id); // live update any open Live Mode (items unlink)
   }
 
   // Quick copyright triage inline in the table — no need to open the edit dialog.
@@ -307,6 +308,18 @@ export function SongLibrary({
         )
       );
     }
+  }
+
+  // Tell any open Live Mode (same band) that a song's audio changed, so it
+  // re-resolves in real time. Group-scoped broadcast → reaches every device.
+  function broadcastSongsChanged(groupId: string) {
+    const ch = supabase.channel(`songs:${groupId}`);
+    ch.subscribe((status) => {
+      if (status === "SUBSCRIBED") {
+        ch.send({ type: "broadcast", event: "changed", payload: {} });
+        setTimeout(() => supabase.removeChannel(ch), 600);
+      }
+    });
   }
 
   // Upload (or replace) a song's audio to R2. A library upload is PERMANENT, so
@@ -331,6 +344,7 @@ export function SongLibrary({
         )
       );
       if (prevPath && prevPath !== path) removeEventAudio(prevPath).catch(() => {});
+      broadcastSongsChanged(song.group_id); // live update any open Live Mode
       toast.success("อัปโหลดไฟล์เพลงขึ้นคลังแล้ว 🎵");
     } catch (e) {
       toast.error("อัปโหลดไม่สำเร็จ", {
@@ -371,6 +385,7 @@ export function SongLibrary({
         )
       );
       removeEventAudio(path).catch(() => {});
+      broadcastSongsChanged(song.group_id); // live update any open Live Mode
       toast.success("ลบไฟล์เสียงแล้ว");
     } catch (e) {
       toast.error("ลบไฟล์ไม่สำเร็จ", {

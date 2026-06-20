@@ -696,12 +696,22 @@ export function LiveMode({
         });
       }
     });
+    // REAL-TIME library audio: a group-scoped channel the library broadcasts on
+    // when a song's audio is uploaded / replaced / deleted → re-resolve + download
+    // live across devices, no reload. (broadcast, not postgres_changes — RLS
+    // postgres changes don't deliver with the publishable key.) The on-air track
+    // is locked by the download effect, so a mid-show change can't cut the live song.
+    const songCh = supabase.channel(`songs:${groupId}`);
+    songCh.on("broadcast", { event: "changed" }, () => refetchRef.current());
+    songCh.subscribe();
+
     return () => {
       channelRef.current = null;
       setSyncReady(false);
       supabase.removeChannel(ch);
+      supabase.removeChannel(songCh);
     };
-  }, [eventId]);
+  }, [eventId, groupId]);
 
   // Derive the audio intent for a broadcast: which item should be SOUNDING, whether
   // it's playing, and its start anchor. While running, that's the current item. When
