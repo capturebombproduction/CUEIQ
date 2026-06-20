@@ -108,6 +108,8 @@ export function SongLibrary({
   const [form, setForm] = useState<FormState>(emptyForm(groups[0]?.id ?? ""));
   const [saving, setSaving] = useState(false);
   const [detecting, setDetecting] = useState(false);
+  // file picked in the add/edit dialog — uploaded to R2 on save (one-step add+upload)
+  const [pickedFile, setPickedFile] = useState<File | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   // per-song audio upload (to R2). audioBusy[songId] = which op is running.
   const [audioBusy, setAudioBusy] = useState<Record<string, "up" | "del">>({});
@@ -155,11 +157,13 @@ export function SongLibrary({
   }, [songs, groupFilter, copyFilter, query]);
 
   function openAdd() {
+    setPickedFile(null);
     setForm(emptyForm(groups[0]?.id ?? ""));
     setOpen(true);
   }
 
   function openEdit(song: Song) {
+    setPickedFile(null);
     setForm({
       id: song.id,
       group_id: song.group_id,
@@ -178,13 +182,14 @@ export function SongLibrary({
 
   async function onPickFile(file: File | undefined) {
     if (!file) return;
+    setPickedFile(file); // keep the File — uploaded to R2 on save
     setForm((f) => ({ ...f, file_name: file.name }));
     setDetecting(true);
     try {
       const seconds = await detectAudioDuration(file);
       setForm((f) => ({ ...f, durationStr: formatDuration(seconds) }));
       toast.success(`ตรวจพบความยาว ${formatDuration(seconds)}`, {
-        description: "อ่านจากไฟล์เท่านั้น — ไม่ได้อัปโหลด/เก็บไฟล์",
+        description: "จะอัปโหลดไฟล์ขึ้นคลาวด์เมื่อกดบันทึก",
       });
     } catch (e) {
       toast.error("ตรวจความยาวไม่สำเร็จ", {
@@ -219,6 +224,7 @@ export function SongLibrary({
       notes: form.notes.trim() || null,
     };
 
+    let saved: Song | null = null;
     if (form.id) {
       const { data, error } = await supabase
         .from("songs")
@@ -226,29 +232,37 @@ export function SongLibrary({
         .eq("id", form.id)
         .select("*")
         .single();
-      setSaving(false);
       if (error || !data) {
+        setSaving(false);
         toast.error("บันทึกไม่สำเร็จ", { description: error?.message });
         return;
       }
-      setSongs((prev) =>
-        prev.map((s) => (s.id === form.id ? (data as Song) : s))
-      );
-      toast.success("บันทึกเพลงแล้ว");
+      saved = data as Song;
+      setSongs((prev) => prev.map((s) => (s.id === form.id ? (saved as Song) : s)));
     } else {
       const { data, error } = await supabase
         .from("songs")
         .insert(payload)
         .select("*")
         .single();
-      setSaving(false);
       if (error || !data) {
+        setSaving(false);
         toast.error("เพิ่มเพลงไม่สำเร็จ", { description: error?.message });
         return;
       }
-      setSongs((prev) => [data as Song, ...prev]);
-      toast.success("เพิ่มเพลงแล้ว 🎵");
+      saved = data as Song;
+      setSongs((prev) => [saved as Song, ...prev]);
     }
+
+    // A file picked in this dialog is uploaded to R2 now that we have the song id
+    // (one-step add+upload). uploadSongAudio sets audio_path + shows its own toast.
+    if (pickedFile) {
+      await uploadSongAudio(saved, pickedFile);
+    } else {
+      toast.success(form.id ? "บันทึกเพลงแล้ว" : "เพิ่มเพลงแล้ว 🎵");
+    }
+    setPickedFile(null);
+    setSaving(false);
     setOpen(false);
   }
 
@@ -664,8 +678,8 @@ export function SongLibrary({
           <DialogHeader>
             <DialogTitle>{form.id ? "แก้ไขเพลง" : "เพิ่มเพลง"}</DialogTitle>
             <DialogDescription>
-              เลือกไฟล์เสียงเพื่อตรวจความยาวอัตโนมัติ — ระบบเก็บแค่ชื่อไฟล์ +
-              ความยาว ไม่ได้อัปโหลดไฟล์จริง
+              เลือกไฟล์เสียง — ระบบอ่านความยาวอัตโนมัติ และอัปโหลดไฟล์ขึ้นคลาวด์ให้
+              เมื่อกดบันทึก (ใช้เล่นใน Live Mode ได้ทุกเครื่อง)
             </DialogDescription>
           </DialogHeader>
 
@@ -706,7 +720,7 @@ export function SongLibrary({
             )}
 
             <div className="space-y-2">
-              <Label>ไฟล์เสียง (ตรวจความยาวอัตโนมัติ)</Label>
+              <Label>ไฟล์เสียง (อัปขึ้นคลาวด์ + อ่านความยาว)</Label>
               <input
                 ref={fileRef}
                 type="file"
