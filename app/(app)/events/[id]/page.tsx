@@ -12,10 +12,12 @@ import { getEventBundle } from "@/lib/queries";
 import { canEdit, EVENT_TYPES, type EventType, type GroupStatus } from "@/lib/types";
 import { shortClock, deadlineInfo } from "@/lib/time";
 import { cn } from "@/lib/utils";
+import { resolveAudioTargets, type SongAudioMap } from "@/lib/audio-targets";
 import { Button } from "@/components/ui/button";
 import { StatusBadge } from "@/components/status-badge";
 import { EventWorkspace } from "@/components/event/event-workspace";
 import { ExportButton } from "@/components/event/export-button";
+import { PrepareDeviceButton } from "@/components/event/prepare-device-button";
 import { BandSkin } from "@/components/band-skin";
 
 export const dynamic = "force-dynamic";
@@ -48,6 +50,15 @@ export default async function EventPage({
 
   const { event } = bundle;
   const editable = canEdit(bundle.role);
+
+  // Resolve which audio files this event plays so the device can pre-cache them.
+  const songAudio: SongAudioMap = Object.fromEntries(
+    bundle.songs.map((s) => [
+      s.id,
+      { path: s.audio_path ?? null, name: s.audio_name ?? null },
+    ])
+  );
+  const audioTargets = resolveAudioTargets(bundle.setlist, songAudio);
 
   return (
     <div className="space-y-6">
@@ -114,7 +125,8 @@ export default async function EventPage({
             </div>
           </div>
 
-          <div className="flex flex-wrap gap-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <PrepareDeviceButton eventId={event.id} targets={audioTargets} />
             <ExportButton eventId={event.id} />
             {editable && (
               <Button asChild variant="outline">

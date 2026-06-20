@@ -6,6 +6,7 @@ import { CalendarDays, MapPin, Music2, Search, Radio, AlarmClock, Timer } from "
 import { Card, CardContent } from "@/components/ui/card";
 import { StatusBadge } from "@/components/status-badge";
 import { DuplicateEventButton } from "@/components/event/duplicate-event-button";
+import { AutoPrefetch } from "@/components/event/auto-prefetch";
 import {
   EVENT_TYPES,
   type EventRow,
@@ -203,6 +204,9 @@ export function EventsList({
               <Radio className="h-4 w-4" /> Live Mode
             </Link>
           </div>
+          {nextShow.group_id && (
+            <AutoPrefetch eventId={nextShow.id} groupId={nextShow.group_id} />
+          )}
         </div>
       )}
 
