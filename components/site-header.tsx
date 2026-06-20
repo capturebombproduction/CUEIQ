@@ -2,6 +2,7 @@ import Link from "next/link";
 import { Brand } from "@/components/brand";
 import { Badge } from "@/components/ui/badge";
 import { SignOutButton } from "@/components/sign-out-button";
+import { ChangePasswordButton } from "@/components/change-password-button";
 import { MainNav } from "@/components/main-nav";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { AccentPicker } from "@/components/accent-picker";
@@ -44,6 +45,7 @@ export function SiteHeader({
           <InstallButton />
           <AccentPicker />
           <ThemeToggle />
+          <ChangePasswordButton />
           <SignOutButton />
         </div>
       </div>
