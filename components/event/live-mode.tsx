@@ -427,6 +427,9 @@ export function LiveMode({
       for (const it of items) {
         const path = it.audio_path;
         if (!path) continue;
+        // LOCK the on-air file: never re-download or revoke the track that's
+        // currently sounding (a mid-show library re-upload won't cut the live song).
+        if (it.id === playingIdRef.current && audioUrlsRef.current[it.id]) continue;
         // already holding this exact version locally? skip.
         if (cachedPathRef.current[it.id] === path && audioUrlsRef.current[it.id]) continue;
         setAudioBusy((prev) => ({ ...prev, [it.id]: "down" }));
@@ -808,6 +811,18 @@ export function LiveMode({
   // ref so the realtime subscription (registered once) always calls the latest
   const refetchRef = useRef(refetchItems);
   refetchRef.current = refetchItems;
+
+  // Auto pick-up library audio: when this tab regains focus (e.g. you just
+  // uploaded a file in the library on another tab), re-fetch songs + setlist so
+  // linked items get their audio without a manual reload. The on-air file is
+  // locked by the download effect, so the live track is never cut.
+  useEffect(() => {
+    const onVis = () => {
+      if (document.visibilityState === "visible") refetchRef.current();
+    };
+    document.addEventListener("visibilitychange", onVis);
+    return () => document.removeEventListener("visibilitychange", onVis);
+  }, []);
 
   // Claim control of the show on this device. Broadcasting our current state tells
   // the previous controller to step down (it'll see our message and become a viewer).
