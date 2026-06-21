@@ -18,6 +18,7 @@ import {
 import { toast } from "sonner";
 import { createClient } from "@/lib/supabase/client";
 import { downloadEventAudio } from "@/lib/audio-remote";
+import { PracticeAudioEngine } from "@/lib/practice-audio";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { BreakTimer } from "@/components/practice/break-timer";
@@ -25,8 +26,9 @@ import { Metronome } from "@/components/practice/metronome";
 import { cn } from "@/lib/utils";
 import { MARKER_PRESETS, type Song, type SongMarker } from "@/lib/types";
 
-// Speed presets — slowing down for practice. Pitch is preserved (see preservesPitch
-// below) so 0.5x stays in the same key, just slower.
+// Speed presets — slowing down for practice. The engine (SoundTouchJS) time-
+// stretches with pitch preserved, so 0.5x stays in the same key, just slower —
+// and it does so identically across browsers, including iOS Safari.
 const SPEEDS = [1, 0.75, 0.5] as const;
 // only auto-log a song as "practiced" once it's been played at least this long
 const RUN_LOG_THRESHOLD = 20;
@@ -69,8 +71,7 @@ export function PracticePlayer({
     return playable.filter((s) => s.title.toLowerCase().includes(q));
   }, [playable, query]);
 
-  const audioRef = useRef<HTMLAudioElement | null>(null);
-  const urlRef = useRef<string | null>(null);
+  const engineRef = useRef<PracticeAudioEngine | null>(null);
   const [currentId, setCurrentId] = useState<string | null>(null);
   const [loadingId, setLoadingId] = useState<string | null>(null);
   const [playing, setPlaying] = useState(false);
@@ -138,73 +139,36 @@ export function PracticePlayer({
       .then(() => onRunLogged?.());
   }
 
-  // one audio element for the whole session
+  // one SoundTouch engine for the whole session (created once; talks to Web Audio)
   useEffect(() => {
-    const a = new Audio();
-    a.preload = "auto";
-    audioRef.current = a;
-    const onTime = () => {
-      setCur(a.currentTime);
+    const engine = new PracticeAudioEngine();
+    engineRef.current = engine;
+    engine.onDuration = (d) => setDur(d);
+    engine.onTime = (t) => {
+      setCur(t);
       const { a: la, b: lb, on } = loopRef.current;
-      if (on && la != null && lb != null && lb > la && a.currentTime >= lb) {
-        a.currentTime = la;
-      }
+      if (on && la != null && lb != null && lb > la && t >= lb) engine.seek(la);
     };
-    const onMeta = () => setDur(a.duration);
-    const onPlay = () => {
-      setPlaying(true);
-      if (runRef.current.startedAt == null) runRef.current.startedAt = Date.now();
-    };
-    const stopAccum = () => {
+    engine.onPlayingChange = (p) => {
+      setPlaying(p);
       const r = runRef.current;
-      if (r.startedAt != null) {
+      if (p) {
+        if (r.startedAt == null) r.startedAt = Date.now();
+      } else if (r.startedAt != null) {
         r.accum += (Date.now() - r.startedAt) / 1000;
         r.startedAt = null;
       }
     };
-    const onPause = () => {
-      setPlaying(false);
-      stopAccum();
-    };
-    const onEnd = () => {
-      setPlaying(false);
-      stopAccum();
-    };
-    a.addEventListener("timeupdate", onTime);
-    a.addEventListener("loadedmetadata", onMeta);
-    a.addEventListener("ended", onEnd);
-    a.addEventListener("play", onPlay);
-    a.addEventListener("pause", onPause);
     return () => {
       flushRun(); // log whatever was playing when we leave
-      a.pause();
-      a.removeEventListener("timeupdate", onTime);
-      a.removeEventListener("loadedmetadata", onMeta);
-      a.removeEventListener("ended", onEnd);
-      a.removeEventListener("play", onPlay);
-      a.removeEventListener("pause", onPause);
-      a.src = "";
-      if (urlRef.current) URL.revokeObjectURL(urlRef.current);
-      urlRef.current = null;
-      audioRef.current = null;
+      engine.destroy();
+      engineRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
-    const a = audioRef.current;
-    if (!a) return;
-    a.playbackRate = speed;
-    a.preservesPitch = true;
-    // @ts-expect-error vendor-prefixed fallback (older WebKit/Firefox)
-    a.webkitPreservesPitch = true;
-    // @ts-expect-error vendor-prefixed fallback (older Firefox)
-    a.mozPreservesPitch = true;
-  }, [speed, currentId]);
-
-  useEffect(() => {
-    const a = audioRef.current;
-    if (a) a.volume = Math.min(1, Math.max(0, vol / 100));
+    engineRef.current?.setVolume(vol / 100);
   }, [vol]);
 
   const wakeRef = useRef<WakeLockSentinel | null>(null);
@@ -230,24 +194,18 @@ export function PracticePlayer({
   }, [playing]);
 
   async function selectSong(song: Song) {
-    const a = audioRef.current;
-    if (!a || !song.audio_path) return;
+    const engine = engineRef.current;
+    if (!engine || !song.audio_path) return;
+    engine.unlock(); // sync, inside the tap — unlocks audio on iOS Safari
     if (song.id === currentId) {
-      if (a.paused) a.play().catch(() => {});
-      else a.pause();
+      engine.toggle();
       return;
     }
     flushRun(); // finalize the previous song's practice time
     setLoadingId(song.id);
     try {
       const blob = await downloadEventAudio(song.audio_path);
-      const url = URL.createObjectURL(blob);
-      if (urlRef.current) URL.revokeObjectURL(urlRef.current);
-      urlRef.current = url;
-      a.src = url;
-      a.currentTime = 0;
-      setCur(0);
-      setDur(0);
+      await engine.load(blob); // decode happens here, inside the spinner
       setCurrentId(song.id);
       runRef.current.song = song; // start accounting for the new song
       runRef.current.accum = 0;
@@ -256,9 +214,7 @@ export function PracticePlayer({
       setLoopB(null);
       setLoopOn(false);
       setEditMarkers(false);
-      a.playbackRate = speed;
-      a.preservesPitch = true;
-      await a.play().catch(() => {});
+      await engine.play(); // engine already carries the current speed (tempo)
     } catch (err) {
       toast.error("โหลดเพลงไม่สำเร็จ", {
         description: err instanceof Error ? err.message : undefined,
@@ -269,29 +225,28 @@ export function PracticePlayer({
   }
 
   function togglePlay() {
-    const a = audioRef.current;
-    if (!a || !currentId) return;
-    if (a.paused) a.play().catch(() => {});
-    else a.pause();
+    const engine = engineRef.current;
+    if (!engine || !currentId) return;
+    engine.unlock();
+    engine.toggle();
   }
 
   function seek(to: number) {
-    const a = audioRef.current;
-    if (!a) return;
-    a.currentTime = Math.min(dur || 0, Math.max(0, to));
-    setCur(a.currentTime);
+    engineRef.current?.seek(to);
   }
 
   function jumpTo(pos: number) {
-    seek(pos);
-    const a = audioRef.current;
-    if (a && a.paused) a.play().catch(() => {});
+    const engine = engineRef.current;
+    if (!engine) return;
+    engine.unlock();
+    engine.seek(pos);
+    if (!engine.playing) void engine.play();
   }
 
   async function addMarker(label: string) {
-    const a = audioRef.current;
-    if (!current || !a || !canManage) return;
-    const pos = a.currentTime;
+    const engine = engineRef.current;
+    if (!current || !engine || !canManage) return;
+    const pos = engine.currentTime;
     const supabase = createClient();
     const { data, error } = await supabase
       .from("song_markers")
@@ -326,19 +281,21 @@ export function PracticePlayer({
   }
 
   function setA() {
-    const a = audioRef.current;
-    if (!a) return;
-    setLoopA(a.currentTime);
-    if (loopB != null && a.currentTime >= loopB) setLoopB(null);
+    const engine = engineRef.current;
+    if (!engine) return;
+    const t = engine.currentTime;
+    setLoopA(t);
+    if (loopB != null && t >= loopB) setLoopB(null);
   }
   function setB() {
-    const a = audioRef.current;
-    if (!a) return;
-    if (loopA != null && a.currentTime <= loopA) {
+    const engine = engineRef.current;
+    if (!engine) return;
+    const t = engine.currentTime;
+    if (loopA != null && t <= loopA) {
       toast.error("จุด B ต้องอยู่หลังจุด A");
       return;
     }
-    setLoopB(a.currentTime);
+    setLoopB(t);
     setLoopOn(true);
   }
   function clearLoop() {
@@ -394,7 +351,11 @@ export function PracticePlayer({
                 {SPEEDS.map((s) => (
                   <button
                     key={s}
-                    onClick={() => setSpeed(s)}
+                    onClick={() => {
+                      setSpeed(s);
+                      engineRef.current?.unlock();
+                      engineRef.current?.setTempo(s);
+                    }}
                     className={cn(
                       "rounded-md px-2 py-1 text-xs font-medium transition-colors",
                       speed === s
