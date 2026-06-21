@@ -9,9 +9,9 @@ type NavLink = { href: string; label: string; short: string };
 
 const LINKS: NavLink[] = [
   { href: "/dashboard", label: "Events", short: "Events" },
-  { href: "/overview", label: "ภาพรวมค่าย", short: "ภาพรวม" },
+  { href: "/overview", label: "Overview", short: "Overview" },
   { href: "/library", label: "Music Library", short: "Library" },
-  { href: "/practice", label: "โหมดซ้อม", short: "ซ้อม" },
+  { href: "/practice", label: "Training", short: "Training" },
   { href: "/groups", label: "Artists", short: "Artists" },
 ];
 
@@ -29,7 +29,7 @@ export function MainNav({ perms }: { perms?: Perms }) {
     return true;
   });
   if (perms && isAdmin(perms)) {
-    links.push({ href: "/admin", label: "ผู้ใช้ & สิทธิ์", short: "ผู้ใช้" });
+    links.push({ href: "/admin", label: "Admin", short: "Admin" });
   }
   return (
     <nav className="flex items-center gap-1">

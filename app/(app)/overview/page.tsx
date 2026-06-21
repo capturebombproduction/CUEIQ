@@ -141,7 +141,7 @@ export default async function OverviewPage() {
     <div className="space-y-6">
       <div>
         <h1 className="flex items-center gap-2 text-2xl font-bold tracking-tight">
-          <LayoutGrid className="h-6 w-6" /> ภาพรวมค่าย
+          <LayoutGrid className="h-6 w-6" /> Overview
         </h1>
         <p className="text-sm text-muted-foreground">
           {ws.tenant.name} · {ws.groups.length} วง · {events.length} งาน

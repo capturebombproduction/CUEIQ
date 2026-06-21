@@ -8,6 +8,7 @@ import { MainNav } from "@/components/main-nav";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { AccentPicker } from "@/components/accent-picker";
 import { InstallButton } from "@/components/install-button";
+import { KioskMode } from "@/components/kiosk-mode";
 import { ROLE_SHORT, type Role } from "@/lib/types";
 import { isLabelWideUser, type Perms } from "@/lib/permissions";
 
@@ -45,19 +46,22 @@ export function SiteHeader({
           <Link href="/dashboard" className="shrink-0">
             <Brand subtitle="Designed by PatzNutthapat" />
           </Link>
-          {/* nav is inline here on desktop; on mobile it drops to its own row below */}
-          <div className="hidden md:block">
+          {/* nav is inline only on wide desktops (xl+), where even the admin's
+              6-link nav fits beside the action icons; on anything narrower (phones in
+              either orientation, tablets, split windows) it drops to its own
+              scrollable row below so it can never overlap the action icons */}
+          <div className="hidden xl:block">
             <MainNav perms={perms} />
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-2 sm:gap-3">
           {shownRole && (
-            <Badge variant="secondary" className="hidden sm:inline-flex">
+            <Badge variant="secondary" className="hidden xl:inline-flex">
               {shownRole}
             </Badge>
           )}
           {name && (
-            <span className="hidden max-w-[16ch] truncate text-sm font-medium md:inline">
+            <span className="hidden max-w-[16ch] truncate text-sm font-medium xl:inline">
               {name}
             </span>
           )}
@@ -65,15 +69,17 @@ export function SiteHeader({
             <NotificationBell userId={userId} tenantId={tenantId} />
           )}
           <InstallButton />
+          <KioskMode />
           <AccentPicker />
           <ThemeToggle />
           <ChangePasswordButton />
           <SignOutButton />
         </div>
       </div>
-      {/* mobile nav row — keeps all links visible without overflowing the header.
-          Identity (role + name) lives here on phones since the top row hides it. */}
-      <div className="container -mt-1 space-y-1.5 pb-2 md:hidden">
+      {/* mobile / landscape-phone / tablet nav row — keeps all links visible without
+          overflowing the header (shown below xl). Identity (role + name) lives here
+          since the top row hides it until xl. */}
+      <div className="container -mt-1 space-y-1.5 pb-2 xl:hidden">
         {(shownRole || name) && (
           <div className="flex items-center gap-2 text-xs">
             {shownRole && (

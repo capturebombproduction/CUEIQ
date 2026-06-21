@@ -43,7 +43,7 @@ export default async function PracticePage() {
       <div className="flex items-end justify-between gap-3">
         <div>
           <h1 className="flex items-center gap-2 text-2xl font-bold tracking-tight">
-            <Dumbbell className="h-6 w-6" /> โหมดซ้อม
+            <Dumbbell className="h-6 w-6" /> Training
           </h1>
           <p className="mt-1 text-sm text-muted-foreground">
             ห้องซ้อมของวง — เปิดเพลงจากคลัง, ปรับความเร็ว, วนท่อน, จับเวลาพัก และจดบันทึกการซ้อม

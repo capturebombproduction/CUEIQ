@@ -5,7 +5,6 @@ import { createClient } from "@/lib/supabase/server";
 import { getEventBundle, getWorkspace } from "@/lib/queries";
 import { canEditGroup } from "@/lib/permissions";
 import { PracticeMode } from "@/components/practice/practice-mode";
-import { FullscreenButton } from "@/components/fullscreen-button";
 import { Button } from "@/components/ui/button";
 import type { SongMarker } from "@/lib/types";
 
@@ -47,7 +46,6 @@ export default async function PracticePlayPage({
             <ArrowLeft className="h-4 w-4" /> ห้องซ้อม
           </Link>
         </Button>
-        <FullscreenButton />
       </div>
       <PracticeMode
         roomName={bundle.event.name}

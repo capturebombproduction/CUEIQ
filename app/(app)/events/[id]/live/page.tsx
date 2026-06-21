@@ -4,7 +4,6 @@ import { ArrowLeft } from "lucide-react";
 import { getEventBundle, getWorkspace } from "@/lib/queries";
 import { canLiveEdit } from "@/lib/permissions";
 import { LiveMode } from "@/components/event/live-mode";
-import { FullscreenButton } from "@/components/fullscreen-button";
 import { Button } from "@/components/ui/button";
 
 export const dynamic = "force-dynamic";
@@ -35,7 +34,6 @@ export default async function LivePage({
             <ArrowLeft className="h-4 w-4" /> กลับไปหน้างาน
           </Link>
         </Button>
-        <FullscreenButton />
       </div>
       <LiveMode
         eventId={bundle.event.id}

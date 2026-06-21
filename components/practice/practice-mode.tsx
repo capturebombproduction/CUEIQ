@@ -43,7 +43,7 @@ export function PracticeMode({
           <Music2 className="h-5 w-5" /> {roomName}
         </h1>
         <p className="text-xs text-muted-foreground">
-          โหมดซ้อม — ปรับความเร็ว, วนท่อน, จับเวลาพัก และจดบันทึกการซ้อม
+          Training — ปรับความเร็ว, วนท่อน, จับเวลาพัก และจดบันทึกการซ้อม
         </p>
       </div>
 
