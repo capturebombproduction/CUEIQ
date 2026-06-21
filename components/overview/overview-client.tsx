@@ -78,6 +78,15 @@ function fmtRange(r: TimeRange): string {
   return r.end ? `${start}–${shortClock(r.end)}` : start;
 }
 
+// ISO date with weekday for the date picker / export subtitle: "2026-06-21 · Sat".
+function fmtDateWd(date: string): string {
+  const d = new Date(`${date}T00:00:00`);
+  if (isNaN(d.getTime())) return date;
+  return `${d.toLocaleDateString("en-CA")} · ${d.toLocaleDateString("en-GB", {
+    weekday: "short",
+  })}`;
+}
+
 function startOfWeek(d: Date): Date {
   const x = new Date(d);
   const day = (x.getDay() + 6) % 7; // Mon = 0
@@ -144,18 +153,40 @@ export function OverviewClient({
 }) {
   const [mode, setMode] = useState<ViewMode>("band");
   const [bandFilter, setBandFilter] = useState<string>("all");
+  const [dateFilter, setDateFilter] = useState<string>("all"); // "all" or an ISO date
   const [exporting, setExporting] = useState(false);
   const exportRef = useRef<HTMLDivElement>(null);
 
-  const filtered = useMemo(
+  const byBand = useMemo(
     () => (bandFilter === "all" ? events : events.filter((e) => e.group_id === bandFilter)),
     [events, bandFilter]
   );
+
+  // Dates that actually have a show (within the current band scope), for the
+  // "เลือกวัน" picker — so staff can capture a single day instead of every day.
+  const availableDates = useMemo(
+    () =>
+      Array.from(
+        new Set(byBand.map((e) => e.event_date).filter((d): d is string => !!d))
+      ).sort(),
+    [byBand]
+  );
+
+  // Apply the date filter on top of the band filter. Guard against a stale date
+  // (e.g. after switching band) by falling back to the whole band scope.
+  const filtered = useMemo(() => {
+    if (dateFilter === "all" || !byBand.some((e) => e.event_date === dateFilter)) {
+      return byBand;
+    }
+    return byBand.filter((e) => e.event_date === dateFilter);
+  }, [byBand, dateFilter]);
 
   const bandFilterLabel =
     bandFilter === "all"
       ? "ทุกวง"
       : bands.find((b) => b.id === bandFilter)?.name ?? "ทุกวง";
+
+  const dateActive = dateFilter !== "all" && availableDates.includes(dateFilter);
 
   const modeLabel = VIEW_MODES.find((m) => m.value === mode)?.label ?? "";
 
@@ -164,7 +195,9 @@ export function OverviewClient({
     if (!el) return;
     setExporting(true);
     try {
-      const filename = `schedule-${new Date().toISOString().slice(0, 10)}.jpg`;
+      const filename = `schedule-${
+        dateActive ? dateFilter : new Date().toISOString().slice(0, 10)
+      }.jpg`;
       const how = await captureElementToImage(el, {
         filename,
         shareTitle: `${labelName} · ตารางงาน`,
@@ -227,7 +260,22 @@ export function OverviewClient({
             </button>
           ))}
         </div>
-        <div className="ml-auto flex items-center gap-2">
+        <div className="ml-auto flex flex-wrap items-center gap-2">
+          {availableDates.length > 1 && (
+            <select
+              value={dateFilter}
+              onChange={(e) => setDateFilter(e.target.value)}
+              className="rounded-md border bg-background px-2 py-1.5 text-sm"
+              title="กรองเฉพาะวันที่เลือก — ถ่ายรูปเฉพาะวันนั้น"
+            >
+              <option value="all">ทุกวัน</option>
+              {availableDates.map((d) => (
+                <option key={d} value={d}>
+                  {fmtDateWd(d)}
+                </option>
+              ))}
+            </select>
+          )}
           {bands.length > 1 && (
             <select
               value={bandFilter}
@@ -439,7 +487,9 @@ export function OverviewClient({
           <div className="border-b pb-3">
             <h2 className="text-xl font-bold leading-tight">{labelName}</h2>
             <p className="text-sm text-muted-foreground">
-              ตารางงาน · {modeLabel} · {bandFilterLabel} · {filtered.length} งาน
+              ตารางงาน · {modeLabel} · {bandFilterLabel}
+              {dateActive ? ` · ${fmtDateWd(dateFilter)}` : ""} · {filtered.length}{" "}
+              งาน
             </p>
           </div>
           {/* Mirror the on-screen grouping (buckets follow the current view mode)
