@@ -8,7 +8,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { JoinDemo } from "@/components/join-demo";
 import { EventsList } from "@/components/event/events-list";
 import { CreateFromTemplateButton } from "@/components/event/create-from-template-button";
-import { canCreateAnyEvent, canEditGroup, canViewGroup } from "@/lib/permissions";
+import { canCreateAnyEvent, canEditGroup } from "@/lib/permissions";
 import { type EventRow } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
@@ -54,14 +54,12 @@ export default async function DashboardPage() {
     .filter((g) => canEditGroup(ws.perms, g.id))
     .map((g) => ({ id: g.id, name: g.name }));
   const editableGroupIds = editableGroups.map((g) => g.id);
-  // "create from template" needs a template the user can READ (RLS: admin, or the
-  // template band's own editor) and at least one band they can create in.
+  // "create from template" is offered to ANY event-creator (admin, or an Ar of
+  // any band) once a template exists — RLS now lets every creator READ the
+  // template skeleton (migration 0029). Cloning into a different band keeps only
+  // the structure (no songs/mic/audio); that's handled in the clone itself.
   const template = tplRow as { id: string; group_id: string } | null;
-  const showTemplate =
-    !!template &&
-    canCreate &&
-    editableGroups.length > 0 &&
-    canViewGroup(ws.perms, template.group_id);
+  const showTemplate = !!template && canCreate && editableGroups.length > 0;
 
   return (
     <div className="space-y-6">

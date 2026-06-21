@@ -40,8 +40,9 @@ function strip(rows: Row[] | null, drop: string[], eventId: string): Row[] {
  * event for a chosen band. Cloning into the template's OWN band keeps the linked
  * library songs + mic map; cloning into a DIFFERENT band keeps only the structure
  * (schedule skeleton + setlist titles) and drops song links + mic (band-specific).
- * Audio is never copied. RLS already limits this to users who can read the
- * template (admin, or the template band's own editor) and create in the target.
+ * Audio is never copied. RLS lets any event-creator in the tenant READ the
+ * template (migration 0029) and create only in a band they can edit (the target
+ * dropdown is already scoped to the user's editable bands).
  */
 export function CreateFromTemplateButton({
   templateId,
