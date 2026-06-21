@@ -18,6 +18,7 @@ import {
 import { Card, CardContent } from "@/components/ui/card";
 import { StatusBadge } from "@/components/status-badge";
 import { DuplicateEventButton } from "@/components/event/duplicate-event-button";
+import { DeleteEventButton } from "@/components/event/delete-event-button";
 import { AutoPrefetch } from "@/components/event/auto-prefetch";
 import { LibraryPrefetch } from "@/components/event/library-prefetch";
 import { DeviceStorage } from "@/components/event/device-storage";
@@ -129,7 +130,12 @@ function EventCard({
         className="relative h-full overflow-hidden border-l-4 transition-shadow group-hover:shadow-md"
         style={ev.groups?.color ? { borderLeftColor: ev.groups.color } : undefined}
       >
-        {editable && <DuplicateEventButton eventId={ev.id} />}
+        {editable && (
+          <>
+            <DuplicateEventButton eventId={ev.id} />
+            <DeleteEventButton eventId={ev.id} eventName={ev.name} />
+          </>
+        )}
         <CardContent className="space-y-3 p-5">
           <div className="flex items-start justify-between gap-2">
             <h2 className="font-semibold leading-tight group-hover:text-primary">
