@@ -34,15 +34,42 @@ function clampBpm(n: number) {
   return Math.min(MAX_BPM, Math.max(MIN_BPM, Math.round(n)));
 }
 
+// Re-derive a working beat grid from the detected beats for an octave factor:
+// >1 subdivides each gap (×2 → twice as many beats), <1 keeps every Nth beat
+// (÷2 → half as many). Used by the ÷2/×2 buttons to fix octave-off detections
+// while staying beat-LOCKED (not just changing a free-run BPM number).
+function octaveBeats(base: number[], octave: number): number[] {
+  if (octave === 1 || base.length < 2) return base.slice();
+  if (octave > 1) {
+    const sub = Math.round(octave);
+    const out: number[] = [];
+    for (let i = 0; i < base.length - 1; i++) {
+      const a = base[i];
+      const b = base[i + 1];
+      for (let k = 0; k < sub; k++) out.push(a + ((b - a) * k) / sub);
+    }
+    out.push(base[base.length - 1]);
+    return out;
+  }
+  const step = Math.max(1, Math.round(1 / octave));
+  return base.filter((_, i) => i % step === 0);
+}
+
 /**
  * Practice metronome — syncs to the song.
  *
  * In SYNC mode (default when a song with audio is loaded) it follows the player's
- * transport: it starts/stops with playback, runs at the song's saved BPM, stays
- * in phase with the playback position (so it survives seeking + A-B loops), and
- * scales with the slow-down speed (at 0.5× the beats are spaced twice as wide in
- * real time, so they still land on the music). No manual start needed — that's the
- * "hard to use" problem solved. A "ตั้งบีตแรก" tap re-phases beat 1 to the moment.
+ * transport: it starts/stops with playback and stays locked to the music.
+ *
+ * Two sync strategies:
+ *   • BEAT-LOCKED (best) — after "ตรวจจับจังหวะจากเพลง" runs the audio beat tracker
+ *     we have the ACTUAL beat times. The scheduler clicks exactly on those times
+ *     (mapped from song position to the audio clock via a play anchor + speed), so
+ *     it never drifts and auto-phases — no free-running clock to slide off a real
+ *     recording. ÷2/×2 thin/subdivide the beats; "ตั้งบีตแรก" picks which beat is "1".
+ *   • FREE-RUN (fallback) — no detected beats yet: run a steady clock at the saved
+ *     BPM, phase-locked to the playback position. Survives seeks/A-B loops and
+ *     scales with the slow-down speed, but can drift on a non-quantised recording.
  *
  * Without a song (or with sync off) it falls back to a free-running manual
  * metronome with tap-tempo.
@@ -58,7 +85,7 @@ export function Metronome({
   position = 0,
   speed = 1,
   onBpmSaved,
-  onDetectBpm,
+  onDetectBeats,
 }: {
   song: Song | null;
   canManage: boolean;
@@ -66,7 +93,7 @@ export function Metronome({
   position?: number;
   speed?: number;
   onBpmSaved?: (songId: string, bpm: number) => void;
-  onDetectBpm?: () => Promise<number | null>;
+  onDetectBeats?: () => Promise<{ bpm: number; beats: number[] } | null>;
 }) {
   const canSync = !!song?.audio_path;
 
@@ -79,6 +106,7 @@ export function Metronome({
   const [running, setRunning] = useState(false);
   const [beatLabel, setBeatLabel] = useState(0); // current beat shown in the dial
   const [detecting, setDetecting] = useState(false); // analysing audio for its BPM
+  const [hasBeats, setHasBeats] = useState(false); // beat-locked (vs free-run) sync
 
   // live refs for the running scheduler (so it reads the latest values)
   const bpmRef = useRef(bpm);
@@ -96,13 +124,23 @@ export function Metronome({
   transportRef.current = { playing, position, speed };
 
   const ctxRef = useRef<AudioContext | null>(null);
-  const nextNoteRef = useRef(0); // ctx time of the next beat to schedule
-  const beatAbsRef = useRef(0); // absolute beat index from the grid origin
-  const gridBaseRef = useRef(0); // song-time of beat "1" (origin of the beat grid)
+  const nextNoteRef = useRef(0); // ctx time of the next beat to schedule (free-run)
+  const beatAbsRef = useRef(0); // absolute beat index from the grid origin (free-run)
+  const gridBaseRef = useRef(0); // song-time of beat "1" (origin of the beat grid, free-run)
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const genRef = useRef(0); // bumped on stop so queued beat callbacks don't leak
   const tapsRef = useRef<number[]>([]);
   const lastPosRef = useRef(position);
+
+  // --- beat-locked scheduling (from the audio beat tracker) -----------------
+  const detectedBeatsRef = useRef<number[] | null>(null); // raw detected beat times (s)
+  const detectedBpmRef = useRef(0); // raw detected BPM (before octave fixups)
+  const octaveRef = useRef(1); // ÷2/×2 factor applied to the detected beats
+  const beatTimesRef = useRef<number[] | null>(null); // working beat times (octave-adjusted)
+  const beatPtrRef = useRef(0); // index of the next beat to schedule
+  const beatOriginRef = useRef(0); // which working-beat index counts as "1"
+  const anchorCtxRef = useRef(0); // ctx time at the anchor
+  const anchorPosRef = useRef(0); // song position (s) at the anchor
 
   const voiceRef = useRef<SpeechSynthesisVoice | null>(null);
   const canSpeakRef = useRef(false);
@@ -116,6 +154,13 @@ export function Metronome({
 
   useEffect(() => {
     if (song?.bpm) setBpm(clampBpm(song.bpm));
+    // detected beats belong to the previous song — drop them (fall back to free-run)
+    detectedBeatsRef.current = null;
+    detectedBpmRef.current = 0;
+    beatTimesRef.current = null;
+    octaveRef.current = 1;
+    beatOriginRef.current = 0;
+    setHasBeats(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [song?.id]);
 
@@ -279,9 +324,37 @@ export function Metronome({
     return songSpb;
   }
 
+  // beat-locked when synced AND the tracker gave us real beat times
+  function beatLockActive() {
+    const beats = beatTimesRef.current;
+    return syncedRef.current && !!beats && beats.length > 0;
+  }
+
   function schedule() {
     const ctx = ctxRef.current;
     if (!ctx) return;
+    const beats = beatTimesRef.current;
+    if (beatLockActive() && beats) {
+      // Map each beat's song-time to ctx time via the anchor + speed and schedule
+      // the ones falling in the lookahead window. Drift-free: every click is a real
+      // beat position, not a free-running clock.
+      const spd = Math.max(0.01, transportRef.current.speed || 1);
+      const horizon = ctx.currentTime + 0.12;
+      let ptr = beatPtrRef.current;
+      while (ptr < beats.length) {
+        const ctxT = anchorCtxRef.current + (beats[ptr] - anchorPosRef.current) / spd;
+        if (ctxT < ctx.currentTime - 0.05) {
+          ptr++; // already past (after a jump / fell behind) — skip silently
+          continue;
+        }
+        if (ctxT >= horizon) break;
+        scheduleBeat(ctxT, ptr - beatOriginRef.current);
+        ptr++;
+      }
+      beatPtrRef.current = ptr;
+      return;
+    }
+    // free-run fallback
     while (nextNoteRef.current < ctx.currentTime + 0.12) {
       scheduleBeat(nextNoteRef.current, beatAbsRef.current);
       nextNoteRef.current += realSpb();
@@ -289,11 +362,26 @@ export function Metronome({
     }
   }
 
-  // Phase-lock the beat grid to the song's current position (sync mode).
+  // Phase-lock the metronome to the song's current position (sync mode).
   function anchorSync() {
     const ctx = ctxRef.current;
     if (!ctx) return;
     const { position: pos, speed: spd } = transportRef.current;
+    const beats = beatTimesRef.current;
+    if (beatLockActive() && beats) {
+      // anchor the song↔ctx clock mapping at "now", point at the first beat ≥ pos
+      anchorCtxRef.current = ctx.currentTime;
+      anchorPosRef.current = pos;
+      let lo = 0;
+      let hi = beats.length;
+      while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        if (beats[mid] < pos) lo = mid + 1;
+        else hi = mid;
+      }
+      beatPtrRef.current = lo;
+      return;
+    }
     const songSpb = 60 / bpmRef.current;
     const grid = gridBaseRef.current;
     const phase = (((pos - grid) % songSpb) + songSpb) % songSpb;
@@ -395,21 +483,75 @@ export function Metronome({
     }
   }
 
-  // Re-phase beat 1 to "now" (tap this on the song's downbeat to line it up).
+  // Re-phase beat "1". Beat-locked: pick the detected beat nearest "now" as the 1.
+  // Free-run: set the grid origin to "now". Tap this on the song's downbeat.
   function setBeatOne() {
+    const beats = beatTimesRef.current;
+    if (beatLockActive() && beats) {
+      const pos = transportRef.current.position;
+      let best = 0;
+      let bestD = Infinity;
+      for (let i = 0; i < beats.length; i++) {
+        const d = Math.abs(beats[i] - pos);
+        if (d < bestD) {
+          bestD = d;
+          best = i;
+        }
+      }
+      beatOriginRef.current = best;
+      return;
+    }
     gridBaseRef.current = transportRef.current.position;
     if (runningRef.current) anchorSync();
   }
 
+  // ÷2 / ×2 octave fixups. Beat-locked: re-derive the working beat grid (thin /
+  // subdivide) so it stays locked to the music. Free-run: just scale the BPM.
+  function applyOctave(factor: number) {
+    const base = detectedBeatsRef.current;
+    if (sync && canSync && base && base.length > 1) {
+      const next = Math.min(4, Math.max(0.25, octaveRef.current * factor));
+      octaveRef.current = next;
+      const working = octaveBeats(base, next);
+      beatTimesRef.current = working;
+      beatOriginRef.current = 0;
+      setHasBeats(working.length > 0);
+      if (detectedBpmRef.current > 0) setBpm(clampBpm(detectedBpmRef.current * next));
+      if (runningRef.current) anchorSync();
+    } else {
+      setBpm((b) => clampBpm(b * factor));
+    }
+  }
+
   async function detect() {
-    if (!onDetectBpm || detecting) return;
+    if (!onDetectBeats || detecting) return;
     setDetecting(true);
     try {
-      const guess = await onDetectBpm();
-      if (guess && guess > 0) {
-        setBpm(clampBpm(guess)); // the [bpm] effect re-phases the running metronome
-        toast.success(`ตรวจจับได้ ~${clampBpm(guess)} BPM`, {
-          description: "ถ้ารู้สึกเร็ว/ช้าไปเท่าตัว กด ÷2 หรือ ×2",
+      const res = await onDetectBeats();
+      if (res && res.bpm > 0 && res.beats.length > 1) {
+        // beat-locked: schedule clicks on the real beat times (no drift, auto-phase)
+        detectedBpmRef.current = res.bpm;
+        detectedBeatsRef.current = res.beats;
+        octaveRef.current = 1;
+        beatTimesRef.current = res.beats.slice();
+        beatOriginRef.current = 0;
+        setBpm(clampBpm(res.bpm));
+        setHasBeats(true);
+        if (runningRef.current) anchorSync();
+        toast.success(`ล็อกจังหวะเพลงแล้ว ~${clampBpm(res.bpm)} BPM`, {
+          description: "เมโทรนอมจะเกาะจังหวะจริงของเพลง • ถี่/ห่างไปกด ÷2 หรือ ×2 • “ตั้งบีตแรก” จัดเลข 1",
+        });
+      } else if (res && res.bpm > 0) {
+        // tempo only — couldn't lock beats; fall back to a free-run clock at this BPM
+        detectedBeatsRef.current = null;
+        detectedBpmRef.current = 0;
+        beatTimesRef.current = null;
+        octaveRef.current = 1;
+        setHasBeats(false);
+        setBpm(clampBpm(res.bpm));
+        if (runningRef.current) anchorSync();
+        toast.success(`ตรวจจับได้ ~${clampBpm(res.bpm)} BPM`, {
+          description: "ล็อกบีตไม่ชัด ใช้จังหวะคงที่แทน • ถ้าเร็ว/ช้าไปเท่าตัวกด ÷2 หรือ ×2",
         });
       } else {
         toast.error("ตรวจจับจังหวะไม่ได้", { description: "ลองเคาะจังหวะเองหรือปรับเลข BPM" });
@@ -558,33 +700,30 @@ export function Metronome({
         className="w-full accent-[var(--primary)]"
       />
 
-      {/* auto BPM detection from the song's audio (+ octave fixups) */}
-      {canSync && onDetectBpm && (
-        <div className="flex items-center gap-2">
-          <Button variant="outline" size="sm" onClick={detect} disabled={detecting}>
-            {detecting ? (
-              <Loader2 className="h-4 w-4 animate-spin" />
-            ) : (
-              <Wand2 className="h-4 w-4" />
-            )}
-            {detecting ? "กำลังตรวจจับ…" : "ตรวจจับจังหวะจากเพลง"}
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => setBpm((b) => clampBpm(b / 2))}
-            title="ช้าลงครึ่งหนึ่ง"
-          >
-            ÷2
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => setBpm((b) => clampBpm(b * 2))}
-            title="เร็วขึ้นเท่าตัว"
-          >
-            ×2
-          </Button>
+      {/* auto beat detection from the song's audio (+ octave fixups) */}
+      {canSync && onDetectBeats && (
+        <div className="space-y-1.5">
+          <div className="flex items-center gap-2">
+            <Button variant="outline" size="sm" onClick={detect} disabled={detecting}>
+              {detecting ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Wand2 className="h-4 w-4" />
+              )}
+              {detecting ? "กำลังตรวจจับ…" : "ตรวจจับจังหวะจากเพลง"}
+            </Button>
+            <Button variant="outline" size="sm" onClick={() => applyOctave(0.5)} title="ช้าลงครึ่งหนึ่ง">
+              ÷2
+            </Button>
+            <Button variant="outline" size="sm" onClick={() => applyOctave(2)} title="เร็วขึ้นเท่าตัว">
+              ×2
+            </Button>
+          </div>
+          {hasBeats && isSync && (
+            <p className="flex items-center gap-1 text-xs font-medium text-primary">
+              <Crosshair className="h-3 w-3" /> เกาะจังหวะจริงของเพลง — ไม่หลุดจังหวะ
+            </p>
+          )}
         </div>
       )}
 

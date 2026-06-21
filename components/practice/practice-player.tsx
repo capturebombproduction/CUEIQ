@@ -19,7 +19,7 @@ import { toast } from "sonner";
 import { createClient } from "@/lib/supabase/client";
 import { getSongBlob } from "@/lib/song-cache";
 import { PracticeAudioEngine } from "@/lib/practice-audio";
-import { detectTempo } from "@/lib/bpm-detect";
+import { detectBeats } from "@/lib/bpm-detect";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { BreakTimer } from "@/components/practice/break-timer";
@@ -319,9 +319,9 @@ export function PracticePlayer({
           playing={playing}
           position={cur}
           speed={speed}
-          onDetectBpm={async () => {
+          onDetectBeats={async () => {
             const buf = await engineRef.current?.getBuffer();
-            return buf ? detectTempo(buf) : null;
+            return buf ? detectBeats(buf) : null;
           }}
         />
         <BreakTimer />
