@@ -129,6 +129,10 @@ export function Metronome({
   const gridBaseRef = useRef(0); // song-time of beat "1" (origin of the beat grid, free-run)
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const genRef = useRef(0); // bumped on stop so queued beat callbacks don't leak
+  // Scheduled audio nodes (count samples + clicks) committed to the audio clock up
+  // to the lookahead ahead of "now". Tracked so a stop/pause can cancel the ones
+  // that haven't sounded yet — otherwise a trailing beat leaks ~120ms after stop.
+  const liveNodesRef = useRef<Set<AudioScheduledSourceNode>>(new Set());
   const tapsRef = useRef<number[]>([]);
   const lastPosRef = useRef(position);
 
@@ -243,6 +247,13 @@ export function Metronome({
     countBuffersRef.current = out;
   }
 
+  // Track a scheduled node so stopScheduler can cancel it if it hasn't fired yet
+  // (drops itself from the set once it ends, so the set only holds pending/sounding).
+  function track(node: AudioScheduledSourceNode) {
+    liveNodesRef.current.add(node);
+    node.addEventListener("ended", () => liveNodesRef.current.delete(node));
+  }
+
   // Schedule a decoded count sample exactly at `time` (on the audio clock).
   function playSample(buf: AudioBuffer, time: number) {
     const ctx = ctxRef.current;
@@ -254,6 +265,7 @@ export function Metronome({
     src.connect(g);
     g.connect(ctx.destination);
     src.start(time);
+    track(src);
   }
 
   function speak(n: number) {
@@ -289,6 +301,7 @@ export function Metronome({
     gain.gain.exponentialRampToValueAtTime(0.0001, time + 0.05);
     osc.start(time);
     osc.stop(time + 0.06);
+    track(osc);
   }
 
   function scheduleBeat(time: number, abs: number) {
@@ -408,6 +421,16 @@ export function Metronome({
     if (timerRef.current) clearInterval(timerRef.current);
     timerRef.current = null;
     genRef.current++; // invalidate any beat callbacks already queued ahead
+    // cancel any click/count already scheduled on the audio clock but not yet
+    // sounded (or still sounding) so no stray beat leaks out after stop/pause
+    liveNodesRef.current.forEach((n) => {
+      try {
+        n.stop();
+      } catch {
+        /* already stopped/ended — fine */
+      }
+    });
+    liveNodesRef.current.clear();
     try {
       window.speechSynthesis?.cancel();
     } catch {
