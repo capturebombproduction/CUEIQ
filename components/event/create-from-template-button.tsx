@@ -26,6 +26,9 @@ import {
 
 type Row = Record<string, unknown>;
 
+/** A band the user can create in, paired with that band's OWN demo-draft template. */
+export type TemplateGroup = { id: string; name: string; templateId: string };
+
 function strip(rows: Row[] | null, drop: string[], eventId: string): Row[] {
   return (rows ?? []).map((row) => {
     const o: Row = { ...row };
@@ -36,23 +39,14 @@ function strip(rows: Row[] | null, drop: string[], eventId: string): Row[] {
 }
 
 /**
- * "สร้างจากแม่แบบ" — clone the label template (NIKKO baseline) into a new draft
- * event for a chosen band. Cloning into the template's OWN band keeps the linked
- * library songs + mic map; cloning into a DIFFERENT band keeps only the structure
- * (schedule skeleton + setlist titles) and drops song links + mic (band-specific).
- * Audio is never copied. RLS lets any event-creator in the tenant READ the
- * template (migration 0029) and create only in a band they can edit (the target
- * dropdown is already scoped to the user's editable bands).
+ * "สร้างจากแม่แบบ" — clone a band's OWN demo-draft template ("Demo Draft Events",
+ * is_template=true) into a new draft event for that same band. Each band has its
+ * own template, so a clone never pulls another band's content. The schedule
+ * skeleton + setlist (with song links + mic) are copied; audio bytes are never
+ * copied. RLS limits this to a band the user can edit (the dropdown is already
+ * scoped to the user's editable bands that have a template).
  */
-export function CreateFromTemplateButton({
-  templateId,
-  templateGroupId,
-  groups,
-}: {
-  templateId: string;
-  templateGroupId: string;
-  groups: { id: string; name: string }[];
-}) {
+export function CreateFromTemplateButton({ groups }: { groups: TemplateGroup[] }) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -60,16 +54,18 @@ export function CreateFromTemplateButton({
   const [name, setName] = useState("");
 
   async function create() {
-    if (!groupId || busy) return;
+    const group = groups.find((g) => g.id === groupId);
+    if (!group || busy) return;
     setBusy(true);
     const supabase = createClient();
+    const templateId = group.templateId;
     try {
       const { data: tpl, error: tErr } = await supabase
         .from("events")
         .select("*")
         .eq("id", templateId)
         .single();
-      if (tErr || !tpl) throw tErr ?? new Error("ไม่พบแม่แบบ");
+      if (tErr || !tpl) throw tErr ?? new Error("ไม่พบแม่แบบของวงนี้");
 
       const [sched, setl, mic] = await Promise.all([
         supabase.from("schedule_items").select("*").eq("event_id", templateId),
@@ -77,10 +73,7 @@ export function CreateFromTemplateButton({
         supabase.from("mic_assignments").select("*").eq("event_id", templateId),
       ]);
 
-      const sameGroup = groupId === templateGroupId;
-      const finalName =
-        name.trim() ||
-        `${groups.find((g) => g.id === groupId)?.name ?? "งานใหม่"} (จากแม่แบบ)`;
+      const finalName = name.trim() || `${group.name} (จากแม่แบบ)`;
 
       const { data: created, error: insErr } = await supabase
         .from("events")
@@ -104,29 +97,27 @@ export function CreateFromTemplateButton({
       if (insErr || !created) throw insErr ?? new Error("สร้างงานไม่สำเร็จ");
       const nid = created.id as string;
 
-      // schedule skeleton — always
+      // schedule skeleton
       const schedRows = strip(sched.data as Row[] | null, ["id", "event_id"], nid);
       if (schedRows.length) {
         const { error } = await supabase.from("schedule_items").insert(schedRows);
         if (error) throw error;
       }
-      // setlist — drop audio; cross-band also drops the song link (other band's library)
+      // setlist — keep song links (same band), drop audio (re-uploaded per show)
       const setlRows = strip(
         setl.data as Row[] | null,
         ["id", "event_id", "audio_path", "audio_name"],
         nid
-      ).map((r) => (sameGroup ? r : { ...r, song_id: null }));
+      );
       if (setlRows.length) {
         const { error } = await supabase.from("setlist_items").insert(setlRows);
         if (error) throw error;
       }
-      // mic map — only when staying in the template's own band
-      if (sameGroup) {
-        const micRows = strip(mic.data as Row[] | null, ["id", "event_id", "created_at"], nid);
-        if (micRows.length) {
-          const { error } = await supabase.from("mic_assignments").insert(micRows);
-          if (error) throw error;
-        }
+      // mic map (same band)
+      const micRows = strip(mic.data as Row[] | null, ["id", "event_id", "created_at"], nid);
+      if (micRows.length) {
+        const { error } = await supabase.from("mic_assignments").insert(micRows);
+        if (error) throw error;
       }
 
       toast.success("สร้างงานจากแม่แบบแล้ว — เปิดงานใหม่ให้");
@@ -149,7 +140,7 @@ export function CreateFromTemplateButton({
           <DialogHeader>
             <DialogTitle>สร้างงานจากแม่แบบ</DialogTitle>
             <DialogDescription>
-              คัดลอกคิว/เซ็ตลิสต์จากแม่แบบ NIKKO เป็นงานใหม่ (สถานะแบบร่าง ยังไม่กำหนดวันที่)
+              คัดลอกโครงงาน (คิว/เซ็ตลิสต์ตัวอย่าง) ของวงเป็นงานใหม่ (สถานะแบบร่าง ยังไม่กำหนดวันที่)
             </DialogDescription>
           </DialogHeader>
 
@@ -168,11 +159,6 @@ export function CreateFromTemplateButton({
                   ))}
                 </SelectContent>
               </Select>
-              {groupId !== templateGroupId && (
-                <p className="text-xs text-muted-foreground">
-                  คนละวงกับแม่แบบ — จะคัดลอกเฉพาะโครงคิว + ชื่อเพลง (ไม่รวมไฟล์เพลง/ไมค์)
-                </p>
-              )}
             </div>
             <div className="space-y-1.5">
               <Label>ชื่องาน (เว้นว่างได้)</Label>

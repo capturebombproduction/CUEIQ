@@ -23,7 +23,7 @@ export default async function DashboardPage() {
 
   const supabase = createClient();
   const tid = ws.membership.tenant_id;
-  const [{ data }, { data: tplRow }] = await Promise.all([
+  const [{ data }, { data: tplRows }] = await Promise.all([
     supabase
       .from("events")
       .select("*, groups(name, color, exempt_from_deadline)")
@@ -32,13 +32,12 @@ export default async function DashboardPage() {
       .eq("is_practice", false) // practice rooms live in /practice, not here
       .order("event_date", { ascending: false, nullsFirst: false })
       .order("created_at", { ascending: false }),
+    // each band has its OWN demo-draft template ("Demo Draft Events").
     supabase
       .from("events")
       .select("id, group_id")
       .eq("tenant_id", tid)
-      .eq("is_template", true)
-      .limit(1)
-      .maybeSingle(),
+      .eq("is_template", true),
   ]);
 
   const events = (data ?? []) as (EventRow & {
@@ -54,12 +53,16 @@ export default async function DashboardPage() {
     .filter((g) => canEditGroup(ws.perms, g.id))
     .map((g) => ({ id: g.id, name: g.name }));
   const editableGroupIds = editableGroups.map((g) => g.id);
-  // "create from template" is offered to ANY event-creator (admin, or an Ar of
-  // any band) once a template exists — RLS now lets every creator READ the
-  // template skeleton (migration 0029). Cloning into a different band keeps only
-  // the structure (no songs/mic/audio); that's handled in the clone itself.
-  const template = tplRow as { id: string; group_id: string } | null;
-  const showTemplate = !!template && canCreate && editableGroups.length > 0;
+  // "create from template": each band clones ITS OWN demo-draft template, so a
+  // clone never pulls another band's content. Offer only the user's editable
+  // bands that actually have a template. (RLS lets any creator READ a template
+  // skeleton — migration 0029.)
+  const templates = (tplRows ?? []) as { id: string; group_id: string }[];
+  const templateByGroup = new Map(templates.map((t) => [t.group_id, t.id]));
+  const templateGroups = editableGroups
+    .filter((g) => templateByGroup.has(g.id))
+    .map((g) => ({ id: g.id, name: g.name, templateId: templateByGroup.get(g.id)! }));
+  const showTemplate = canCreate && templateGroups.length > 0;
 
   return (
     <div className="space-y-6">
@@ -72,12 +75,8 @@ export default async function DashboardPage() {
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          {showTemplate && template && (
-            <CreateFromTemplateButton
-              templateId={template.id}
-              templateGroupId={template.group_id}
-              groups={editableGroups}
-            />
+          {showTemplate && (
+            <CreateFromTemplateButton groups={templateGroups} />
           )}
           {canCreate && (
             <Button asChild>
