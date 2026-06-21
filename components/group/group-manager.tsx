@@ -286,6 +286,39 @@ export function GroupManager({
                 )}
               </CardHeader>
               <CardContent className="space-y-2">
+                {admin && (
+                  <div className="flex flex-wrap items-center gap-2 rounded-md border bg-muted/20 p-2">
+                    <span className="text-xs font-medium text-muted-foreground">
+                      ผู้ติดต่อวง:
+                    </span>
+                    <Input
+                      value={g.contact_name ?? ""}
+                      placeholder="ชื่อผู้ติดต่อ"
+                      className="h-8 min-w-[140px] flex-1"
+                      onChange={(e) =>
+                        setGroupLocal(g.id, { contact_name: e.target.value })
+                      }
+                      onBlur={(e) =>
+                        persistGroup(g.id, {
+                          contact_name: e.target.value.trim() || null,
+                        })
+                      }
+                    />
+                    <Input
+                      value={g.contact_phone ?? ""}
+                      placeholder="เบอร์โทร"
+                      className="h-8 min-w-[120px] flex-1 tabular-nums"
+                      onChange={(e) =>
+                        setGroupLocal(g.id, { contact_phone: e.target.value })
+                      }
+                      onBlur={(e) =>
+                        persistGroup(g.id, {
+                          contact_phone: e.target.value.trim() || null,
+                        })
+                      }
+                    />
+                  </div>
+                )}
                 {gm.length === 0 && (
                   <p className="py-2 text-center text-sm text-muted-foreground">
                     ยังไม่มีสมาชิก

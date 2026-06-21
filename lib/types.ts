@@ -249,6 +249,19 @@ export interface Group {
   skin: string | null; // brand hex that themes the app on this band's pages (null = none)
   exempt_from_deadline: boolean;
   self_photo: boolean; // true = band sets its own photo time (has own photographer); false = label staff fills it
+  contact_name: string | null; // band's point of contact (shown on the staff schedule export)
+  contact_phone: string | null;
+  created_at: string;
+}
+
+/** Label-wide crew member for the staff schedule export (ช่างภาพ / ประสานงาน / …). */
+export interface StaffContact {
+  id: string;
+  tenant_id: string;
+  name: string;
+  role: string;
+  phone: string;
+  sort_order: number;
   created_at: string;
 }
 

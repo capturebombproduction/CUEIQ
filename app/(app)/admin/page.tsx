@@ -6,8 +6,10 @@ import { createAdminClient, hasServiceRole } from "@/lib/supabase/admin";
 import { UserManager, type ManagedUser } from "@/components/admin/user-manager";
 import { DevInbox } from "@/components/admin/dev-inbox";
 import { StorageUsage } from "@/components/admin/storage-usage";
+import { StaffContactsManager } from "@/components/admin/staff-contacts";
 import { getR2Usage } from "@/lib/r2";
-import type { GroupRole, Role } from "@/lib/types";
+import { createClient } from "@/lib/supabase/server";
+import type { GroupRole, Role, StaffContact } from "@/lib/types";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Inbox } from "lucide-react";
 
@@ -53,6 +55,14 @@ export default async function AdminPage() {
   // list call fails (don't let it take the whole admin page down).
   const r2usage = await getR2Usage().catch(() => null);
 
+  const staffContacts = ((
+    await createClient()
+      .from("staff_contacts")
+      .select("*")
+      .eq("tenant_id", ws.membership.tenant_id)
+      .order("sort_order", { ascending: true })
+  ).data ?? []) as StaffContact[];
+
   return (
     <div className="space-y-6">
       <div>
@@ -94,6 +104,13 @@ export default async function AdminPage() {
           initialUsers={await listUsers(ws.membership.tenant_id)}
         />
       )}
+
+      <section className="border-t pt-6">
+        <StaffContactsManager
+          tenantId={ws.membership.tenant_id}
+          initial={staffContacts}
+        />
+      </section>
 
       {r2usage && (
         <section className="border-t pt-6">

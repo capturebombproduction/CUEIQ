@@ -13,7 +13,7 @@ import {
   type OverviewEvent,
   type OverviewBand,
 } from "@/components/overview/overview-client";
-import { type EventRow, type Member } from "@/lib/types";
+import { type EventRow, type Member, type StaffContact } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 
@@ -34,7 +34,7 @@ export default async function OverviewPage() {
   const canApproveEvents = canApprove(ws.perms);
   const supabase = createClient();
 
-  const [evRes, schedRes, memRes, slRes, songRes] = await Promise.all([
+  const [evRes, schedRes, memRes, slRes, songRes, staffRes] = await Promise.all([
     supabase
       .from("events")
       .select("*")
@@ -59,6 +59,11 @@ export default async function OverviewPage() {
       .from("songs")
       .select("id, copyright_status")
       .eq("tenant_id", tid),
+    supabase
+      .from("staff_contacts")
+      .select("*")
+      .eq("tenant_id", tid)
+      .order("sort_order", { ascending: true }),
   ]);
 
   const eventRows = (evRes.data ?? []) as EventRow[];
@@ -66,6 +71,7 @@ export default async function OverviewPage() {
   const members = (memRes.data ?? []) as Member[];
   const slRows = (slRes.data ?? []) as { event_id: string; song_id: string | null }[];
   const songRows = (songRes.data ?? []) as { id: string; copyright_status: string }[];
+  const staff = (staffRes.data ?? []) as StaffContact[];
 
   // Per-event copyright rollup — count the distinct library songs used in each
   // event's setlist that are pending / rejected, so approvers spot issues here.
@@ -134,6 +140,8 @@ export default async function OverviewPage() {
     id: g.id,
     name: g.name,
     color: g.color,
+    contact_name: g.contact_name,
+    contact_phone: g.contact_phone,
     members: members
       .filter((m) => m.group_id === g.id)
       .map((m) => ({
@@ -162,6 +170,7 @@ export default async function OverviewPage() {
         <OverviewClient
           events={events}
           bands={bands}
+          staffContacts={staff}
           labelName={ws.tenant.name}
           canApproveEvents={canApproveEvents}
           isLabelWide={isLabelWideUser(ws.perms)}

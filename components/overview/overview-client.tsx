@@ -11,7 +11,7 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { shortClock, deadlineInfo } from "@/lib/time";
 import { captureElementToImage } from "@/lib/export-image";
-import type { GroupStatus } from "@/lib/types";
+import type { GroupStatus, StaffContact } from "@/lib/types";
 
 /** A start→end clock window; end is optional (single time when absent). */
 type TimeRange = { start: string | null; end: string | null } | null;
@@ -43,6 +43,8 @@ export interface OverviewBand {
   id: string;
   name: string;
   color: string | null;
+  contact_name: string | null; // band's point of contact (staff schedule export)
+  contact_phone: string | null;
   members: { id: string; label: string; mic_number: number | null }[];
 }
 
@@ -139,6 +141,7 @@ interface Bucket {
 export function OverviewClient({
   events,
   bands,
+  staffContacts,
   labelName,
   canApproveEvents,
   isLabelWide,
@@ -146,6 +149,7 @@ export function OverviewClient({
 }: {
   events: OverviewEvent[];
   bands: OverviewBand[];
+  staffContacts: StaffContact[]; // label-wide crew for the export's contact block
   labelName: string; // tenant name, shown as the heading on the exported schedule
   canApproveEvents: boolean;
   isLabelWide: boolean; // show the view-only Live link (overview audience)
@@ -189,6 +193,45 @@ export function OverviewClient({
   const dateActive = dateFilter !== "all" && availableDates.includes(dateFilter);
 
   const modeLabel = VIEW_MODES.find((m) => m.value === mode)?.label ?? "";
+
+  // Contact block for the export: label crew first, then a rep for each band that
+  // appears in the current (filtered) view — unique, in first-appearance order.
+  const bandById = useMemo(() => new Map(bands.map((b) => [b.id, b])), [bands]);
+  const exportContacts = useMemo(() => {
+    type Row = {
+      key: string;
+      name: string;
+      role: string;
+      phone: string;
+      color: string | null;
+    };
+    const crew: Row[] = staffContacts
+      .filter((c) => c.name || c.role || c.phone)
+      .map((c) => ({
+        key: `s-${c.id}`,
+        name: c.name,
+        role: c.role,
+        phone: c.phone,
+        color: null,
+      }));
+    const seen = new Set<string>();
+    const reps: Row[] = [];
+    for (const ev of filtered) {
+      if (seen.has(ev.group_id)) continue;
+      seen.add(ev.group_id);
+      const b = bandById.get(ev.group_id);
+      if (b && (b.contact_name || b.contact_phone)) {
+        reps.push({
+          key: `b-${b.id}`,
+          name: b.contact_name ?? "",
+          role: b.name,
+          phone: b.contact_phone ?? "",
+          color: b.color,
+        });
+      }
+    }
+    return [...crew, ...reps];
+  }, [staffContacts, filtered, bandById]);
 
   async function exportImage() {
     const el = exportRef.current;
@@ -492,6 +535,42 @@ export function OverviewClient({
               งาน
             </p>
           </div>
+          {/* Contact block — label crew + the rep of each band shown that day. */}
+          {exportContacts.length > 0 && (
+            <div className="space-y-1.5">
+              <h3 className="text-sm font-bold text-primary">ทีมงาน / ติดต่อ</h3>
+              <table className="w-full border-collapse text-sm">
+                <thead>
+                  <tr className="border-b text-left text-xs text-muted-foreground">
+                    <th className="py-1.5 pr-3 font-medium">ชื่อ</th>
+                    <th className="py-1.5 pr-3 font-medium">หน้าที่ / วง</th>
+                    <th className="py-1.5 font-medium">เบอร์</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {exportContacts.map((c) => (
+                    <tr key={c.key} className="border-b last:border-0">
+                      <td className="py-1.5 pr-3 font-medium">{c.name || "—"}</td>
+                      <td className="py-1.5 pr-3">
+                        {c.color !== null ? (
+                          <span className="inline-flex items-center gap-1.5">
+                            <span
+                              className="inline-block h-2.5 w-2.5 rounded-full"
+                              style={{ background: c.color || "var(--primary)" }}
+                            />
+                            {c.role}
+                          </span>
+                        ) : (
+                          c.role || "—"
+                        )}
+                      </td>
+                      <td className="py-1.5 tabular-nums">{c.phone || "—"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
           {/* Mirror the on-screen grouping (buckets follow the current view mode)
               so "capture" produces whatever arrangement the staff are looking at —
               by band, by day, by week/month/year, or the flat report. */}
