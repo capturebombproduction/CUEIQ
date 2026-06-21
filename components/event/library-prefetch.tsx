@@ -8,6 +8,7 @@ import {
   prefetchLibrary,
   type LibraryTarget,
 } from "@/lib/library-prefetch";
+import { pruneSupersededSongs } from "@/lib/song-cache";
 
 const OPT_OUT_KEY = "cueiq:libraryPrefetch"; // value "off" disables library auto-download
 
@@ -54,13 +55,22 @@ export function LibraryPrefetch({ groupIds }: { groupIds: string[] }) {
         const supabase = createClient();
         const { data, error } = await supabase
           .from("songs")
-          .select("audio_path, audio_name")
+          .select("id, audio_path, audio_name")
           .in("group_id", key.split(","))
           .not("audio_path", "is", null);
         if (cancelledRef.current || error) return;
-        const targets: LibraryTarget[] = (data ?? [])
-          .filter((s) => !!s.audio_path)
-          .map((s) => ({ path: s.audio_path as string, name: s.audio_name ?? null }));
+        const rows = (data ?? []).filter((s) => !!s.audio_path);
+        const targets: LibraryTarget[] = rows.map((s) => ({
+          path: s.audio_path as string,
+          name: s.audio_name ?? null,
+        }));
+        // Free space from replaced files: drop superseded versions of songs we can
+        // see (same songId, older path). Only acts on known songIds, so it never
+        // touches a file from a band not represented here. Best-effort, non-blocking.
+        const currentBySong = new Map(
+          rows.map((s) => [String(s.id), s.audio_path as string])
+        );
+        pruneSupersededSongs(currentBySong).catch(() => {});
         if (targets.length === 0) return;
 
         const r = await getLibraryReadiness(targets);

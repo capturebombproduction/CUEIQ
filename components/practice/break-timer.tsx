@@ -14,31 +14,6 @@ function mmss(sec: number) {
   return `${m}:${s.toString().padStart(2, "0")}`;
 }
 
-// short, gentle beep when the break ends (no asset needed)
-function beep() {
-  try {
-    const Ctx =
-      window.AudioContext ||
-      (window as unknown as { webkitAudioContext: typeof AudioContext })
-        .webkitAudioContext;
-    const ctx = new Ctx();
-    const o = ctx.createOscillator();
-    const g = ctx.createGain();
-    o.connect(g);
-    g.connect(ctx.destination);
-    o.type = "sine";
-    o.frequency.value = 880;
-    g.gain.setValueAtTime(0.001, ctx.currentTime);
-    g.gain.exponentialRampToValueAtTime(0.3, ctx.currentTime + 0.02);
-    g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.6);
-    o.start();
-    o.stop(ctx.currentTime + 0.65);
-    o.onended = () => ctx.close().catch(() => {});
-  } catch {
-    /* ignore — toast still fires */
-  }
-}
-
 /**
  * Break timer for practice (โหมดซ้อม) — pick 5 / 10 min or a custom length, counts
  * down, beeps + toasts when done. Pure client; nothing is saved.
@@ -50,6 +25,55 @@ export function BreakTimer() {
   const [running, setRunning] = useState(false);
   const [custom, setCustom] = useState("15");
   const deadlineRef = useRef<number | null>(null); // absolute end time while running
+  const audioCtxRef = useRef<AudioContext | null>(null);
+
+  // Create/resume the AudioContext from WITHIN a user gesture (start/resume tap) so
+  // iOS lets the end-of-break beep — fired later from the timer — actually sound.
+  function unlockAudio() {
+    try {
+      if (!audioCtxRef.current) {
+        const Ctx =
+          window.AudioContext ||
+          (window as unknown as { webkitAudioContext: typeof AudioContext })
+            .webkitAudioContext;
+        audioCtxRef.current = new Ctx();
+      }
+      if (audioCtxRef.current.state === "suspended")
+        void audioCtxRef.current.resume().catch(() => {});
+    } catch {
+      /* ignore — toast still fires when the timer ends */
+    }
+  }
+
+  // short, gentle beep when the break ends — reuses the gesture-unlocked context
+  function beep() {
+    const ctx = audioCtxRef.current;
+    if (!ctx) return;
+    try {
+      if (ctx.state === "suspended") void ctx.resume().catch(() => {});
+      const o = ctx.createOscillator();
+      const g = ctx.createGain();
+      o.connect(g);
+      g.connect(ctx.destination);
+      o.type = "sine";
+      o.frequency.value = 880;
+      g.gain.setValueAtTime(0.001, ctx.currentTime);
+      g.gain.exponentialRampToValueAtTime(0.3, ctx.currentTime + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.6);
+      o.start();
+      o.stop(ctx.currentTime + 0.65);
+    } catch {
+      /* ignore — toast still fires */
+    }
+  }
+
+  // close the shared context on unmount
+  useEffect(() => {
+    return () => {
+      audioCtxRef.current?.close().catch(() => {});
+      audioCtxRef.current = null;
+    };
+  }, []);
 
   // tick from an absolute deadline so a backgrounded tab still ends on time
   useEffect(() => {
@@ -70,6 +94,7 @@ export function BreakTimer() {
 
   function startWith(seconds: number) {
     if (seconds <= 0) return;
+    unlockAudio(); // within this tap, so the end beep can sound on iOS
     setTotal(seconds);
     setRemaining(seconds);
     deadlineRef.current = Date.now() + seconds * 1000;
@@ -81,6 +106,7 @@ export function BreakTimer() {
       setRunning(false);
       deadlineRef.current = null;
     } else if (remaining > 0) {
+      unlockAudio(); // resume tap — keep the context warm for the beep
       deadlineRef.current = Date.now() + remaining * 1000;
       setRunning(true);
     }

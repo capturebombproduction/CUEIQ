@@ -1,7 +1,18 @@
 import { createServerClient, type CookieOptions } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
 
-const PROTECTED_PREFIXES = ["/dashboard", "/events"];
+// Every authenticated (app) route — so an unauthenticated hit redirects at the
+// edge instead of rendering the layout first (the layout also guards, as defense
+// in depth). Keep in sync with the routes under app/(app).
+const PROTECTED_PREFIXES = [
+  "/dashboard",
+  "/events",
+  "/admin",
+  "/overview",
+  "/groups",
+  "/library",
+  "/practice",
+];
 const AUTH_PAGES = ["/login", "/register"];
 
 export async function updateSession(request: NextRequest) {
