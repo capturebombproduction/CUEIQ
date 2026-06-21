@@ -21,6 +21,7 @@ import { downloadEventAudio } from "@/lib/audio-remote";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { BreakTimer } from "@/components/practice/break-timer";
+import { Metronome } from "@/components/practice/metronome";
 import { cn } from "@/lib/utils";
 import { MARKER_PRESETS, type Song, type SongMarker } from "@/lib/types";
 
@@ -348,7 +349,8 @@ export function PracticePlayer({
 
   return (
     <div className="space-y-4">
-      <div className="flex justify-end">
+      <div className="flex flex-wrap items-start justify-end gap-2">
+        <Metronome song={current} canManage={canManage} />
         <BreakTimer />
       </div>
 

@@ -454,6 +454,7 @@ export interface Song {
   audio_path?: string | null; // R2 object key for this song's audio (null = no file yet)
   audio_name?: string | null; // original filename, for display
   audio_expires_at?: string | null; // null = permanent; timestamp = temp (ad-hoc), auto-cleaned after
+  bpm?: number | null; // tempo for the practice metronome (null = unset)
   created_at: string;
   updated_at: string;
 }
