@@ -22,6 +22,7 @@ type SchedRow = {
   event_id: string;
   kind: string;
   start_time: string | null;
+  end_time: string | null;
   sort_order: number;
 };
 
@@ -43,7 +44,7 @@ export default async function OverviewPage() {
       .order("event_date", { ascending: true, nullsFirst: false }),
     supabase
       .from("schedule_items")
-      .select("id, event_id, kind, start_time, sort_order")
+      .select("id, event_id, kind, start_time, end_time, sort_order")
       .eq("tenant_id", tid),
     supabase
       .from("members")
@@ -88,8 +89,12 @@ export default async function OverviewPage() {
   };
 
   const groupById = new Map(ws.groups.map((g) => [g.id, g]));
-  const timeOf = (eventId: string, kind: string) =>
-    sched.find((s) => s.event_id === eventId && s.kind === kind)?.start_time ?? null;
+  // Stage/Booth carry a start→end window for the staff schedule; missing end is
+  // fine (rendered as a single time). Photo stays start-only (inline-editable).
+  const rangeOf = (eventId: string, kind: string) => {
+    const it = sched.find((s) => s.event_id === eventId && s.kind === kind);
+    return it ? { start: it.start_time, end: it.end_time } : null;
+  };
   const photoOf = (eventId: string) =>
     sched.find((s) => s.event_id === eventId && s.kind === "photo") ?? null;
   const maxSortOf = (eventId: string) =>
@@ -112,8 +117,8 @@ export default async function OverviewPage() {
       event_date: e.event_date,
       status: e.status,
       deadline: e.deadline,
-      stage: timeOf(e.id, "stage"),
-      booth: timeOf(e.id, "booth"),
+      stage: rangeOf(e.id, "stage"),
+      booth: rangeOf(e.id, "booth"),
       photo: photoRow?.start_time ?? null,
       tenant_id: e.tenant_id,
       canEditPhoto: g ? canEditPhotoTime(ws.perms, e.group_id, g.self_photo) : false,
@@ -156,6 +161,7 @@ export default async function OverviewPage() {
         <OverviewClient
           events={events}
           bands={bands}
+          labelName={ws.tenant.name}
           canApproveEvents={canApproveEvents}
           isLabelWide={isLabelWideUser(ws.perms)}
           canOpenDetail={canOpenEventDetail(ws.perms)}

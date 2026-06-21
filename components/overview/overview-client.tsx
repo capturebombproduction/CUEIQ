@@ -1,14 +1,20 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { AlarmClock, Users, PlayCircle } from "lucide-react";
+import { toast } from "sonner";
+import { AlarmClock, Users, PlayCircle, ImageDown, Loader2 } from "lucide-react";
 import { EventStatusActions } from "@/components/overview/event-status-actions";
 import { PhotoTimeCell } from "@/components/overview/photo-time-cell";
 import { StatusBadge } from "@/components/status-badge";
+import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { shortClock, deadlineInfo } from "@/lib/time";
+import { captureElementToImage } from "@/lib/export-image";
 import type { GroupStatus } from "@/lib/types";
+
+/** A start→end clock window; end is optional (single time when absent). */
+type TimeRange = { start: string | null; end: string | null } | null;
 
 export interface OverviewEvent {
   id: string;
@@ -20,8 +26,8 @@ export interface OverviewEvent {
   event_date: string | null;
   status: GroupStatus;
   deadline: string | null;
-  stage: string | null;
-  booth: string | null;
+  stage: TimeRange;
+  booth: TimeRange;
   photo: string | null;
   // inline-action support
   tenant_id: string;
@@ -60,7 +66,14 @@ function fmtDate(date: string | null): string {
   if (!date) return "—";
   const d = new Date(`${date}T00:00:00`);
   if (isNaN(d.getTime())) return date;
-  return d.toLocaleDateString("en-GB", { day: "2-digit", month: "short" });
+  return d.toLocaleDateString("en-CA"); // ISO YYYY-MM-DD, e.g. 2026-06-21
+}
+
+// Stage/Booth time window: "12:00–12:20", or just "12:00" when no end is set.
+function fmtRange(r: TimeRange): string {
+  if (!r || (!r.start && !r.end)) return "—";
+  const start = shortClock(r.start) || "—";
+  return r.end ? `${start}–${shortClock(r.end)}` : start;
 }
 
 function startOfWeek(d: Date): Date {
@@ -110,23 +123,64 @@ interface Bucket {
 export function OverviewClient({
   events,
   bands,
+  labelName,
   canApproveEvents,
   isLabelWide,
   canOpenDetail,
 }: {
   events: OverviewEvent[];
   bands: OverviewBand[];
+  labelName: string; // tenant name, shown as the heading on the exported schedule
   canApproveEvents: boolean;
   isLabelWide: boolean; // show the view-only Live link (overview audience)
   canOpenDetail: boolean; // false for label_staff (overview-only); name is plain text
 }) {
   const [mode, setMode] = useState<ViewMode>("band");
   const [bandFilter, setBandFilter] = useState<string>("all");
+  const [exporting, setExporting] = useState(false);
+  const exportRef = useRef<HTMLDivElement>(null);
 
   const filtered = useMemo(
     () => (bandFilter === "all" ? events : events.filter((e) => e.group_id === bandFilter)),
     [events, bandFilter]
   );
+
+  const bandFilterLabel =
+    bandFilter === "all"
+      ? "ทุกวง"
+      : bands.find((b) => b.id === bandFilter)?.name ?? "ทุกวง";
+
+  // Sort the export rows by date (then name) so the distributed sheet reads top-to-
+  // bottom in show order regardless of the on-screen view mode.
+  const exportRows = useMemo(
+    () =>
+      [...filtered].sort((a, b) => {
+        const da = a.event_date ?? "9999";
+        const db = b.event_date ?? "9999";
+        return da === db ? a.name.localeCompare(b.name) : da.localeCompare(db);
+      }),
+    [filtered]
+  );
+
+  async function exportImage() {
+    const el = exportRef.current;
+    if (!el) return;
+    setExporting(true);
+    try {
+      const filename = `schedule-${new Date().toISOString().slice(0, 10)}.jpg`;
+      const how = await captureElementToImage(el, {
+        filename,
+        shareTitle: `${labelName} · ตารางงาน`,
+      });
+      toast.success(how === "shared" ? "แชร์รูปตารางแล้ว" : "บันทึกรูปตารางแล้ว");
+    } catch (e) {
+      toast.error("บันทึกรูปไม่สำเร็จ — แคปหน้าจอแทนได้", {
+        description: e instanceof Error ? e.message : String(e),
+      });
+    } finally {
+      setExporting(false);
+    }
+  }
 
   // In "band" mode we list every band (even with 0 events) so rosters show.
   const buckets = useMemo<Bucket[]>(() => {
@@ -176,20 +230,36 @@ export function OverviewClient({
             </button>
           ))}
         </div>
-        {bands.length > 1 && (
-          <select
-            value={bandFilter}
-            onChange={(e) => setBandFilter(e.target.value)}
-            className="ml-auto rounded-md border bg-background px-2 py-1.5 text-sm"
+        <div className="ml-auto flex items-center gap-2">
+          {bands.length > 1 && (
+            <select
+              value={bandFilter}
+              onChange={(e) => setBandFilter(e.target.value)}
+              className="rounded-md border bg-background px-2 py-1.5 text-sm"
+            >
+              <option value="all">ทุกวง</option>
+              {bands.map((b) => (
+                <option key={b.id} value={b.id}>
+                  {b.name}
+                </option>
+              ))}
+            </select>
+          )}
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={exportImage}
+            disabled={exporting || filtered.length === 0}
+            title="บันทึกตารางงานเป็นรูปไปแจกให้สตาฟ/วง"
           >
-            <option value="all">ทุกวง</option>
-            {bands.map((b) => (
-              <option key={b.id} value={b.id}>
-                {b.name}
-              </option>
-            ))}
-          </select>
-        )}
+            {exporting ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <ImageDown className="h-4 w-4" />
+            )}
+            บันทึกเป็นรูป
+          </Button>
+        </div>
       </div>
 
       {buckets.length === 0 || buckets.every((b) => b.events.length === 0 && !showRosters) ? (
@@ -294,10 +364,10 @@ export function OverviewClient({
                               {fmtDate(ev.event_date)}
                             </td>
                             <td className="px-3 py-2 tabular-nums text-muted-foreground">
-                              {shortClock(ev.stage) || "—"}
+                              {fmtRange(ev.stage)}
                             </td>
                             <td className="px-3 py-2 tabular-nums text-muted-foreground">
-                              {shortClock(ev.booth) || "—"}
+                              {fmtRange(ev.booth)}
                             </td>
                             <td className="px-3 py-2 tabular-nums text-muted-foreground">
                               {ev.canEditPhoto ? (
@@ -361,6 +431,56 @@ export function OverviewClient({
           );
         })
       )}
+
+      {/* Off-screen clean schedule — rendered only so it can be captured as a JPG
+          for distribution. Kept in layout (not display:none) so html-to-image can
+          measure it; pushed far off-screen and hidden from a11y/pointer. The
+          capture helper forces a light palette + fixed width on exportRef. */}
+      <div className="pointer-events-none fixed -left-[10000px] top-0" aria-hidden>
+        <div ref={exportRef} className="space-y-4 bg-card p-6 text-foreground">
+          <div className="border-b pb-3">
+            <h2 className="text-xl font-bold leading-tight">{labelName}</h2>
+            <p className="text-sm text-muted-foreground">
+              ตารางงาน · {bandFilterLabel} · {exportRows.length} งาน
+            </p>
+          </div>
+          <table className="w-full border-collapse text-sm">
+            <thead>
+              <tr className="border-b text-left text-xs text-muted-foreground">
+                <th className="py-2 pr-3 font-medium">งาน</th>
+                <th className="py-2 pr-3 font-medium">วง</th>
+                <th className="py-2 pr-3 font-medium">วันที่</th>
+                <th className="py-2 pr-3 font-medium">Stage</th>
+                <th className="py-2 pr-3 font-medium">Booth</th>
+                <th className="py-2 font-medium">Photo</th>
+              </tr>
+            </thead>
+            <tbody>
+              {exportRows.map((ev) => (
+                <tr key={ev.id} className="border-b last:border-0">
+                  <td className="py-2 pr-3 font-medium">{ev.name}</td>
+                  <td className="py-2 pr-3">
+                    <span className="inline-flex items-center gap-1.5">
+                      <span
+                        className="inline-block h-2.5 w-2.5 rounded-full"
+                        style={{ background: ev.group_color || "var(--primary)" }}
+                      />
+                      {ev.group_name}
+                    </span>
+                  </td>
+                  <td className="py-2 pr-3 tabular-nums">{fmtDate(ev.event_date)}</td>
+                  <td className="py-2 pr-3 tabular-nums">{fmtRange(ev.stage)}</td>
+                  <td className="py-2 pr-3 tabular-nums">{fmtRange(ev.booth)}</td>
+                  <td className="py-2 tabular-nums">{shortClock(ev.photo) || "—"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <p className="text-[10px] text-muted-foreground">
+            สร้างจาก CueIQ · {fmtDate(new Date().toISOString().slice(0, 10))}
+          </p>
+        </div>
+      </div>
     </div>
   );
 }

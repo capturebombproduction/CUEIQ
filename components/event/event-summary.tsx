@@ -44,32 +44,8 @@ import {
   type ScheduleKind,
   type SetlistItem,
 } from "@/lib/types";
+import { captureElementToImage } from "@/lib/export-image";
 import { type CompletenessResult } from "@/lib/completeness";
-
-// Light-theme variable overrides forced on the captured element during export, so
-// the JPG is always a clean dark-on-white run-sheet regardless of the app's theme/skin
-// (otherwise dark-mode white text lands on the white export background = invisible).
-const EXPORT_LIGHT_VARS: Record<string, string> = {
-  "--background": "0 0% 100%",
-  "--foreground": "222 47% 11%",
-  "--card": "0 0% 100%",
-  "--card-foreground": "222 47% 11%",
-  "--popover": "0 0% 100%",
-  "--popover-foreground": "222 47% 11%",
-  "--primary": "243 75% 59%",
-  "--primary-foreground": "0 0% 100%",
-  "--secondary": "220 14% 96%",
-  "--secondary-foreground": "222 47% 11%",
-  "--muted": "220 14% 96%",
-  "--muted-foreground": "220 9% 46%",
-  "--accent": "243 75% 96%",
-  "--accent-foreground": "243 75% 30%",
-  "--border": "220 13% 91%",
-  "--destructive": "0 72% 51%",
-  "--destructive-foreground": "0 0% 100%",
-  "--success": "142 71% 45%",
-  "--success-foreground": "0 0% 100%",
-};
 
 function fmtDate(date: string | null): string {
   if (!date) return "—";
@@ -196,56 +172,21 @@ export function EventSummary({
   async function exportJpg() {
     const el = captureRef.current;
     if (!el) return;
-    const prevWidth = el.style.width;
     setExporting(true);
     setIsCapturing(true); // swap iframe → static map
     await new Promise((r) => setTimeout(r, 120)); // wait for re-render
     try {
-      const { toJpeg } = await import("html-to-image");
-      // Force 600px reflow before capture so text doesn't wrap at mobile width
-      el.style.width = "600px";
-      // force a light palette so dark-mode text isn't white-on-white in the export
-      for (const [k, v] of Object.entries(EXPORT_LIGHT_VARS)) {
-        el.style.setProperty(k, v);
-      }
-      await new Promise((r) => setTimeout(r, 80)); // wait for browser reflow
-      const dataUrl = await toJpeg(el, {
-        pixelRatio: 2,
-        backgroundColor: "#ffffff",
-        cacheBust: true,
-        quality: 0.92,
-      });
       const filename = `${event.name.replace(/[^\w\-]+/g, "_") || "summary"}.jpg`;
-
-      // Web Share API — saves directly to gallery on iOS/Android
-      if (navigator.share && navigator.canShare) {
-        try {
-          const res = await fetch(dataUrl);
-          const blob = await res.blob();
-          const file = new File([blob], filename, { type: "image/jpeg" });
-          if (navigator.canShare({ files: [file] })) {
-            await navigator.share({ files: [file], title: event.name });
-            toast.success("แชร์รูปสรุปแล้ว");
-            return;
-          }
-        } catch {
-          // share cancelled or unsupported — fall through to download
-        }
-      }
-
-      // Desktop fallback
-      const a = document.createElement("a");
-      a.download = filename;
-      a.href = dataUrl;
-      a.click();
-      toast.success("บันทึกรูปสรุปแล้ว");
+      const how = await captureElementToImage(el, {
+        filename,
+        shareTitle: event.name,
+      });
+      toast.success(how === "shared" ? "แชร์รูปสรุปแล้ว" : "บันทึกรูปสรุปแล้ว");
     } catch (e) {
       toast.error("บันทึกรูปไม่สำเร็จ — แคปหน้าจอแทนได้", {
         description: e instanceof Error ? e.message : String(e),
       });
     } finally {
-      el.style.width = prevWidth; // always restore — even if capture threw
-      for (const k of Object.keys(EXPORT_LIGHT_VARS)) el.style.removeProperty(k);
       setIsCapturing(false);
       setExporting(false);
     }
