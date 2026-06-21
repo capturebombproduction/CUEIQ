@@ -28,7 +28,8 @@ export interface OverviewEvent {
   deadline: string | null;
   stage: TimeRange;
   booth: TimeRange;
-  photo: string | null;
+  photo: string | null; // start (inline-editable via PhotoTimeCell)
+  photoEnd: string | null; // end of the photo window
   // inline-action support
   tenant_id: string;
   canEditPhoto: boolean; // band is self_photo=false AND viewer may set photo time
@@ -376,10 +377,11 @@ export function OverviewClient({
                                   tenantId={ev.tenant_id}
                                   initialItemId={ev.photoItemId}
                                   initialTime={ev.photo}
+                                  initialEnd={ev.photoEnd}
                                   nextSortOrder={ev.photoSortOrder}
                                 />
                               ) : (
-                                shortClock(ev.photo) || "—"
+                                fmtRange({ start: ev.photo, end: ev.photoEnd })
                               )}
                             </td>
                             <td className="px-3 py-2">
@@ -471,7 +473,9 @@ export function OverviewClient({
                   <td className="py-2 pr-3 tabular-nums">{fmtDate(ev.event_date)}</td>
                   <td className="py-2 pr-3 tabular-nums">{fmtRange(ev.stage)}</td>
                   <td className="py-2 pr-3 tabular-nums">{fmtRange(ev.booth)}</td>
-                  <td className="py-2 tabular-nums">{shortClock(ev.photo) || "—"}</td>
+                  <td className="py-2 tabular-nums">
+                    {fmtRange({ start: ev.photo, end: ev.photoEnd })}
+                  </td>
                 </tr>
               ))}
             </tbody>

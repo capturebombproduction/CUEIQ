@@ -120,6 +120,7 @@ export default async function OverviewPage() {
       stage: rangeOf(e.id, "stage"),
       booth: rangeOf(e.id, "booth"),
       photo: photoRow?.start_time ?? null,
+      photoEnd: photoRow?.end_time ?? null,
       tenant_id: e.tenant_id,
       canEditPhoto: g ? canEditPhotoTime(ws.perms, e.group_id, g.self_photo) : false,
       photoItemId: photoRow?.id ?? null,

@@ -7,41 +7,47 @@ import { createClient } from "@/lib/supabase/client";
 
 /**
  * Inline photo-time editor used on /overview. Lets an approver (label staff) or
- * the band's editor fill the "ถ่ายรูป" call-time for bands that don't run their
- * own photographer (groups.self_photo = false) without opening the full editor.
- * Updates the event's photo schedule_item, or inserts one if none exists yet.
+ * the band's editor fill the "ถ่ายรูป" call-time window (start–end) for bands that
+ * don't run their own photographer (groups.self_photo = false) without opening the
+ * full editor. Updates the event's photo schedule_item, or inserts one if none
+ * exists yet.
  */
 export function PhotoTimeCell({
   eventId,
   tenantId,
   initialItemId,
   initialTime,
+  initialEnd,
   nextSortOrder,
 }: {
   eventId: string;
   tenantId: string;
   initialItemId: string | null;
-  initialTime: string | null; // "HH:MM" or "HH:MM:SS"
+  initialTime: string | null; // start, "HH:MM" or "HH:MM:SS"
+  initialEnd: string | null; // end, "HH:MM" or "HH:MM:SS"
   nextSortOrder: number;
 }) {
   const [itemId, setItemId] = useState<string | null>(initialItemId);
-  const [value, setValue] = useState(initialTime ? initialTime.slice(0, 5) : "");
-  const [committed, setCommitted] = useState(value);
+  const [start, setStart] = useState(initialTime ? initialTime.slice(0, 5) : "");
+  const [end, setEnd] = useState(initialEnd ? initialEnd.slice(0, 5) : "");
+  const [committedStart, setCommittedStart] = useState(start);
+  const [committedEnd, setCommittedEnd] = useState(end);
   const [busy, setBusy] = useState(false);
 
   async function commit() {
-    if (value === committed) return;
-    const next = value || null;
+    if (start === committedStart && end === committedEnd) return;
+    const nextStart = start || null;
+    const nextEnd = end || null;
     setBusy(true);
     const supabase = createClient();
     try {
       if (itemId) {
         const { error } = await supabase
           .from("schedule_items")
-          .update({ start_time: next })
+          .update({ start_time: nextStart, end_time: nextEnd })
           .eq("id", itemId);
         if (error) throw error;
-      } else if (next) {
+      } else if (nextStart || nextEnd) {
         const { data, error } = await supabase
           .from("schedule_items")
           .insert({
@@ -49,7 +55,8 @@ export function PhotoTimeCell({
             event_id: eventId,
             kind: "photo",
             sort_order: nextSortOrder,
-            start_time: next,
+            start_time: nextStart,
+            end_time: nextEnd,
             label: "ถ่ายรูป",
           })
           .select("id")
@@ -57,12 +64,14 @@ export function PhotoTimeCell({
         if (error) throw error;
         setItemId(data.id as string);
       }
-      setCommitted(value);
+      setCommittedStart(start);
+      setCommittedEnd(end);
     } catch (e) {
       toast.error("บันทึกเวลาถ่ายรูปไม่สำเร็จ", {
         description: (e as Error).message,
       });
-      setValue(committed); // revert the field to the last saved value
+      setStart(committedStart); // revert the fields to the last saved values
+      setEnd(committedEnd);
     } finally {
       setBusy(false);
     }
@@ -72,12 +81,22 @@ export function PhotoTimeCell({
     <span className="inline-flex items-center gap-1">
       <input
         type="time"
-        value={value}
-        onChange={(e) => setValue(e.target.value)}
+        value={start}
+        onChange={(e) => setStart(e.target.value)}
         onBlur={commit}
         disabled={busy}
-        aria-label="เวลาถ่ายรูป"
-        className="w-[5.5rem] rounded border bg-background px-1.5 py-0.5 text-sm tabular-nums"
+        aria-label="เวลาเริ่มถ่ายรูป"
+        className="w-[5.25rem] rounded border bg-background px-1.5 py-0.5 text-sm tabular-nums"
+      />
+      <span className="text-muted-foreground">–</span>
+      <input
+        type="time"
+        value={end}
+        onChange={(e) => setEnd(e.target.value)}
+        onBlur={commit}
+        disabled={busy}
+        aria-label="เวลาจบถ่ายรูป"
+        className="w-[5.25rem] rounded border bg-background px-1.5 py-0.5 text-sm tabular-nums"
       />
       {busy && <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />}
     </span>
