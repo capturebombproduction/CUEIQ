@@ -4,8 +4,10 @@ import { getWorkspace } from "@/lib/queries";
 import { isAdmin } from "@/lib/permissions";
 import { createAdminClient, hasServiceRole } from "@/lib/supabase/admin";
 import { UserManager, type ManagedUser } from "@/components/admin/user-manager";
+import { DevInbox } from "@/components/admin/dev-inbox";
 import type { GroupRole, Role } from "@/lib/types";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Inbox } from "lucide-react";
 
 export const dynamic = "force-dynamic";
 
@@ -86,6 +88,18 @@ export default async function AdminPage() {
           initialUsers={await listUsers(ws.membership.tenant_id)}
         />
       )}
+
+      <section className="space-y-3 border-t pt-6">
+        <div>
+          <h2 className="flex items-center gap-2 text-lg font-semibold">
+            <Inbox className="h-5 w-5" /> ฟีดแบค &amp; ปัญหา
+          </h2>
+          <p className="text-sm text-muted-foreground">
+            ข้อความที่ทีมส่งเข้ามา + error ที่ระบบจับได้อัตโนมัติ (เห็นเฉพาะแอดมิน)
+          </p>
+        </div>
+        <DevInbox />
+      </section>
     </div>
   );
 }

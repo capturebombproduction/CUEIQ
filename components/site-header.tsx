@@ -3,6 +3,7 @@ import { Brand } from "@/components/brand";
 import { Badge } from "@/components/ui/badge";
 import { SignOutButton } from "@/components/sign-out-button";
 import { ChangePasswordButton } from "@/components/change-password-button";
+import { FeedbackButton } from "@/components/feedback-button";
 import { NotificationBell } from "@/components/notifications/notification-bell";
 import { MainNav } from "@/components/main-nav";
 import { ThemeToggle } from "@/components/theme-toggle";
@@ -72,6 +73,7 @@ export function SiteHeader({
           <KioskMode />
           <AccentPicker />
           <ThemeToggle />
+          <FeedbackButton userId={userId} tenantId={tenantId} />
           <ChangePasswordButton />
           <SignOutButton />
         </div>
