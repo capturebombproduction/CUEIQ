@@ -359,6 +359,30 @@ export const SONG_LANGUAGE_LABELS: Record<string, string> = Object.fromEntries(
   SONG_LANGUAGES.map((l) => [l.value, l.label])
 );
 
+/** A named section point on a library song (Intro/Verse/Hook/custom) for practice. */
+export interface SongMarker {
+  id: string;
+  tenant_id: string;
+  group_id: string;
+  song_id: string;
+  label: string;
+  position_seconds: number;
+  sort_order: number;
+  created_by: string | null;
+  created_at: string;
+}
+
+/** Common section presets offered when adding a marker (custom labels also allowed). */
+export const MARKER_PRESETS = [
+  "Intro",
+  "Verse",
+  "Pre",
+  "Hook",
+  "Bridge",
+  "Solo",
+  "Outro",
+] as const;
+
 export interface Song {
   id: string;
   tenant_id: string;
