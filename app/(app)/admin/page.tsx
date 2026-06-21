@@ -5,6 +5,8 @@ import { isAdmin } from "@/lib/permissions";
 import { createAdminClient, hasServiceRole } from "@/lib/supabase/admin";
 import { UserManager, type ManagedUser } from "@/components/admin/user-manager";
 import { DevInbox } from "@/components/admin/dev-inbox";
+import { StorageUsage } from "@/components/admin/storage-usage";
+import { getR2Usage } from "@/lib/r2";
 import type { GroupRole, Role } from "@/lib/types";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Inbox } from "lucide-react";
@@ -47,6 +49,10 @@ export default async function AdminPage() {
   if (!ws.membership || !ws.tenant) redirect("/dashboard");
   if (!isAdmin(ws.perms)) redirect("/dashboard");
 
+  // Live storage usage for the audio bucket — null if R2 isn't configured or the
+  // list call fails (don't let it take the whole admin page down).
+  const r2usage = await getR2Usage().catch(() => null);
+
   return (
     <div className="space-y-6">
       <div>
@@ -87,6 +93,12 @@ export default async function AdminPage() {
           groups={ws.groups}
           initialUsers={await listUsers(ws.membership.tenant_id)}
         />
+      )}
+
+      {r2usage && (
+        <section className="border-t pt-6">
+          <StorageUsage bytes={r2usage.bytes} count={r2usage.count} />
+        </section>
       )}
 
       <section className="space-y-3 border-t pt-6">

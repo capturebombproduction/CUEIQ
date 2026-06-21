@@ -11,7 +11,7 @@
 // request time so `next build` and an un-configured dev box don't crash on import.
 // ---------------------------------------------------------------------------
 
-import { S3Client } from "@aws-sdk/client-s3";
+import { S3Client, ListObjectsV2Command } from "@aws-sdk/client-s3";
 
 export const R2_BUCKET = process.env.R2_BUCKET ?? "";
 
@@ -48,4 +48,28 @@ export function r2Client(): S3Client {
     responseChecksumValidation: "WHEN_REQUIRED",
   });
   return _client;
+}
+
+/**
+ * Total bytes + object count stored in the bucket — for the Admin storage gauge.
+ * Returns null when R2 isn't configured. Paginates through every object (ListV2
+ * is a Class A op; one or a few calls for a small label). Server-only.
+ */
+export async function getR2Usage(): Promise<{ bytes: number; count: number } | null> {
+  if (!r2Configured()) return null;
+  const client = r2Client();
+  let token: string | undefined;
+  let bytes = 0;
+  let count = 0;
+  do {
+    const res = await client.send(
+      new ListObjectsV2Command({ Bucket: R2_BUCKET, ContinuationToken: token })
+    );
+    for (const o of res.Contents ?? []) {
+      bytes += o.Size ?? 0;
+      count += 1;
+    }
+    token = res.IsTruncated ? res.NextContinuationToken : undefined;
+  } while (token);
+  return { bytes, count };
 }
