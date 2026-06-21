@@ -310,7 +310,13 @@ export function PracticePlayer({
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-start justify-end gap-2">
-        <Metronome song={current} canManage={canManage} />
+        <Metronome
+          song={current}
+          canManage={canManage}
+          playing={playing}
+          position={cur}
+          speed={speed}
+        />
         <BreakTimer />
       </div>
 
