@@ -281,6 +281,19 @@ export class PracticeAudioEngine {
     }
   }
 
+  /** Decode (once) and return the current song's buffer — used for BPM detection.
+   *  Shares the cache with the stretch backend so we never decode the same song
+   *  twice. Heavy for a big WAV, but it's paid only when the user asks. */
+  async getBuffer(): Promise<AudioBuffer | null> {
+    if (this.buffer) return this.buffer;
+    if (!this.blob) return null;
+    const ctx = this.ensureCtx();
+    const arr = await this.blob.arrayBuffer();
+    this.buffer = await this.decode(ctx, arr);
+    this._duration = this.buffer.duration;
+    return this.buffer;
+  }
+
   async play(): Promise<void> {
     if (this.active === "native") {
       const a = this.ensureAudio();

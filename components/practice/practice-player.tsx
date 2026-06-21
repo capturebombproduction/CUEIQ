@@ -19,6 +19,7 @@ import { toast } from "sonner";
 import { createClient } from "@/lib/supabase/client";
 import { downloadEventAudio } from "@/lib/audio-remote";
 import { PracticeAudioEngine } from "@/lib/practice-audio";
+import { detectTempo } from "@/lib/bpm-detect";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { BreakTimer } from "@/components/practice/break-timer";
@@ -316,6 +317,10 @@ export function PracticePlayer({
           playing={playing}
           position={cur}
           speed={speed}
+          onDetectBpm={async () => {
+            const buf = await engineRef.current?.getBuffer();
+            return buf ? detectTempo(buf) : null;
+          }}
         />
         <BreakTimer />
       </div>

@@ -12,6 +12,8 @@ import {
   Volume2,
   Link2,
   Crosshair,
+  Wand2,
+  Loader2,
 } from "lucide-react";
 import { toast } from "sonner";
 import { createClient } from "@/lib/supabase/client";
@@ -56,6 +58,7 @@ export function Metronome({
   position = 0,
   speed = 1,
   onBpmSaved,
+  onDetectBpm,
 }: {
   song: Song | null;
   canManage: boolean;
@@ -63,6 +66,7 @@ export function Metronome({
   position?: number;
   speed?: number;
   onBpmSaved?: (songId: string, bpm: number) => void;
+  onDetectBpm?: () => Promise<number | null>;
 }) {
   const canSync = !!song?.audio_path;
 
@@ -74,6 +78,7 @@ export function Metronome({
   const [vol, setVol] = useState(80); // metronome volume (0–100), independent of the song
   const [running, setRunning] = useState(false);
   const [beatLabel, setBeatLabel] = useState(0); // current beat shown in the dial
+  const [detecting, setDetecting] = useState(false); // analysing audio for its BPM
 
   // live refs for the running scheduler (so it reads the latest values)
   const bpmRef = useRef(bpm);
@@ -321,6 +326,28 @@ export function Metronome({
     if (runningRef.current) anchorSync();
   }
 
+  async function detect() {
+    if (!onDetectBpm || detecting) return;
+    setDetecting(true);
+    try {
+      const guess = await onDetectBpm();
+      if (guess && guess > 0) {
+        setBpm(clampBpm(guess)); // the [bpm] effect re-phases the running metronome
+        toast.success(`ตรวจจับได้ ~${clampBpm(guess)} BPM`, {
+          description: "ถ้ารู้สึกเร็ว/ช้าไปเท่าตัว กด ÷2 หรือ ×2",
+        });
+      } else {
+        toast.error("ตรวจจับจังหวะไม่ได้", { description: "ลองเคาะจังหวะเองหรือปรับเลข BPM" });
+      }
+    } catch (e) {
+      toast.error("ตรวจจับจังหวะไม่ได้", {
+        description: e instanceof Error ? e.message : undefined,
+      });
+    } finally {
+      setDetecting(false);
+    }
+  }
+
   async function saveBpm() {
     if (!song || !canManage) return;
     const supabase = createClient();
@@ -455,6 +482,36 @@ export function Metronome({
         onChange={(e) => setBpm(clampBpm(Number(e.target.value)))}
         className="w-full accent-[var(--primary)]"
       />
+
+      {/* auto BPM detection from the song's audio (+ octave fixups) */}
+      {canSync && onDetectBpm && (
+        <div className="flex items-center gap-2">
+          <Button variant="outline" size="sm" onClick={detect} disabled={detecting}>
+            {detecting ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <Wand2 className="h-4 w-4" />
+            )}
+            {detecting ? "กำลังตรวจจับ…" : "ตรวจจับจังหวะจากเพลง"}
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setBpm((b) => clampBpm(b / 2))}
+            title="ช้าลงครึ่งหนึ่ง"
+          >
+            ÷2
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setBpm((b) => clampBpm(b * 2))}
+            title="เร็วขึ้นเท่าตัว"
+          >
+            ×2
+          </Button>
+        </div>
+      )}
 
       {isSync && !playing && (
         <p className="text-xs text-muted-foreground">▶ เล่นเพลงแล้วเมโทรนอมจะเริ่มเองตามจังหวะ</p>
