@@ -10,7 +10,7 @@
 // Bump VERSION to roll the cache. A new worker does NOT skipWaiting — it waits until
 // every tab is closed before activating, so an update can't disrupt a running show.
 
-const VERSION = "v2";
+const VERSION = "v3";
 const STATIC_CACHE = `cueiq-static-${VERSION}`;
 const PAGE_CACHE = `cueiq-pages-${VERSION}`;
 const PRECACHE = [
@@ -18,6 +18,16 @@ const PRECACHE = [
   "/icon-512.png",
   "/apple-touch-icon.png",
   "/manifest.webmanifest",
+  // practice metronome spoken-count samples — precached so the count is on-device
+  // and instant, even offline (see public/sounds/count/).
+  "/sounds/count/1.mp3",
+  "/sounds/count/2.mp3",
+  "/sounds/count/3.mp3",
+  "/sounds/count/4.mp3",
+  "/sounds/count/5.mp3",
+  "/sounds/count/6.mp3",
+  "/sounds/count/7.mp3",
+  "/sounds/count/8.mp3",
 ];
 
 self.addEventListener("install", (event) => {
@@ -47,7 +57,7 @@ function isStaticAsset(url) {
   return (
     url.pathname.startsWith("/_next/static/") ||
     url.pathname === "/manifest.webmanifest" ||
-    /\.(png|jpg|jpeg|svg|webp|ico|woff2?)$/.test(url.pathname)
+    /\.(png|jpg|jpeg|svg|webp|ico|woff2?|mp3|wav|ogg|m4a|aac)$/.test(url.pathname)
   );
 }
 

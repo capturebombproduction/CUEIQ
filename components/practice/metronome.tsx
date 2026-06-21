@@ -107,10 +107,43 @@ export function Metronome({
   const voiceRef = useRef<SpeechSynthesisVoice | null>(null);
   const canSpeakRef = useRef(false);
 
+  // Pre-recorded count samples ("one".."eight", cute JP-accented female voice):
+  // scheduled sample-accurately via Web Audio so the count lands ON the beat,
+  // unlike live SpeechSynthesis (which lags). rawCountRef = fetched mp3 bytes;
+  // countBuffersRef = decoded per audio context. See public/sounds/count/.
+  const rawCountRef = useRef<ArrayBuffer[]>([]);
+  const countBuffersRef = useRef<(AudioBuffer | null)[]>([]);
+
   useEffect(() => {
     if (song?.bpm) setBpm(clampBpm(song.bpm));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [song?.id]);
+
+  // Fetch the count samples once (tiny; the service worker caches them so they're
+  // on-device for stability, like Live Mode's prefetch).
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const bytes = await Promise.all(
+          Array.from({ length: 8 }, (_, i) =>
+            fetch(`/sounds/count/${i + 1}.mp3`).then((r) =>
+              r.ok ? r.arrayBuffer() : Promise.reject(new Error(String(r.status)))
+            )
+          )
+        );
+        if (!alive) return;
+        rawCountRef.current = bytes;
+        if (ctxRef.current) void decodeCount(ctxRef.current);
+      } catch {
+        /* fall back to TTS / click */
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Pick a female voice once the platform's voice list is available.
   useEffect(() => {
@@ -139,11 +172,43 @@ export function Metronome({
     }
     const ctx = ctxRef.current;
     if (ctx.state === "suspended") void ctx.resume().catch(() => {});
+    void decodeCount(ctx); // make sure the count samples are ready for this ctx
     return ctx;
   }
   function closeCtx() {
     ctxRef.current?.close().catch(() => {});
     ctxRef.current = null;
+    countBuffersRef.current = []; // decoded against the old ctx — re-decode on reopen
+  }
+
+  // Decode the fetched count mp3s for this context (once). slice(0) clones so the
+  // raw bytes survive decodeAudioData detaching them (lets us re-decode later).
+  async function decodeCount(ctx: AudioContext) {
+    const raw = rawCountRef.current;
+    if (raw.length < 8) return;
+    if (countBuffersRef.current.length === 8 && countBuffersRef.current.every(Boolean)) return;
+    const out: (AudioBuffer | null)[] = [];
+    for (let i = 0; i < 8; i++) {
+      try {
+        out[i] = await ctx.decodeAudioData(raw[i].slice(0));
+      } catch {
+        out[i] = null;
+      }
+    }
+    countBuffersRef.current = out;
+  }
+
+  // Schedule a decoded count sample exactly at `time` (on the audio clock).
+  function playSample(buf: AudioBuffer, time: number) {
+    const ctx = ctxRef.current;
+    if (!ctx) return;
+    const src = ctx.createBufferSource();
+    src.buffer = buf;
+    const g = ctx.createGain();
+    g.gain.value = Math.min(1, Math.max(0, volRef.current / 100));
+    src.connect(g);
+    g.connect(ctx.destination);
+    src.start(time);
   }
 
   function speak(n: number) {
@@ -186,18 +251,24 @@ export function Metronome({
     if (!ctx) return;
     const nBeats = beatsRef.current;
     const idx = ((abs % nBeats) + nBeats) % nBeats;
-    const voiceOn = modeRef.current === "voice" && canSpeakRef.current;
-    if (!voiceOn) {
+    const wantVoice = modeRef.current === "voice";
+    const sample = wantVoice ? countBuffersRef.current[idx] : null;
+    // Preloaded sample → schedule it on the audio clock (tight). No sample but a
+    // platform voice → fall back to live TTS (laggy). Otherwise click.
+    const ttsFallback = wantVoice && !sample && canSpeakRef.current;
+    if (sample) {
+      playSample(sample, time);
+    } else if (!ttsFallback) {
       const level = idx === 0 ? "strong" : nBeats === 8 && idx === 4 ? "mid" : "normal";
       clickAt(time, level);
     }
-    // visual + (voice) fire at the actual beat moment
+    // visual (+ TTS fallback) fire at the actual beat moment
     const delay = Math.max(0, (time - ctx.currentTime) * 1000);
     const gen = genRef.current;
     setTimeout(() => {
       if (gen !== genRef.current) return; // stopped/restarted since — don't leak
       setBeatLabel(idx + 1);
-      if (voiceOn) speak(idx + 1);
+      if (ttsFallback) speak(idx + 1);
     }, delay);
   }
 
@@ -545,14 +616,10 @@ export function Metronome({
                 : "text-muted-foreground hover:bg-muted"
             )}
           >
-            นับ 1–{beats} (ผู้หญิง)
+            นับ 1–{beats} 🎀
           </button>
         </div>
-        {mode === "voice" && !canSpeakRef.current && (
-          <span className="text-xs text-amber-600 dark:text-amber-400">
-            เครื่องนี้ไม่มีเสียงพูด — จะใช้คลิกแทน
-          </span>
-        )}
+        {mode === "voice" && <span className="text-xs text-muted-foreground">เสียงสาวญี่ปุ่น</span>}
       </div>
 
       {/* metronome volume — independent of the song's volume */}
