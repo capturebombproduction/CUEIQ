@@ -46,11 +46,12 @@ export interface OverviewBand {
   members: { id: string; label: string; mic_number: number | null }[];
 }
 
-type ViewMode = "band" | "event" | "week" | "month" | "year";
+type ViewMode = "band" | "event" | "day" | "week" | "month" | "year";
 
 const VIEW_MODES: { value: ViewMode; label: string }[] = [
   { value: "band", label: "รายวง" },
   { value: "event", label: "รายงาน" },
+  { value: "day", label: "รายวัน" },
   { value: "week", label: "รายสัปดาห์" },
   { value: "month", label: "รายเดือน" },
   { value: "year", label: "รายปี" },
@@ -77,6 +78,16 @@ function fmtRange(r: TimeRange): string {
   return r.end ? `${start}–${shortClock(r.end)}` : start;
 }
 
+// Day-section header for the exported schedule: "2026-06-21 · Sat".
+function dayHeader(date: string | null): string {
+  if (!date) return "ไม่ระบุวันที่";
+  const d = new Date(`${date}T00:00:00`);
+  if (isNaN(d.getTime())) return date;
+  return `${d.toLocaleDateString("en-CA")} · ${d.toLocaleDateString("en-GB", {
+    weekday: "short",
+  })}`;
+}
+
 function startOfWeek(d: Date): Date {
   const x = new Date(d);
   const day = (x.getDay() + 6) % 7; // Mon = 0
@@ -92,6 +103,11 @@ function bucketOf(ev: OverviewEvent, mode: ViewMode): { key: string; label: stri
   if (!ev.event_date) return { key: NO_DATE_KEY, label: "ไม่ระบุวันที่" };
   const d = new Date(`${ev.event_date}T00:00:00`);
   if (isNaN(d.getTime())) return { key: NO_DATE_KEY, label: "ไม่ระบุวันที่" };
+  if (mode === "day") {
+    const iso = d.toLocaleDateString("en-CA"); // 2026-06-21
+    const wd = d.toLocaleDateString("en-GB", { weekday: "short" }); // Sat
+    return { key: iso, label: `${iso} · ${wd}` };
+  }
   if (mode === "year") {
     const y = d.getFullYear();
     return { key: String(y), label: String(y) };
@@ -162,6 +178,19 @@ export function OverviewClient({
       }),
     [filtered]
   );
+
+  // Group the export rows into day sections (insertion order = date order since
+  // exportRows is already sorted), so the exported sheet reads day-by-day.
+  const exportDays = useMemo(() => {
+    const map = new Map<string, OverviewEvent[]>();
+    for (const ev of exportRows) {
+      const key = ev.event_date ?? "";
+      const arr = map.get(key);
+      if (arr) arr.push(ev);
+      else map.set(key, [ev]);
+    }
+    return Array.from(map.entries());
+  }, [exportRows]);
 
   async function exportImage() {
     const el = exportRef.current;
@@ -446,40 +475,45 @@ export function OverviewClient({
               ตารางงาน · {bandFilterLabel} · {exportRows.length} งาน
             </p>
           </div>
-          <table className="w-full border-collapse text-sm">
-            <thead>
-              <tr className="border-b text-left text-xs text-muted-foreground">
-                <th className="py-2 pr-3 font-medium">งาน</th>
-                <th className="py-2 pr-3 font-medium">วง</th>
-                <th className="py-2 pr-3 font-medium">วันที่</th>
-                <th className="py-2 pr-3 font-medium">Stage</th>
-                <th className="py-2 pr-3 font-medium">Booth</th>
-                <th className="py-2 font-medium">Photo</th>
-              </tr>
-            </thead>
-            <tbody>
-              {exportRows.map((ev) => (
-                <tr key={ev.id} className="border-b last:border-0">
-                  <td className="py-2 pr-3 font-medium">{ev.name}</td>
-                  <td className="py-2 pr-3">
-                    <span className="inline-flex items-center gap-1.5">
-                      <span
-                        className="inline-block h-2.5 w-2.5 rounded-full"
-                        style={{ background: ev.group_color || "var(--primary)" }}
-                      />
-                      {ev.group_name}
-                    </span>
-                  </td>
-                  <td className="py-2 pr-3 tabular-nums">{fmtDate(ev.event_date)}</td>
-                  <td className="py-2 pr-3 tabular-nums">{fmtRange(ev.stage)}</td>
-                  <td className="py-2 pr-3 tabular-nums">{fmtRange(ev.booth)}</td>
-                  <td className="py-2 tabular-nums">
-                    {fmtRange({ start: ev.photo, end: ev.photoEnd })}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          {exportDays.map(([date, evs]) => (
+            <div key={date || "no-date"} className="space-y-1.5">
+              <h3 className="text-sm font-bold text-primary">
+                {dayHeader(date || null)} · {evs.length} วง
+              </h3>
+              <table className="w-full border-collapse text-sm">
+                <thead>
+                  <tr className="border-b text-left text-xs text-muted-foreground">
+                    <th className="py-1.5 pr-3 font-medium">งาน</th>
+                    <th className="py-1.5 pr-3 font-medium">วง</th>
+                    <th className="py-1.5 pr-3 font-medium">Stage</th>
+                    <th className="py-1.5 pr-3 font-medium">Booth</th>
+                    <th className="py-1.5 font-medium">Photo</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {evs.map((ev) => (
+                    <tr key={ev.id} className="border-b last:border-0">
+                      <td className="py-1.5 pr-3 font-medium">{ev.name}</td>
+                      <td className="py-1.5 pr-3">
+                        <span className="inline-flex items-center gap-1.5">
+                          <span
+                            className="inline-block h-2.5 w-2.5 rounded-full"
+                            style={{ background: ev.group_color || "var(--primary)" }}
+                          />
+                          {ev.group_name}
+                        </span>
+                      </td>
+                      <td className="py-1.5 pr-3 tabular-nums">{fmtRange(ev.stage)}</td>
+                      <td className="py-1.5 pr-3 tabular-nums">{fmtRange(ev.booth)}</td>
+                      <td className="py-1.5 tabular-nums">
+                        {fmtRange({ start: ev.photo, end: ev.photoEnd })}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ))}
           <p className="text-[10px] text-muted-foreground">
             สร้างจาก CueIQ · {fmtDate(new Date().toISOString().slice(0, 10))}
           </p>
