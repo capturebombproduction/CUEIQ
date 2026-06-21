@@ -42,7 +42,7 @@ export function SiteHeader({
   const shownRole = roleLabel(role, perms);
   return (
     <header className="no-print sticky top-0 z-40 border-b bg-background/80 backdrop-blur supports-[backdrop-filter]:bg-background/60">
-      <div className="container flex h-14 items-center justify-between gap-3">
+      <div className="container flex flex-wrap items-center justify-between gap-x-3 gap-y-1.5 py-2 xl:h-14 xl:flex-nowrap xl:py-0">
         <div className="flex min-w-0 items-center gap-2 sm:gap-4">
           <Link href="/dashboard" className="shrink-0">
             <Brand subtitle="Designed by PatzNutthapat" />
@@ -55,7 +55,11 @@ export function SiteHeader({
             <MainNav perms={perms} />
           </div>
         </div>
-        <div className="flex shrink-0 items-center gap-2 sm:gap-3">
+        {/* action icons: inline beside the brand on wide desktops (xl+); on anything
+            narrower the whole cluster (w-full) wraps onto its own right-aligned line
+            below the brand so it can never overlap the logo, and flex-wraps again on
+            very narrow phones instead of being clipped */}
+        <div className="flex w-full shrink-0 flex-wrap items-center justify-end gap-x-2 gap-y-1.5 sm:gap-x-3 xl:w-auto xl:flex-nowrap">
           {shownRole && (
             <Badge variant="secondary" className="hidden xl:inline-flex">
               {shownRole}
