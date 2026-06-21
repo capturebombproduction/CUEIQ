@@ -119,10 +119,12 @@ function EventCard({
   ev,
   editable,
   readiness,
+  onDeleted,
 }: {
   ev: EventWithGroup;
   editable: boolean;
   readiness?: { ready: number; total: number };
+  onDeleted?: (id: string) => void;
 }) {
   return (
     <Link href={`/events/${ev.id}`} className="group">
@@ -133,7 +135,7 @@ function EventCard({
         {editable && (
           <>
             <DuplicateEventButton eventId={ev.id} />
-            <DeleteEventButton eventId={ev.id} eventName={ev.name} />
+            <DeleteEventButton eventId={ev.id} eventName={ev.name} onDeleted={onDeleted} />
           </>
         )}
         <CardContent className="space-y-3 p-5">
@@ -205,18 +207,26 @@ export function EventsList({
   editableGroupIds: string[];
 }) {
   const [q, setQ] = useState("");
+  // Local copy so a delete drops the card instantly; re-synced when the server
+  // refresh brings a fresh `events` prop.
+  const [items, setItems] = useState(events);
+  useEffect(() => setItems(events), [events]);
+  const handleDeleted = useCallback(
+    (id: string) => setItems((cur) => cur.filter((e) => e.id !== id)),
+    []
+  );
   const canEditEvent = (ev: EventWithGroup) =>
     !!ev.group_id && editableGroupIds.includes(ev.group_id);
 
   const { upcoming, past } = useMemo(() => {
     const needle = q.trim().toLowerCase();
     const matched = needle
-      ? events.filter((e) =>
+      ? items.filter((e) =>
           [e.name, e.venue, e.groups?.name]
             .filter(Boolean)
             .some((s) => (s as string).toLowerCase().includes(needle))
         )
-      : events;
+      : items;
     const today = todayKey();
     const up = matched
       .filter((e) => !e.event_date || e.event_date >= today)
@@ -225,7 +235,7 @@ export function EventsList({
       .filter((e) => e.event_date && e.event_date < today)
       .sort((a, b) => (b.event_date ?? "").localeCompare(a.event_date ?? ""));
     return { upcoming: up, past: pa };
-  }, [events, q]);
+  }, [items, q]);
 
   const noResults = upcoming.length === 0 && past.length === 0;
   // soonest dated upcoming event (upcoming is already sorted soonest-first)
@@ -235,18 +245,18 @@ export function EventsList({
   const libraryGroupIds = useMemo(
     () =>
       Array.from(
-        new Set(events.map((e) => e.group_id).filter((id): id is string => !!id))
+        new Set(items.map((e) => e.group_id).filter((id): id is string => !!id))
       ),
-    [events]
+    [items]
   );
 
   // all past events (search-independent) — for clearing their cached audio
   const allPastIds = useMemo(() => {
     const today = todayKey();
-    return events
+    return items
       .filter((e) => e.event_date && e.event_date < today)
       .map((e) => e.id);
-  }, [events]);
+  }, [items]);
 
   // Per-device offline-readiness badge on each upcoming card: does THIS device
   // already hold the event's audio? Two batched queries (items + songs) cover all
@@ -261,7 +271,7 @@ export function EventsList({
 
   const computeReadiness = useCallback(async () => {
     const today = todayKey();
-    const wanted = events.filter(
+    const wanted = items.filter(
       (e) => e.group_id && (!e.event_date || e.event_date >= today)
     );
     if (wanted.length === 0) return;
@@ -308,7 +318,7 @@ export function EventsList({
     } catch {
       /* best-effort — no badge on failure */
     }
-  }, [events]);
+  }, [items]);
 
   // Files still missing across all upcoming shows, and a one-tap "prepare them all".
   const notReadyIds = useMemo(
@@ -449,6 +459,7 @@ export function EventsList({
                     ev={ev}
                     editable={canEditEvent(ev)}
                     readiness={readiness[ev.id]}
+                    onDeleted={handleDeleted}
                   />
                 ))}
               </div>
@@ -461,7 +472,12 @@ export function EventsList({
               </h2>
               <div className="grid gap-4 opacity-80 sm:grid-cols-2 lg:grid-cols-3">
                 {past.map((ev) => (
-                  <EventCard key={ev.id} ev={ev} editable={canEditEvent(ev)} />
+                  <EventCard
+                    key={ev.id}
+                    ev={ev}
+                    editable={canEditEvent(ev)}
+                    onDeleted={handleDeleted}
+                  />
                 ))}
               </div>
             </section>

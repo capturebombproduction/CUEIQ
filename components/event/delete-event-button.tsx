@@ -24,9 +24,12 @@ import {
 export function DeleteEventButton({
   eventId,
   eventName,
+  onDeleted,
 }: {
   eventId: string;
   eventName: string;
+  /** Optimistically drop the card from the list before the server refresh. */
+  onDeleted?: (id: string) => void;
 }) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
@@ -46,9 +49,10 @@ export function DeleteEventButton({
       const { error } = await supabase.from("events").delete().eq("id", eventId);
       if (error) throw error;
       toast.success("ลบงานแล้ว");
-      setOpen(false);
       setBusy(false);
-      router.refresh();
+      setOpen(false);
+      onDeleted?.(eventId); // drop the card immediately; don't wait for refresh
+      router.refresh(); // reconcile with the server in the background
     } catch (err) {
       toast.error("ลบงานไม่สำเร็จ", {
         description: err instanceof Error ? err.message : undefined,
