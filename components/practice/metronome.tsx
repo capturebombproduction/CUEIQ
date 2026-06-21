@@ -100,6 +100,7 @@ export function Metronome({
   const beatAbsRef = useRef(0); // absolute beat index from the grid origin
   const gridBaseRef = useRef(0); // song-time of beat "1" (origin of the beat grid)
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const genRef = useRef(0); // bumped on stop so queued beat callbacks don't leak
   const tapsRef = useRef<number[]>([]);
   const lastPosRef = useRef(position);
 
@@ -192,7 +193,9 @@ export function Metronome({
     }
     // visual + (voice) fire at the actual beat moment
     const delay = Math.max(0, (time - ctx.currentTime) * 1000);
+    const gen = genRef.current;
     setTimeout(() => {
+      if (gen !== genRef.current) return; // stopped/restarted since — don't leak
       setBeatLabel(idx + 1);
       if (voiceOn) speak(idx + 1);
     }, delay);
@@ -245,6 +248,7 @@ export function Metronome({
   function stopScheduler() {
     if (timerRef.current) clearInterval(timerRef.current);
     timerRef.current = null;
+    genRef.current++; // invalidate any beat callbacks already queued ahead
     try {
       window.speechSynthesis?.cancel();
     } catch {
