@@ -8,6 +8,11 @@ import {
   clearAllAudio,
   type CacheSummary,
 } from "@/lib/audio-store";
+import {
+  getSongCacheSummary,
+  clearSongCache,
+  type SongCacheSummary,
+} from "@/lib/song-cache";
 
 function fmtSize(bytes: number): string {
   const mb = bytes / (1024 * 1024);
@@ -32,6 +37,7 @@ export function DeviceStorage({
   onChanged?: () => void;
 }) {
   const [summary, setSummary] = useState<CacheSummary | null>(null);
+  const [songCache, setSongCache] = useState<SongCacheSummary | null>(null);
   const [busy, setBusy] = useState(false);
   // null = unknown/unsupported; false = browser may evict the cache mid-show
   const [persisted, setPersisted] = useState<boolean | null>(null);
@@ -40,6 +46,9 @@ export function DeviceStorage({
     getCacheSummary()
       .then(setSummary)
       .catch(() => setSummary(null));
+    getSongCacheSummary()
+      .then(setSongCache)
+      .catch(() => setSongCache(null));
   }, []);
 
   useEffect(() => {
@@ -65,10 +74,14 @@ export function DeviceStorage({
     }
   };
 
-  if (!summary || summary.fileCount === 0) return null;
+  const eventBytes = summary?.totalBytes ?? 0;
+  const eventCount = summary?.fileCount ?? 0;
+  const songBytes = songCache?.totalBytes ?? 0;
+  const songCount = songCache?.count ?? 0;
+  if (eventCount === 0 && songCount === 0) return null;
 
   const pastSet = new Set(pastEventIds);
-  const pastEntries = Object.entries(summary.byEvent).filter(([id]) =>
+  const pastEntries = Object.entries(summary?.byEvent ?? {}).filter(([id]) =>
     pastSet.has(id)
   );
   const pastBytes = pastEntries.reduce((n, [, v]) => n + v.bytes, 0);
@@ -83,9 +96,17 @@ export function DeviceStorage({
     onChanged?.();
   };
 
+  const clearLibrary = async () => {
+    setBusy(true);
+    await clearSongCache().catch(() => {});
+    setBusy(false);
+    refresh();
+    onChanged?.();
+  };
+
   const clearAll = async () => {
     setBusy(true);
-    await clearAllAudio().catch(() => {});
+    await Promise.all([clearAllAudio().catch(() => {}), clearSongCache().catch(() => {})]);
     setBusy(false);
     refresh();
     onChanged?.();
@@ -113,10 +134,27 @@ export function DeviceStorage({
         <span className="inline-flex items-center gap-1.5">
           <HardDrive className="h-3.5 w-3.5" />
           เพลงในเครื่องนี้{" "}
-          <b className="text-foreground">{fmtSize(summary.totalBytes)}</b> ·{" "}
-          {summary.fileCount} ไฟล์
+          <b className="text-foreground">{fmtSize(eventBytes + songBytes)}</b> ·{" "}
+          {eventCount + songCount} ไฟล์
+          {songCount > 0 && (
+            <span className="text-muted-foreground/80">
+              {" "}
+              (คลังพรีโหลด {fmtSize(songBytes)})
+            </span>
+          )}
         </span>
         {busy && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+        {songCount > 0 && (
+          <button
+            type="button"
+            onClick={clearLibrary}
+            disabled={busy}
+            className="inline-flex items-center gap-1 rounded-md border px-2 py-1 font-medium transition hover:bg-muted hover:text-foreground disabled:opacity-60"
+            title="ลบคลังเพลงที่พรีโหลดไว้ (ซ้อม/ไลฟ์จะโหลดใหม่เมื่อเล่น)"
+          >
+            <Trash2 className="h-3.5 w-3.5" /> ล้างคลังพรีโหลด ({fmtSize(songBytes)})
+          </button>
+        )}
         {pastEntries.length > 0 && (
           <button
             type="button"

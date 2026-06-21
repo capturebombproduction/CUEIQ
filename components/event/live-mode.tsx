@@ -31,6 +31,7 @@ import {
 import { toast } from "sonner";
 import { createClient } from "@/lib/supabase/client";
 import { saveAudio, loadAudioForEvent } from "@/lib/audio-store";
+import { getCachedSongBlob } from "@/lib/song-cache";
 import {
   buildSongAudioPath,
   uploadEventAudio,
@@ -486,7 +487,9 @@ export function LiveMode({
         if (cachedPathRef.current[it.id] === path && audioUrlsRef.current[it.id]) continue;
         setAudioBusy((prev) => ({ ...prev, [it.id]: "down" }));
         try {
-          const blob = await downloadEventAudio(path);
+          // Fast path: if the band-library prefetch already cached this file
+          // on this device, use it instead of hitting the network.
+          const blob = (await getCachedSongBlob(path)) ?? (await downloadEventAudio(path));
           if (cancelled) return;
           const url = URL.createObjectURL(blob);
           if (audioUrlsRef.current[it.id]) URL.revokeObjectURL(audioUrlsRef.current[it.id]);

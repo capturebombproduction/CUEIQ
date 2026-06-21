@@ -19,6 +19,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { StatusBadge } from "@/components/status-badge";
 import { DuplicateEventButton } from "@/components/event/duplicate-event-button";
 import { AutoPrefetch } from "@/components/event/auto-prefetch";
+import { LibraryPrefetch } from "@/components/event/library-prefetch";
 import { DeviceStorage } from "@/components/event/device-storage";
 import { createClient } from "@/lib/supabase/client";
 import {
@@ -223,6 +224,15 @@ export function EventsList({
   const noResults = upcoming.length === 0 && past.length === 0;
   // soonest dated upcoming event (upcoming is already sorted soonest-first)
   const nextShow = !q.trim() ? upcoming.find((e) => !!e.event_date) : undefined;
+
+  // Bands the user works with → which libraries to pre-cache on app open.
+  const libraryGroupIds = useMemo(
+    () =>
+      Array.from(
+        new Set(events.map((e) => e.group_id).filter((id): id is string => !!id))
+      ),
+    [events]
+  );
 
   // all past events (search-independent) — for clearing their cached audio
   const allPastIds = useMemo(() => {
@@ -453,6 +463,7 @@ export function EventsList({
         </>
       )}
 
+      <LibraryPrefetch groupIds={libraryGroupIds} />
       <DeviceStorage pastEventIds={allPastIds} onChanged={computeReadiness} />
     </div>
   );
