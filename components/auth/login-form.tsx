@@ -47,7 +47,7 @@ export function LoginForm({ next }: { next?: string }) {
       <CardContent>
         <form onSubmit={onSubmit} className="space-y-4">
           <div className="space-y-2">
-            <Label htmlFor="loginId">ชื่อผู้ใช้ หรือ อีเมล</Label>
+            <Label htmlFor="loginId">ชื่อผู้ใช้</Label>
             <Input
               id="loginId"
               type="text"
@@ -57,7 +57,7 @@ export function LoginForm({ next }: { next?: string }) {
               required
               value={loginId}
               onChange={(e) => setLoginId(e.target.value)}
-              placeholder="ar01 หรือ you@example.com"
+              placeholder="ชื่อผู้ใช้ของคุณ"
             />
           </div>
           <div className="space-y-2">
