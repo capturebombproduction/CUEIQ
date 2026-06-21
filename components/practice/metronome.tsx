@@ -1,7 +1,16 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Minus, Plus, Play, Square, Hand, Save, AudioWaveform } from "lucide-react";
+import {
+  Minus,
+  Plus,
+  Play,
+  Square,
+  Hand,
+  Save,
+  AudioWaveform,
+  Volume2,
+} from "lucide-react";
 import { toast } from "sonner";
 import { createClient } from "@/lib/supabase/client";
 import { Button } from "@/components/ui/button";
@@ -10,17 +19,19 @@ import type { Song } from "@/lib/types";
 
 const MIN_BPM = 30;
 const MAX_BPM = 280;
-const BEATS_OPTIONS = [2, 3, 4, 6] as const;
+const BEATS_OPTIONS = [2, 3, 4, 6, 8] as const;
+type SoundMode = "click" | "voice";
 
 function clampBpm(n: number) {
   return Math.min(MAX_BPM, Math.max(MIN_BPM, Math.round(n)));
 }
 
 /**
- * Practice metronome (Slice 4) — Web Audio scheduled clicks (accented downbeat),
- * tap-tempo, and a per-song saved BPM (Ar). Seeds from the current song's bpm and
- * can write a new tempo back to the library. Self-contained; nothing plays until the
- * user presses ▶ (which also unlocks audio on iOS).
+ * Practice metronome (Slice 4 + count mode) — Web Audio scheduled clicks (accented
+ * downbeat) OR a spoken count ("one, two, three… eight" via SpeechSynthesis), with
+ * its OWN volume (separate from the song), tap-tempo, beats-per-bar, and a per-song
+ * saved BPM (Ar). Self-contained; nothing plays until ▶ (which also unlocks audio
+ * on iOS).
  */
 export function Metronome({
   song,
@@ -33,15 +44,21 @@ export function Metronome({
 }) {
   const [open, setOpen] = useState(false);
   const [bpm, setBpm] = useState<number>(song?.bpm ?? 100);
-  const [beats, setBeats] = useState<number>(4);
+  const [beats, setBeats] = useState<number>(8);
+  const [mode, setMode] = useState<SoundMode>("click");
+  const [vol, setVol] = useState(80); // metronome volume (0–100), independent of the song
   const [running, setRunning] = useState(false);
-  const [flash, setFlash] = useState(false);
+  const [beatLabel, setBeatLabel] = useState(0); // current beat shown in the dial
 
   // live refs for the running scheduler
   const bpmRef = useRef(bpm);
   bpmRef.current = bpm;
   const beatsRef = useRef(beats);
   beatsRef.current = beats;
+  const modeRef = useRef(mode);
+  modeRef.current = mode;
+  const volRef = useRef(vol);
+  volRef.current = vol;
 
   const ctxRef = useRef<AudioContext | null>(null);
   const nextNoteRef = useRef(0);
@@ -49,11 +66,25 @@ export function Metronome({
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const tapsRef = useRef<number[]>([]);
 
-  // reseed BPM when the selected song changes (only if it has a saved tempo)
   useEffect(() => {
     if (song?.bpm) setBpm(clampBpm(song.bpm));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [song?.id]);
+
+  function speak(n: number) {
+    try {
+      const synth = window.speechSynthesis;
+      if (!synth) return;
+      synth.cancel(); // drop any backlog so counts stay in time
+      const u = new SpeechSynthesisUtterance(String(n));
+      u.lang = "en-US";
+      u.rate = 1.5;
+      u.volume = Math.min(1, Math.max(0, volRef.current / 100));
+      synth.speak(u);
+    } catch {
+      /* ignore */
+    }
+  }
 
   function clickAt(time: number, accent: boolean) {
     const ctx = ctxRef.current;
@@ -63,19 +94,27 @@ export function Metronome({
     osc.connect(gain);
     gain.connect(ctx.destination);
     osc.frequency.value = accent ? 1600 : 1000;
+    const peak = (accent ? 0.6 : 0.4) * (volRef.current / 100);
     gain.gain.setValueAtTime(0.0001, time);
-    gain.gain.exponentialRampToValueAtTime(accent ? 0.6 : 0.4, time + 0.001);
+    gain.gain.exponentialRampToValueAtTime(Math.max(0.0002, peak), time + 0.001);
     gain.gain.exponentialRampToValueAtTime(0.0001, time + 0.05);
     osc.start(time);
     osc.stop(time + 0.06);
-    // visual beat flash (downbeat only, scheduled roughly)
-    if (accent) {
-      const delay = Math.max(0, (time - ctx.currentTime) * 1000);
-      setTimeout(() => {
-        setFlash(true);
-        setTimeout(() => setFlash(false), 90);
-      }, delay);
+  }
+
+  function scheduleBeat(time: number, beatIndex: number) {
+    const ctx = ctxRef.current;
+    if (!ctx) return;
+    const accent = beatIndex === 0;
+    if (modeRef.current === "click") {
+      clickAt(time, accent);
     }
+    // visual + (voice) fire at the actual beat moment
+    const delay = Math.max(0, (time - ctx.currentTime) * 1000);
+    setTimeout(() => {
+      setBeatLabel(beatIndex + 1);
+      if (modeRef.current === "voice") speak(beatIndex + 1);
+    }, delay);
   }
 
   function schedule() {
@@ -83,7 +122,7 @@ export function Metronome({
     if (!ctx) return;
     const spb = 60 / bpmRef.current;
     while (nextNoteRef.current < ctx.currentTime + 0.12) {
-      clickAt(nextNoteRef.current, beatNumRef.current % beatsRef.current === 0);
+      scheduleBeat(nextNoteRef.current, beatNumRef.current % beatsRef.current);
       nextNoteRef.current += spb;
       beatNumRef.current = (beatNumRef.current + 1) % beatsRef.current;
     }
@@ -97,7 +136,7 @@ export function Metronome({
     const ctx = new Ctx();
     ctxRef.current = ctx;
     beatNumRef.current = 0;
-    nextNoteRef.current = ctx.currentTime + 0.06;
+    nextNoteRef.current = ctx.currentTime + 0.12;
     timerRef.current = setInterval(schedule, 25);
     setRunning(true);
   }
@@ -107,8 +146,13 @@ export function Metronome({
     timerRef.current = null;
     ctxRef.current?.close().catch(() => {});
     ctxRef.current = null;
+    try {
+      window.speechSynthesis?.cancel();
+    } catch {
+      /* ignore */
+    }
     setRunning(false);
-    setFlash(false);
+    setBeatLabel(0);
   }
 
   function toggle() {
@@ -120,18 +164,22 @@ export function Metronome({
     return () => {
       if (timerRef.current) clearInterval(timerRef.current);
       ctxRef.current?.close().catch(() => {});
+      try {
+        window.speechSynthesis?.cancel();
+      } catch {
+        /* ignore */
+      }
     };
   }, []);
 
   function tap() {
     const now = performance.now();
     const taps = tapsRef.current;
-    // reset if the last tap was long ago
     if (taps.length && now - taps[taps.length - 1] > 2000) taps.length = 0;
     taps.push(now);
     if (taps.length > 5) taps.shift();
     if (taps.length >= 2) {
-      const intervals = [];
+      const intervals: number[] = [];
       for (let i = 1; i < taps.length; i++) intervals.push(taps[i] - taps[i - 1]);
       const avg = intervals.reduce((a, b) => a + b, 0) / intervals.length;
       if (avg > 0) setBpm(clampBpm(60000 / avg));
@@ -141,10 +189,7 @@ export function Metronome({
   async function saveBpm() {
     if (!song || !canManage) return;
     const supabase = createClient();
-    const { error } = await supabase
-      .from("songs")
-      .update({ bpm })
-      .eq("id", song.id);
+    const { error } = await supabase.from("songs").update({ bpm }).eq("id", song.id);
     if (error) {
       toast.error("บันทึก BPM ไม่สำเร็จ", { description: error.message });
       return;
@@ -182,10 +227,10 @@ export function Metronome({
         <span
           className={cn(
             "flex h-12 w-12 shrink-0 items-center justify-center rounded-full border-2 tabular-nums transition-colors",
-            flash ? "border-primary bg-primary/20" : "border-muted"
+            running && beatLabel === 1 ? "border-primary bg-primary/20" : "border-muted"
           )}
         >
-          <span className="text-lg font-bold">{bpm}</span>
+          <span className="text-lg font-bold">{running ? beatLabel || "·" : bpm}</span>
         </span>
 
         <div className="flex items-center gap-1">
@@ -204,6 +249,8 @@ export function Metronome({
         <Button variant="outline" size="sm" onClick={tap}>
           <Hand className="h-4 w-4" /> เคาะจังหวะ
         </Button>
+
+        <span className="ml-auto text-xs tabular-nums text-muted-foreground">{bpm} BPM</span>
       </div>
 
       <input
@@ -214,6 +261,49 @@ export function Metronome({
         onChange={(e) => setBpm(clampBpm(Number(e.target.value)))}
         className="mt-3 w-full accent-[var(--primary)]"
       />
+
+      {/* mode: click vs spoken count */}
+      <div className="mt-2 flex items-center gap-2">
+        <span className="text-xs text-muted-foreground">เสียง</span>
+        <div className="flex overflow-hidden rounded-md border text-xs">
+          <button
+            onClick={() => setMode("click")}
+            className={cn(
+              "px-2.5 py-1.5 transition-colors",
+              mode === "click"
+                ? "bg-primary text-primary-foreground"
+                : "text-muted-foreground hover:bg-muted"
+            )}
+          >
+            คลิก
+          </button>
+          <button
+            onClick={() => setMode("voice")}
+            className={cn(
+              "px-2.5 py-1.5 transition-colors",
+              mode === "voice"
+                ? "bg-primary text-primary-foreground"
+                : "text-muted-foreground hover:bg-muted"
+            )}
+          >
+            นับเลข (1–{beats})
+          </button>
+        </div>
+      </div>
+
+      {/* metronome volume — independent of the song's volume */}
+      <div className="mt-2 flex items-center gap-2">
+        <Volume2 className="h-4 w-4 text-muted-foreground" />
+        <span className="w-20 shrink-0 text-xs text-muted-foreground">ดังเมโทรนอม</span>
+        <input
+          type="range"
+          min={0}
+          max={100}
+          value={vol}
+          onChange={(e) => setVol(Number(e.target.value))}
+          className="w-full accent-[var(--primary)]"
+        />
+      </div>
 
       <div className="mt-2 flex flex-wrap items-center gap-2">
         <span className="text-xs text-muted-foreground">บีตต่อห้อง</span>

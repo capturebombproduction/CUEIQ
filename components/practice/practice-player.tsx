@@ -407,17 +407,20 @@ export function PracticePlayer({
                 ))}
               </div>
 
-              <div className="ml-auto hidden items-center gap-2 sm:flex">
-                <Volume2 className="h-4 w-4 text-muted-foreground" />
-                <input
-                  type="range"
-                  min={0}
-                  max={100}
-                  value={vol}
-                  onChange={(e) => setVol(Number(e.target.value))}
-                  className="w-24 accent-[var(--primary)]"
-                />
-              </div>
+            </div>
+
+            {/* song volume — always visible (separate from the metronome's volume) */}
+            <div className="mt-3 flex items-center gap-2">
+              <Volume2 className="h-4 w-4 shrink-0 text-muted-foreground" />
+              <span className="w-16 shrink-0 text-xs text-muted-foreground">เสียงเพลง</span>
+              <input
+                type="range"
+                min={0}
+                max={100}
+                value={vol}
+                onChange={(e) => setVol(Number(e.target.value))}
+                className="w-full accent-[var(--primary)]"
+              />
             </div>
 
             {/* A-B loop */}
