@@ -383,6 +383,63 @@ export const MARKER_PRESETS = [
   "Outro",
 ] as const;
 
+// ---------------------------------------------------------------------------
+// Practice journal (Practice Mode Slice 3)
+// ---------------------------------------------------------------------------
+export type PracticeVisibility = "shared" | "staff";
+export type PracticeCategory = "note" | "problem" | "summary" | "homework";
+
+export const PRACTICE_CATEGORY_META: Record<
+  PracticeCategory,
+  { label: string; emoji: string }
+> = {
+  note: { label: "บันทึก", emoji: "📝" },
+  problem: { label: "ปัญหา", emoji: "⚠️" },
+  summary: { label: "สรุป", emoji: "✅" },
+  homework: { label: "การบ้าน", emoji: "📌" },
+};
+
+export interface PracticeLog {
+  id: string;
+  tenant_id: string;
+  group_id: string;
+  event_id: string;
+  log_date: string; // "YYYY-MM-DD"
+  author_id: string | null;
+  visibility: PracticeVisibility;
+  category: PracticeCategory;
+  body: string;
+  target_member_id: string | null;
+  done: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PracticeRun {
+  id: string;
+  tenant_id: string;
+  group_id: string;
+  event_id: string;
+  song_id: string | null;
+  song_title: string;
+  seconds: number;
+  last_speed: number;
+  log_date: string;
+  created_by: string | null;
+  created_at: string;
+}
+
+export interface PracticeAttendance {
+  id: string;
+  tenant_id: string;
+  group_id: string;
+  event_id: string;
+  log_date: string;
+  member_id: string;
+  present: boolean;
+  created_at: string;
+}
+
 export interface Song {
   id: string;
   tenant_id: string;

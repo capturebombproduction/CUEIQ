@@ -22,7 +22,9 @@ export default async function PracticePlayPage({
   if (!bundle.event.is_practice) redirect(`/events/${params.id}`);
 
   const ws = await getWorkspace();
-  // Ar (or admin) of the band manages markers; members jump + play. RLS enforces it.
+  if (!ws.user) redirect("/dashboard");
+  // Ar (or admin) of the band manages markers/notes/attendance; members jump + play
+  // + add shared notes. RLS enforces the real boundary.
   const canManage = canEditGroup(ws.perms, bundle.event.group_id);
 
   // Section markers for the whole band library, grouped by song (reusable per song).
@@ -49,9 +51,14 @@ export default async function PracticePlayPage({
       </div>
       <PracticeMode
         roomName={bundle.event.name}
+        eventId={bundle.event.id}
+        groupId={bundle.event.group_id}
+        tenantId={bundle.event.tenant_id}
         songs={bundle.songs}
         markersBySong={markersBySong}
+        members={bundle.members}
         canManage={canManage}
+        currentUserId={ws.user.id}
       />
     </div>
   );
