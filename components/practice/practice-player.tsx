@@ -79,6 +79,8 @@ export function PracticePlayer({
   const [dur, setDur] = useState(0);
   const [speed, setSpeed] = useState<number>(1);
   const [vol, setVol] = useState(100);
+  // true while the engine decodes a song for the first slow-down (stretch backend)
+  const [preparing, setPreparing] = useState(false);
 
   const [markers, setMarkers] = useState<Record<string, SongMarker[]>>(markersBySong);
   const [editMarkers, setEditMarkers] = useState(false);
@@ -159,6 +161,7 @@ export function PracticePlayer({
         r.startedAt = null;
       }
     };
+    engine.onPreparing = (p) => setPreparing(p);
     return () => {
       flushRun(); // log whatever was playing when we leave
       engine.destroy();
@@ -351,13 +354,14 @@ export function PracticePlayer({
                 {SPEEDS.map((s) => (
                   <button
                     key={s}
+                    disabled={preparing}
                     onClick={() => {
                       setSpeed(s);
                       engineRef.current?.unlock();
                       engineRef.current?.setTempo(s);
                     }}
                     className={cn(
-                      "rounded-md px-2 py-1 text-xs font-medium transition-colors",
+                      "rounded-md px-2 py-1 text-xs font-medium transition-colors disabled:opacity-50",
                       speed === s
                         ? "bg-primary text-primary-foreground"
                         : "bg-muted text-muted-foreground hover:bg-muted/70"
@@ -366,6 +370,9 @@ export function PracticePlayer({
                     {s}×
                   </button>
                 ))}
+                {preparing && (
+                  <Loader2 className="ml-0.5 h-3.5 w-3.5 animate-spin text-muted-foreground" />
+                )}
               </div>
 
             </div>

@@ -1,49 +1,66 @@
 // ---------------------------------------------------------------------------
 // Practice Mode audio engine — high-quality, pitch-preserving slow-down.
 //
-// The first cut of Practice Mode slowed audio with the native
-// `HTMLAudioElement.playbackRate` + `preservesPitch`. That works, but on iOS
-// Safari the native time-stretch is low quality (warbly) and on some versions
-// preservesPitch is ignored entirely (the key drops). This engine replaces it
-// with SoundTouchJS, a WSOLA time-stretcher that runs through the Web Audio
-// graph and behaves identically across browsers, including iOS Safari.
+// HYBRID, two backends behind one interface:
 //
-// Trade-off: SoundTouch needs the whole song decoded into an AudioBuffer (it
-// can't stream). The practice player already downloads the full file blob from
-// R2 before playing, so we just decode that blob once per song — the decode
-// happens inside the existing "loading" spinner. Only one decoded buffer is
-// kept in memory at a time.
+//   • "native"  — a plain HTMLAudioElement at playbackRate 1. Used whenever the
+//     speed is 1×. Streams the blob, starts instantly, costs almost no memory.
+//     This is the common case (practising at full speed), so it pays nothing.
 //
-// The player talks ONLY to this class; it never touches Web Audio directly.
-// Slow-down lives in Practice Mode only — Live Mode never uses this.
+//   • "stretch" — SoundTouchJS (WSOLA) running through the Web Audio graph. Used
+//     only at <1× (0.75 / 0.5). It needs the whole song decoded into an
+//     AudioBuffer, which it CAN'T stream — so we decode lazily, the first time
+//     the user actually slows a given song down. Native preservesPitch is low
+//     quality on iOS Safari (and ignored on some versions — the key drops);
+//     SoundTouch behaves identically everywhere, including iOS.
+//
+// So a big WAV that's only ever played at full speed is never decoded; the
+// decode cost (and the spinner for it, via onPreparing) is paid only on the
+// first slow-down. The decoded buffer is cached for the loaded song, so toggling
+// speed back and forth doesn't re-decode. Only one song is in memory at a time.
+//
+// The player talks ONLY to this class. Slow-down is Practice-Mode-only — Live
+// Mode never uses this.
 // ---------------------------------------------------------------------------
 
 import { PitchShifter } from "soundtouchjs";
 
 // SoundTouch drives playback through a ScriptProcessorNode whose callback fires
-// every `BUFFER_SIZE / sampleRate` seconds (~93ms at 44.1kHz). Smaller = tighter
+// every BUFFER_SIZE / sampleRate seconds (~93ms at 44.1kHz). Smaller = tighter
 // A-B loop / scrubber updates, at a little more CPU. 4096 is the library default.
 const BUFFER_SIZE = 4096;
 
-export class PracticeAudioEngine {
-  private ctx: AudioContext | null = null;
-  private gain: GainNode | null = null;
-  private shifter: PitchShifter | null = null;
-  private buffer: AudioBuffer | null = null;
+type Backend = "native" | "stretch";
 
-  private _tempo = 1; // time-stretch factor (1 = normal, 0.5 = half speed)
+export class PracticeAudioEngine {
+  // shared state (kept consistent across both backends)
+  private _tempo = 1; // 1 = native, <1 = stretch
   private _volume = 1; // 0..1
   private _playing = false;
   private _duration = 0;
   private _time = 0;
+  private active: Backend = "native";
+
+  // native backend
+  private audio: HTMLAudioElement | null = null;
+  private objectUrl: string | null = null;
+
+  // stretch backend (lazy)
+  private ctx: AudioContext | null = null;
+  private gain: GainNode | null = null;
+  private shifter: PitchShifter | null = null;
+  private buffer: AudioBuffer | null = null;
+  private blob: Blob | null = null; // kept so we can decode on the first slow-down
   private _ended = false;
   private _kicked = false; // has the iOS silent-buffer unlock run?
+  private switching = false; // serialises backend switches across rapid toggles
 
   // The player assigns these; defaults are no-ops so the engine is safe pre-wiring.
   onTime: (seconds: number) => void = () => {};
   onDuration: (seconds: number) => void = () => {};
   onPlayingChange: (playing: boolean) => void = () => {};
   onEnded: () => void = () => {};
+  onPreparing: (preparing: boolean) => void = () => {}; // decoding for slow-down
 
   get currentTime() {
     return this._time;
@@ -57,6 +74,66 @@ export class PracticeAudioEngine {
   get tempo() {
     return this._tempo;
   }
+
+  // --- native element -------------------------------------------------------
+
+  private ensureAudio(): HTMLAudioElement {
+    if (!this.audio) {
+      const a = new Audio();
+      a.preload = "auto";
+      a.volume = this._volume;
+      a.addEventListener("timeupdate", () => {
+        if (this.active !== "native") return;
+        this._time = a.currentTime;
+        this.onTime(a.currentTime);
+      });
+      a.addEventListener("loadedmetadata", () => {
+        if (this.active !== "native") return;
+        this._duration = a.duration;
+        this.onDuration(a.duration);
+      });
+      a.addEventListener("play", () => {
+        if (this.active !== "native") return;
+        this._playing = true;
+        this.onPlayingChange(true);
+      });
+      a.addEventListener("pause", () => {
+        if (this.active !== "native") return;
+        this._playing = false;
+        this.onPlayingChange(false);
+      });
+      a.addEventListener("ended", () => {
+        if (this.active !== "native") return;
+        this._playing = false;
+        this.onPlayingChange(false);
+        this.onEnded();
+      });
+      this.audio = a;
+    }
+    return this.audio;
+  }
+
+  private setNativeTime(a: HTMLAudioElement, t: number) {
+    if (a.readyState >= 1 /* HAVE_METADATA */) {
+      try {
+        a.currentTime = t;
+      } catch {
+        /* not seekable yet */
+      }
+    } else {
+      const onMeta = () => {
+        try {
+          a.currentTime = t;
+        } catch {
+          /* ignore */
+        }
+        a.removeEventListener("loadedmetadata", onMeta);
+      };
+      a.addEventListener("loadedmetadata", onMeta);
+    }
+  }
+
+  // --- Web Audio / stretch --------------------------------------------------
 
   private ensureCtx(): AudioContext {
     if (!this.ctx) {
@@ -72,10 +149,10 @@ export class PracticeAudioEngine {
   }
 
   /**
-   * Unlock audio. Call this SYNCHRONOUSLY from inside a user gesture (the tap
-   * that starts playback / changes speed). iOS Safari only lets an AudioContext
-   * start — and only honours a silent-buffer "kick" — from within a gesture, so
-   * doing it here keeps the context running through the later async decode/play.
+   * Unlock audio. Call SYNCHRONOUSLY from inside a user gesture (the tap that
+   * starts playback / changes speed). iOS Safari only lets an AudioContext start
+   * — and only honours a silent-buffer "kick" — from within a gesture, so doing
+   * it here keeps the context running through the later async decode/play.
    */
   unlock() {
     const ctx = this.ensureCtx();
@@ -89,15 +166,14 @@ export class PracticeAudioEngine {
         src.start(0);
         this._kicked = true;
       } catch {
-        /* ignore — best-effort unlock */
+        /* best-effort */
       }
     }
   }
 
   private decode(ctx: AudioContext, arr: ArrayBuffer): Promise<AudioBuffer> {
     return new Promise((resolve, reject) => {
-      // The promise form is standard; passing the success/error callbacks too
-      // keeps older Safari (callback-only decodeAudioData) working.
+      // Promise form is standard; passing callbacks too keeps older Safari happy.
       const ret = ctx.decodeAudioData(arr, resolve, reject) as unknown as
         | Promise<AudioBuffer>
         | undefined;
@@ -105,29 +181,30 @@ export class PracticeAudioEngine {
     });
   }
 
-  /** Decode a new song and arm it, paused at 0. Does not auto-play. */
-  async load(blob: Blob): Promise<void> {
+  /** Decode the current blob (once) and build the shifter armed at startSec. */
+  private async prepareStretch(startSec: number): Promise<void> {
+    if (!this.blob) return;
     const ctx = this.ensureCtx();
     await ctx.resume().catch(() => {});
-    // Drop the previous song first so we don't hold two decoded buffers at once.
-    this.teardownShifter();
-    this.buffer = null;
-    const arr = await blob.arrayBuffer();
-    const buffer = await this.decode(ctx, arr);
-    this.buffer = buffer;
-    this._duration = buffer.duration;
-    this._time = 0;
-    this._ended = false;
-    this._playing = false;
-    this.buildShifter(0);
+    if (!this.buffer) {
+      this.onPreparing(true);
+      try {
+        const arr = await this.blob.arrayBuffer();
+        this.buffer = await this.decode(ctx, arr);
+      } finally {
+        this.onPreparing(false);
+      }
+    }
+    this._duration = this.buffer.duration;
+    this.buildShifter(startSec);
     this.onDuration(this._duration);
-    this.onTime(0);
-    this.onPlayingChange(false);
+    this.onTime(startSec);
   }
 
   private buildShifter(startSec: number) {
     const ctx = this.ensureCtx();
     if (!this.buffer) return;
+    this.teardownShifter();
     const shifter = new PitchShifter(ctx, this.buffer, BUFFER_SIZE, () => this.handleEnd());
     shifter.tempo = this._tempo;
     shifter.pitch = 1; // keep the key — slow down only
@@ -135,6 +212,7 @@ export class PracticeAudioEngine {
       shifter.percentagePlayed = Math.min(0.999, startSec / this._duration);
     }
     shifter.on("play", (d) => {
+      if (this.active !== "stretch") return;
       this._time = d.timePlayed;
       this.onTime(d.timePlayed);
     });
@@ -156,10 +234,9 @@ export class PracticeAudioEngine {
     this.shifter = null;
   }
 
-  // SoundTouch's onEnd fires on EVERY audioprocess tick once the source is
-  // exhausted, so guard against re-entry and stop the node on the first hit.
+  // SoundTouch's onEnd fires on EVERY audioprocess tick once exhausted — guard.
   private handleEnd() {
-    if (this._ended) return;
+    if (this._ended || this.active !== "stretch") return;
     this._ended = true;
     this._playing = false;
     this._time = this._duration;
@@ -173,11 +250,48 @@ export class PracticeAudioEngine {
     this.onEnded();
   }
 
+  // --- public transport -----------------------------------------------------
+
+  /** Arm a new song. Sets up native streaming immediately; decodes for stretch
+   *  only if we're already in a slow tempo (carried over from the last song). */
+  async load(blob: Blob): Promise<void> {
+    this.teardownShifter();
+    this.buffer = null; // force a fresh decode for the new song
+    this.blob = blob;
+    this._time = 0;
+    this._ended = false;
+    this._playing = false;
+
+    const a = this.ensureAudio();
+    if (this.objectUrl) URL.revokeObjectURL(this.objectUrl);
+    this.objectUrl = URL.createObjectURL(blob);
+    a.src = this.objectUrl;
+    a.playbackRate = 1;
+    a.load(); // pull metadata so a later switch-to-native can seek immediately
+
+    if (this._tempo < 1) {
+      this.active = "stretch";
+      await this.prepareStretch(0);
+      this.onPlayingChange(false);
+    } else {
+      this.active = "native";
+      this.onTime(0);
+      this.onPlayingChange(false);
+      // duration arrives via the native loadedmetadata listener
+    }
+  }
+
   async play(): Promise<void> {
-    if (!this.buffer) return;
+    if (this.active === "native") {
+      const a = this.ensureAudio();
+      await a.play().catch(() => {}); // 'play' listener flips state
+      return;
+    }
+    // stretch
+    if (!this.blob) return;
+    if (!this.buffer) await this.prepareStretch(this._time);
     const ctx = this.ensureCtx();
     if (ctx.state === "suspended") await ctx.resume().catch(() => {});
-    // Replay from the top if we're sitting at (or past) the natural end.
     if (this._ended || this._time >= this._duration - 0.05) this.seek(0);
     if (!this.shifter) this.buildShifter(this._time);
     if (this.shifter && this.gain) {
@@ -188,14 +302,19 @@ export class PracticeAudioEngine {
   }
 
   pause() {
-    if (!this.shifter || !this._playing) return;
-    try {
-      this.shifter.disconnect(); // disconnecting the node halts playback in place
-    } catch {
-      /* ignore */
+    if (this.active === "native") {
+      this.audio?.pause(); // 'pause' listener flips state
+      return;
     }
-    this._playing = false;
-    this.onPlayingChange(false);
+    if (this.shifter && this._playing) {
+      try {
+        this.shifter.disconnect(); // disconnecting halts playback in place
+      } catch {
+        /* ignore */
+      }
+      this._playing = false;
+      this.onPlayingChange(false);
+    }
   }
 
   toggle() {
@@ -207,25 +326,50 @@ export class PracticeAudioEngine {
     const clamped = Math.min(this._duration || 0, Math.max(0, seconds));
     this._time = clamped;
     this._ended = false;
-    if (this.shifter && this._duration > 0) {
+    if (this.active === "native") {
+      const a = this.audio;
+      if (a) this.setNativeTime(a, clamped);
+    } else if (this.shifter && this._duration > 0) {
       this.shifter.percentagePlayed = clamped / this._duration; // setter wants 0..1
     }
     this.onTime(clamped);
   }
 
   setTempo(tempo: number) {
+    const prev = this._tempo;
     this._tempo = tempo;
-    if (this.shifter) this.shifter.tempo = tempo; // takes effect live
+    if (tempo < 1 && prev < 1) {
+      // slow → slow: just retune the running shifter, no backend change
+      if (this.shifter) this.shifter.tempo = tempo;
+      return;
+    }
+    if (tempo === 1 && prev === 1) return;
+    void this.switchBackend(); // crossing the native <-> stretch boundary
   }
 
   setVolume(volume: number) {
     this._volume = Math.min(1, Math.max(0, volume));
+    if (this.audio) this.audio.volume = this._volume;
     if (this.gain) this.gain.gain.value = this._volume;
   }
 
   destroy() {
     this.teardownShifter();
     this.buffer = null;
+    this.blob = null;
+    if (this.audio) {
+      try {
+        this.audio.pause();
+      } catch {
+        /* ignore */
+      }
+      this.audio.src = "";
+      this.audio = null;
+    }
+    if (this.objectUrl) {
+      URL.revokeObjectURL(this.objectUrl);
+      this.objectUrl = null;
+    }
     if (this.gain) {
       try {
         this.gain.disconnect();
@@ -241,6 +385,59 @@ export class PracticeAudioEngine {
         /* ignore */
       }
       this.ctx = null;
+    }
+  }
+
+  // --- backend switching ----------------------------------------------------
+
+  // Converge `active` to whatever `_tempo` now wants. The while-loop re-reads
+  // `_tempo` after each async step so rapid speed toggles during a decode settle
+  // on the final choice instead of racing. `switching` keeps it single-flight.
+  private async switchBackend(): Promise<void> {
+    if (this.switching) return; // an in-flight switch will re-check _tempo at its loop top
+    this.switching = true;
+    try {
+      for (;;) {
+        const want: Backend = this._tempo < 1 ? "stretch" : "native";
+        if (want === this.active) {
+          if (want === "stretch" && this.shifter) this.shifter.tempo = this._tempo;
+          break;
+        }
+        await this.doSwitch(want);
+      }
+    } finally {
+      this.switching = false;
+    }
+  }
+
+  private async doSwitch(want: Backend): Promise<void> {
+    const wasPlaying = this._playing;
+    const at = this._time;
+    if (want === "stretch") {
+      // native → stretch
+      if (this.audio && !this.audio.paused) this.audio.pause();
+      this.active = "stretch";
+      await this.prepareStretch(at);
+      if (this.shifter) this.shifter.tempo = this._tempo;
+      if (wasPlaying) await this.play();
+      else this.onPlayingChange(false);
+    } else {
+      // stretch → native
+      if (this.shifter) {
+        try {
+          this.shifter.disconnect();
+        } catch {
+          /* ignore */
+        }
+      }
+      this.active = "native";
+      const a = this.ensureAudio();
+      a.playbackRate = 1;
+      this.setNativeTime(a, at);
+      if (a.duration) this._duration = a.duration;
+      this.onTime(at);
+      if (wasPlaying) await a.play().catch(() => {});
+      else this.onPlayingChange(false);
     }
   }
 }
