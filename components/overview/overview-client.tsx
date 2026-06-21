@@ -78,16 +78,6 @@ function fmtRange(r: TimeRange): string {
   return r.end ? `${start}–${shortClock(r.end)}` : start;
 }
 
-// Day-section header for the exported schedule: "2026-06-21 · Sat".
-function dayHeader(date: string | null): string {
-  if (!date) return "ไม่ระบุวันที่";
-  const d = new Date(`${date}T00:00:00`);
-  if (isNaN(d.getTime())) return date;
-  return `${d.toLocaleDateString("en-CA")} · ${d.toLocaleDateString("en-GB", {
-    weekday: "short",
-  })}`;
-}
-
 function startOfWeek(d: Date): Date {
   const x = new Date(d);
   const day = (x.getDay() + 6) % 7; // Mon = 0
@@ -167,30 +157,7 @@ export function OverviewClient({
       ? "ทุกวง"
       : bands.find((b) => b.id === bandFilter)?.name ?? "ทุกวง";
 
-  // Sort the export rows by date (then name) so the distributed sheet reads top-to-
-  // bottom in show order regardless of the on-screen view mode.
-  const exportRows = useMemo(
-    () =>
-      [...filtered].sort((a, b) => {
-        const da = a.event_date ?? "9999";
-        const db = b.event_date ?? "9999";
-        return da === db ? a.name.localeCompare(b.name) : da.localeCompare(db);
-      }),
-    [filtered]
-  );
-
-  // Group the export rows into day sections (insertion order = date order since
-  // exportRows is already sorted), so the exported sheet reads day-by-day.
-  const exportDays = useMemo(() => {
-    const map = new Map<string, OverviewEvent[]>();
-    for (const ev of exportRows) {
-      const key = ev.event_date ?? "";
-      const arr = map.get(key);
-      if (arr) arr.push(ev);
-      else map.set(key, [ev]);
-    }
-    return Array.from(map.entries());
-  }, [exportRows]);
+  const modeLabel = VIEW_MODES.find((m) => m.value === mode)?.label ?? "";
 
   async function exportImage() {
     const el = exportRef.current;
@@ -472,48 +439,78 @@ export function OverviewClient({
           <div className="border-b pb-3">
             <h2 className="text-xl font-bold leading-tight">{labelName}</h2>
             <p className="text-sm text-muted-foreground">
-              ตารางงาน · {bandFilterLabel} · {exportRows.length} งาน
+              ตารางงาน · {modeLabel} · {bandFilterLabel} · {filtered.length} งาน
             </p>
           </div>
-          {exportDays.map(([date, evs]) => (
-            <div key={date || "no-date"} className="space-y-1.5">
-              <h3 className="text-sm font-bold text-primary">
-                {dayHeader(date || null)} · {evs.length} วง
-              </h3>
-              <table className="w-full border-collapse text-sm">
-                <thead>
-                  <tr className="border-b text-left text-xs text-muted-foreground">
-                    <th className="py-1.5 pr-3 font-medium">งาน</th>
-                    <th className="py-1.5 pr-3 font-medium">วง</th>
-                    <th className="py-1.5 pr-3 font-medium">Stage</th>
-                    <th className="py-1.5 pr-3 font-medium">Booth</th>
-                    <th className="py-1.5 font-medium">Photo</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {evs.map((ev) => (
-                    <tr key={ev.id} className="border-b last:border-0">
-                      <td className="py-1.5 pr-3 font-medium">{ev.name}</td>
-                      <td className="py-1.5 pr-3">
-                        <span className="inline-flex items-center gap-1.5">
-                          <span
-                            className="inline-block h-2.5 w-2.5 rounded-full"
-                            style={{ background: ev.group_color || "var(--primary)" }}
-                          />
-                          {ev.group_name}
-                        </span>
-                      </td>
-                      <td className="py-1.5 pr-3 tabular-nums">{fmtRange(ev.stage)}</td>
-                      <td className="py-1.5 pr-3 tabular-nums">{fmtRange(ev.booth)}</td>
-                      <td className="py-1.5 tabular-nums">
-                        {fmtRange({ start: ev.photo, end: ev.photoEnd })}
-                      </td>
+          {/* Mirror the on-screen grouping (buckets follow the current view mode)
+              so "capture" produces whatever arrangement the staff are looking at —
+              by band, by day, by week/month/year, or the flat report. */}
+          {buckets
+            .filter((b) => b.events.length > 0)
+            .map((bucket) => (
+              <div key={bucket.key} className="space-y-1.5">
+                {bucket.label && (
+                  <h3 className="flex items-center gap-1.5 text-sm font-bold text-primary">
+                    {bucket.color !== undefined && (
+                      <span
+                        className="inline-block h-2.5 w-2.5 rounded-full"
+                        style={{ background: bucket.color || "var(--primary)" }}
+                      />
+                    )}
+                    {bucket.label}
+                    <span className="font-normal text-muted-foreground">
+                      · {bucket.events.length} งาน
+                    </span>
+                  </h3>
+                )}
+                <table className="w-full border-collapse text-sm">
+                  <thead>
+                    <tr className="border-b text-left text-xs text-muted-foreground">
+                      <th className="py-1.5 pr-3 font-medium">งาน</th>
+                      {showBandColumn && (
+                        <th className="py-1.5 pr-3 font-medium">วง</th>
+                      )}
+                      <th className="py-1.5 pr-3 font-medium">วันที่</th>
+                      <th className="py-1.5 pr-3 font-medium">Stage</th>
+                      <th className="py-1.5 pr-3 font-medium">Booth</th>
+                      <th className="py-1.5 font-medium">Photo</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          ))}
+                  </thead>
+                  <tbody>
+                    {bucket.events.map((ev) => (
+                      <tr key={ev.id} className="border-b last:border-0">
+                        <td className="py-1.5 pr-3 font-medium">{ev.name}</td>
+                        {showBandColumn && (
+                          <td className="py-1.5 pr-3">
+                            <span className="inline-flex items-center gap-1.5">
+                              <span
+                                className="inline-block h-2.5 w-2.5 rounded-full"
+                                style={{
+                                  background: ev.group_color || "var(--primary)",
+                                }}
+                              />
+                              {ev.group_name}
+                            </span>
+                          </td>
+                        )}
+                        <td className="py-1.5 pr-3 tabular-nums">
+                          {fmtDate(ev.event_date)}
+                        </td>
+                        <td className="py-1.5 pr-3 tabular-nums">
+                          {fmtRange(ev.stage)}
+                        </td>
+                        <td className="py-1.5 pr-3 tabular-nums">
+                          {fmtRange(ev.booth)}
+                        </td>
+                        <td className="py-1.5 tabular-nums">
+                          {fmtRange({ start: ev.photo, end: ev.photoEnd })}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ))}
           <p className="text-[10px] text-muted-foreground">
             สร้างจาก CueIQ · {fmtDate(new Date().toISOString().slice(0, 10))}
           </p>
