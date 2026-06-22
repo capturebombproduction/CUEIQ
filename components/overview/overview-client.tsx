@@ -168,16 +168,16 @@ function EventNameCell({
   isLabelWide: boolean;
 }) {
   return (
-    <div className="flex flex-wrap items-center gap-2">
+    <div className="flex min-w-0 flex-wrap items-center gap-2">
       {canOpenDetail ? (
         <Link
           href={`/events/${ev.id}`}
-          className="font-medium hover:text-primary hover:underline"
+          className="break-words font-medium hover:text-primary hover:underline"
         >
           {ev.name}
         </Link>
       ) : (
-        <span className="font-medium">{ev.name}</span>
+        <span className="break-words font-medium">{ev.name}</span>
       )}
       {isLabelWide && (
         <Link
@@ -283,7 +283,9 @@ function EventCard({
   return (
     <div className="space-y-2 rounded-lg border bg-card p-3">
       <div className="flex items-start justify-between gap-2">
-        <EventNameCell ev={ev} canOpenDetail={canOpenDetail} isLabelWide={isLabelWide} />
+        <div className="min-w-0 flex-1">
+          <EventNameCell ev={ev} canOpenDetail={canOpenDetail} isLabelWide={isLabelWide} />
+        </div>
         <div className="shrink-0">
           <StatusCell ev={ev} canApproveEvents={canApproveEvents} />
         </div>
@@ -570,8 +572,11 @@ export function OverviewClient({
 
               {bucket.events.length > 0 && (
                 <>
-                  {/* Desktop: full table */}
-                  <div className="hidden overflow-x-auto rounded-lg border md:block">
+                  {/* Laptop/desktop (≥xl): full table. A phone in landscape clears
+                      md (768) but is still too narrow for 8 columns — times wrap to
+                      two lines — so the table is held back to xl; everything below
+                      that gets the stacked cards. */}
+                  <div className="hidden overflow-x-auto rounded-lg border xl:block">
                     <table className="w-full text-sm">
                       <thead>
                         <tr className="border-b bg-muted/40 text-left text-xs text-muted-foreground">
@@ -623,8 +628,9 @@ export function OverviewClient({
                       </tbody>
                     </table>
                   </div>
-                  {/* Mobile: stacked cards — everything visible, no side-scroll */}
-                  <div className="space-y-2 md:hidden">
+                  {/* Phone (portrait + landscape) & tablet: stacked cards —
+                      everything visible, no side-scroll */}
+                  <div className="space-y-2 xl:hidden">
                     {bucket.events.map((ev) => (
                       <EventCard
                         key={ev.id}
