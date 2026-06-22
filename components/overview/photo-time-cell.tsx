@@ -86,7 +86,7 @@ export function PhotoTimeCell({
         onBlur={commit}
         disabled={busy}
         aria-label="เวลาเริ่มถ่ายรูป"
-        className="w-[5.25rem] rounded border bg-background px-1.5 py-0.5 text-sm tabular-nums"
+        className="w-[4.25rem] rounded border bg-background px-1 py-0.5 text-sm tabular-nums"
       />
       <span className="text-muted-foreground">–</span>
       <input
@@ -96,7 +96,7 @@ export function PhotoTimeCell({
         onBlur={commit}
         disabled={busy}
         aria-label="เวลาจบถ่ายรูป"
-        className="w-[5.25rem] rounded border bg-background px-1.5 py-0.5 text-sm tabular-nums"
+        className="w-[4.25rem] rounded border bg-background px-1 py-0.5 text-sm tabular-nums"
       />
       {busy && <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />}
     </span>

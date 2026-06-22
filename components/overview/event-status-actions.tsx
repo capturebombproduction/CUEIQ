@@ -62,10 +62,10 @@ export function EventStatusActions({
         type="button"
         onClick={() => setOpen(true)}
         title="แตะเพื่อเปลี่ยนสถานะ (อนุมัติ / ปฏิเสธ)"
-        className="inline-flex items-center gap-1 rounded-md transition-opacity hover:opacity-80 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
+        className="inline-flex items-center gap-0.5 rounded-md transition-opacity hover:opacity-80 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
       >
-        <StatusBadge status={status} />
-        <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />
+        <StatusBadge status={status} className="px-2 py-0 text-[11px]" />
+        <ChevronDown className="h-3 w-3 text-muted-foreground" />
       </button>
 
       <Dialog open={open} onOpenChange={(o) => !busy && setOpen(o)}>

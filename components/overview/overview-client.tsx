@@ -346,11 +346,11 @@ function TimeBit({ label, children }: { label: string; children: ReactNode }) {
   );
 }
 
-// A single show in the compact "รายงาน" view — the event name + date already live
-// in the group header above, so the row leads with the BAND and the three times
-// staff actually need (Stage / Booth / Photo), with the deadline chip (only when it
-// matters) and the tappable status at the end. Reads as one line on a laptop and
-// wraps cleanly on a phone.
+// A single show in the compact "รายงาน" view. Two tidy rows that read the same on
+// a phone (portrait or landscape) and a laptop: the BAND + tappable status on top,
+// then the three times staff need (Stage / Booth / Photo) below. The event name +
+// date already live in the group header above. Deadline chip shows only when it
+// matters (soon / urgent / overdue).
 function EventScheduleRow({
   ev,
   canOpenDetail,
@@ -364,46 +364,47 @@ function EventScheduleRow({
 }) {
   const dl = ev.exempt_from_deadline ? null : deadlineInfo(ev.deadline);
   return (
-    <div className="flex flex-wrap items-center gap-x-4 gap-y-2 rounded-lg border bg-card px-3 py-2.5">
-      <div className="flex min-w-[7.5rem] items-center gap-2 font-medium">
-        <span
-          className="inline-block h-2.5 w-2.5 shrink-0 rounded-full"
-          style={{ background: ev.group_color || "var(--primary)" }}
-        />
-        {canOpenDetail ? (
-          <Link
-            href={`/events/${ev.id}`}
-            className="hover:text-primary hover:underline"
-          >
-            {ev.group_name}
-          </Link>
-        ) : (
-          <span>{ev.group_name}</span>
-        )}
-        {isLabelWide && <LiveLink ev={ev} />}
-        <CopyrightBadges ev={ev} />
+    <div className="space-y-1.5 rounded-lg border bg-card px-3 py-2.5">
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex min-w-0 items-center gap-2 font-medium">
+          <span
+            className="inline-block h-2.5 w-2.5 shrink-0 rounded-full"
+            style={{ background: ev.group_color || "var(--primary)" }}
+          />
+          {canOpenDetail ? (
+            <Link
+              href={`/events/${ev.id}`}
+              className="truncate hover:text-primary hover:underline"
+            >
+              {ev.group_name}
+            </Link>
+          ) : (
+            <span className="truncate">{ev.group_name}</span>
+          )}
+          {isLabelWide && <LiveLink ev={ev} />}
+          <CopyrightBadges ev={ev} />
+        </div>
+        <div className="flex shrink-0 items-center gap-2">
+          {dl && (
+            <span
+              className={cn(
+                "inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs font-medium",
+                DEADLINE_BADGE[dl.tone]
+              )}
+            >
+              <AlarmClock className="h-3 w-3" /> {dl.label}
+            </span>
+          )}
+          <StatusCell ev={ev} canApproveEvents={canApproveEvents} />
+        </div>
       </div>
 
-      <div className="flex flex-1 flex-wrap items-center gap-x-4 gap-y-1 text-sm tabular-nums">
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 pl-[1.125rem] text-sm tabular-nums">
         <TimeBit label="Stage">{fmtRange(ev.stage)}</TimeBit>
         <TimeBit label="Booth">{fmtRange(ev.booth)}</TimeBit>
         <TimeBit label="Photo">
           <PhotoCell ev={ev} />
         </TimeBit>
-      </div>
-
-      <div className="ml-auto flex items-center gap-2">
-        {dl && (
-          <span
-            className={cn(
-              "inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs font-medium",
-              DEADLINE_BADGE[dl.tone]
-            )}
-          >
-            <AlarmClock className="h-3 w-3" /> {dl.label}
-          </span>
-        )}
-        <StatusCell ev={ev} canApproveEvents={canApproveEvents} />
       </div>
     </div>
   );
