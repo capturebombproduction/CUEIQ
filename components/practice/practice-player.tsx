@@ -73,7 +73,8 @@ export function PracticePlayer({
   songs: Song[]; // the band's full library — the pool the "add song" picker offers
   practiceList: PracticeSong[]; // the room's practice list (any member curates it)
   markersBySong: Record<string, SongMarker[]>;
-  canManage: boolean; // Ar/admin — gates section-marker editing (NOT the list)
+  canManage: boolean; // Ar/admin — gates only the metronome's "save BPM to song"
+  // (the list + section markers are member-writable; BPM lives on the guarded songs table)
   onRunLogged?: () => void;
 }) {
   const songsById = useMemo(() => new Map(songs.map((s) => [s.id, s])), [songs]);
@@ -282,7 +283,7 @@ export function PracticePlayer({
 
   async function addMarker(label: string) {
     const engine = engineRef.current;
-    if (!current || !engine || !canManage) return;
+    if (!current || !engine) return;
     const pos = engine.currentTime;
     const supabase = createClient();
     const { data, error } = await supabase
@@ -308,7 +309,7 @@ export function PracticePlayer({
   }
 
   async function deleteMarker(id: string) {
-    if (!current || !canManage) return;
+    if (!current) return;
     setMarkers((prev) => ({
       ...prev,
       [current.id]: (prev[current.id] ?? []).filter((m) => m.id !== id),
@@ -505,7 +506,7 @@ export function PracticePlayer({
                 <span className="flex items-center gap-1 text-xs font-medium text-muted-foreground">
                   <MapPin className="h-3.5 w-3.5" /> ท่อนเพลง
                 </span>
-                {canManage && curMarkers.length > 0 && (
+                {curMarkers.length > 0 && (
                   <button
                     onClick={() => setEditMarkers((v) => !v)}
                     className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
@@ -517,7 +518,7 @@ export function PracticePlayer({
 
               {curMarkers.length === 0 ? (
                 <p className="text-xs text-muted-foreground">
-                  {canManage ? "ยังไม่มีท่อน — เพิ่มจากปุ่มด้านล่าง" : "ยังไม่มีท่อน"}
+                  ยังไม่มีท่อน — เพิ่มจากปุ่มด้านล่าง
                 </p>
               ) : (
                 <div className="flex flex-wrap gap-1.5">
@@ -535,7 +536,7 @@ export function PracticePlayer({
                           {mmss(m.position_seconds)}
                         </span>
                       </button>
-                      {editMarkers && canManage && (
+                      {editMarkers && (
                         <button
                           onClick={() => deleteMarker(m.id)}
                           className="border-l px-1.5 py-1 text-destructive hover:bg-destructive/10"
@@ -549,8 +550,7 @@ export function PracticePlayer({
                 </div>
               )}
 
-              {canManage && (
-                <div className="mt-2.5 space-y-2">
+              <div className="mt-2.5 space-y-2">
                   <div className="flex flex-wrap gap-1.5">
                     {MARKER_PRESETS.map((p) => (
                       <button
@@ -583,7 +583,6 @@ export function PracticePlayer({
                     </Button>
                   </div>
                 </div>
-              )}
             </div>
           </>
         ) : (
@@ -593,8 +592,8 @@ export function PracticePlayer({
         )}
       </div>
 
-      {/* Practice list — only the songs chosen for this room. The Ar curates it
-          (add from library / take out); everyone can play. For a timed run-through
+      {/* Practice list — only the songs chosen for this room. Any band member
+          curates it (add from library / take out) and plays. For a timed run-through
           of the whole show, use Live Mode instead. */}
       <div className="space-y-2">
         <div className="flex items-center justify-between gap-2">

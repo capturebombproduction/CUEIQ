@@ -112,10 +112,20 @@ export function BreakTimer() {
     }
   }
 
+  // restart the SAME break from the top
   function reset() {
     setRunning(false);
     deadlineRef.current = null;
     setRemaining(total);
+  }
+
+  // go back to the duration picker so a new length can be chosen (the old code had
+  // no way out once a time was set — reset() kept remaining>0, so it felt "locked")
+  function changeTime() {
+    setRunning(false);
+    deadlineRef.current = null;
+    setTotal(0);
+    setRemaining(0);
   }
 
   if (!open) {
@@ -160,8 +170,11 @@ export function BreakTimer() {
             <Button variant="outline" size="icon" onClick={toggle}>
               {running ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}
             </Button>
-            <Button variant="outline" size="icon" onClick={reset} title="รีเซ็ต">
+            <Button variant="outline" size="icon" onClick={reset} title="เริ่มนับใหม่จากต้น">
               <RotateCcw className="h-4 w-4" />
+            </Button>
+            <Button variant="ghost" size="sm" onClick={changeTime} title="ตั้งเวลาพักใหม่">
+              เปลี่ยน
             </Button>
           </div>
         </div>
