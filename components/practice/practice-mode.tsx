@@ -37,6 +37,12 @@ export function PracticeMode({
   currentUserId: string;
 }) {
   const [runSignal, setRunSignal] = useState(0);
+  // The practice list lives HERE (above the Tabs) so it survives switching to the
+  // journal tab and back — the player unmounts on tab switch, so its own state would
+  // reset to the stale server prop and "lose" songs you just added.
+  const [practiceItems, setPracticeItems] = useState(() =>
+    practiceList.slice().sort((a, b) => a.sort_order - b.sort_order)
+  );
 
   return (
     <div className="space-y-4">
@@ -64,7 +70,8 @@ export function PracticeMode({
             eventId={eventId}
             currentUserId={currentUserId}
             songs={songs}
-            practiceList={practiceList}
+            items={practiceItems}
+            setItems={setPracticeItems}
             markersBySong={markersBySong}
             canManage={canManage}
             onRunLogged={() => setRunSignal((n) => n + 1)}

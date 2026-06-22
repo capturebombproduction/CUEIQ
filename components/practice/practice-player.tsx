@@ -1,6 +1,13 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type Dispatch,
+  type SetStateAction,
+} from "react";
 import {
   Play,
   Pause,
@@ -64,7 +71,8 @@ export function PracticePlayer({
   eventId,
   currentUserId,
   songs,
-  practiceList,
+  items,
+  setItems,
   markersBySong,
   canManage,
   onRunLogged,
@@ -72,7 +80,12 @@ export function PracticePlayer({
   eventId: string;
   currentUserId: string;
   songs: Song[]; // the band's full library — the pool the "add song" picker offers
-  practiceList: PracticeSong[]; // the room's practice list (any member curates it)
+  // The practice list lives in PracticeMode (the parent) so it SURVIVES a tab switch
+  // — the player unmounts when you open the journal, and local state would reset to
+  // a stale server prop, dropping songs you just added (and then the unique key
+  // would reject re-adding them). Owning it above the Tabs fixes that.
+  items: PracticeSong[];
+  setItems: Dispatch<SetStateAction<PracticeSong[]>>;
   markersBySong: Record<string, SongMarker[]>;
   canManage: boolean; // Ar/admin — gates only the metronome's "save BPM to song"
   // (the list + section markers are member-writable; BPM lives on the guarded songs table)
@@ -81,10 +94,6 @@ export function PracticePlayer({
   const songsById = useMemo(() => new Map(songs.map((s) => [s.id, s])), [songs]);
   // library songs that actually have audio — the pool the picker offers
   const library = useMemo(() => songs.filter((s) => !!s.audio_path), [songs]);
-  // the practice list, in order. Held in state so add/remove reflect instantly.
-  const [items, setItems] = useState<PracticeSong[]>(() =>
-    practiceList.slice().sort((a, b) => a.sort_order - b.sort_order)
-  );
   const listedIds = useMemo(() => new Set(items.map((i) => i.song_id)), [items]);
   // resolve each list row to a playable song (skip songs that lost their audio)
   const practiceSongs = useMemo(
@@ -383,10 +392,19 @@ export function PracticePlayer({
       .select("*")
       .single();
     if (error || !data) {
-      toast.error("เพิ่มเพลงไม่สำเร็จ", { description: error?.message });
+      // 23505 = already in the list (unique event_id+song_id) — not a real failure
+      if (error?.code === "23505") {
+        toast.info("เพลงนี้อยู่ในลิสต์ซ้อมอยู่แล้ว");
+      } else {
+        toast.error("เพิ่มเพลงไม่สำเร็จ", { description: error?.message });
+      }
       return;
     }
-    setItems((prev) => [...prev, data as PracticeSong]);
+    setItems((prev) =>
+      prev.some((i) => i.id === (data as PracticeSong).id)
+        ? prev
+        : [...prev, data as PracticeSong]
+    );
     toast.success(`เพิ่ม “${song.title}” เข้าลิสต์ซ้อม`);
   }
 
