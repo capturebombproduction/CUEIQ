@@ -6,7 +6,7 @@ import { toast } from "sonner";
 import { AlarmClock, Users, PlayCircle, ImageDown, Loader2 } from "lucide-react";
 import { EventStatusActions } from "@/components/overview/event-status-actions";
 import { PhotoTimeCell } from "@/components/overview/photo-time-cell";
-import { StatusBadge } from "@/components/status-badge";
+import { StatusBadge, StatusDot } from "@/components/status-badge";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { shortClock, deadlineInfo } from "@/lib/time";
@@ -272,16 +272,21 @@ function DeadlineCell({ ev }: { ev: OverviewEvent }) {
 function StatusCell({
   ev,
   canApproveEvents,
+  compact = false,
 }: {
   ev: OverviewEvent;
   canApproveEvents: boolean;
+  compact?: boolean; // tight rows (รายงาน): colour dot only, no text badge
 }) {
   return canApproveEvents ? (
     <EventStatusActions
       eventId={ev.id}
       initialStatus={ev.status}
       eventName={ev.name}
+      compact={compact}
     />
+  ) : compact ? (
+    <StatusDot status={ev.status} />
   ) : (
     <StatusBadge status={ev.status} />
   );
@@ -388,7 +393,8 @@ function EventScheduleRow({
       </div>
 
       {/* Status (+ deadline) — pinned right on the phone's top row, and at the far
-          right of the single line on a wide screen */}
+          right of the single line on a wide screen. Compact colour dot only so the
+          variable-width text badge can't crowd the times (push them onto 2 lines). */}
       <div className="order-2 ml-auto flex shrink-0 items-center gap-2 sm:order-3 sm:ml-0">
         {dl && (
           <span
@@ -400,7 +406,7 @@ function EventScheduleRow({
             <AlarmClock className="h-3 w-3" /> {dl.label}
           </span>
         )}
-        <StatusCell ev={ev} canApproveEvents={canApproveEvents} />
+        <StatusCell ev={ev} canApproveEvents={canApproveEvents} compact />
       </div>
 
       {/* The three times staff need. Wraps to its own line under the band on a phone

@@ -5,7 +5,7 @@ import { Check, X, Loader2, ChevronDown } from "lucide-react";
 import { toast } from "sonner";
 import { createClient } from "@/lib/supabase/client";
 import { notify } from "@/lib/notify-client";
-import { StatusBadge } from "@/components/status-badge";
+import { StatusBadge, StatusDot } from "@/components/status-badge";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -24,10 +24,12 @@ export function EventStatusActions({
   eventId,
   initialStatus,
   eventName,
+  compact = false,
 }: {
   eventId: string;
   initialStatus: GroupStatus;
   eventName?: string;
+  compact?: boolean; // tight rows: show just the colour dot, not the text badge
 }) {
   const [status, setStatus] = useState<GroupStatus>(initialStatus);
   const [busy, setBusy] = useState(false);
@@ -62,9 +64,17 @@ export function EventStatusActions({
         type="button"
         onClick={() => setOpen(true)}
         title="แตะเพื่อเปลี่ยนสถานะ (อนุมัติ / ปฏิเสธ)"
-        className="inline-flex items-center gap-0.5 rounded-md transition-opacity hover:opacity-80 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
+        className={
+          compact
+            ? "inline-flex items-center gap-0.5 rounded-full p-1 transition-colors hover:bg-muted focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            : "inline-flex items-center gap-0.5 rounded-md transition-opacity hover:opacity-80 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
+        }
       >
-        <StatusBadge status={status} className="px-2 py-0 text-[11px]" />
+        {compact ? (
+          <StatusDot status={status} />
+        ) : (
+          <StatusBadge status={status} className="px-2 py-0 text-[11px]" />
+        )}
         <ChevronDown className="h-3 w-3 text-muted-foreground" />
       </button>
 
