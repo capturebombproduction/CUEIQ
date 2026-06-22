@@ -15,6 +15,7 @@ import {
   Pencil,
   X,
   ListMusic,
+  Trash2,
 } from "lucide-react";
 import { toast } from "sonner";
 import { createClient } from "@/lib/supabase/client";
@@ -318,6 +319,28 @@ export function PracticePlayer({
     await supabase.from("song_markers").delete().eq("id", id);
   }
 
+  // wipe every mark on the current song at once (optimistic, reverts on error)
+  async function clearMarkers() {
+    if (!current) return;
+    const list = markers[current.id] ?? [];
+    if (list.length === 0) return;
+    setMarkers((prev) => ({ ...prev, [current.id]: [] }));
+    setEditMarkers(false);
+    const { error } = await createClient()
+      .from("song_markers")
+      .delete()
+      .in(
+        "id",
+        list.map((m) => m.id)
+      );
+    if (error) {
+      toast.error("ล้างท่อนไม่สำเร็จ", { description: error.message });
+      setMarkers((prev) => ({ ...prev, [current.id]: list })); // revert
+    } else {
+      toast.success("ล้างท่อนทั้งหมดแล้ว");
+    }
+  }
+
   function setA() {
     const engine = engineRef.current;
     if (!engine) return;
@@ -507,12 +530,22 @@ export function PracticePlayer({
                   <MapPin className="h-3.5 w-3.5" /> ท่อนเพลง
                 </span>
                 {curMarkers.length > 0 && (
-                  <button
-                    onClick={() => setEditMarkers((v) => !v)}
-                    className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
-                  >
-                    <Pencil className="h-3.5 w-3.5" /> {editMarkers ? "เสร็จ" : "แก้ไข"}
-                  </button>
+                  <div className="flex items-center gap-3">
+                    {editMarkers && (
+                      <button
+                        onClick={clearMarkers}
+                        className="flex items-center gap-1 text-xs text-destructive hover:underline"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" /> ล้างทั้งหมด
+                      </button>
+                    )}
+                    <button
+                      onClick={() => setEditMarkers((v) => !v)}
+                      className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
+                    >
+                      <Pencil className="h-3.5 w-3.5" /> {editMarkers ? "เสร็จ" : "แก้ไข"}
+                    </button>
+                  </div>
                 )}
               </div>
 
@@ -658,11 +691,14 @@ export function PracticePlayer({
                       </span>
                       <span className="min-w-0 flex-1">
                         <span className="block truncate text-sm font-medium">{s.title}</span>
-                        <span className="flex items-center gap-2 text-xs text-muted-foreground">
-                          {s.duration_seconds > 0 && <span>{mmss(s.duration_seconds)}</span>}
+                        <span className="flex flex-wrap items-center gap-x-2 text-xs text-muted-foreground">
+                          {s.duration_seconds > 0 && (
+                            <span>Duration {mmss(s.duration_seconds)}</span>
+                          )}
                           {mCount > 0 && (
-                            <span className="flex items-center gap-0.5">
-                              <MapPin className="h-3 w-3" /> {mCount}
+                            <span>
+                              {s.duration_seconds > 0 ? "· " : ""}
+                              {mCount} Mark{mCount > 1 ? "s" : ""}
                             </span>
                           )}
                         </span>
