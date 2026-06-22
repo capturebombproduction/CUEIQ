@@ -154,6 +154,165 @@ interface Bucket {
   events: OverviewEvent[];
 }
 
+// --- Shared cell renderers — used by BOTH the desktop table and the mobile
+// cards so the interactive bits (detail link, Live, copyright badges, photo-time
+// edit, status actions) live in one place. ---
+
+function EventNameCell({
+  ev,
+  canOpenDetail,
+  isLabelWide,
+}: {
+  ev: OverviewEvent;
+  canOpenDetail: boolean;
+  isLabelWide: boolean;
+}) {
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      {canOpenDetail ? (
+        <Link
+          href={`/events/${ev.id}`}
+          className="font-medium hover:text-primary hover:underline"
+        >
+          {ev.name}
+        </Link>
+      ) : (
+        <span className="font-medium">{ev.name}</span>
+      )}
+      {isLabelWide && (
+        <Link
+          href={`/events/${ev.id}/live`}
+          title="เปิด Live (ดูอย่างเดียว)"
+          className="text-muted-foreground hover:text-primary"
+        >
+          <PlayCircle className="h-4 w-4" />
+        </Link>
+      )}
+      {ev.copyrightRejected > 0 ? (
+        <Link
+          href="/library"
+          title={`${ev.copyrightRejected} เพลงถูกปฏิเสธลิขสิทธิ์ — ไปจัดการที่คลังเพลง`}
+          className="inline-flex items-center gap-0.5 rounded bg-destructive/15 px-1 text-xs font-semibold text-destructive"
+        >
+          ⛔ {ev.copyrightRejected}
+        </Link>
+      ) : ev.copyrightPending > 0 ? (
+        <Link
+          href="/library"
+          title={`${ev.copyrightPending} เพลงรอตรวจลิขสิทธิ์ — ไปจัดการที่คลังเพลง`}
+          className="inline-flex items-center gap-0.5 rounded bg-amber-400/20 px-1 text-xs font-semibold text-amber-700 dark:text-amber-400"
+        >
+          🕒 {ev.copyrightPending}
+        </Link>
+      ) : null}
+    </div>
+  );
+}
+
+function BandTag({ ev }: { ev: OverviewEvent }) {
+  return (
+    <span className="inline-flex items-center gap-1.5">
+      <span
+        className="inline-block h-2.5 w-2.5 rounded-full"
+        style={{ background: ev.group_color || "var(--primary)" }}
+      />
+      {ev.group_name}
+    </span>
+  );
+}
+
+function PhotoCell({ ev }: { ev: OverviewEvent }) {
+  return ev.canEditPhoto ? (
+    <PhotoTimeCell
+      eventId={ev.id}
+      tenantId={ev.tenant_id}
+      initialItemId={ev.photoItemId}
+      initialTime={ev.photo}
+      initialEnd={ev.photoEnd}
+      nextSortOrder={ev.photoSortOrder}
+    />
+  ) : (
+    <>{fmtRange({ start: ev.photo, end: ev.photoEnd })}</>
+  );
+}
+
+function DeadlineCell({ ev }: { ev: OverviewEvent }) {
+  const dl = ev.exempt_from_deadline ? null : deadlineInfo(ev.deadline);
+  return dl ? (
+    <span
+      className={cn(
+        "inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs font-medium",
+        DEADLINE_BADGE[dl.tone]
+      )}
+    >
+      <AlarmClock className="h-3 w-3" /> {dl.label}
+    </span>
+  ) : (
+    <span className="text-xs text-muted-foreground">—</span>
+  );
+}
+
+function StatusCell({
+  ev,
+  canApproveEvents,
+}: {
+  ev: OverviewEvent;
+  canApproveEvents: boolean;
+}) {
+  return canApproveEvents ? (
+    <EventStatusActions eventId={ev.id} initialStatus={ev.status} />
+  ) : (
+    <StatusBadge status={ev.status} />
+  );
+}
+
+// One show as a vertical card (mobile) — everything visible, no horizontal scroll.
+function EventCard({
+  ev,
+  showBand,
+  canOpenDetail,
+  isLabelWide,
+  canApproveEvents,
+}: {
+  ev: OverviewEvent;
+  showBand: boolean;
+  canOpenDetail: boolean;
+  isLabelWide: boolean;
+  canApproveEvents: boolean;
+}) {
+  return (
+    <div className="space-y-2 rounded-lg border bg-card p-3">
+      <div className="flex items-start justify-between gap-2">
+        <EventNameCell ev={ev} canOpenDetail={canOpenDetail} isLabelWide={isLabelWide} />
+        <div className="shrink-0">
+          <StatusCell ev={ev} canApproveEvents={canApproveEvents} />
+        </div>
+      </div>
+      {showBand && (
+        <div className="text-sm">
+          <BandTag ev={ev} />
+        </div>
+      )}
+      <dl className="grid grid-cols-[4.5rem_1fr] gap-x-3 gap-y-1 text-sm">
+        <dt className="text-muted-foreground">วันที่</dt>
+        <dd className="tabular-nums">{fmtDate(ev.event_date)}</dd>
+        <dt className="text-muted-foreground">Stage</dt>
+        <dd className="tabular-nums">{fmtRange(ev.stage)}</dd>
+        <dt className="text-muted-foreground">Booth</dt>
+        <dd className="tabular-nums">{fmtRange(ev.booth)}</dd>
+        <dt className="text-muted-foreground">Photo</dt>
+        <dd className="tabular-nums">
+          <PhotoCell ev={ev} />
+        </dd>
+        <dt className="text-muted-foreground">เดดไลน์</dt>
+        <dd>
+          <DeadlineCell ev={ev} />
+        </dd>
+      </dl>
+    </div>
+  );
+}
+
 export function OverviewClient({
   events,
   bands,
@@ -410,74 +569,35 @@ export function OverviewClient({
               )}
 
               {bucket.events.length > 0 && (
-                <div className="overflow-x-auto rounded-lg border">
-                  <table className="w-full text-sm">
-                    <thead>
-                      <tr className="border-b bg-muted/40 text-left text-xs text-muted-foreground">
-                        <th className="px-3 py-2 font-medium">งาน</th>
-                        {showBandColumn && <th className="px-3 py-2 font-medium">วง</th>}
-                        <th className="px-3 py-2 font-medium">วันที่</th>
-                        <th className="px-3 py-2 font-medium tabular-nums">Stage</th>
-                        <th className="px-3 py-2 font-medium tabular-nums">Booth</th>
-                        <th className="px-3 py-2 font-medium tabular-nums">Photo</th>
-                        <th className="px-3 py-2 font-medium">เดดไลน์</th>
-                        <th className="px-3 py-2 font-medium">สถานะ</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {bucket.events.map((ev) => {
-                        const dl = ev.exempt_from_deadline ? null : deadlineInfo(ev.deadline);
-                        return (
+                <>
+                  {/* Desktop: full table */}
+                  <div className="hidden overflow-x-auto rounded-lg border md:block">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="border-b bg-muted/40 text-left text-xs text-muted-foreground">
+                          <th className="px-3 py-2 font-medium">งาน</th>
+                          {showBandColumn && <th className="px-3 py-2 font-medium">วง</th>}
+                          <th className="px-3 py-2 font-medium">วันที่</th>
+                          <th className="px-3 py-2 font-medium tabular-nums">Stage</th>
+                          <th className="px-3 py-2 font-medium tabular-nums">Booth</th>
+                          <th className="px-3 py-2 font-medium tabular-nums">Photo</th>
+                          <th className="px-3 py-2 font-medium">เดดไลน์</th>
+                          <th className="px-3 py-2 font-medium">สถานะ</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {bucket.events.map((ev) => (
                           <tr key={ev.id} className="border-b last:border-0 align-middle">
                             <td className="px-3 py-2">
-                              <div className="flex items-center gap-2">
-                                {canOpenDetail ? (
-                                  <Link
-                                    href={`/events/${ev.id}`}
-                                    className="font-medium hover:text-primary hover:underline"
-                                  >
-                                    {ev.name}
-                                  </Link>
-                                ) : (
-                                  <span className="font-medium">{ev.name}</span>
-                                )}
-                                {isLabelWide && (
-                                  <Link
-                                    href={`/events/${ev.id}/live`}
-                                    title="เปิด Live (ดูอย่างเดียว)"
-                                    className="text-muted-foreground hover:text-primary"
-                                  >
-                                    <PlayCircle className="h-4 w-4" />
-                                  </Link>
-                                )}
-                                {ev.copyrightRejected > 0 ? (
-                                  <Link
-                                    href="/library"
-                                    title={`${ev.copyrightRejected} เพลงถูกปฏิเสธลิขสิทธิ์ — ไปจัดการที่คลังเพลง`}
-                                    className="inline-flex items-center gap-0.5 rounded bg-destructive/15 px-1 text-xs font-semibold text-destructive"
-                                  >
-                                    ⛔ {ev.copyrightRejected}
-                                  </Link>
-                                ) : ev.copyrightPending > 0 ? (
-                                  <Link
-                                    href="/library"
-                                    title={`${ev.copyrightPending} เพลงรอตรวจลิขสิทธิ์ — ไปจัดการที่คลังเพลง`}
-                                    className="inline-flex items-center gap-0.5 rounded bg-amber-400/20 px-1 text-xs font-semibold text-amber-700 dark:text-amber-400"
-                                  >
-                                    🕒 {ev.copyrightPending}
-                                  </Link>
-                                ) : null}
-                              </div>
+                              <EventNameCell
+                                ev={ev}
+                                canOpenDetail={canOpenDetail}
+                                isLabelWide={isLabelWide}
+                              />
                             </td>
                             {showBandColumn && (
                               <td className="px-3 py-2">
-                                <span className="inline-flex items-center gap-1.5">
-                                  <span
-                                    className="inline-block h-2.5 w-2.5 rounded-full"
-                                    style={{ background: ev.group_color || "var(--primary)" }}
-                                  />
-                                  {ev.group_name}
-                                </span>
+                                <BandTag ev={ev} />
                               </td>
                             )}
                             <td className="px-3 py-2 text-muted-foreground">
@@ -490,49 +610,33 @@ export function OverviewClient({
                               {fmtRange(ev.booth)}
                             </td>
                             <td className="px-3 py-2 tabular-nums text-muted-foreground">
-                              {ev.canEditPhoto ? (
-                                <PhotoTimeCell
-                                  eventId={ev.id}
-                                  tenantId={ev.tenant_id}
-                                  initialItemId={ev.photoItemId}
-                                  initialTime={ev.photo}
-                                  initialEnd={ev.photoEnd}
-                                  nextSortOrder={ev.photoSortOrder}
-                                />
-                              ) : (
-                                fmtRange({ start: ev.photo, end: ev.photoEnd })
-                              )}
+                              <PhotoCell ev={ev} />
                             </td>
                             <td className="px-3 py-2">
-                              {dl ? (
-                                <span
-                                  className={cn(
-                                    "inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs font-medium",
-                                    DEADLINE_BADGE[dl.tone]
-                                  )}
-                                >
-                                  <AlarmClock className="h-3 w-3" /> {dl.label}
-                                </span>
-                              ) : (
-                                <span className="text-xs text-muted-foreground">—</span>
-                              )}
+                              <DeadlineCell ev={ev} />
                             </td>
                             <td className="px-3 py-2">
-                              {canApproveEvents ? (
-                                <EventStatusActions
-                                  eventId={ev.id}
-                                  initialStatus={ev.status}
-                                />
-                              ) : (
-                                <StatusBadge status={ev.status} />
-                              )}
+                              <StatusCell ev={ev} canApproveEvents={canApproveEvents} />
                             </td>
                           </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                  {/* Mobile: stacked cards — everything visible, no side-scroll */}
+                  <div className="space-y-2 md:hidden">
+                    {bucket.events.map((ev) => (
+                      <EventCard
+                        key={ev.id}
+                        ev={ev}
+                        showBand={showBandColumn}
+                        canOpenDetail={canOpenDetail}
+                        isLabelWide={isLabelWide}
+                        canApproveEvents={canApproveEvents}
+                      />
+                    ))}
+                  </div>
+                </>
               )}
 
               {band && band.members.length > 0 && (
