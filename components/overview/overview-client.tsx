@@ -275,6 +275,7 @@ export function OverviewClient({
       const how = await captureElementToImage(el, {
         filename,
         shareTitle: `${labelName} · ตารางงาน`,
+        width: 820, // wider so the time/date/name columns stay on one line
       });
       toast.success(how === "shared" ? "แชร์รูปตารางแล้ว" : "บันทึกรูปตารางแล้ว");
     } catch (e) {
@@ -566,52 +567,6 @@ export function OverviewClient({
               งาน
             </p>
           </div>
-          {/* Contact block — label crew and band reps in two separate sections so
-              a busy day with many bands stays readable. */}
-          {(exportContacts.crew.length > 0 || exportContacts.reps.length > 0) && (
-            <div className="space-y-3">
-              {[
-                { key: "crew", title: "ทีมงานค่าย", col2: "หน้าที่", rows: exportContacts.crew },
-                { key: "reps", title: "ผู้ติดต่อวง", col2: "วง", rows: exportContacts.reps },
-              ]
-                .filter((s) => s.rows.length > 0)
-                .map((section) => (
-                  <div key={section.key} className="space-y-1.5">
-                    <h3 className="text-sm font-bold text-primary">{section.title}</h3>
-                    <table className="w-full border-collapse text-sm">
-                      <thead>
-                        <tr className="border-b text-left text-xs text-muted-foreground">
-                          <th className="py-1.5 pr-3 font-medium">ชื่อ</th>
-                          <th className="py-1.5 pr-3 font-medium">{section.col2}</th>
-                          <th className="py-1.5 font-medium">เบอร์</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {section.rows.map((c) => (
-                          <tr key={c.key} className="border-b last:border-0">
-                            <td className="py-1.5 pr-3 font-medium">{c.name || "—"}</td>
-                            <td className="py-1.5 pr-3">
-                              {c.color !== null ? (
-                                <span className="inline-flex items-center gap-1.5">
-                                  <span
-                                    className="inline-block h-2.5 w-2.5 rounded-full"
-                                    style={{ background: c.color || "var(--primary)" }}
-                                  />
-                                  {c.role}
-                                </span>
-                              ) : (
-                                c.role || "—"
-                              )}
-                            </td>
-                            <td className="py-1.5 tabular-nums">{c.phone || "—"}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                ))}
-            </div>
-          )}
           {/* Mirror the on-screen grouping (buckets follow the current view mode)
               so "capture" produces whatever arrangement the staff are looking at —
               by band, by day, by week/month/year, or the flat report. */}
@@ -633,7 +588,7 @@ export function OverviewClient({
                     </span>
                   </h3>
                 )}
-                <table className="w-full border-collapse text-sm">
+                <table className="w-full border-collapse text-sm [&_th]:whitespace-nowrap [&_td]:whitespace-nowrap">
                   <thead>
                     <tr className="border-b text-left text-xs text-muted-foreground">
                       <th className="py-1.5 pr-3 font-medium">งาน</th>
@@ -681,6 +636,52 @@ export function OverviewClient({
                 </table>
               </div>
             ))}
+          {/* Contact block at the BOTTOM — staff read the schedule first, then
+              who to call. Crew + band reps in two sections. */}
+          {(exportContacts.crew.length > 0 || exportContacts.reps.length > 0) && (
+            <div className="space-y-3 border-t pt-3">
+              {[
+                { key: "crew", title: "ทีมงานค่าย", col2: "หน้าที่", rows: exportContacts.crew },
+                { key: "reps", title: "ผู้ติดต่อวง", col2: "วง", rows: exportContacts.reps },
+              ]
+                .filter((s) => s.rows.length > 0)
+                .map((section) => (
+                  <div key={section.key} className="space-y-1.5">
+                    <h3 className="text-sm font-bold text-primary">{section.title}</h3>
+                    <table className="w-full border-collapse text-sm [&_th]:whitespace-nowrap [&_td]:whitespace-nowrap">
+                      <thead>
+                        <tr className="border-b text-left text-xs text-muted-foreground">
+                          <th className="py-1.5 pr-3 font-medium">ชื่อ</th>
+                          <th className="py-1.5 pr-3 font-medium">{section.col2}</th>
+                          <th className="py-1.5 font-medium">เบอร์</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {section.rows.map((c) => (
+                          <tr key={c.key} className="border-b last:border-0">
+                            <td className="py-1.5 pr-3 font-medium">{c.name || "—"}</td>
+                            <td className="py-1.5 pr-3">
+                              {c.color !== null ? (
+                                <span className="inline-flex items-center gap-1.5">
+                                  <span
+                                    className="inline-block h-2.5 w-2.5 rounded-full"
+                                    style={{ background: c.color || "var(--primary)" }}
+                                  />
+                                  {c.role}
+                                </span>
+                              ) : (
+                                c.role || "—"
+                              )}
+                            </td>
+                            <td className="py-1.5 tabular-nums">{c.phone || "—"}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                ))}
+            </div>
+          )}
           <p className="text-[10px] text-muted-foreground">
             สร้างจาก CueIQ · {fmtDate(new Date().toISOString().slice(0, 10))}
           </p>
