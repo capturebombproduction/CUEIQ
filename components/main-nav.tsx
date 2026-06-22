@@ -5,14 +5,14 @@ import { usePathname } from "next/navigation";
 import { cn } from "@/lib/utils";
 import { isAdmin, canViewOverview, canViewLibrary, type Perms } from "@/lib/permissions";
 
-type NavLink = { href: string; label: string; short: string };
+type NavLink = { href: string; label: string };
 
 const LINKS: NavLink[] = [
-  { href: "/dashboard", label: "Events", short: "Events" },
-  { href: "/overview", label: "Overview", short: "Overview" },
-  { href: "/library", label: "Music Library", short: "Library" },
-  { href: "/practice", label: "Training", short: "Training" },
-  { href: "/groups", label: "Artists", short: "Artists" },
+  { href: "/dashboard", label: "Events" },
+  { href: "/overview", label: "Overview" },
+  { href: "/library", label: "Library" },
+  { href: "/practice", label: "Training" },
+  { href: "/groups", label: "Artists" },
 ];
 
 export function MainNav({ perms }: { perms?: Perms }) {
@@ -31,7 +31,7 @@ export function MainNav({ perms }: { perms?: Perms }) {
     return true;
   });
   if (perms && isAdmin(perms)) {
-    links.push({ href: "/admin", label: "Admin", short: "Admin" });
+    links.push({ href: "/admin", label: "Admin" });
   }
   return (
     <nav className="flex items-center gap-1">
@@ -49,8 +49,7 @@ export function MainNav({ perms }: { perms?: Perms }) {
                 : "text-muted-foreground hover:bg-muted/60 hover:text-foreground"
             )}
           >
-            <span className="sm:hidden">{link.short}</span>
-            <span className="hidden sm:inline">{link.label}</span>
+            {link.label}
           </Link>
         );
       })}
