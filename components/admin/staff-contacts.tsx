@@ -1,12 +1,13 @@
 "use client";
 
-import { useState } from "react";
+import { useState, type KeyboardEvent } from "react";
 import { toast } from "sonner";
 import { Plus, Trash2, Users } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { useConfirm } from "@/components/ui/confirm-dialog";
 import type { StaffContact } from "@/lib/types";
 
 /**
@@ -22,6 +23,7 @@ export function StaffContactsManager({
   initial: StaffContact[];
 }) {
   const supabase = createClient();
+  const confirm = useConfirm();
   const [rows, setRows] = useState<StaffContact[]>(initial);
   const [busy, setBusy] = useState(false);
 
@@ -34,6 +36,11 @@ export function StaffContactsManager({
       .update(partial)
       .eq("id", id);
     if (error) toast.error("บันทึกไม่สำเร็จ", { description: error.message });
+  }
+  // Enter saves the field (it blurs, firing the onBlur persist) so a typed value
+  // never hangs unsaved if the admin leaves the page without clicking away.
+  function saveOnEnter(e: KeyboardEvent<HTMLInputElement>) {
+    if (e.key === "Enter") e.currentTarget.blur();
   }
 
   async function addRow() {
@@ -53,6 +60,12 @@ export function StaffContactsManager({
   }
 
   async function removeRow(id: string) {
+    const row = rows.find((r) => r.id === id);
+    const ok = await confirm({
+      title: "ลบทีมงานคนนี้?",
+      description: row?.name ? `“${row.name}” จะถูกลบออกจากรายชื่อ` : "แถวนี้จะถูกลบออก",
+    });
+    if (!ok) return;
     const snap = rows;
     setRows((prev) => prev.filter((r) => r.id !== id));
     const { error } = await supabase.from("staff_contacts").delete().eq("id", id);
@@ -87,6 +100,7 @@ export function StaffContactsManager({
               className="min-w-[140px] flex-1"
               onChange={(e) => setLocal(r.id, { name: e.target.value })}
               onBlur={(e) => persist(r.id, { name: e.target.value })}
+              onKeyDown={saveOnEnter}
             />
             <Input
               value={r.role}
@@ -94,6 +108,7 @@ export function StaffContactsManager({
               className="min-w-[140px] flex-1"
               onChange={(e) => setLocal(r.id, { role: e.target.value })}
               onBlur={(e) => persist(r.id, { role: e.target.value })}
+              onKeyDown={saveOnEnter}
             />
             <Input
               value={r.phone}
@@ -101,6 +116,7 @@ export function StaffContactsManager({
               className="min-w-[120px] flex-1 tabular-nums"
               onChange={(e) => setLocal(r.id, { phone: e.target.value })}
               onBlur={(e) => persist(r.id, { phone: e.target.value })}
+              onKeyDown={saveOnEnter}
             />
             <Button
               variant="ghost"

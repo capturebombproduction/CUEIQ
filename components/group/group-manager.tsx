@@ -11,6 +11,7 @@ import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { canEditGroup, isAdmin, type Perms } from "@/lib/permissions";
+import { useConfirm } from "@/components/ui/confirm-dialog";
 import type { Group, Member } from "@/lib/types";
 
 export function GroupManager({
@@ -25,6 +26,7 @@ export function GroupManager({
   perms: Perms;
 }) {
   const supabase = createClient();
+  const confirm = useConfirm();
   const [groups, setGroups] = useState<Group[]>(initialGroups);
   const [members, setMembers] = useState<Member[]>(initialMembers);
   const [newGroup, setNewGroup] = useState("");
@@ -72,12 +74,13 @@ export function GroupManager({
   }
 
   async function deleteGroup(g: Group) {
-    if (
-      !window.confirm(
-        `ลบวง "${g.name}"?\n\n⚠️ จะลบสมาชิก เพลงในคลัง และงานทั้งหมดของวงนี้ด้วย — กู้คืนไม่ได้`
-      )
-    )
-      return;
+    const ok = await confirm({
+      title: `ลบวง “${g.name}”?`,
+      description:
+        "⚠️ จะลบสมาชิก เพลงในคลัง และงานทั้งหมดของวงนี้ด้วย — กู้คืนไม่ได้",
+      confirmText: "ลบวง",
+    });
+    if (!ok) return;
     // Gather the R2 audio keys this delete will orphan BEFORE the DB cascade wipes
     // the rows: every library song's file + any legacy per-item file on the group's
     // events. (The cascade only removes DB rows, not the R2 objects.)

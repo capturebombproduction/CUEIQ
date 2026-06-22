@@ -32,6 +32,7 @@ import {
 } from "@/lib/types";
 import { displayLoginId } from "@/lib/username";
 import { isMasterAdminEmail } from "@/lib/master-admin";
+import { useConfirm } from "@/components/ui/confirm-dialog";
 
 export interface ManagedUser {
   user_id: string;
@@ -105,6 +106,7 @@ export function UserManager({
   groups: Group[];
   initialUsers: ManagedUser[];
 }) {
+  const confirm = useConfirm();
   const [users, setUsers] = useState<ManagedUser[]>(initialUsers);
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<ManagedUser | null>(null);
@@ -225,7 +227,12 @@ export function UserManager({
   }
 
   async function remove(u: ManagedUser) {
-    if (!window.confirm(`ลบบัญชี ${displayLoginId(u.email) || u.user_id}? กู้คืนไม่ได้`)) return;
+    const ok = await confirm({
+      title: `ลบบัญชี ${displayLoginId(u.email) || u.user_id}?`,
+      description: "กู้คืนไม่ได้",
+      confirmText: "ลบบัญชี",
+    });
+    if (!ok) return;
     setBusy(true);
     try {
       const res = await fetch(`/api/admin/users?user_id=${encodeURIComponent(u.user_id)}`, {

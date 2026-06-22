@@ -2,6 +2,7 @@ import { redirect } from "next/navigation";
 import { getWorkspace } from "@/lib/queries";
 import { SiteHeader } from "@/components/site-header";
 import { ErrorMonitor, AppErrorBoundary } from "@/components/error-monitor";
+import { ConfirmProvider } from "@/components/ui/confirm-dialog";
 
 export const dynamic = "force-dynamic";
 
@@ -28,7 +29,7 @@ export default async function AppLayout({
       />
       <main className="container py-6">
         <AppErrorBoundary userId={ws.user.id} tenantId={tenantId}>
-          {children}
+          <ConfirmProvider>{children}</ConfirmProvider>
         </AppErrorBoundary>
       </main>
     </div>

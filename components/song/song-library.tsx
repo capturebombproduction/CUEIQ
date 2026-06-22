@@ -60,6 +60,7 @@ import {
   type Song,
 } from "@/lib/types";
 import { canApprove, canEditGroup, type Perms } from "@/lib/permissions";
+import { useConfirm } from "@/components/ui/confirm-dialog";
 
 const NONE = "__none__";
 const COPYRIGHT_KEYS = Object.keys(COPYRIGHT_META) as CopyrightStatus[];
@@ -102,6 +103,7 @@ export function SongLibrary({
   perms: Perms;
 }) {
   const supabase = createClient();
+  const confirm = useConfirm();
   // A song is editable by admin OR the band's Ar; copyright triage is for
   // approvers (admin / label_staff) only. Gate per-row by the song's band.
   const editableGroupIds = useMemo(
@@ -292,11 +294,15 @@ export function SongLibrary({
       .select("id", { count: "exact", head: true })
       .eq("song_id", song.id);
     const used = count ?? 0;
-    const warn =
-      used > 0
-        ? `\n\n⚠️ เพลงนี้ถูกใช้อยู่ใน ${used} รายการของงาน — ลบแล้วงานพวกนั้นจะไม่มีไฟล์เพลงนี้`
-        : "";
-    if (!window.confirm(`ลบเพลง "${song.title}" ออกจากคลัง?${warn}`)) return;
+    const ok = await confirm({
+      title: `ลบเพลง “${song.title}” ออกจากคลัง?`,
+      description:
+        used > 0
+          ? `⚠️ เพลงนี้ถูกใช้อยู่ใน ${used} รายการของงาน — ลบแล้วงานพวกนั้นจะไม่มีไฟล์เพลงนี้`
+          : undefined,
+      confirmText: "ลบเพลง",
+    });
+    if (!ok) return;
     const snapshot = songs;
     setSongs((prev) => prev.filter((s) => s.id !== song.id));
     const { error } = await supabase.from("songs").delete().eq("id", song.id);
@@ -391,7 +397,12 @@ export function SongLibrary({
 
   async function removeSongAudio(song: Song) {
     if (!song.audio_path) return;
-    if (!window.confirm(`ลบไฟล์เสียงของ "${song.title}"? (ข้อมูลเพลงยังอยู่)`)) return;
+    const ok = await confirm({
+      title: `ลบไฟล์เสียงของ “${song.title}”?`,
+      description: "ข้อมูลเพลงยังอยู่ — ลบเฉพาะไฟล์เสียง",
+      confirmText: "ลบไฟล์เสียง",
+    });
+    if (!ok) return;
     setAudioBusy((b) => ({ ...b, [song.id]: "del" }));
     const path = song.audio_path;
     try {

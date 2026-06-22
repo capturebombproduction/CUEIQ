@@ -15,6 +15,7 @@ import { createClient } from "@/lib/supabase/client";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { useConfirm } from "@/components/ui/confirm-dialog";
 
 interface FeedbackRow {
   id: string;
@@ -55,6 +56,7 @@ function when(iso: string) {
  * RLS (admins see all rows of their tenant).
  */
 export function DevInbox() {
+  const confirm = useConfirm();
   const [fb, setFb] = useState<FeedbackRow[]>([]);
   const [errs, setErrs] = useState<ErrorRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -80,10 +82,12 @@ export function DevInbox() {
     await createClient().from("feedback").update({ status: next }).eq("id", id);
   }
   async function delFb(id: string) {
+    if (!(await confirm({ title: "ลบฟีดแบคนี้?", description: "ลบถาวร กู้คืนไม่ได้" }))) return;
     setFb((p) => p.filter((r) => r.id !== id));
     await createClient().from("feedback").delete().eq("id", id);
   }
   async function delErr(id: string) {
+    if (!(await confirm({ title: "ลบ error นี้?", description: "ลบถาวร กู้คืนไม่ได้" }))) return;
     setErrs((p) => p.filter((r) => r.id !== id));
     await createClient().from("client_errors").delete().eq("id", id);
   }

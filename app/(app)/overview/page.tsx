@@ -1,3 +1,4 @@
+import { redirect } from "next/navigation";
 import { LayoutGrid } from "lucide-react";
 import { getWorkspace } from "@/lib/queries";
 import { createClient } from "@/lib/supabase/server";
@@ -29,6 +30,10 @@ type SchedRow = {
 export default async function OverviewPage() {
   const ws = await getWorkspace();
   if (!ws.membership || !ws.tenant) return <JoinDemo />;
+  // Overview is a label-wide staff surface (the nav hides it from band-only
+  // roles); send a band-scoped Ar/member who reaches the URL back to their
+  // dashboard, the same way /admin redirects non-admins.
+  if (!isLabelWideUser(ws.perms)) redirect("/dashboard");
   const tid = ws.membership.tenant_id;
   // Approve/reject is for approvers (admin / label_staff); others see status only.
   const canApproveEvents = canApprove(ws.perms);
