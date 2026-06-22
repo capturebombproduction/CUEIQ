@@ -189,7 +189,7 @@ export default async function OverviewPage() {
           labelName={ws.tenant.name}
           canApproveEvents={canApproveEvents}
           isLabelWide={isLabelWideUser(ws.perms)}
-          canOpenDetail={canOpenEventDetail(ws.perms)}
+          canOpenDetail={canOpenEventDetail()}
         />
       )}
     </div>

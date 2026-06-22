@@ -2,7 +2,7 @@ import { notFound } from "next/navigation";
 import Link from "next/link";
 import { ArrowLeft } from "lucide-react";
 import { getEventBundle, getWorkspace } from "@/lib/queries";
-import { canLiveEdit } from "@/lib/permissions";
+import { canLiveEdit, canViewGroup } from "@/lib/permissions";
 import { LiveMode } from "@/components/event/live-mode";
 import { Button } from "@/components/ui/button";
 
@@ -17,8 +17,10 @@ export default async function LivePage({
   if (!bundle) notFound();
 
   // Anyone who can VIEW the event may open Live Mode to rehearse (playback only);
-  // in-show editing + saving the "จบโชว์" record is Admin-only.
+  // in-show editing + saving the "จบโชว์" record is Admin-only. Per-band scope: a
+  // band-tier user can't open another band's Live by URL (RLS is tenant-wide).
   const ws = await getWorkspace();
+  if (!canViewGroup(ws.perms, bundle.event.group_id)) notFound();
   const canEdit = canLiveEdit(ws.perms);
 
   // song_id → audio, so Live Mode can play a library-linked item's song file.

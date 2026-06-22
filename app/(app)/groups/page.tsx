@@ -3,7 +3,7 @@ import { JoinDemo } from "@/components/join-demo";
 import { GroupManager } from "@/components/group/group-manager";
 import { RefreshButton } from "@/components/refresh-button";
 import { ConfirmSavedBar } from "@/components/confirm-saved-bar";
-import { canEditAnyGroup } from "@/lib/permissions";
+import { canEditAnyGroup, viewableGroups } from "@/lib/permissions";
 
 export const dynamic = "force-dynamic";
 
@@ -13,7 +13,13 @@ export default async function GroupsPage() {
     return <JoinDemo />;
   }
 
-  const members = await getMembers(ws.membership.tenant_id);
+  // Per-band scope: a band-tier user manages only their own band's roster;
+  // admin/ceo see every band.
+  const bands = viewableGroups(ws.perms, ws.groups);
+  const members = await getMembers(
+    ws.membership.tenant_id,
+    bands.map((g) => g.id)
+  );
 
   return (
     <div className="space-y-6">
@@ -21,14 +27,14 @@ export default async function GroupsPage() {
         <div>
           <h1 className="text-2xl font-bold tracking-tight">จัดการวง</h1>
           <p className="text-sm text-muted-foreground">
-            {ws.tenant.name} · {ws.groups.length} วง
+            {ws.tenant.name} · {bands.length} วง
           </p>
         </div>
         <RefreshButton />
       </div>
       <GroupManager
         tenantId={ws.membership.tenant_id}
-        initialGroups={ws.groups}
+        initialGroups={bands}
         initialMembers={members}
         perms={ws.perms}
       />

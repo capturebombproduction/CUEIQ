@@ -3,7 +3,7 @@ import Link from "next/link";
 import { ArrowLeft } from "lucide-react";
 import { createClient } from "@/lib/supabase/server";
 import { getEventBundle, getWorkspace } from "@/lib/queries";
-import { canEditGroup } from "@/lib/permissions";
+import { canEditGroup, canViewGroup } from "@/lib/permissions";
 import { PracticeMode } from "@/components/practice/practice-mode";
 import { Button } from "@/components/ui/button";
 import type { SongMarker } from "@/lib/types";
@@ -22,6 +22,9 @@ export default async function PracticePlayPage({
 
   const ws = await getWorkspace();
   if (!ws.user) redirect("/dashboard");
+  // Per-band scope: a band-tier user can't open another band's practice room by
+  // URL (RLS is tenant-wide, so guard here).
+  if (!canViewGroup(ws.perms, bundle.event.group_id)) notFound();
   // Ar (or admin) of the band manages markers/notes/attendance; members jump + play
   // + add shared notes. RLS enforces the real boundary.
   const canManage = canEditGroup(ws.perms, bundle.event.group_id);

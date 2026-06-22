@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { cn } from "@/lib/utils";
-import { isAdmin, canViewOverview, type Perms } from "@/lib/permissions";
+import { isAdmin, canViewOverview, canViewLibrary, type Perms } from "@/lib/permissions";
 
 type NavLink = { href: string; label: string; short: string };
 
@@ -25,6 +25,7 @@ export function MainNav({ perms }: { perms?: Perms }) {
   const labelStaff = perms?.tenantRole === "label_staff";
   const links: NavLink[] = LINKS.filter((l) => {
     if (l.href === "/overview") return !!perms && canViewOverview(perms);
+    if (l.href === "/library") return !!perms && canViewLibrary(perms); // staff: no catalogue
     if (l.href === "/dashboard") return !labelStaff;
     if (l.href === "/practice") return !labelStaff; // practice is a band activity
     return true;

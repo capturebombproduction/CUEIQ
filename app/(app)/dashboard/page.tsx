@@ -8,7 +8,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { JoinDemo } from "@/components/join-demo";
 import { EventsList } from "@/components/event/events-list";
 import { CreateFromTemplateButton } from "@/components/event/create-from-template-button";
-import { canCreateAnyEvent, canEditGroup } from "@/lib/permissions";
+import { canCreateAnyEvent, canEditGroup, viewableGroups } from "@/lib/permissions";
 import { type EventRow } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
@@ -23,11 +23,17 @@ export default async function DashboardPage() {
 
   const supabase = createClient();
   const tid = ws.membership.tenant_id;
+  // Per-band scope: label-wide (admin/ceo) → all bands; a band-tier user → only
+  // their own. Drives the event list AND, downstream, which bands' audio the
+  // client pre-caches (EventsList derives libraryGroupIds from these events) —
+  // so a one-band member no longer downloads every band's library.
+  const viewableGroupIds = viewableGroups(ws.perms, ws.groups).map((g) => g.id);
   const [{ data }, { data: tplRows }] = await Promise.all([
     supabase
       .from("events")
       .select("*, groups(name, color, exempt_from_deadline)")
       .eq("tenant_id", tid)
+      .in("group_id", viewableGroupIds) // only bands this user may view
       .eq("is_template", false) // templates live outside the normal event list
       .eq("is_practice", false) // practice rooms live in /practice, not here
       .order("event_date", { ascending: false, nullsFirst: false })

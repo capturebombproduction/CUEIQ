@@ -72,6 +72,27 @@ export function canEditGroup(p: Perms, groupId: string): boolean {
   return isAdmin(p) || groupRoleOf(p, groupId) === "artist_manager";
 }
 
+/**
+ * The subset of `groups` the user may VIEW — the ONE rule every surface scopes
+ * by (dashboard / library / artists / training / event detail). Label-wide
+ * (admin / ceo / label_staff) → all bands; a band-tier user (Ar / member) → only
+ * the band(s) they belong to. A band must never see another band's data.
+ */
+export function viewableGroups(p: Perms, groups: Group[]): Group[] {
+  return groups.filter((g) => canViewGroup(p, g.id));
+}
+
+/**
+ * May open the shared song library. label_staff is proof-only (they work from
+ * /overview + read-only event detail) and never need the catalogue, so they
+ * don't load it at all. Everyone else does — admin/ceo see every band, a
+ * band-tier user only their own band's songs (the page scopes the rows).
+ */
+export function canViewLibrary(p: Perms): boolean {
+  if (p.tenantRole === "label_staff") return false;
+  return isLabelWideUser(p) || p.groupRoles.length > 0;
+}
+
 /** Can create a new event for at least one band (drives the "New Event" CTA). */
 export function canCreateAnyEvent(p: Perms): boolean {
   return isAdmin(p) || p.groupRoles.some((g) => g.role === "artist_manager");
@@ -88,12 +109,14 @@ export function editableGroups(p: Perms, groups: Group[]): Group[] {
 }
 
 /**
- * May open a full event detail / editor page. label_staff is OVERVIEW-ONLY
- * (they act on events from /overview, never the full event workspace); everyone
- * else who can VIEW the event (admin / ceo / the band's Ar+members) may open it.
+ * May open a full event detail page. Everyone who can VIEW an event may open it —
+ * INCLUDING label_staff, who open it READ-ONLY to inspect a show before they
+ * proof it (canEditGroup is false for them, so no edit controls render). The
+ * per-band scope (a band-tier user can't open another band's event by URL) is
+ * enforced by the page via canViewGroup, not here.
  */
-export function canOpenEventDetail(p: Perms): boolean {
-  return p.tenantRole !== "label_staff";
+export function canOpenEventDetail(): boolean {
+  return true;
 }
 
 /** Can edit the photo-time of an event whose band has self_photo = false. */

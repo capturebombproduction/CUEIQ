@@ -3,7 +3,7 @@ import Link from "next/link";
 import { Dumbbell, Play, Plus } from "lucide-react";
 import { createClient } from "@/lib/supabase/server";
 import { getWorkspace } from "@/lib/queries";
-import { canEditGroup } from "@/lib/permissions";
+import { canEditGroup, viewableGroups } from "@/lib/permissions";
 import { CreatePracticeButton } from "@/components/practice/create-practice-button";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -22,10 +22,14 @@ export default async function PracticePage() {
 
   const supabase = createClient();
   const tid = ws.membership.tenant_id;
+  // Per-band scope: a band-tier user sees only their own band's practice rooms;
+  // admin/ceo see every band's.
+  const viewableGroupIds = viewableGroups(ws.perms, ws.groups).map((g) => g.id);
   const { data } = await supabase
     .from("events")
     .select("*, groups(name, color)")
     .eq("tenant_id", tid)
+    .in("group_id", viewableGroupIds) // only bands this user may view
     .eq("is_practice", true)
     .order("created_at", { ascending: false });
 

@@ -1,9 +1,15 @@
+import { redirect } from "next/navigation";
 import { getSongs, getWorkspace } from "@/lib/queries";
 import { JoinDemo } from "@/components/join-demo";
 import { SongLibrary } from "@/components/song/song-library";
 import { RefreshButton } from "@/components/refresh-button";
 import { ConfirmSavedBar } from "@/components/confirm-saved-bar";
-import { canApprove, canEditAnyGroup } from "@/lib/permissions";
+import {
+  canApprove,
+  canEditAnyGroup,
+  canViewLibrary,
+  viewableGroups,
+} from "@/lib/permissions";
 
 export const dynamic = "force-dynamic";
 
@@ -12,8 +18,17 @@ export default async function LibraryPage() {
   if (!ws.membership || !ws.tenant) {
     return <JoinDemo />;
   }
+  // label_staff is proof-only and never needs the catalogue — bounce them so
+  // their device never loads the song library at all.
+  if (!canViewLibrary(ws.perms)) redirect("/dashboard");
 
-  const songs = await getSongs(ws.membership.tenant_id);
+  // Per-band scope: a band-tier user sees only their own band's songs; admin/ceo
+  // see every band. Drives both the rows loaded and the band filter/selectors.
+  const bands = viewableGroups(ws.perms, ws.groups);
+  const songs = await getSongs(
+    ws.membership.tenant_id,
+    bands.map((g) => g.id)
+  );
 
   return (
     <div className="space-y-6">
@@ -28,7 +43,7 @@ export default async function LibraryPage() {
       </div>
       <SongLibrary
         tenantId={ws.membership.tenant_id}
-        groups={ws.groups}
+        groups={bands}
         initialSongs={songs}
         perms={ws.perms}
       />

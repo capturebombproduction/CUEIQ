@@ -189,25 +189,31 @@ export const getEventBundle = cache(async (
   };
 });
 
-/** All members in the tenant, grouped-ordered. */
-export async function getMembers(tenantId: string): Promise<Member[]> {
+/** Members in the tenant, grouped-ordered. Pass `groupIds` to scope to a subset
+ * of bands (band-tier users see only their own; omit for the whole tenant). */
+export async function getMembers(
+  tenantId: string,
+  groupIds?: string[]
+): Promise<Member[]> {
   const supabase = createClient();
-  const { data } = await supabase
-    .from("members")
-    .select("*")
-    .eq("tenant_id", tenantId)
+  const base = supabase.from("members").select("*").eq("tenant_id", tenantId);
+  const scoped = groupIds ? base.in("group_id", groupIds) : base;
+  const { data } = await scoped
     .order("group_id", { ascending: true })
     .order("sort_order", { ascending: true });
   return (data ?? []) as Member[];
 }
 
-/** All songs in the tenant's library (newest first). */
-export async function getSongs(tenantId: string): Promise<Song[]> {
+/** Songs in the tenant's library (newest first). Pass `groupIds` to scope to a
+ * subset of bands (band-tier users see only their own; omit for the whole
+ * tenant). An empty array returns nothing — correct for a user with no bands. */
+export async function getSongs(
+  tenantId: string,
+  groupIds?: string[]
+): Promise<Song[]> {
   const supabase = createClient();
-  const { data } = await supabase
-    .from("songs")
-    .select("*")
-    .eq("tenant_id", tenantId)
-    .order("created_at", { ascending: false });
+  const base = supabase.from("songs").select("*").eq("tenant_id", tenantId);
+  const scoped = groupIds ? base.in("group_id", groupIds) : base;
+  const { data } = await scoped.order("created_at", { ascending: false });
   return (data ?? []) as Song[];
 }

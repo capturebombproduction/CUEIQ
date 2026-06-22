@@ -1,4 +1,4 @@
-import { notFound, redirect } from "next/navigation";
+import { notFound } from "next/navigation";
 import Link from "next/link";
 import {
   ArrowLeft,
@@ -10,7 +10,7 @@ import {
   AlertTriangle,
 } from "lucide-react";
 import { getEventBundle, getWorkspace } from "@/lib/queries";
-import { canEditGroup, canOpenEventDetail, canApprove } from "@/lib/permissions";
+import { canEditGroup, canViewGroup, canApprove } from "@/lib/permissions";
 import { eventCompleteness } from "@/lib/completeness";
 import { EVENT_TYPES, type EventType, type GroupStatus } from "@/lib/types";
 import { shortClock, deadlineInfo } from "@/lib/time";
@@ -52,11 +52,13 @@ export default async function EventPage({
   const bundle = await getEventBundle(params.id);
   if (!bundle) notFound();
 
-  // label_staff works from /overview only — the full event workspace is off-limits.
-  const ws = await getWorkspace();
-  if (!canOpenEventDetail(ws.perms)) redirect("/overview");
-
   const { event } = bundle;
+  const ws = await getWorkspace();
+  // Per-band scope: a band-tier user (Ar / member) may open ONLY their own band's
+  // events; label-wide users (admin / ceo / label_staff) may open any. RLS is
+  // tenant-wide, so this guard — not the DB — stops one band from reaching
+  // another's event by URL. label_staff lands here read-only to proof a show.
+  if (!canViewGroup(ws.perms, event.group_id)) notFound();
 
   // Completeness drives the auto-transition (draft ↔ pending_review) + the
   // "ยังขาด…" panel on the Summary. Single source of truth = lib/completeness.
