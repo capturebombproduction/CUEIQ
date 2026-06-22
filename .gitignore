@@ -41,3 +41,6 @@ next-env.d.ts
 # presentation deck — binary, regenerated from the generator outside this repo
 docs/*.pptx
 docs/*.pdf
+
+# review screenshots inbox — drop images here for Josephine to read (never committed)
+/review-shots/
