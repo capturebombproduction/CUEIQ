@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useRef, useState } from "react";
+import { type ReactNode, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { toast } from "sonner";
 import { AlarmClock, Users, PlayCircle, ImageDown, Loader2 } from "lucide-react";
@@ -151,12 +151,53 @@ interface Bucket {
   key: string;
   label: string;
   color?: string | null;
+  date?: string | null; // report view: the shared event date, shown in the header
   events: OverviewEvent[];
 }
 
 // --- Shared cell renderers — used by BOTH the desktop table and the mobile
 // cards so the interactive bits (detail link, Live, copyright badges, photo-time
 // edit, status actions) live in one place. ---
+
+// View-only Live link (overview audience). copyright-status badges that deep-link
+// to the library. Shared by the event-name cell and the compact report row.
+function LiveLink({ ev }: { ev: OverviewEvent }) {
+  return (
+    <Link
+      href={`/events/${ev.id}/live`}
+      title="เปิด Live (ดูอย่างเดียว)"
+      className="text-muted-foreground hover:text-primary"
+    >
+      <PlayCircle className="h-4 w-4" />
+    </Link>
+  );
+}
+
+function CopyrightBadges({ ev }: { ev: OverviewEvent }) {
+  if (ev.copyrightRejected > 0) {
+    return (
+      <Link
+        href="/library"
+        title={`${ev.copyrightRejected} เพลงถูกปฏิเสธลิขสิทธิ์ — ไปจัดการที่คลังเพลง`}
+        className="inline-flex items-center gap-0.5 rounded bg-destructive/15 px-1 text-xs font-semibold text-destructive"
+      >
+        ⛔ {ev.copyrightRejected}
+      </Link>
+    );
+  }
+  if (ev.copyrightPending > 0) {
+    return (
+      <Link
+        href="/library"
+        title={`${ev.copyrightPending} เพลงรอตรวจลิขสิทธิ์ — ไปจัดการที่คลังเพลง`}
+        className="inline-flex items-center gap-0.5 rounded bg-amber-400/20 px-1 text-xs font-semibold text-amber-700 dark:text-amber-400"
+      >
+        🕒 {ev.copyrightPending}
+      </Link>
+    );
+  }
+  return null;
+}
 
 function EventNameCell({
   ev,
@@ -179,32 +220,8 @@ function EventNameCell({
       ) : (
         <span className="break-words font-medium">{ev.name}</span>
       )}
-      {isLabelWide && (
-        <Link
-          href={`/events/${ev.id}/live`}
-          title="เปิด Live (ดูอย่างเดียว)"
-          className="text-muted-foreground hover:text-primary"
-        >
-          <PlayCircle className="h-4 w-4" />
-        </Link>
-      )}
-      {ev.copyrightRejected > 0 ? (
-        <Link
-          href="/library"
-          title={`${ev.copyrightRejected} เพลงถูกปฏิเสธลิขสิทธิ์ — ไปจัดการที่คลังเพลง`}
-          className="inline-flex items-center gap-0.5 rounded bg-destructive/15 px-1 text-xs font-semibold text-destructive"
-        >
-          ⛔ {ev.copyrightRejected}
-        </Link>
-      ) : ev.copyrightPending > 0 ? (
-        <Link
-          href="/library"
-          title={`${ev.copyrightPending} เพลงรอตรวจลิขสิทธิ์ — ไปจัดการที่คลังเพลง`}
-          className="inline-flex items-center gap-0.5 rounded bg-amber-400/20 px-1 text-xs font-semibold text-amber-700 dark:text-amber-400"
-        >
-          🕒 {ev.copyrightPending}
-        </Link>
-      ) : null}
+      {isLabelWide && <LiveLink ev={ev} />}
+      <CopyrightBadges ev={ev} />
     </div>
   );
 }
@@ -311,6 +328,79 @@ function EventCard({
           <DeadlineCell ev={ev} />
         </dd>
       </dl>
+    </div>
+  );
+}
+
+// One label + value time block for the compact report row, e.g. "Stage 10:00–10:30".
+function TimeBit({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <span className="flex items-center gap-1.5">
+      <span className="text-xs font-medium uppercase text-muted-foreground">{label}</span>
+      <span>{children}</span>
+    </span>
+  );
+}
+
+// A single show in the compact "รายงาน" view — the event name + date already live
+// in the group header above, so the row leads with the BAND and the three times
+// staff actually need (Stage / Booth / Photo), with the deadline chip (only when it
+// matters) and the tappable status at the end. Reads as one line on a laptop and
+// wraps cleanly on a phone.
+function EventScheduleRow({
+  ev,
+  canOpenDetail,
+  isLabelWide,
+  canApproveEvents,
+}: {
+  ev: OverviewEvent;
+  canOpenDetail: boolean;
+  isLabelWide: boolean;
+  canApproveEvents: boolean;
+}) {
+  const dl = ev.exempt_from_deadline ? null : deadlineInfo(ev.deadline);
+  return (
+    <div className="flex flex-wrap items-center gap-x-4 gap-y-2 rounded-lg border bg-card px-3 py-2.5">
+      <div className="flex min-w-[7.5rem] items-center gap-2 font-medium">
+        <span
+          className="inline-block h-2.5 w-2.5 shrink-0 rounded-full"
+          style={{ background: ev.group_color || "var(--primary)" }}
+        />
+        {canOpenDetail ? (
+          <Link
+            href={`/events/${ev.id}`}
+            className="hover:text-primary hover:underline"
+          >
+            {ev.group_name}
+          </Link>
+        ) : (
+          <span>{ev.group_name}</span>
+        )}
+        {isLabelWide && <LiveLink ev={ev} />}
+        <CopyrightBadges ev={ev} />
+      </div>
+
+      <div className="flex flex-1 flex-wrap items-center gap-x-4 gap-y-1 text-sm tabular-nums">
+        <TimeBit label="Stage">{fmtRange(ev.stage)}</TimeBit>
+        <TimeBit label="Booth">{fmtRange(ev.booth)}</TimeBit>
+        <TimeBit label="Photo">
+          <PhotoCell ev={ev} />
+        </TimeBit>
+      </div>
+
+      <div className="ml-auto flex items-center gap-2">
+        {dl && (
+          <span
+            className={cn(
+              "inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs font-medium",
+              DEADLINE_BADGE[dl.tone]
+            )}
+          >
+            <AlarmClock className="h-3 w-3" /> {dl.label}
+          </span>
+        )}
+        <StatusCell ev={ev} canApproveEvents={canApproveEvents} />
+      </div>
     </div>
   );
 }
@@ -460,7 +550,20 @@ export function OverviewClient({
       }));
     }
     if (mode === "event") {
-      return [{ key: "all", label: "", events: filtered }];
+      // Group by (date + name): one header per show, with its bands listed beneath.
+      // A festival where several bands share a name + day collapses to ONE header;
+      // a day with two differently-named shows gets two. `filtered` is already in
+      // date→time order, and Map keeps first-seen order, so groups stay sorted.
+      const map = new Map<string, Bucket>();
+      for (const ev of filtered) {
+        const key = `${ev.event_date ?? NO_DATE_KEY}__${ev.name}`;
+        const b =
+          map.get(key) ??
+          ({ key, label: ev.name, date: ev.event_date, events: [] } as Bucket);
+        b.events.push(ev);
+        map.set(key, b);
+      }
+      return Array.from(map.values());
     }
     const map = new Map<string, Bucket>();
     for (const ev of filtered) {
@@ -554,25 +657,48 @@ export function OverviewClient({
           if (!showRosters && bucket.events.length === 0) return null;
           return (
             <section key={bucket.key} className="space-y-3">
-              {bucket.label && (
-                <div className="flex items-center gap-2">
+              {(bucket.label || bucket.date) && (
+                <div className="flex flex-wrap items-center gap-2">
                   {bucket.color !== undefined && (
                     <span
                       className="inline-block h-3 w-3 rounded-full"
                       style={{ background: bucket.color || "var(--primary)" }}
                     />
                   )}
-                  <h2 className="text-lg font-semibold">{bucket.label}</h2>
+                  {bucket.label && (
+                    <h2 className="text-lg font-semibold">{bucket.label}</h2>
+                  )}
+                  {bucket.date && (
+                    <span className="rounded-md bg-muted px-2 py-0.5 text-sm font-medium tabular-nums text-muted-foreground">
+                      {fmtDateWd(bucket.date)}
+                    </span>
+                  )}
                   <span className="text-sm text-muted-foreground">
-                    · {bucket.events.length} งาน
+                    · {bucket.events.length} {mode === "event" ? "วง" : "งาน"}
                     {band ? ` · ${band.members.length} คน` : ""}
                   </span>
                 </div>
               )}
 
-              {bucket.events.length > 0 && (
-                <>
-                  {/* Laptop/desktop (≥xl): full table. A phone in landscape clears
+              {bucket.events.length > 0 &&
+                (mode === "event" ? (
+                  // Compact report rows — the name + date sit in the header above, so
+                  // each row leads with the band and the three times staff need. One
+                  // layout at every width (no separate table) = the space saving.
+                  <div className="space-y-1.5">
+                    {bucket.events.map((ev) => (
+                      <EventScheduleRow
+                        key={ev.id}
+                        ev={ev}
+                        canOpenDetail={canOpenDetail}
+                        isLabelWide={isLabelWide}
+                        canApproveEvents={canApproveEvents}
+                      />
+                    ))}
+                  </div>
+                ) : (
+                  <>
+                    {/* Laptop/desktop (≥xl): full table. A phone in landscape clears
                       md (768) but is still too narrow for 8 columns — times wrap to
                       two lines — so the table is held back to xl; everything below
                       that gets the stacked cards. */}
@@ -642,8 +768,8 @@ export function OverviewClient({
                       />
                     ))}
                   </div>
-                </>
-              )}
+                  </>
+                ))}
 
               {band && band.members.length > 0 && (
                 <div className="flex flex-wrap items-center gap-1.5">
