@@ -56,6 +56,7 @@ export default async function PracticePlayPage({
         groupId={bundle.event.group_id}
         tenantId={bundle.event.tenant_id}
         songs={bundle.songs}
+        setlist={bundle.setlist}
         markersBySong={markersBySong}
         members={bundle.members}
         canManage={canManage}

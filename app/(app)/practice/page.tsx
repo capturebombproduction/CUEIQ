@@ -5,6 +5,7 @@ import { createClient } from "@/lib/supabase/server";
 import { getWorkspace } from "@/lib/queries";
 import { canEditGroup, viewableGroups } from "@/lib/permissions";
 import { CreatePracticeButton } from "@/components/practice/create-practice-button";
+import { DeletePracticeRoomButton } from "@/components/practice/delete-practice-room-button";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import type { EventRow } from "@/lib/types";
@@ -96,11 +97,16 @@ export default async function PracticePage() {
                     </p>
                   </div>
                 </div>
-                <Button asChild size="sm">
-                  <Link href={`/events/${room.id}/practice`}>
-                    <Play className="h-4 w-4" /> เข้าซ้อม
-                  </Link>
-                </Button>
+                <div className="flex shrink-0 items-center gap-1">
+                  <Button asChild size="sm">
+                    <Link href={`/events/${room.id}/practice`}>
+                      <Play className="h-4 w-4" /> เข้าซ้อม
+                    </Link>
+                  </Button>
+                  {canEditGroup(ws.perms, room.group_id) && (
+                    <DeletePracticeRoomButton roomId={room.id} roomName={room.name} />
+                  )}
+                </div>
               </CardContent>
             </Card>
           ))}

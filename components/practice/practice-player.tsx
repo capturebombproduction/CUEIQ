@@ -14,6 +14,7 @@ import {
   Repeat,
   Pencil,
   X,
+  ListMusic,
 } from "lucide-react";
 import { toast } from "sonner";
 import { createClient } from "@/lib/supabase/client";
@@ -22,10 +23,17 @@ import { PracticeAudioEngine } from "@/lib/practice-audio";
 import { detectBeats } from "@/lib/bpm-detect";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
 import { BreakTimer } from "@/components/practice/break-timer";
 import { Metronome } from "@/components/practice/metronome";
 import { cn } from "@/lib/utils";
-import { MARKER_PRESETS, type Song, type SongMarker } from "@/lib/types";
+import { MARKER_PRESETS, type Song, type SongMarker, type SetlistItem } from "@/lib/types";
 
 // Speed presets — slowing down for practice. The engine (SoundTouchJS) time-
 // stretches with pitch preserved, so 0.5x stays in the same key, just slower —
@@ -42,35 +50,67 @@ function mmss(sec: number) {
 }
 
 /**
- * Practice Mode player — Slices 1 + 2 (+ auto-log from Slice 3). Pick any library
- * song that has audio and play it slowed down (1.0 / 0.75 / 0.5, pitch preserved) +
- * scrubber; jump between section markers (per-song, reusable; Ar manages); loop a
- * section A→B; run a break timer. Songs played long enough are auto-logged to
+ * Practice Mode player — Slices 1 + 2 (+ auto-log from Slice 3). The room has a
+ * curated PRACTICE LIST (a subset of the band's library, chosen by the Ar); play a
+ * listed song slowed down (1.0 / 0.75 / 0.5, pitch preserved) + scrubber; jump
+ * between section markers (per-song, reusable; Ar manages); loop a section with
+ * Mark In→Mark Out; run a break timer. Songs played long enough are auto-logged to
  * practice_runs so the journal can show "what we practiced today". Single device,
- * online: audio streams from R2 on demand.
+ * online: audio streams from R2 on demand. For a timed run-through use Live Mode.
  */
 export function PracticePlayer({
   eventId,
   currentUserId,
   songs,
+  setlist,
   markersBySong,
   canManage,
   onRunLogged,
 }: {
   eventId: string;
   currentUserId: string;
-  songs: Song[];
+  songs: Song[]; // the band's full library — the pool the "add song" picker offers
+  setlist: SetlistItem[]; // the practice list: library songs chosen for this room
   markersBySong: Record<string, SongMarker[]>;
   canManage: boolean;
   onRunLogged?: () => void;
 }) {
-  const playable = useMemo(() => songs.filter((s) => !!s.audio_path), [songs]);
+  const songsById = useMemo(() => new Map(songs.map((s) => [s.id, s])), [songs]);
+  // library songs that actually have audio — the pool the picker offers
+  const library = useMemo(() => songs.filter((s) => !!s.audio_path), [songs]);
+  // the practice list: setlist rows that link a library song, in order. Held in
+  // state so add/remove reflect instantly (persisted to setlist_items).
+  const [items, setItems] = useState<SetlistItem[]>(() =>
+    setlist
+      .filter((i) => i.song_id)
+      .slice()
+      .sort((a, b) => a.sort_order - b.sort_order)
+  );
+  const listedIds = useMemo(
+    () => new Set(items.map((i) => i.song_id).filter((id): id is string => !!id)),
+    [items]
+  );
+  // resolve each list row to a playable song (skip broken links / songs with no audio)
+  const practiceSongs = useMemo(
+    () =>
+      items
+        .map((item) => ({
+          item,
+          song: item.song_id ? songsById.get(item.song_id) : undefined,
+        }))
+        .filter(
+          (x): x is { item: SetlistItem; song: Song } =>
+            !!x.song && !!x.song.audio_path
+        ),
+    [items, songsById]
+  );
+
   const [query, setQuery] = useState("");
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
-    if (!q) return playable;
-    return playable.filter((s) => s.title.toLowerCase().includes(q));
-  }, [playable, query]);
+    if (!q) return practiceSongs;
+    return practiceSongs.filter((x) => x.song.title.toLowerCase().includes(q));
+  }, [practiceSongs, query]);
 
   const engineRef = useRef<PracticeAudioEngine | null>(null);
   const [currentId, setCurrentId] = useState<string | null>(null);
@@ -97,7 +137,7 @@ export function PracticePlayer({
   });
   loopRef.current = { a: loopA, b: loopB, on: loopOn };
 
-  const current = playable.find((s) => s.id === currentId) ?? null;
+  const current = currentId ? songsById.get(currentId) ?? null : null;
   const curMarkers = useMemo(
     () =>
       (currentId ? markers[currentId] ?? [] : [])
@@ -298,7 +338,7 @@ export function PracticePlayer({
     if (!engine) return;
     const t = engine.currentTime;
     if (loopA != null && t <= loopA) {
-      toast.error("จุด B ต้องอยู่หลังจุด A");
+      toast.error("Mark Out ต้องอยู่หลัง Mark In");
       return;
     }
     setLoopB(t);
@@ -308,6 +348,47 @@ export function PracticePlayer({
     setLoopA(null);
     setLoopB(null);
     setLoopOn(false);
+  }
+
+  // --- practice list: add a library song / take one out (Ar-only; RLS enforces) ---
+  async function addSong(song: Song) {
+    const sort = items.length ? Math.max(...items.map((i) => i.sort_order)) + 1 : 1;
+    const supabase = createClient();
+    const { data, error } = await supabase
+      .from("setlist_items")
+      .insert({
+        tenant_id: song.tenant_id,
+        event_id: eventId,
+        kind: "song",
+        title: song.title,
+        duration_seconds: song.duration_seconds,
+        song_id: song.id,
+        buffer_before_seconds: 0,
+        buffer_after_seconds: 0,
+        mic_slots: [],
+        sort_order: sort,
+      })
+      .select("*")
+      .single();
+    if (error || !data) {
+      toast.error("เพิ่มเพลงไม่สำเร็จ", { description: error?.message });
+      return;
+    }
+    setItems((prev) => [...prev, data as SetlistItem]);
+    toast.success(`เพิ่ม “${song.title}” เข้าลิสต์ซ้อม`);
+  }
+
+  async function removeSong(itemId: string) {
+    const snapshot = items;
+    setItems((prev) => prev.filter((i) => i.id !== itemId));
+    const { error } = await createClient()
+      .from("setlist_items")
+      .delete()
+      .eq("id", itemId);
+    if (error) {
+      toast.error("เอาเพลงออกไม่สำเร็จ", { description: error.message });
+      setItems(snapshot);
+    }
   }
 
   return (
@@ -410,10 +491,10 @@ export function PracticePlayer({
                 <Repeat className="h-3.5 w-3.5" /> วนท่อน
               </span>
               <Button variant={loopA != null ? "secondary" : "outline"} size="sm" onClick={setA}>
-                A{loopA != null ? ` · ${mmss(loopA)}` : ""}
+                Mark In{loopA != null ? ` · ${mmss(loopA)}` : ""}
               </Button>
               <Button variant={loopB != null ? "secondary" : "outline"} size="sm" onClick={setB}>
-                B{loopB != null ? ` · ${mmss(loopB)}` : ""}
+                Mark Out{loopB != null ? ` · ${mmss(loopB)}` : ""}
               </Button>
               <Button
                 variant={loopOn ? "default" : "outline"}
@@ -524,70 +605,187 @@ export function PracticePlayer({
         )}
       </div>
 
-      {/* Library picker */}
+      {/* Practice list — only the songs chosen for this room. The Ar curates it
+          (add from library / take out); everyone can play. For a timed run-through
+          of the whole show, use Live Mode instead. */}
       <div className="space-y-2">
-        <div className="relative">
-          <Search className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-          <Input
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="ค้นหาเพลงในคลัง..."
-            className="pl-8"
-          />
+        <div className="flex items-center justify-between gap-2">
+          <span className="flex items-center gap-1.5 text-sm font-medium">
+            <ListMusic className="h-4 w-4" /> ลิสต์ซ้อม
+            {practiceSongs.length > 0 && (
+              <span className="text-xs font-normal text-muted-foreground">
+                · {practiceSongs.length} เพลง
+              </span>
+            )}
+          </span>
+          {canManage && (
+            <AddPracticeSongDialog
+              library={library}
+              listedIds={listedIds}
+              onAdd={addSong}
+            />
+          )}
         </div>
 
-        {playable.length === 0 ? (
+        {practiceSongs.length === 0 ? (
           <div className="rounded-lg border border-dashed py-10 text-center text-sm text-muted-foreground">
-            ยังไม่มีเพลงที่มีไฟล์เสียงในคลังของวงนี้
-            <br />
-            อัปโหลดเพลงในคลังเพลงก่อน แล้วกลับมาซ้อมได้เลย
-          </div>
-        ) : (
-          <div className="divide-y rounded-lg border">
-            {filtered.map((s) => {
-              const active = s.id === currentId;
-              const loading = s.id === loadingId;
-              const mCount = (markers[s.id] ?? []).length;
-              return (
-                <button
-                  key={s.id}
-                  onClick={() => selectSong(s)}
-                  className={cn(
-                    "flex w-full items-center gap-3 px-3 py-2.5 text-left transition-colors",
-                    active ? "bg-primary/10" : "hover:bg-muted/50"
-                  )}
-                >
-                  <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-muted">
-                    {loading ? (
-                      <Loader2 className="h-4 w-4 animate-spin" />
-                    ) : active && playing ? (
-                      <Pause className="h-4 w-4" />
-                    ) : (
-                      <Play className="h-4 w-4" />
-                    )}
-                  </span>
-                  <span className="min-w-0 flex-1">
-                    <span className="block truncate text-sm font-medium">{s.title}</span>
-                    <span className="flex items-center gap-2 text-xs text-muted-foreground">
-                      {s.duration_seconds > 0 && <span>{mmss(s.duration_seconds)}</span>}
-                      {mCount > 0 && (
-                        <span className="flex items-center gap-0.5">
-                          <MapPin className="h-3 w-3" /> {mCount}
-                        </span>
-                      )}
-                    </span>
-                  </span>
-                </button>
-              );
-            })}
-            {filtered.length === 0 && (
-              <p className="px-3 py-6 text-center text-sm text-muted-foreground">
-                ไม่พบเพลงที่ค้นหา
-              </p>
+            {canManage ? (
+              <>
+                ยังไม่มีเพลงในลิสต์ซ้อม
+                <br />
+                กด “เพิ่มเพลง” เพื่อเลือกเพลงจากคลังมาซ้อม
+              </>
+            ) : (
+              "ยังไม่มีเพลงในลิสต์ซ้อม — ขอให้ Ar ของวงเพิ่มเพลงซ้อม"
             )}
           </div>
+        ) : (
+          <>
+            <div className="relative">
+              <Search className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="ค้นหาเพลงในลิสต์ซ้อม..."
+                className="pl-8"
+              />
+            </div>
+
+            <div className="divide-y rounded-lg border">
+              {filtered.map(({ item, song: s }) => {
+                const active = s.id === currentId;
+                const loading = s.id === loadingId;
+                const mCount = (markers[s.id] ?? []).length;
+                return (
+                  <div
+                    key={item.id}
+                    className={cn(
+                      "flex items-center gap-3 px-3 py-2.5 transition-colors",
+                      active ? "bg-primary/10" : "hover:bg-muted/50"
+                    )}
+                  >
+                    <button
+                      onClick={() => selectSong(s)}
+                      className="flex min-w-0 flex-1 items-center gap-3 text-left"
+                    >
+                      <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-muted">
+                        {loading ? (
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                        ) : active && playing ? (
+                          <Pause className="h-4 w-4" />
+                        ) : (
+                          <Play className="h-4 w-4" />
+                        )}
+                      </span>
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-sm font-medium">{s.title}</span>
+                        <span className="flex items-center gap-2 text-xs text-muted-foreground">
+                          {s.duration_seconds > 0 && <span>{mmss(s.duration_seconds)}</span>}
+                          {mCount > 0 && (
+                            <span className="flex items-center gap-0.5">
+                              <MapPin className="h-3 w-3" /> {mCount}
+                            </span>
+                          )}
+                        </span>
+                      </span>
+                    </button>
+                    {canManage && (
+                      <button
+                        onClick={() => removeSong(item.id)}
+                        title="เอาออกจากลิสต์ซ้อม"
+                        className="shrink-0 rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
+                      >
+                        <X className="h-4 w-4" />
+                      </button>
+                    )}
+                  </div>
+                );
+              })}
+              {filtered.length === 0 && (
+                <p className="px-3 py-6 text-center text-sm text-muted-foreground">
+                  ไม่พบเพลงที่ค้นหา
+                </p>
+              )}
+            </div>
+          </>
         )}
       </div>
     </div>
+  );
+}
+
+// Pick a library song (with audio, not already in the list) to add to the practice
+// list. Stays open after a pick so several songs can be added in one go.
+function AddPracticeSongDialog({
+  library,
+  listedIds,
+  onAdd,
+}: {
+  library: Song[];
+  listedIds: Set<string>;
+  onAdd: (song: Song) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [q, setQ] = useState("");
+  const available = useMemo(
+    () => library.filter((s) => !listedIds.has(s.id)),
+    [library, listedIds]
+  );
+  const filtered = available.filter((s) =>
+    s.title.toLowerCase().includes(q.trim().toLowerCase())
+  );
+  return (
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogTrigger asChild>
+        <Button size="sm" variant="outline">
+          <Plus className="h-4 w-4" /> เพิ่มเพลง
+        </Button>
+      </DialogTrigger>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>เพิ่มเพลงเข้าลิสต์ซ้อม</DialogTitle>
+        </DialogHeader>
+        {library.length === 0 ? (
+          <p className="py-6 text-center text-sm text-muted-foreground">
+            ยังไม่มีเพลงที่มีไฟล์เสียงในคลังของวงนี้ — อัปโหลดในคลังเพลงก่อน แล้วกลับมาเพิ่มได้
+          </p>
+        ) : available.length === 0 ? (
+          <p className="py-6 text-center text-sm text-muted-foreground">
+            เพิ่มครบทุกเพลงในคลังแล้ว
+          </p>
+        ) : (
+          <div className="space-y-2">
+            <Input
+              autoFocus
+              placeholder="ค้นหาชื่อเพลง…"
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+            />
+            <div className="max-h-72 space-y-1 overflow-auto">
+              {filtered.length === 0 ? (
+                <p className="py-4 text-center text-sm text-muted-foreground">ไม่พบเพลง</p>
+              ) : (
+                filtered.map((s) => (
+                  <button
+                    key={s.id}
+                    type="button"
+                    className="flex w-full items-center justify-between gap-3 rounded-md border px-3 py-2 text-left text-sm transition-colors hover:bg-muted"
+                    onClick={() => {
+                      onAdd(s);
+                      setQ("");
+                    }}
+                  >
+                    <span className="font-medium">{s.title}</span>
+                    <span className="shrink-0 tabular-nums text-muted-foreground">
+                      {s.duration_seconds ? mmss(s.duration_seconds) : "—"}
+                    </span>
+                  </button>
+                ))
+              )}
+            </div>
+          </div>
+        )}
+      </DialogContent>
+    </Dialog>
   );
 }
