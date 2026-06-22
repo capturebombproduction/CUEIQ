@@ -131,6 +131,22 @@ function bucketOf(ev: OverviewEvent, mode: ViewMode): { key: string; label: stri
   return { key, label: `${fmt(ws)} – ${fmt(we)}` };
 }
 
+// Minutes since midnight for a "HH:MM[:SS]" clock, for time-ordering the schedule.
+function toMinutes(t: string): number {
+  const [h, m] = t.split(":");
+  return (Number(h) || 0) * 60 + (Number(m) || 0);
+}
+// An event's EARLIEST scheduled activity (stage / booth / photo start). Shows with
+// no time set sort last so they don't jump ahead of timed ones.
+function earliestMinutes(ev: OverviewEvent): number {
+  const starts = [ev.stage?.start, ev.booth?.start, ev.photo].filter(
+    (t): t is string => !!t
+  );
+  return starts.length
+    ? Math.min(...starts.map(toMinutes))
+    : Number.POSITIVE_INFINITY;
+}
+
 interface Bucket {
   key: string;
   label: string;
@@ -161,9 +177,24 @@ export function OverviewClient({
   const [exporting, setExporting] = useState(false);
   const exportRef = useRef<HTMLDivElement>(null);
 
+  // Order the whole schedule by date, then by each show's EARLIEST activity time —
+  // staff read a day top-to-bottom in time order, regardless of band.
+  const sortedEvents = useMemo(
+    () =>
+      [...events].sort((a, b) => {
+        const da = a.event_date ?? "9999-12-31";
+        const db = b.event_date ?? "9999-12-31";
+        if (da !== db) return da < db ? -1 : 1;
+        return earliestMinutes(a) - earliestMinutes(b);
+      }),
+    [events]
+  );
   const byBand = useMemo(
-    () => (bandFilter === "all" ? events : events.filter((e) => e.group_id === bandFilter)),
-    [events, bandFilter]
+    () =>
+      bandFilter === "all"
+        ? sortedEvents
+        : sortedEvents.filter((e) => e.group_id === bandFilter),
+    [sortedEvents, bandFilter]
   );
 
   // Dates that actually have a show (within the current band scope), for the
@@ -230,7 +261,7 @@ export function OverviewClient({
         });
       }
     }
-    return [...crew, ...reps];
+    return { crew, reps };
   }, [staffContacts, filtered, bandById]);
 
   async function exportImage() {
@@ -535,40 +566,50 @@ export function OverviewClient({
               งาน
             </p>
           </div>
-          {/* Contact block — label crew + the rep of each band shown that day. */}
-          {exportContacts.length > 0 && (
-            <div className="space-y-1.5">
-              <h3 className="text-sm font-bold text-primary">ทีมงาน / ติดต่อ</h3>
-              <table className="w-full border-collapse text-sm">
-                <thead>
-                  <tr className="border-b text-left text-xs text-muted-foreground">
-                    <th className="py-1.5 pr-3 font-medium">ชื่อ</th>
-                    <th className="py-1.5 pr-3 font-medium">หน้าที่ / วง</th>
-                    <th className="py-1.5 font-medium">เบอร์</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {exportContacts.map((c) => (
-                    <tr key={c.key} className="border-b last:border-0">
-                      <td className="py-1.5 pr-3 font-medium">{c.name || "—"}</td>
-                      <td className="py-1.5 pr-3">
-                        {c.color !== null ? (
-                          <span className="inline-flex items-center gap-1.5">
-                            <span
-                              className="inline-block h-2.5 w-2.5 rounded-full"
-                              style={{ background: c.color || "var(--primary)" }}
-                            />
-                            {c.role}
-                          </span>
-                        ) : (
-                          c.role || "—"
-                        )}
-                      </td>
-                      <td className="py-1.5 tabular-nums">{c.phone || "—"}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+          {/* Contact block — label crew and band reps in two separate sections so
+              a busy day with many bands stays readable. */}
+          {(exportContacts.crew.length > 0 || exportContacts.reps.length > 0) && (
+            <div className="space-y-3">
+              {[
+                { key: "crew", title: "ทีมงานค่าย", col2: "หน้าที่", rows: exportContacts.crew },
+                { key: "reps", title: "ผู้ติดต่อวง", col2: "วง", rows: exportContacts.reps },
+              ]
+                .filter((s) => s.rows.length > 0)
+                .map((section) => (
+                  <div key={section.key} className="space-y-1.5">
+                    <h3 className="text-sm font-bold text-primary">{section.title}</h3>
+                    <table className="w-full border-collapse text-sm">
+                      <thead>
+                        <tr className="border-b text-left text-xs text-muted-foreground">
+                          <th className="py-1.5 pr-3 font-medium">ชื่อ</th>
+                          <th className="py-1.5 pr-3 font-medium">{section.col2}</th>
+                          <th className="py-1.5 font-medium">เบอร์</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {section.rows.map((c) => (
+                          <tr key={c.key} className="border-b last:border-0">
+                            <td className="py-1.5 pr-3 font-medium">{c.name || "—"}</td>
+                            <td className="py-1.5 pr-3">
+                              {c.color !== null ? (
+                                <span className="inline-flex items-center gap-1.5">
+                                  <span
+                                    className="inline-block h-2.5 w-2.5 rounded-full"
+                                    style={{ background: c.color || "var(--primary)" }}
+                                  />
+                                  {c.role}
+                                </span>
+                              ) : (
+                                c.role || "—"
+                              )}
+                            </td>
+                            <td className="py-1.5 tabular-nums">{c.phone || "—"}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                ))}
             </div>
           )}
           {/* Mirror the on-screen grouping (buckets follow the current view mode)
