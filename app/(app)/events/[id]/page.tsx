@@ -22,6 +22,7 @@ import { ApprovalControl } from "@/components/event/approval-control";
 import { EventWorkspace } from "@/components/event/event-workspace";
 import { ExportButton } from "@/components/event/export-button";
 import { PrepareDeviceButton } from "@/components/event/prepare-device-button";
+import { EventCopyrightPanel } from "@/components/event/event-copyright-panel";
 import { BandSkin } from "@/components/band-skin";
 
 export const dynamic = "force-dynamic";
@@ -94,6 +95,19 @@ export default async function EventPage({
   const rejectedSongs = bundle.songs.filter(
     (s) => usedSongIds.has(s.id) && s.copyright_status === "rejected"
   );
+
+  // Approver-only (admin / label_staff) copyright triage for the library songs
+  // used in this event — lets staff clear/reject right here while proofing the
+  // show, since label_staff no longer sees the full song library.
+  const setlistLibrarySongs = bundle.songs
+    .filter((s) => usedSongIds.has(s.id))
+    .map((s) => ({
+      id: s.id,
+      title: s.title,
+      copyright_status: s.copyright_status,
+    }));
+  const showCopyrightPanel =
+    canApprove(ws.perms) && setlistLibrarySongs.length > 0;
 
   return (
     <div className="space-y-6">
@@ -196,6 +210,8 @@ export default async function EventPage({
           </ul>
         </div>
       )}
+
+      {showCopyrightPanel && <EventCopyrightPanel songs={setlistLibrarySongs} />}
 
       <EventWorkspace
         event={event}
