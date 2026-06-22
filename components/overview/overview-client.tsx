@@ -346,11 +346,13 @@ function TimeBit({ label, children }: { label: string; children: ReactNode }) {
   );
 }
 
-// A single show in the compact "รายงาน" view. Two tidy rows that read the same on
-// a phone (portrait or landscape) and a laptop: the BAND + tappable status on top,
-// then the three times staff need (Stage / Booth / Photo) below. The event name +
-// date already live in the group header above. Deadline chip shows only when it
-// matters (soon / urgent / overdue).
+// A single show in the compact "รายงาน" view. On a phone (portrait) it's two tidy
+// rows — BAND + tappable status on top, the three times (Stage / Booth / Photo)
+// below. On a wider screen (landscape phone / laptop, ≥sm) it collapses to ONE line
+// — band, then the times, then the status at the far right — using the horizontal
+// room a phone doesn't have. The band sits in a fixed column so the Stage time lines
+// up row-to-row. Event name + date live in the group header above; the deadline chip
+// shows only when it matters (soon / urgent / overdue).
 function EventScheduleRow({
   ev,
   canOpenDetail,
@@ -364,42 +366,46 @@ function EventScheduleRow({
 }) {
   const dl = ev.exempt_from_deadline ? null : deadlineInfo(ev.deadline);
   return (
-    <div className="space-y-1.5 rounded-lg border bg-card px-3 py-2.5">
-      <div className="flex items-center justify-between gap-2">
-        <div className="flex min-w-0 items-center gap-2 font-medium">
-          <span
-            className="inline-block h-2.5 w-2.5 shrink-0 rounded-full"
-            style={{ background: ev.group_color || "var(--primary)" }}
-          />
-          {canOpenDetail ? (
-            <Link
-              href={`/events/${ev.id}`}
-              className="truncate hover:text-primary hover:underline"
-            >
-              {ev.group_name}
-            </Link>
-          ) : (
-            <span className="truncate">{ev.group_name}</span>
-          )}
-          {isLabelWide && <LiveLink ev={ev} />}
-          <CopyrightBadges ev={ev} />
-        </div>
-        <div className="flex shrink-0 items-center gap-2">
-          {dl && (
-            <span
-              className={cn(
-                "inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs font-medium",
-                DEADLINE_BADGE[dl.tone]
-              )}
-            >
-              <AlarmClock className="h-3 w-3" /> {dl.label}
-            </span>
-          )}
-          <StatusCell ev={ev} canApproveEvents={canApproveEvents} />
-        </div>
+    <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 rounded-lg border bg-card px-3 py-2.5 text-sm">
+      {/* Band — fixed column on wide screens so the Stage time aligns row-to-row */}
+      <div className="order-1 flex min-w-0 items-center gap-2 font-medium sm:w-44 sm:shrink-0">
+        <span
+          className="inline-block h-2.5 w-2.5 shrink-0 rounded-full"
+          style={{ background: ev.group_color || "var(--primary)" }}
+        />
+        {canOpenDetail ? (
+          <Link
+            href={`/events/${ev.id}`}
+            className="truncate hover:text-primary hover:underline"
+          >
+            {ev.group_name}
+          </Link>
+        ) : (
+          <span className="truncate">{ev.group_name}</span>
+        )}
+        {isLabelWide && <LiveLink ev={ev} />}
+        <CopyrightBadges ev={ev} />
       </div>
 
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 pl-[1.125rem] text-sm tabular-nums">
+      {/* Status (+ deadline) — pinned right on the phone's top row, and at the far
+          right of the single line on a wide screen */}
+      <div className="order-2 ml-auto flex shrink-0 items-center gap-2 sm:order-3 sm:ml-0">
+        {dl && (
+          <span
+            className={cn(
+              "inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs font-medium",
+              DEADLINE_BADGE[dl.tone]
+            )}
+          >
+            <AlarmClock className="h-3 w-3" /> {dl.label}
+          </span>
+        )}
+        <StatusCell ev={ev} canApproveEvents={canApproveEvents} />
+      </div>
+
+      {/* The three times staff need. Wraps to its own line under the band on a phone
+          (portrait); slots between the band and the status on a wider screen. */}
+      <div className="order-3 flex basis-full flex-wrap items-center gap-x-4 gap-y-1 pl-[1.125rem] tabular-nums sm:order-2 sm:basis-0 sm:flex-1 sm:pl-0">
         <TimeBit label="Stage">{fmtRange(ev.stage)}</TimeBit>
         <TimeBit label="Booth">{fmtRange(ev.booth)}</TimeBit>
         <TimeBit label="Photo">
