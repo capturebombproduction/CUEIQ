@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { cn } from "@/lib/utils";
-import { isAdmin, isLabelWideUser, type Perms } from "@/lib/permissions";
+import { isAdmin, canViewOverview, type Perms } from "@/lib/permissions";
 
 type NavLink = { href: string; label: string; short: string };
 
@@ -17,13 +17,14 @@ const LINKS: NavLink[] = [
 
 export function MainNav({ perms }: { perms?: Perms }) {
   const pathname = usePathname();
-  // /overview is a label-wide surface; /admin is admin-only. label_staff is
-  // overview-only for events, so they don't get the /dashboard ("Events") link —
-  // overview becomes their first/primary tab. Hide what a role can't use (RLS
-  // still enforces — this just declutters the nav).
+  // /overview: label-wide users see all bands, a band member sees only their own
+  // (the page scopes it). /admin is admin-only. label_staff is overview-only for
+  // events, so they don't get the /dashboard ("Events") link — overview becomes
+  // their first/primary tab. Hide what a role can't use (RLS still enforces —
+  // this just declutters the nav).
   const labelStaff = perms?.tenantRole === "label_staff";
   const links: NavLink[] = LINKS.filter((l) => {
-    if (l.href === "/overview") return !!perms && isLabelWideUser(perms);
+    if (l.href === "/overview") return !!perms && canViewOverview(perms);
     if (l.href === "/dashboard") return !labelStaff;
     if (l.href === "/practice") return !labelStaff; // practice is a band activity
     return true;

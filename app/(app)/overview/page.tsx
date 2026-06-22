@@ -8,6 +8,8 @@ import {
   canEditPhotoTime,
   isLabelWideUser,
   canOpenEventDetail,
+  canViewOverview,
+  canViewGroup,
 } from "@/lib/permissions";
 import {
   OverviewClient,
@@ -30,11 +32,17 @@ type SchedRow = {
 export default async function OverviewPage() {
   const ws = await getWorkspace();
   if (!ws.membership || !ws.tenant) return <JoinDemo />;
-  // Overview is a label-wide staff surface (the nav hides it from band-only
-  // roles); send a band-scoped Ar/member who reaches the URL back to their
-  // dashboard, the same way /admin redirects non-admins.
-  if (!isLabelWideUser(ws.perms)) redirect("/dashboard");
+  // Anyone in at least one band may open Overview; a user with no band and no
+  // label-wide standing has nothing to see, so bounce them like /admin does.
+  if (!canViewOverview(ws.perms)) redirect("/dashboard");
   const tid = ws.membership.tenant_id;
+
+  // Scope to the bands this user may view. RLS is tenant-wide (every member can
+  // read every band/event), so a band-only Ar/member is narrowed HERE: label-wide
+  // → all bands, otherwise only their own. Drives both the events query and the
+  // band list, so each band sees only its own schedule.
+  const viewableGroups = ws.groups.filter((g) => canViewGroup(ws.perms, g.id));
+  const viewableGroupIds = viewableGroups.map((g) => g.id);
   // Approve/reject is for approvers (admin / label_staff); others see status only.
   const canApproveEvents = canApprove(ws.perms);
   const supabase = createClient();
@@ -44,6 +52,7 @@ export default async function OverviewPage() {
       .from("events")
       .select("*")
       .eq("tenant_id", tid)
+      .in("group_id", viewableGroupIds) // only bands this user may view
       .eq("is_template", false) // templates are not real shows
       .eq("is_practice", false) // practice rooms aren't real shows
       .order("event_date", { ascending: true, nullsFirst: false }),
@@ -55,6 +64,7 @@ export default async function OverviewPage() {
       .from("members")
       .select("*")
       .eq("tenant_id", tid)
+      .in("group_id", viewableGroupIds) // rosters for visible bands only
       .order("sort_order", { ascending: true }),
     supabase
       .from("setlist_items")
@@ -99,7 +109,7 @@ export default async function OverviewPage() {
     return { pending, rejected };
   };
 
-  const groupById = new Map(ws.groups.map((g) => [g.id, g]));
+  const groupById = new Map(viewableGroups.map((g) => [g.id, g]));
   // Stage/Booth carry a start→end window for the staff schedule; missing end is
   // fine (rendered as a single time). Photo stays start-only (inline-editable).
   const rangeOf = (eventId: string, kind: string) => {
@@ -141,7 +151,7 @@ export default async function OverviewPage() {
     };
   });
 
-  const bands: OverviewBand[] = ws.groups.map((g) => ({
+  const bands: OverviewBand[] = viewableGroups.map((g) => ({
     id: g.id,
     name: g.name,
     color: g.color,
@@ -163,7 +173,7 @@ export default async function OverviewPage() {
           <LayoutGrid className="h-6 w-6" /> Overview
         </h1>
         <p className="text-sm text-muted-foreground">
-          {ws.tenant.name} · {ws.groups.length} วง · {events.length} งาน
+          {ws.tenant.name} · {viewableGroups.length} วง · {events.length} งาน
         </p>
       </div>
 

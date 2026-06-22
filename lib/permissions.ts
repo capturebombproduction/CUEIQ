@@ -48,6 +48,15 @@ export function isLabelWideUser(p: Perms): boolean {
   return isLabelWide(p.tenantRole);
 }
 
+/**
+ * May open /overview. Label-wide users see every band; a band-only user (Ar /
+ * member) sees ONLY their own band(s) — the page scopes events/bands to
+ * `canViewGroup`, since RLS is tenant-wide and can't scope by band itself.
+ */
+export function canViewOverview(p: Perms): boolean {
+  return isLabelWideUser(p) || p.groupRoles.length > 0;
+}
+
 /** May approve/reject songs + events (admin / label_staff). */
 export function canApprove(p: Perms): boolean {
   return isApprover(p.tenantRole);
