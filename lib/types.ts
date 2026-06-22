@@ -385,6 +385,19 @@ export interface SongMarker {
   created_at: string;
 }
 
+/** A library song chosen for a practice room's list. Member-writable (any band
+ * member curates it) — distinct from the editor-only show setlist. */
+export interface PracticeSong {
+  id: string;
+  tenant_id: string;
+  group_id: string;
+  event_id: string;
+  song_id: string;
+  sort_order: number;
+  created_by: string | null;
+  created_at: string;
+}
+
 /** Common section presets offered when adding a marker (custom labels also allowed). */
 export const MARKER_PRESETS = [
   "Intro",

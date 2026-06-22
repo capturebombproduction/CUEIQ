@@ -6,7 +6,7 @@ import { getEventBundle, getWorkspace } from "@/lib/queries";
 import { canEditGroup, canViewGroup } from "@/lib/permissions";
 import { PracticeMode } from "@/components/practice/practice-mode";
 import { Button } from "@/components/ui/button";
-import type { SongMarker } from "@/lib/types";
+import type { SongMarker, PracticeSong } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 
@@ -29,17 +29,26 @@ export default async function PracticePlayPage({
   // + add shared notes. RLS enforces the real boundary.
   const canManage = canEditGroup(ws.perms, bundle.event.group_id);
 
-  // Section markers for the whole band library, grouped by song (reusable per song).
   const supabase = createClient();
-  const { data: markerRows } = await supabase
-    .from("song_markers")
-    .select("*")
-    .eq("group_id", bundle.event.group_id)
-    .order("position_seconds", { ascending: true });
+  // Section markers for the whole band library, grouped by song (reusable per song),
+  // and this room's practice list (member-curated).
+  const [{ data: markerRows }, { data: practiceRows }] = await Promise.all([
+    supabase
+      .from("song_markers")
+      .select("*")
+      .eq("group_id", bundle.event.group_id)
+      .order("position_seconds", { ascending: true }),
+    supabase
+      .from("practice_songs")
+      .select("*")
+      .eq("event_id", bundle.event.id)
+      .order("sort_order", { ascending: true }),
+  ]);
   const markersBySong: Record<string, SongMarker[]> = {};
   for (const m of (markerRows ?? []) as SongMarker[]) {
     (markersBySong[m.song_id] ??= []).push(m);
   }
+  const practiceList = (practiceRows ?? []) as PracticeSong[];
 
   return (
     <div className="space-y-4">
@@ -56,7 +65,7 @@ export default async function PracticePlayPage({
         groupId={bundle.event.group_id}
         tenantId={bundle.event.tenant_id}
         songs={bundle.songs}
-        setlist={bundle.setlist}
+        practiceList={practiceList}
         markersBySong={markersBySong}
         members={bundle.members}
         canManage={canManage}

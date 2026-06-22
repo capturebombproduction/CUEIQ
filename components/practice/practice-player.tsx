@@ -33,7 +33,7 @@ import {
 import { BreakTimer } from "@/components/practice/break-timer";
 import { Metronome } from "@/components/practice/metronome";
 import { cn } from "@/lib/utils";
-import { MARKER_PRESETS, type Song, type SongMarker, type SetlistItem } from "@/lib/types";
+import { MARKER_PRESETS, type Song, type SongMarker, type PracticeSong } from "@/lib/types";
 
 // Speed presets — slowing down for practice. The engine (SoundTouchJS) time-
 // stretches with pitch preserved, so 0.5x stays in the same key, just slower —
@@ -51,8 +51,9 @@ function mmss(sec: number) {
 
 /**
  * Practice Mode player — Slices 1 + 2 (+ auto-log from Slice 3). The room has a
- * curated PRACTICE LIST (a subset of the band's library, chosen by the Ar); play a
- * listed song slowed down (1.0 / 0.75 / 0.5, pitch preserved) + scrubber; jump
+ * curated PRACTICE LIST (a subset of the band's library) that ANY band member can
+ * manage — they practice on their own / at home; play a listed song slowed down
+ * (1.0 / 0.75 / 0.5, pitch preserved) + scrubber; jump
  * between section markers (per-song, reusable; Ar manages); loop a section with
  * Mark In→Mark Out; run a break timer. Songs played long enough are auto-logged to
  * practice_runs so the journal can show "what we practiced today". Single device,
@@ -62,7 +63,7 @@ export function PracticePlayer({
   eventId,
   currentUserId,
   songs,
-  setlist,
+  practiceList,
   markersBySong,
   canManage,
   onRunLogged,
@@ -70,36 +71,26 @@ export function PracticePlayer({
   eventId: string;
   currentUserId: string;
   songs: Song[]; // the band's full library — the pool the "add song" picker offers
-  setlist: SetlistItem[]; // the practice list: library songs chosen for this room
+  practiceList: PracticeSong[]; // the room's practice list (any member curates it)
   markersBySong: Record<string, SongMarker[]>;
-  canManage: boolean;
+  canManage: boolean; // Ar/admin — gates section-marker editing (NOT the list)
   onRunLogged?: () => void;
 }) {
   const songsById = useMemo(() => new Map(songs.map((s) => [s.id, s])), [songs]);
   // library songs that actually have audio — the pool the picker offers
   const library = useMemo(() => songs.filter((s) => !!s.audio_path), [songs]);
-  // the practice list: setlist rows that link a library song, in order. Held in
-  // state so add/remove reflect instantly (persisted to setlist_items).
-  const [items, setItems] = useState<SetlistItem[]>(() =>
-    setlist
-      .filter((i) => i.song_id)
-      .slice()
-      .sort((a, b) => a.sort_order - b.sort_order)
+  // the practice list, in order. Held in state so add/remove reflect instantly.
+  const [items, setItems] = useState<PracticeSong[]>(() =>
+    practiceList.slice().sort((a, b) => a.sort_order - b.sort_order)
   );
-  const listedIds = useMemo(
-    () => new Set(items.map((i) => i.song_id).filter((id): id is string => !!id)),
-    [items]
-  );
-  // resolve each list row to a playable song (skip broken links / songs with no audio)
+  const listedIds = useMemo(() => new Set(items.map((i) => i.song_id)), [items]);
+  // resolve each list row to a playable song (skip songs that lost their audio)
   const practiceSongs = useMemo(
     () =>
       items
-        .map((item) => ({
-          item,
-          song: item.song_id ? songsById.get(item.song_id) : undefined,
-        }))
+        .map((item) => ({ item, song: songsById.get(item.song_id) }))
         .filter(
-          (x): x is { item: SetlistItem; song: Song } =>
+          (x): x is { item: PracticeSong; song: Song } =>
             !!x.song && !!x.song.audio_path
         ),
     [items, songsById]
@@ -350,23 +341,20 @@ export function PracticePlayer({
     setLoopOn(false);
   }
 
-  // --- practice list: add a library song / take one out (Ar-only; RLS enforces) ---
+  // --- practice list: any band member adds a library song / takes one out (RLS =
+  // can_view_group, so members curate their own practice list — see practice_songs) ---
   async function addSong(song: Song) {
     const sort = items.length ? Math.max(...items.map((i) => i.sort_order)) + 1 : 1;
     const supabase = createClient();
     const { data, error } = await supabase
-      .from("setlist_items")
+      .from("practice_songs")
       .insert({
         tenant_id: song.tenant_id,
+        group_id: song.group_id,
         event_id: eventId,
-        kind: "song",
-        title: song.title,
-        duration_seconds: song.duration_seconds,
         song_id: song.id,
-        buffer_before_seconds: 0,
-        buffer_after_seconds: 0,
-        mic_slots: [],
         sort_order: sort,
+        created_by: currentUserId,
       })
       .select("*")
       .single();
@@ -374,7 +362,7 @@ export function PracticePlayer({
       toast.error("เพิ่มเพลงไม่สำเร็จ", { description: error?.message });
       return;
     }
-    setItems((prev) => [...prev, data as SetlistItem]);
+    setItems((prev) => [...prev, data as PracticeSong]);
     toast.success(`เพิ่ม “${song.title}” เข้าลิสต์ซ้อม`);
   }
 
@@ -382,7 +370,7 @@ export function PracticePlayer({
     const snapshot = items;
     setItems((prev) => prev.filter((i) => i.id !== itemId));
     const { error } = await createClient()
-      .from("setlist_items")
+      .from("practice_songs")
       .delete()
       .eq("id", itemId);
     if (error) {
@@ -618,26 +606,18 @@ export function PracticePlayer({
               </span>
             )}
           </span>
-          {canManage && (
-            <AddPracticeSongDialog
-              library={library}
-              listedIds={listedIds}
-              onAdd={addSong}
-            />
-          )}
+          <AddPracticeSongDialog
+            library={library}
+            listedIds={listedIds}
+            onAdd={addSong}
+          />
         </div>
 
         {practiceSongs.length === 0 ? (
           <div className="rounded-lg border border-dashed py-10 text-center text-sm text-muted-foreground">
-            {canManage ? (
-              <>
-                ยังไม่มีเพลงในลิสต์ซ้อม
-                <br />
-                กด “เพิ่มเพลง” เพื่อเลือกเพลงจากคลังมาซ้อม
-              </>
-            ) : (
-              "ยังไม่มีเพลงในลิสต์ซ้อม — ขอให้ Ar ของวงเพิ่มเพลงซ้อม"
-            )}
+            ยังไม่มีเพลงในลิสต์ซ้อม
+            <br />
+            กด “เพิ่มเพลง” เพื่อเลือกเพลงจากคลังมาซ้อม
           </div>
         ) : (
           <>
@@ -689,15 +669,13 @@ export function PracticePlayer({
                         </span>
                       </span>
                     </button>
-                    {canManage && (
-                      <button
-                        onClick={() => removeSong(item.id)}
-                        title="เอาออกจากลิสต์ซ้อม"
-                        className="shrink-0 rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
-                      >
-                        <X className="h-4 w-4" />
-                      </button>
-                    )}
+                    <button
+                      onClick={() => removeSong(item.id)}
+                      title="เอาออกจากลิสต์ซ้อม"
+                      className="shrink-0 rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
+                    >
+                      <X className="h-4 w-4" />
+                    </button>
                   </div>
                 );
               })}

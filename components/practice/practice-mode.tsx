@@ -5,7 +5,7 @@ import { Music2, Dumbbell, NotebookPen } from "lucide-react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { PracticePlayer } from "@/components/practice/practice-player";
 import { PracticeJournal } from "@/components/practice/practice-journal";
-import type { Member, Song, SongMarker, SetlistItem } from "@/lib/types";
+import type { Member, Song, SongMarker, PracticeSong } from "@/lib/types";
 
 /**
  * Practice Mode shell — two tabs: the player (เครื่องเล่น: slow-down, markers, A-B
@@ -19,7 +19,7 @@ export function PracticeMode({
   groupId,
   tenantId,
   songs,
-  setlist,
+  practiceList,
   markersBySong,
   members,
   canManage,
@@ -30,7 +30,7 @@ export function PracticeMode({
   groupId: string;
   tenantId: string;
   songs: Song[];
-  setlist: SetlistItem[];
+  practiceList: PracticeSong[];
   markersBySong: Record<string, SongMarker[]>;
   members: Member[];
   canManage: boolean;
@@ -64,7 +64,7 @@ export function PracticeMode({
             eventId={eventId}
             currentUserId={currentUserId}
             songs={songs}
-            setlist={setlist}
+            practiceList={practiceList}
             markersBySong={markersBySong}
             canManage={canManage}
             onRunLogged={() => setRunSignal((n) => n + 1)}
