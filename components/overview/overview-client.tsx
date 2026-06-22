@@ -721,7 +721,10 @@ export function OverviewClient({
                   // wide screen the STAGE/BOOTH/PHOTO labels collapse into ONE column
                   // header here (mirrors the row's band-width + column widths so the
                   // times line up under it); on a phone each row keeps its own labels.
-                  <div className="space-y-1.5">
+                  // Capped width so the compact rows don't stretch edge-to-edge on a
+                  // big monitor (they only need ~720px) — the cap is wider than any
+                  // phone so mobile is unaffected.
+                  <div className="max-w-3xl space-y-1.5">
                     <div className="hidden items-center gap-x-4 px-3 text-xs font-medium uppercase text-muted-foreground sm:flex">
                       <div className="w-44 shrink-0" />
                       <div className="flex flex-1 items-center gap-x-4">
@@ -853,25 +856,30 @@ export function OverviewClient({
           {buckets
             .filter((b) => b.events.length > 0)
             .map((bucket) => {
-              // Collapse any column whose value repeats down the WHOLE group — the
-              // same "อะไรซ้ำยุบ" rule the on-screen rows use. The งาน name already
-              // sits in the group header (so drop the column when every row shares
-              // it), and a single-date group shows its date once in the header
-              // instead of on every row. Whatever still varies (วง in รายงาน,
-              // งาน/วง in รายวัน) keeps its column.
+              // Collapse any column whose value repeats down the WHOLE group: the
+              // value is hoisted into the group header (unless it's already the
+              // label) and its column is dropped from the table. The same
+              // "อะไรซ้ำยุบ" rule works in EVERY view mode — รายงาน groups by event
+              // name, รายวง by band, รายเดือน/ปี by period — so e.g. a one-festival
+              // month (every row = "TEST FEST" on "2026-06-28") shows the name +
+              // date once in the header, not on all 8 rows. What still varies keeps
+              // its column.
               const evs = bucket.events;
-              const dropName = evs.every((e) => e.name === bucket.label);
-              const allSameDate = evs.every(
-                (e) => e.event_date === evs[0].event_date
-              );
-              // Date is "in the header" when it's the bucket's own date chip (รายงาน)
-              // or already the bucket label (รายวัน) — only then is it safe to drop.
-              const dropDate = allSameDate && (!!bucket.date || mode === "day");
-              const headerDate = bucket.date && allSameDate ? bucket.date : null;
+              const first = evs[0];
+              const dropName = evs.every((e) => e.name === first.name);
+              const dropDate = evs.every((e) => e.event_date === first.event_date);
+              const headerName =
+                dropName && first.name !== bucket.label ? first.name : null;
+              const headerDate =
+                dropDate &&
+                first.event_date &&
+                fmtDateWd(first.event_date) !== bucket.label
+                  ? first.event_date
+                  : null;
               return (
                 <div key={bucket.key} className="space-y-1.5">
                   {bucket.label && (
-                    <h3 className="flex items-center gap-1.5 text-sm font-bold text-primary">
+                    <h3 className="flex flex-wrap items-center gap-x-1.5 text-sm font-bold text-primary">
                       {bucket.color !== undefined && (
                         <span
                           className="inline-block h-2.5 w-2.5 rounded-full"
@@ -879,6 +887,11 @@ export function OverviewClient({
                         />
                       )}
                       {bucket.label}
+                      {headerName && (
+                        <span className="font-normal text-foreground">
+                          · {headerName}
+                        </span>
+                      )}
                       {headerDate && (
                         <span className="font-normal tabular-nums text-muted-foreground">
                           · {fmtDateWd(headerDate)}
