@@ -64,14 +64,19 @@ export function EventStatusActions({
         type="button"
         onClick={() => setOpen(true)}
         title="แตะเพื่อเปลี่ยนสถานะ (อนุมัติ / ปฏิเสธ)"
-        className={
-          compact
-            ? "inline-flex items-center gap-0.5 rounded-full p-1 transition-colors hover:bg-muted focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            : "inline-flex items-center gap-0.5 rounded-md transition-opacity hover:opacity-80 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
-        }
+        className="inline-flex items-center gap-0.5 rounded-md transition-opacity hover:opacity-80 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
       >
         {compact ? (
-          <StatusDot status={status} />
+          // Phone (2-row card has room): full text badge — readable without hover,
+          // which a touch device doesn't have. Wide single-row: just the colour dot
+          // so the variable-width badge can't crowd the times.
+          <>
+            <StatusBadge
+              status={status}
+              className="px-2 py-0 text-[11px] sm:hidden"
+            />
+            <StatusDot status={status} className="hidden sm:inline-block" />
+          </>
         ) : (
           <StatusBadge status={status} className="px-2 py-0 text-[11px]" />
         )}

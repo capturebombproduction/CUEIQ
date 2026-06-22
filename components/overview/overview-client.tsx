@@ -286,7 +286,11 @@ function StatusCell({
       compact={compact}
     />
   ) : compact ? (
-    <StatusDot status={ev.status} />
+    // Phone: text badge (no hover on touch); wide single-row: colour dot only.
+    <>
+      <StatusBadge status={ev.status} className="sm:hidden" />
+      <StatusDot status={ev.status} className="hidden sm:inline-block" />
+    </>
   ) : (
     <StatusBadge status={ev.status} />
   );
@@ -916,7 +920,11 @@ export function OverviewClient({
                         )}
                         <th className="py-1.5 pr-3 font-medium">Stage</th>
                         <th className="py-1.5 pr-3 font-medium">Booth</th>
-                        <th className="py-1.5 font-medium">Photo</th>
+                        <th className="py-1.5 pr-3 font-medium">Photo</th>
+                        {/* Spacer column absorbs the leftover width so the data
+                            columns stay compact on the left instead of spreading
+                            apart when a collapse leaves only a few of them. */}
+                        <th className="w-full" />
                       </tr>
                     </thead>
                     <tbody>
@@ -949,9 +957,10 @@ export function OverviewClient({
                           <td className="py-1.5 pr-3 tabular-nums">
                             {fmtRange(ev.booth)}
                           </td>
-                          <td className="py-1.5 tabular-nums">
+                          <td className="py-1.5 pr-3 tabular-nums">
                             {fmtRange({ start: ev.photo, end: ev.photoEnd })}
                           </td>
+                          <td />
                         </tr>
                       ))}
                     </tbody>
