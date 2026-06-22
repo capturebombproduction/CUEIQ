@@ -341,11 +341,24 @@ function EventCard({
   );
 }
 
-// One label + value time block for the compact report row, e.g. "Stage 10:00–10:30".
-function TimeBit({ label, children }: { label: string; children: ReactNode }) {
+// One time value for the compact report row. On a phone it carries its own label
+// ("Stage 10:00–10:30") since the stacked rows have no shared header; on a wide
+// screen the label is dropped — the STAGE/BOOTH/PHOTO column header above the group
+// labels them ONCE — and `className` fixes the column width so values line up.
+function TimeBit({
+  label,
+  children,
+  className,
+}: {
+  label: string;
+  children: ReactNode;
+  className?: string;
+}) {
   return (
-    <span className="flex items-center gap-1.5">
-      <span className="text-xs font-medium uppercase text-muted-foreground">{label}</span>
+    <span className={cn("flex items-center gap-1.5", className)}>
+      <span className="text-xs font-medium uppercase text-muted-foreground sm:hidden">
+        {label}
+      </span>
       <span>{children}</span>
     </span>
   );
@@ -411,9 +424,13 @@ function EventScheduleRow({
 
       {/* The three times staff need. Wraps to its own line under the band on a phone
           (portrait); slots between the band and the status on a wider screen. */}
-      <div className="order-3 flex basis-full flex-wrap items-center gap-x-4 gap-y-1 pl-[1.125rem] tabular-nums sm:order-2 sm:basis-0 sm:flex-1 sm:pl-0">
-        <TimeBit label="Stage">{fmtRange(ev.stage)}</TimeBit>
-        <TimeBit label="Booth">{fmtRange(ev.booth)}</TimeBit>
+      <div className="order-3 flex basis-full flex-wrap items-center gap-x-4 gap-y-1 pl-[1.125rem] tabular-nums sm:order-2 sm:basis-0 sm:flex-1 sm:flex-nowrap sm:pl-0">
+        <TimeBit label="Stage" className="sm:w-28">
+          {fmtRange(ev.stage)}
+        </TimeBit>
+        <TimeBit label="Booth" className="sm:w-28">
+          {fmtRange(ev.booth)}
+        </TimeBit>
         <TimeBit label="Photo">
           <PhotoCell ev={ev} />
         </TimeBit>
@@ -700,9 +717,19 @@ export function OverviewClient({
               {bucket.events.length > 0 &&
                 (mode === "event" ? (
                   // Compact report rows — the name + date sit in the header above, so
-                  // each row leads with the band and the three times staff need. One
-                  // layout at every width (no separate table) = the space saving.
+                  // each row leads with the band and the three times staff need. On a
+                  // wide screen the STAGE/BOOTH/PHOTO labels collapse into ONE column
+                  // header here (mirrors the row's band-width + column widths so the
+                  // times line up under it); on a phone each row keeps its own labels.
                   <div className="space-y-1.5">
+                    <div className="hidden items-center gap-x-4 px-3 text-xs font-medium uppercase text-muted-foreground sm:flex">
+                      <div className="w-44 shrink-0" />
+                      <div className="flex flex-1 items-center gap-x-4">
+                        <span className="w-28">Stage</span>
+                        <span className="w-28">Booth</span>
+                        <span>Photo</span>
+                      </div>
+                    </div>
                     {bucket.events.map((ev) => (
                       <EventScheduleRow
                         key={ev.id}
@@ -825,70 +852,100 @@ export function OverviewClient({
               by band, by day, by week/month/year, or the flat report. */}
           {buckets
             .filter((b) => b.events.length > 0)
-            .map((bucket) => (
-              <div key={bucket.key} className="space-y-1.5">
-                {bucket.label && (
-                  <h3 className="flex items-center gap-1.5 text-sm font-bold text-primary">
-                    {bucket.color !== undefined && (
-                      <span
-                        className="inline-block h-2.5 w-2.5 rounded-full"
-                        style={{ background: bucket.color || "var(--primary)" }}
-                      />
-                    )}
-                    {bucket.label}
-                    <span className="font-normal text-muted-foreground">
-                      · {bucket.events.length} งาน
-                    </span>
-                  </h3>
-                )}
-                <table className="w-full border-collapse text-sm [&_th]:whitespace-nowrap [&_td]:whitespace-nowrap">
-                  <thead>
-                    <tr className="border-b text-left text-xs text-muted-foreground">
-                      <th className="py-1.5 pr-3 font-medium">งาน</th>
-                      {showBandColumn && (
-                        <th className="py-1.5 pr-3 font-medium">วง</th>
+            .map((bucket) => {
+              // Collapse any column whose value repeats down the WHOLE group — the
+              // same "อะไรซ้ำยุบ" rule the on-screen rows use. The งาน name already
+              // sits in the group header (so drop the column when every row shares
+              // it), and a single-date group shows its date once in the header
+              // instead of on every row. Whatever still varies (วง in รายงาน,
+              // งาน/วง in รายวัน) keeps its column.
+              const evs = bucket.events;
+              const dropName = evs.every((e) => e.name === bucket.label);
+              const allSameDate = evs.every(
+                (e) => e.event_date === evs[0].event_date
+              );
+              // Date is "in the header" when it's the bucket's own date chip (รายงาน)
+              // or already the bucket label (รายวัน) — only then is it safe to drop.
+              const dropDate = allSameDate && (!!bucket.date || mode === "day");
+              const headerDate = bucket.date && allSameDate ? bucket.date : null;
+              return (
+                <div key={bucket.key} className="space-y-1.5">
+                  {bucket.label && (
+                    <h3 className="flex items-center gap-1.5 text-sm font-bold text-primary">
+                      {bucket.color !== undefined && (
+                        <span
+                          className="inline-block h-2.5 w-2.5 rounded-full"
+                          style={{ background: bucket.color || "var(--primary)" }}
+                        />
                       )}
-                      <th className="py-1.5 pr-3 font-medium">วันที่</th>
-                      <th className="py-1.5 pr-3 font-medium">Stage</th>
-                      <th className="py-1.5 pr-3 font-medium">Booth</th>
-                      <th className="py-1.5 font-medium">Photo</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {bucket.events.map((ev) => (
-                      <tr key={ev.id} className="border-b last:border-0">
-                        <td className="py-1.5 pr-3 font-medium">{ev.name}</td>
-                        {showBandColumn && (
-                          <td className="py-1.5 pr-3">
-                            <span className="inline-flex items-center gap-1.5">
-                              <span
-                                className="inline-block h-2.5 w-2.5 rounded-full"
-                                style={{
-                                  background: ev.group_color || "var(--primary)",
-                                }}
-                              />
-                              {ev.group_name}
-                            </span>
-                          </td>
+                      {bucket.label}
+                      {headerDate && (
+                        <span className="font-normal tabular-nums text-muted-foreground">
+                          · {fmtDateWd(headerDate)}
+                        </span>
+                      )}
+                      <span className="font-normal text-muted-foreground">
+                        · {bucket.events.length} งาน
+                      </span>
+                    </h3>
+                  )}
+                  <table className="w-full border-collapse text-sm [&_th]:whitespace-nowrap [&_td]:whitespace-nowrap">
+                    <thead>
+                      <tr className="border-b text-left text-xs text-muted-foreground">
+                        {!dropName && (
+                          <th className="py-1.5 pr-3 font-medium">งาน</th>
                         )}
-                        <td className="py-1.5 pr-3 tabular-nums">
-                          {fmtDate(ev.event_date)}
-                        </td>
-                        <td className="py-1.5 pr-3 tabular-nums">
-                          {fmtRange(ev.stage)}
-                        </td>
-                        <td className="py-1.5 pr-3 tabular-nums">
-                          {fmtRange(ev.booth)}
-                        </td>
-                        <td className="py-1.5 tabular-nums">
-                          {fmtRange({ start: ev.photo, end: ev.photoEnd })}
-                        </td>
+                        {showBandColumn && (
+                          <th className="py-1.5 pr-3 font-medium">วง</th>
+                        )}
+                        {!dropDate && (
+                          <th className="py-1.5 pr-3 font-medium">วันที่</th>
+                        )}
+                        <th className="py-1.5 pr-3 font-medium">Stage</th>
+                        <th className="py-1.5 pr-3 font-medium">Booth</th>
+                        <th className="py-1.5 font-medium">Photo</th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            ))}
+                    </thead>
+                    <tbody>
+                      {bucket.events.map((ev) => (
+                        <tr key={ev.id} className="border-b last:border-0">
+                          {!dropName && (
+                            <td className="py-1.5 pr-3 font-medium">{ev.name}</td>
+                          )}
+                          {showBandColumn && (
+                            <td className="py-1.5 pr-3">
+                              <span className="inline-flex items-center gap-1.5">
+                                <span
+                                  className="inline-block h-2.5 w-2.5 rounded-full"
+                                  style={{
+                                    background: ev.group_color || "var(--primary)",
+                                  }}
+                                />
+                                {ev.group_name}
+                              </span>
+                            </td>
+                          )}
+                          {!dropDate && (
+                            <td className="py-1.5 pr-3 tabular-nums">
+                              {fmtDate(ev.event_date)}
+                            </td>
+                          )}
+                          <td className="py-1.5 pr-3 tabular-nums">
+                            {fmtRange(ev.stage)}
+                          </td>
+                          <td className="py-1.5 pr-3 tabular-nums">
+                            {fmtRange(ev.booth)}
+                          </td>
+                          <td className="py-1.5 tabular-nums">
+                            {fmtRange({ start: ev.photo, end: ev.photoEnd })}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              );
+            })}
           {/* Contact block at the BOTTOM — staff read the schedule first, then
               who to call. Crew + band reps in two sections. */}
           {(exportContacts.crew.length > 0 || exportContacts.reps.length > 0) && (
