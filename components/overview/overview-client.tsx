@@ -277,7 +277,11 @@ function StatusCell({
   canApproveEvents: boolean;
 }) {
   return canApproveEvents ? (
-    <EventStatusActions eventId={ev.id} initialStatus={ev.status} />
+    <EventStatusActions
+      eventId={ev.id}
+      initialStatus={ev.status}
+      eventName={ev.name}
+    />
   ) : (
     <StatusBadge status={ev.status} />
   );
