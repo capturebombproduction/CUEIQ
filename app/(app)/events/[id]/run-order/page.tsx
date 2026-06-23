@@ -1,9 +1,10 @@
 import { redirect } from "next/navigation";
 import Link from "next/link";
-import { ListOrdered } from "lucide-react";
+import { ListOrdered, Radio } from "lucide-react";
 import { getWorkspace } from "@/lib/queries";
 import { canApprove } from "@/lib/permissions";
 import { createClient } from "@/lib/supabase/server";
+import { Button } from "@/components/ui/button";
 import {
   RunOrderBuilder,
   type RunSequence,
@@ -81,9 +82,16 @@ export default async function RunOrderPage({
         >
           ← {ev.name}
         </Link>
-        <h1 className="flex items-center gap-2 text-2xl font-bold tracking-tight">
-          <ListOrdered className="h-6 w-6" /> Running Order
-        </h1>
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h1 className="flex items-center gap-2 text-2xl font-bold tracking-tight">
+            <ListOrdered className="h-6 w-6" /> Running Order
+          </h1>
+          <Button asChild>
+            <Link href={`/events/${ev.id}/run-order/live`}>
+              <Radio className="h-4 w-4" /> คุมคิว (Live)
+            </Link>
+          </Button>
+        </div>
         <p className="text-sm text-muted-foreground">
           {ev.name}
           {ev.event_date ? ` · ${ev.event_date}` : ""} — ลำดับงานทั้งงาน (สำหรับสตาฟคุมคิว)
