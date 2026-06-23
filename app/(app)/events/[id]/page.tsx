@@ -50,9 +50,10 @@ function formatDate(date: string | null): string {
 export default async function EventPage({
   params,
 }: {
-  params: { id: string };
+  params: Promise<{ id: string }>;
 }) {
-  const bundle = await getEventBundle(params.id);
+  const { id } = await params;
+  const bundle = await getEventBundle(id);
   if (!bundle) notFound();
 
   const { event } = bundle;
@@ -114,7 +115,8 @@ export default async function EventPage({
   // Pull this festival's (same name + date) running order so the band can WATCH
   // its own slot status live on its event page (read-only EventRunStatusCard).
   // Staff build & drive the order from Overview — not from here anymore.
-  let roq = createClient()
+  const supabase = await createClient();
+  let roq = supabase
     .from("run_sequence")
     .select("*")
     .eq("tenant_id", event.tenant_id)

@@ -45,7 +45,7 @@ export default async function OverviewPage() {
   const viewableGroupIds = viewableGroups.map((g) => g.id);
   // Approve/reject is for approvers (admin / label_staff); others see status only.
   const canApproveEvents = canApprove(ws.perms);
-  const supabase = createClient();
+  const supabase = await createClient();
 
   const [evRes, schedRes, memRes, slRes, songRes, staffRes, roRes] = await Promise.all([
     supabase

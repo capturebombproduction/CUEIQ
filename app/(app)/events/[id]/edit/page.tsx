@@ -11,20 +11,21 @@ export const dynamic = "force-dynamic";
 export default async function EditEventPage({
   params,
 }: {
-  params: { id: string };
+  params: Promise<{ id: string }>;
 }) {
-  const bundle = await getEventBundle(params.id);
+  const { id } = await params;
+  const bundle = await getEventBundle(id);
   if (!bundle) notFound();
   const ws = await getWorkspace();
   if (!canEditGroup(ws.perms, bundle.event.group_id)) {
-    redirect(`/events/${params.id}`);
+    redirect(`/events/${id}`);
   }
 
   return (
     <div className="mx-auto max-w-2xl space-y-6">
       <div>
         <Button asChild variant="ghost" size="sm" className="-ml-2 mb-2">
-          <Link href={`/events/${params.id}`}>
+          <Link href={`/events/${id}`}>
             <ArrowLeft className="h-4 w-4" /> กลับไปหน้างาน
           </Link>
         </Button>

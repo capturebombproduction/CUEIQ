@@ -21,7 +21,7 @@ export default async function DashboardPage() {
   // label_staff is overview-only — send them to their primary surface.
   if (ws.perms.tenantRole === "label_staff") redirect("/overview");
 
-  const supabase = createClient();
+  const supabase = await createClient();
   const tid = ws.membership.tenant_id;
   // Per-band scope: label-wide (admin/ceo) → all bands; a band-tier user → only
   // their own. Drives the event list AND, downstream, which bands' audio the

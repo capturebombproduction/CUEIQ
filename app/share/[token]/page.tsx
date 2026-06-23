@@ -75,16 +75,18 @@ function fmtDate(date: string | null): string {
   });
 }
 
-export async function generateMetadata({ params }: { params: { token: string } }) {
-  const supabase = createClient();
-  const { data } = await supabase.rpc("get_shared_event", { p_token: params.token });
+export async function generateMetadata({ params }: { params: Promise<{ token: string }> }) {
+  const { token } = await params;
+  const supabase = await createClient();
+  const { data } = await supabase.rpc("get_shared_event", { p_token: token });
   const name = (data as SharedBundle | null)?.event?.name;
   return { title: name ? `${name} · Run Sheet` : "Run Sheet · CueIQ" };
 }
 
-export default async function SharePage({ params }: { params: { token: string } }) {
-  const supabase = createClient();
-  const { data } = await supabase.rpc("get_shared_event", { p_token: params.token });
+export default async function SharePage({ params }: { params: Promise<{ token: string }> }) {
+  const { token } = await params;
+  const supabase = await createClient();
+  const { data } = await supabase.rpc("get_shared_event", { p_token: token });
   const bundle = data as SharedBundle | null;
 
   if (!bundle || !bundle.event) {

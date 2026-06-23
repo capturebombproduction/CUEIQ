@@ -31,7 +31,7 @@ export interface Workspace {
  * navigation — request-scoped, NOT cross-request, so no staleness).
  */
 export const getWorkspace = cache(async (): Promise<Workspace> => {
-  const supabase = createClient();
+  const supabase = await createClient();
   const {
     data: { user },
   } = await supabase.auth.getUser();
@@ -123,7 +123,7 @@ export interface EventBundle {
 export const getEventBundle = cache(async (
   eventId: string
 ): Promise<EventBundle | null> => {
-  const supabase = createClient();
+  const supabase = await createClient();
 
   const { data: event } = await supabase
     .from("events")
@@ -195,7 +195,7 @@ export async function getMembers(
   tenantId: string,
   groupIds?: string[]
 ): Promise<Member[]> {
-  const supabase = createClient();
+  const supabase = await createClient();
   const base = supabase.from("members").select("*").eq("tenant_id", tenantId);
   const scoped = groupIds ? base.in("group_id", groupIds) : base;
   const { data } = await scoped
@@ -211,7 +211,7 @@ export async function getSongs(
   tenantId: string,
   groupIds?: string[]
 ): Promise<Song[]> {
-  const supabase = createClient();
+  const supabase = await createClient();
   const base = supabase.from("songs").select("*").eq("tenant_id", tenantId);
   const scoped = groupIds ? base.in("group_id", groupIds) : base;
   const { data } = await scoped.order("created_at", { ascending: false });

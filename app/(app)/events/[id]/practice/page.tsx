@@ -13,12 +13,13 @@ export const dynamic = "force-dynamic";
 export default async function PracticePlayPage({
   params,
 }: {
-  params: { id: string };
+  params: Promise<{ id: string }>;
 }) {
-  const bundle = await getEventBundle(params.id);
+  const { id } = await params;
+  const bundle = await getEventBundle(id);
   if (!bundle) notFound();
   // This route is only for practice rooms — a normal event opens in Live Mode.
-  if (!bundle.event.is_practice) redirect(`/events/${params.id}`);
+  if (!bundle.event.is_practice) redirect(`/events/${id}`);
 
   const ws = await getWorkspace();
   if (!ws.user) redirect("/dashboard");
@@ -29,7 +30,7 @@ export default async function PracticePlayPage({
   // + add shared notes. RLS enforces the real boundary.
   const canManage = canEditGroup(ws.perms, bundle.event.group_id);
 
-  const supabase = createClient();
+  const supabase = await createClient();
   // Section markers for the whole band library, grouped by song (reusable per song),
   // and this room's practice list (member-curated).
   const [{ data: markerRows }, { data: practiceRows }] = await Promise.all([

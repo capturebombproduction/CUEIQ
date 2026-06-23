@@ -26,7 +26,7 @@ async function requireAdmin(): Promise<
   | { ok: true; tenantId: string; callerId: string }
   | { ok: false; status: number; error: string }
 > {
-  const supabase = createClient();
+  const supabase = await createClient();
   const {
     data: { user },
   } = await supabase.auth.getUser();

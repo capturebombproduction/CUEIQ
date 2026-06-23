@@ -18,8 +18,9 @@ export default async function CrewPage() {
   if (!ws.membership || !ws.tenant) redirect("/dashboard");
   if (!canApprove(ws.perms)) redirect("/dashboard");
 
+  const supabase = await createClient();
   const staffContacts = ((
-    await createClient()
+    await supabase
       .from("staff_contacts")
       .select("*")
       .eq("tenant_id", ws.membership.tenant_id)

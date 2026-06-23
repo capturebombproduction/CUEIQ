@@ -20,20 +20,22 @@ export default async function RunOrderPage({
   params,
   searchParams,
 }: {
-  params: { id: string };
-  searchParams: { from?: string };
+  params: Promise<{ id: string }>;
+  searchParams: Promise<{ from?: string }>;
 }) {
+  const { id } = await params;
+  const { from } = await searchParams;
   const ws = await getWorkspace();
   if (!ws.membership || !ws.tenant) redirect("/dashboard");
   if (!canApprove(ws.perms)) redirect("/dashboard");
-  const fromOverview = searchParams?.from === "overview";
+  const fromOverview = from === "overview";
   const tid = ws.membership.tenant_id;
-  const supabase = createClient();
+  const supabase = await createClient();
 
   const { data: ev } = await supabase
     .from("events")
     .select("id, name, event_date")
-    .eq("id", params.id)
+    .eq("id", id)
     .single();
   if (!ev) redirect("/overview");
 

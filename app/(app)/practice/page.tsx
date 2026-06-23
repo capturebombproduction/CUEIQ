@@ -21,7 +21,7 @@ export default async function PracticePage() {
   // label_staff is an overview-only role — practice is a band activity.
   if (ws.perms.tenantRole === "label_staff") redirect("/overview");
 
-  const supabase = createClient();
+  const supabase = await createClient();
   const tid = ws.membership.tenant_id;
   // Per-band scope: a band-tier user sees only their own band's practice rooms;
   // admin/ceo see every band's.

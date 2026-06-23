@@ -4,9 +4,11 @@ import { cookies } from "next/headers";
 /**
  * Supabase client for use in Server Components, Route Handlers and Server Actions.
  * Reads/writes the auth session from cookies.
+ *
+ * Async because Next 15 made cookies() a Promise — callers must `await createClient()`.
  */
-export function createClient() {
-  const cookieStore = cookies();
+export async function createClient() {
+  const cookieStore = await cookies();
 
   return createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!.trim(),

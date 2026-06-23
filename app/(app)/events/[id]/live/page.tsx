@@ -11,9 +11,10 @@ export const dynamic = "force-dynamic";
 export default async function LivePage({
   params,
 }: {
-  params: { id: string };
+  params: Promise<{ id: string }>;
 }) {
-  const bundle = await getEventBundle(params.id);
+  const { id } = await params;
+  const bundle = await getEventBundle(id);
   if (!bundle) notFound();
 
   // Anyone who can VIEW the event may open Live Mode to rehearse (playback only);
@@ -32,7 +33,7 @@ export default async function LivePage({
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <Button asChild variant="ghost" size="sm" className="-ml-2">
-          <Link href={`/events/${params.id}`}>
+          <Link href={`/events/${id}`}>
             <ArrowLeft className="h-4 w-4" /> กลับไปหน้างาน
           </Link>
         </Button>

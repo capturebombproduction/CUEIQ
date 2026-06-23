@@ -26,7 +26,7 @@ const NO_OP = NextResponse.json({ ok: true, sent: 0 });
 
 export async function POST(req: Request) {
   // 1) The caller must be a logged-in user (their session, via RLS-bound client).
-  const supabase = createClient();
+  const supabase = await createClient();
   const {
     data: { user },
   } = await supabase.auth.getUser();

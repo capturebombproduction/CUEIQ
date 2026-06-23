@@ -69,7 +69,7 @@ export async function POST(req: Request) {
   }
   const groupId = segs.length >= 4 && UUID.test(segs[1]) ? segs[1] : null;
 
-  const supabase = createClient();
+  const supabase = await createClient();
   const {
     data: { user },
   } = await supabase.auth.getUser();

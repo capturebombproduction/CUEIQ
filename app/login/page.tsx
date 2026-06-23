@@ -3,11 +3,12 @@ import { LoginForm } from "@/components/auth/login-form";
 
 export const metadata = { title: "เข้าสู่ระบบ" };
 
-export default function LoginPage({
+export default async function LoginPage({
   searchParams,
 }: {
-  searchParams: { next?: string };
+  searchParams: Promise<{ next?: string }>;
 }) {
+  const { next } = await searchParams;
   return (
     <main className="flex min-h-screen items-center justify-center bg-gradient-to-b from-accent/40 to-background p-4">
       <div className="w-full max-w-sm">
@@ -17,7 +18,7 @@ export default function LoginPage({
             Smart cues for every show.
           </p>
         </div>
-        <LoginForm next={searchParams.next} />
+        <LoginForm next={next} />
         <p className="mt-6 text-center text-sm text-muted-foreground">
           ต้องการบัญชีเข้าใช้งาน? ติดต่อแอดมินค่าย
         </p>
