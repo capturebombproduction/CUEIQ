@@ -9,7 +9,8 @@ export type NotifyKind =
   | "event_rejected"
   | "song_pending"
   | "song_rejected"
-  | "song_cleared";
+  | "song_cleared"
+  | "run_order_live";
 
 export function notify(
   kind: NotifyKind,

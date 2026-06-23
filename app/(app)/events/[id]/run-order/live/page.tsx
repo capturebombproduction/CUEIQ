@@ -79,6 +79,7 @@ export default async function RunOrderLivePage({
         tenantId={tid}
         eventName={ev.name}
         eventDate={ev.event_date}
+        eventId={ev.id}
         initial={(seqs ?? []) as RunSeqLive[]}
         canControl={canControl}
       />

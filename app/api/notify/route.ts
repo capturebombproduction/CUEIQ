@@ -15,10 +15,12 @@ type Kind =
   | "event_rejected" // → the band's Ar(s)
   | "song_pending" // → approvers
   | "song_rejected" // → the band's Ar(s)
-  | "song_cleared"; // → the band's Ar(s)
+  | "song_cleared" // → the band's Ar(s)
+  | "run_order_live"; // → everyone in the tenant (the show just went live)
 
 const EVENT_KINDS = new Set<Kind>(["event_submitted", "event_approved", "event_rejected"]);
 const SONG_KINDS = new Set<Kind>(["song_pending", "song_rejected", "song_cleared"]);
+const RUN_ORDER_KINDS = new Set<Kind>(["run_order_live"]);
 
 const NO_OP = NextResponse.json({ ok: true, sent: 0 });
 
@@ -38,7 +40,10 @@ export async function POST(req: Request) {
   const kind = body?.kind as Kind;
   const eventId = typeof body?.eventId === "string" ? body.eventId : null;
   const songId = typeof body?.songId === "string" ? body.songId : null;
-  if (!kind || (!EVENT_KINDS.has(kind) && !SONG_KINDS.has(kind))) {
+  if (
+    !kind ||
+    (!EVENT_KINDS.has(kind) && !SONG_KINDS.has(kind) && !RUN_ORDER_KINDS.has(kind))
+  ) {
     return NextResponse.json({ error: "bad kind" }, { status: 400 });
   }
 
@@ -46,12 +51,12 @@ export async function POST(req: Request) {
 
   // 2) Resolve the subject (event or song), its band + current state.
   let tenantId: string;
-  let groupId: string;
+  let groupId = "";
   let bandName: string;
   let title: string;
   let messageBody: string;
   let link: string;
-  let recipientRule: "approvers" | "band_ar";
+  let recipientRule: "approvers" | "band_ar" | "all_tenant";
   const meta: Record<string, unknown> = {};
 
   if (EVENT_KINDS.has(kind)) {
@@ -86,7 +91,7 @@ export async function POST(req: Request) {
       recipientRule = "band_ar";
     }
     messageBody = bandName ? `${name} · ${bandName}` : name;
-  } else {
+  } else if (SONG_KINDS.has(kind)) {
     if (!songId) return NextResponse.json({ error: "no songId" }, { status: 400 });
     const { data: sg } = await admin
       .from("songs")
@@ -115,6 +120,35 @@ export async function POST(req: Request) {
     }
     link = "/library";
     messageBody = bandName ? `${name} · ${bandName}` : name;
+  } else {
+    // run_order_live — the festival's live board just started. Everyone in the
+    // label watches the show, so notify the whole tenant. Anti-spoof: the festival
+    // (tenant + name + date, resolved from the event the board was opened for) must
+    // actually have a row gone live.
+    if (!eventId) return NextResponse.json({ error: "no eventId" }, { status: 400 });
+    const { data: ev } = await admin
+      .from("events")
+      .select("id, name, tenant_id, event_date")
+      .eq("id", eventId)
+      .maybeSingle();
+    if (!ev) return NO_OP;
+    tenantId = ev.tenant_id as string;
+    let liveQ = admin
+      .from("run_sequence")
+      .select("id", { count: "exact", head: true })
+      .eq("tenant_id", tenantId)
+      .eq("event_name", ev.name as string)
+      .eq("status", "live");
+    liveQ = ev.event_date
+      ? liveQ.eq("event_date", ev.event_date as string)
+      : liveQ.is("event_date", null);
+    const { count: liveCount } = await liveQ;
+    if (!liveCount) return NO_OP; // not actually live → don't notify
+    title = "🔴 งานเริ่มแล้ว (Live)";
+    messageBody = `${(ev.name as string) || "งาน"} — เปิดดูคิวงานสดได้เลย`;
+    link = `/events/${ev.id}/run-order/live`;
+    recipientRule = "all_tenant";
+    meta.event_id = ev.id;
   }
 
   // 3) The caller must belong to the subject's tenant (blocks cross-tenant spam).
@@ -128,7 +162,13 @@ export async function POST(req: Request) {
 
   // 4) Resolve recipient user ids.
   let recipientIds: string[] = [];
-  if (recipientRule === "approvers") {
+  if (recipientRule === "all_tenant") {
+    const { data } = await admin
+      .from("tenant_members")
+      .select("user_id")
+      .eq("tenant_id", tenantId);
+    recipientIds = (data ?? []).map((r) => r.user_id as string);
+  } else if (recipientRule === "approvers") {
     const { data } = await admin
       .from("tenant_members")
       .select("user_id, role")

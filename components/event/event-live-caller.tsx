@@ -15,9 +15,13 @@ import {
   CheckCircle2,
   Hand,
   ListMusic,
+  ImageDown,
+  Loader2,
 } from "lucide-react";
 import { toast } from "sonner";
 import { createClient } from "@/lib/supabase/client";
+import { notify } from "@/lib/notify-client";
+import { captureElementToImage } from "@/lib/export-image";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { useConfirm } from "@/components/ui/confirm-dialog";
@@ -99,12 +103,15 @@ export function EventLiveCaller({
   tenantId,
   eventName,
   eventDate,
+  eventId,
   initial,
   canControl,
 }: {
   tenantId: string;
   eventName: string;
   eventDate: string | null;
+  /** The event the board was opened for — anchors the "show is live" notification. */
+  eventId: string;
   initial: RunSeqLive[];
   /** Approvers (admin + label_staff) run the show; everyone else watches read-only. */
   canControl: boolean;
@@ -118,6 +125,8 @@ export function EventLiveCaller({
   // we render stable placeholders for them during SSR/hydration to avoid a mismatch.
   const [mounted, setMounted] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [reportBusy, setReportBusy] = useState(false);
+  const reportRef = useRef<HTMLDivElement>(null);
 
   const meId = useRef(
     typeof crypto !== "undefined" && "randomUUID" in crypto
@@ -260,17 +269,23 @@ export function EventLiveCaller({
   }
 
   // Begin the show / start the first pending row (only when nothing is live).
-  function start() {
+  async function start() {
     if (liveRow || !firstPending) return;
+    // Only the FIRST start of the whole show pings members — resuming a later row
+    // ("เริ่มลำดับถัดไป") shouldn't. Capture before the optimistic update flips it.
+    const firstStart = !started;
     const t = new Date();
     const p = parseClockToSeconds(firstPending.planned_start);
     const d = p != null ? normMin(Math.round((secOfDay(t) - p) / 60)) : drift;
-    apply([
+    await apply([
       {
         id: firstPending.id,
         partial: { status: "live", actual_start: t.toISOString(), offset_min: d },
       },
     ]);
+    // Fire-and-forget AFTER the write lands so the route's anti-spoof (it re-checks
+    // run_sequence has a live row) passes. Notifies the whole label the show is on.
+    if (firstStart) notify("run_order_live", { eventId });
   }
 
   // End the live row (logs its actual_end + its start-offset as late/early) and start
@@ -348,6 +363,29 @@ export function EventLiveCaller({
     );
   }
 
+  // Save the run-time report (planned vs actual, late/early, over/under per slot) as
+  // a JPG to share with the crew after the show. Captures the off-screen report DOM.
+  async function exportReport() {
+    const el = reportRef.current;
+    if (!el) return;
+    setReportBusy(true);
+    try {
+      const safe = eventName.replace(/[^\w\-]+/g, "_") || "run-order";
+      const how = await captureElementToImage(el, {
+        filename: `${safe}_report.jpg`,
+        shareTitle: `${eventName} — รายงานเวลา`,
+        width: 720,
+      });
+      toast.success(how === "shared" ? "แชร์รายงานแล้ว" : "บันทึกรายงานแล้ว");
+    } catch (e) {
+      toast.error("บันทึกรายงานไม่สำเร็จ", {
+        description: e instanceof Error ? e.message : String(e),
+      });
+    } finally {
+      setReportBusy(false);
+    }
+  }
+
   // --- derived display --------------------------------------------------------
   const nowDate = new Date(now);
   const wall = formatClockOfDay(secOfDay(nowDate), true);
@@ -391,17 +429,35 @@ export function EventLiveCaller({
             </p>
           </div>
         </div>
-        <Badge
-          className={cn(
-            "h-9 px-3 text-sm",
-            driftTone === "ok" && "bg-success/15 text-success",
-            driftTone === "late" && "bg-destructive/15 text-destructive",
-            driftTone === "early" && "bg-sky-500/15 text-sky-600 dark:text-sky-400"
+        <div className="flex items-center gap-2">
+          {mounted && doneRows.length > 0 && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={exportReport}
+              disabled={reportBusy}
+              title="บันทึกรายงานเวลาจริงเป็นรูป ไว้แชร์ให้ทีมงาน"
+            >
+              {reportBusy ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <ImageDown className="h-4 w-4" />
+              )}
+              บันทึกรายงาน
+            </Button>
           )}
-          variant="secondary"
-        >
-          {started ? driftPhrase(drift) : "ยังไม่เริ่มงาน"}
-        </Badge>
+          <Badge
+            className={cn(
+              "h-9 px-3 text-sm",
+              driftTone === "ok" && "bg-success/15 text-success",
+              driftTone === "late" && "bg-destructive/15 text-destructive",
+              driftTone === "early" && "bg-sky-500/15 text-sky-600 dark:text-sky-400"
+            )}
+            variant="secondary"
+          >
+            {started ? driftPhrase(drift) : "ยังไม่เริ่มงาน"}
+          </Badge>
+        </div>
       </div>
 
       {/* NOW + NEXT */}
@@ -725,6 +781,82 @@ export function EventLiveCaller({
           })
         )}
       </div>
+
+      {/* Off-screen run-time report — captured to a clean JPG by exportReport().
+          Mounted-only (never in the SSR HTML) so its timezone-dependent actual times
+          can't cause a hydration mismatch; captureElementToImage forces a light
+          palette + fixed width when it shoots it. */}
+      {mounted && doneRows.length > 0 && (
+        <div
+          ref={reportRef}
+          aria-hidden
+          className="pointer-events-none fixed -left-[9999px] top-0 w-[720px] bg-card p-6 text-foreground"
+        >
+          <div className="mb-4">
+            <h2 className="text-xl font-bold">{eventName}</h2>
+            <p className="text-sm text-muted-foreground">
+              {eventDate ? `${eventDate} · ` : ""}รายงานเวลาจริง (Run-time Report)
+            </p>
+            <p className="mt-1 text-sm">
+              ภาพรวม:{" "}
+              <b>{started ? driftPhrase(drift) : "—"}</b>
+            </p>
+          </div>
+          <table className="w-full border-collapse text-sm">
+            <thead>
+              <tr className="border-b text-left text-xs text-muted-foreground">
+                <th className="py-1.5 pr-2 font-medium">ลำดับ</th>
+                <th className="py-1.5 pr-2 font-medium">แผน</th>
+                <th className="py-1.5 pr-2 font-medium">จริง</th>
+                <th className="py-1.5 pr-2 font-medium">เริ่ม</th>
+                <th className="py-1.5 pr-2 font-medium">เล่น</th>
+              </tr>
+            </thead>
+            <tbody>
+              {ordered.map((r) => {
+                const ps = parseClockToSeconds(r.planned_start);
+                const pe = parseClockToSeconds(r.planned_end);
+                const planned =
+                  ps != null
+                    ? `${formatClockOfDay(ps)}${pe != null ? `–${formatClockOfDay(pe)}` : ""}`
+                    : "—";
+                const actual = r.actual_start
+                  ? `${formatClockOfDay(secOfDay(new Date(r.actual_start)))}${
+                      r.actual_end
+                        ? `–${formatClockOfDay(secOfDay(new Date(r.actual_end)))}`
+                        : ""
+                    }`
+                  : "—";
+                const late = startLateMin(r);
+                const dur = durationDeltaMin(r);
+                return (
+                  <tr key={r.id} className="border-b align-top last:border-0">
+                    <td className="py-1.5 pr-2">
+                      <div className="font-medium">{r.title || "(ไม่มีชื่อ)"}</div>
+                      <div className="text-[11px] text-muted-foreground">
+                        {kindMeta(r.kind).label}
+                      </div>
+                    </td>
+                    <td className="py-1.5 pr-2 tabular-nums text-muted-foreground">
+                      {planned}
+                    </td>
+                    <td className="py-1.5 pr-2 tabular-nums">{actual}</td>
+                    <td className="py-1.5 pr-2 text-xs">
+                      {late == null ? "—" : driftPhrase(late)}
+                    </td>
+                    <td className="py-1.5 pr-2 text-xs">
+                      {dur == null ? "—" : durPhrase(dur)}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+          <p className="mt-4 text-[11px] text-muted-foreground">
+            สร้างจาก CueIQ · {eventName}
+          </p>
+        </div>
+      )}
     </div>
   );
 }
