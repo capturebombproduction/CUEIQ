@@ -230,10 +230,22 @@ export function EventsList({
     const today = todayKey();
     const up = matched
       .filter((e) => !e.event_date || e.event_date >= today)
-      .sort((a, b) => (a.event_date ?? "9999").localeCompare(b.event_date ?? "9999"));
+      .sort((a, b) => {
+        // soonest date first, then by start time so same-day shows run in order
+        const d = (a.event_date ?? "9999").localeCompare(b.event_date ?? "9999");
+        return d !== 0
+          ? d
+          : (a.show_start_time ?? "99:99:99").localeCompare(b.show_start_time ?? "99:99:99");
+      });
     const pa = matched
       .filter((e) => e.event_date && e.event_date < today)
-      .sort((a, b) => (b.event_date ?? "").localeCompare(a.event_date ?? ""));
+      .sort((a, b) => {
+        // most recent date first, then latest start time within the day
+        const d = (b.event_date ?? "").localeCompare(a.event_date ?? "");
+        return d !== 0
+          ? d
+          : (b.show_start_time ?? "").localeCompare(a.show_start_time ?? "");
+      });
     return { upcoming: up, past: pa };
   }, [items, q]);
 
