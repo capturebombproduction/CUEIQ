@@ -14,6 +14,7 @@ import {
   CheckCircle2,
   AlertTriangle,
   Pencil,
+  ListOrdered,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -201,6 +202,13 @@ export function EventSummary({
             <Radio className="h-4 w-4" /> เข้า Live Mode
           </Link>
         </Button>
+        {editable && (
+          <Button variant="outline" asChild title="ลำดับงานทั้งงาน (สำหรับสตาฟคุมคิว)">
+            <Link href={`/events/${event.id}/run-order`}>
+              <ListOrdered className="h-4 w-4" /> Running Order
+            </Link>
+          </Button>
+        )}
         <Button variant="outline" onClick={exportJpg} disabled={exporting}>
           {exporting ? (
             <Loader2 className="h-4 w-4 animate-spin" />
