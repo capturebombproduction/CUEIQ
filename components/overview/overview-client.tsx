@@ -1,6 +1,6 @@
 "use client";
 
-import { type ReactNode, useMemo, useRef, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { toast } from "sonner";
 import { AlarmClock, Users, PlayCircle, ImageDown, Loader2 } from "lucide-react";
@@ -596,6 +596,13 @@ export function OverviewClient({
   const [dateFilter, setDateFilter] = useState<string>("all"); // "all" or an ISO date
   const [exporting, setExporting] = useState(false);
   const exportRef = useRef<HTMLDivElement>(null);
+  // The off-screen export block is rendered ONLY after mount (client-side). It
+  // exists solely for the click-triggered JPG export, so it never needs to be in
+  // the SSR HTML — keeping it out avoids any server↔client hydration mismatch from
+  // that large subtree (e.g. the "generated on <today>" footer), which on mobile
+  // Safari could blank the whole page (React #422/#425).
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
 
   // Order the whole schedule by date, then by each show's EARLIEST activity time —
   // staff read a day top-to-bottom in time order, regardless of band.
@@ -974,7 +981,9 @@ export function OverviewClient({
       {/* Off-screen clean schedule — rendered only so it can be captured as a JPG
           for distribution. Kept in layout (not display:none) so html-to-image can
           measure it; pushed far off-screen and hidden from a11y/pointer. The
-          capture helper forces a light palette + fixed width on exportRef. */}
+          capture helper forces a light palette + fixed width on exportRef.
+          Gated on `mounted` so it's client-only — see the note by the state. */}
+      {mounted && (
       <div className="pointer-events-none fixed -left-[10000px] top-0" aria-hidden>
         <div ref={exportRef} className="space-y-4 bg-card p-6 text-foreground">
           <div className="border-b pb-3">
@@ -1087,6 +1096,7 @@ export function OverviewClient({
           </p>
         </div>
       </div>
+      )}
     </div>
   );
 }
