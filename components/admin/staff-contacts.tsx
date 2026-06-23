@@ -2,7 +2,7 @@
 
 import { useState, type KeyboardEvent } from "react";
 import { toast } from "sonner";
-import { Plus, Trash2, Users } from "lucide-react";
+import { ChevronUp, ChevronDown, Plus, Trash2, Users } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -59,6 +59,26 @@ export function StaffContactsManager({
     setRows((prev) => [...prev, data as StaffContact]);
   }
 
+  async function moveRow(id: string, dir: 1 | -1) {
+    const sorted = [...rows].sort((a, b) => a.sort_order - b.sort_order);
+    const idx = sorted.findIndex((r) => r.id === id);
+    const other = sorted[idx + dir];
+    if (!other) return;
+    const a = sorted[idx];
+    // swap sort_order values
+    setRows((prev) =>
+      prev.map((r) => {
+        if (r.id === a.id) return { ...r, sort_order: other.sort_order };
+        if (r.id === other.id) return { ...r, sort_order: a.sort_order };
+        return r;
+      })
+    );
+    await Promise.all([
+      supabase.from("staff_contacts").update({ sort_order: other.sort_order }).eq("id", a.id),
+      supabase.from("staff_contacts").update({ sort_order: a.sort_order }).eq("id", other.id),
+    ]);
+  }
+
   async function removeRow(id: string) {
     const row = rows.find((r) => r.id === id);
     const ok = await confirm({
@@ -92,8 +112,27 @@ export function StaffContactsManager({
             ยังไม่มีทีมงาน — กด “เพิ่มทีมงาน”
           </p>
         )}
-        {rows.map((r) => (
+        {[...rows].sort((a, b) => a.sort_order - b.sort_order).map((r, i, sorted) => (
           <div key={r.id} className="flex flex-wrap items-center gap-2">
+            {/* up/down reorder */}
+            <div className="flex flex-col">
+              <Button
+                variant="ghost" size="icon" className="h-5 w-6"
+                disabled={i === 0}
+                onClick={() => moveRow(r.id, -1)}
+                aria-label="ขยับขึ้น"
+              >
+                <ChevronUp className="h-3.5 w-3.5" />
+              </Button>
+              <Button
+                variant="ghost" size="icon" className="h-5 w-6"
+                disabled={i === sorted.length - 1}
+                onClick={() => moveRow(r.id, 1)}
+                aria-label="ขยับลง"
+              >
+                <ChevronDown className="h-3.5 w-3.5" />
+              </Button>
+            </div>
             <Input
               value={r.name}
               placeholder="ชื่อ (เช่น พี่พัชร์)"
@@ -119,8 +158,7 @@ export function StaffContactsManager({
               onKeyDown={saveOnEnter}
             />
             <Button
-              variant="ghost"
-              size="icon"
+              variant="ghost" size="icon"
               className="text-destructive hover:text-destructive"
               onClick={() => removeRow(r.id)}
               aria-label="ลบทีมงาน"
