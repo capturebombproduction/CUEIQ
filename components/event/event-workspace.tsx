@@ -1,19 +1,43 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import dynamic from "next/dynamic";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
-import { ClipboardList, Check } from "lucide-react";
+import { ClipboardList, Check, Loader2 } from "lucide-react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { RefreshButton } from "@/components/refresh-button";
 import { ShareButton } from "@/components/event/share-button";
-import { ScheduleEditor } from "@/components/event/schedule-editor";
-import { SetlistBuilder } from "@/components/event/setlist-builder";
-import { MicMapEditor } from "@/components/event/mic-map-editor";
-import { LineupEditor } from "@/components/event/lineup-editor";
 import { EventSummary } from "@/components/event/event-summary";
 import { type RunSeqLive } from "@/components/event/event-live-caller";
+
+// The per-tab editors are heavy (SetlistBuilder alone is ~700 lines) and aren't
+// needed until their tab is opened — the page lands on Summary. Code-split them
+// so opening an event ships only the Summary + shell JS; each editor's chunk is
+// fetched the first time its tab is shown. ssr:false is fine here (this is a
+// Client Component, and the editors are client-only interactive surfaces).
+const editorLoading = () => (
+  <div className="flex items-center justify-center gap-2 py-12 text-sm text-muted-foreground">
+    <Loader2 className="h-4 w-4 animate-spin" /> กำลังโหลด…
+  </div>
+);
+const SetlistBuilder = dynamic(
+  () => import("@/components/event/setlist-builder").then((m) => m.SetlistBuilder),
+  { ssr: false, loading: editorLoading }
+);
+const ScheduleEditor = dynamic(
+  () => import("@/components/event/schedule-editor").then((m) => m.ScheduleEditor),
+  { ssr: false, loading: editorLoading }
+);
+const MicMapEditor = dynamic(
+  () => import("@/components/event/mic-map-editor").then((m) => m.MicMapEditor),
+  { ssr: false, loading: editorLoading }
+);
+const LineupEditor = dynamic(
+  () => import("@/components/event/lineup-editor").then((m) => m.LineupEditor),
+  { ssr: false, loading: editorLoading }
+);
 import { createClient } from "@/lib/supabase/client";
 import { notify } from "@/lib/notify-client";
 import { type CompletenessResult } from "@/lib/completeness";

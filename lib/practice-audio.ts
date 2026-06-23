@@ -23,12 +23,32 @@
 // Mode never uses this.
 // ---------------------------------------------------------------------------
 
-import { PitchShifter } from "soundtouchjs";
+import type { PitchShifter } from "soundtouchjs";
 
 // SoundTouch drives playback through a ScriptProcessorNode whose callback fires
 // every BUFFER_SIZE / sampleRate seconds (~93ms at 44.1kHz). Smaller = tighter
 // A-B loop / scrubber updates, at a little more CPU. 4096 is the library default.
 const BUFFER_SIZE = 4096;
+
+// SoundTouchJS is only needed for slow-down (<1× = the "stretch" backend). The
+// common case — practising at full speed — never touches it, so we lazy-load the
+// library the first time a slow-down is requested instead of bundling it into the
+// practice route up front. The constructor promise is module-level so it loads at
+// most once across every engine instance.
+type PitchShifterCtor = new (
+  context: AudioContext,
+  buffer: AudioBuffer,
+  bufferSize: number,
+  onEnd?: () => void
+) => PitchShifter;
+let _shifterCtor: PitchShifterCtor | null = null;
+async function loadShifterCtor(): Promise<PitchShifterCtor> {
+  if (!_shifterCtor) {
+    const m = await import("soundtouchjs");
+    _shifterCtor = m.PitchShifter as unknown as PitchShifterCtor;
+  }
+  return _shifterCtor;
+}
 
 type Backend = "native" | "stretch";
 
@@ -49,6 +69,7 @@ export class PracticeAudioEngine {
   private ctx: AudioContext | null = null;
   private gain: GainNode | null = null;
   private shifter: PitchShifter | null = null;
+  private shifterCtor: PitchShifterCtor | null = null; // lazily loaded on first slow-down
   private buffer: AudioBuffer | null = null;
   private blob: Blob | null = null; // kept so we can decode on the first slow-down
   private _ended = false;
@@ -196,16 +217,22 @@ export class PracticeAudioEngine {
       }
     }
     this._duration = this.buffer.duration;
+    await this.ensureShifterCtor();
     this.buildShifter(startSec);
     this.onDuration(this._duration);
     this.onTime(startSec);
   }
 
+  // Load SoundTouchJS (once) so the synchronous buildShifter can construct it.
+  private async ensureShifterCtor(): Promise<void> {
+    if (!this.shifterCtor) this.shifterCtor = await loadShifterCtor();
+  }
+
   private buildShifter(startSec: number) {
     const ctx = this.ensureCtx();
-    if (!this.buffer) return;
+    if (!this.buffer || !this.shifterCtor) return;
     this.teardownShifter();
-    const shifter = new PitchShifter(ctx, this.buffer, BUFFER_SIZE, () => this.handleEnd());
+    const shifter = new this.shifterCtor(ctx, this.buffer, BUFFER_SIZE, () => this.handleEnd());
     shifter.tempo = this._tempo;
     shifter.pitch = 1; // keep the key — slow down only
     if (startSec > 0 && this._duration > 0) {
@@ -306,7 +333,10 @@ export class PracticeAudioEngine {
     const ctx = this.ensureCtx();
     if (ctx.state === "suspended") await ctx.resume().catch(() => {});
     if (this._ended || this._time >= this._duration - 0.05) this.seek(0);
-    if (!this.shifter) this.buildShifter(this._time);
+    if (!this.shifter) {
+      await this.ensureShifterCtor();
+      this.buildShifter(this._time);
+    }
     if (this.shifter && this.gain) {
       this.shifter.connect(this.gain); // connecting the node starts playback
       this._playing = true;
