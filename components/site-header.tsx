@@ -42,31 +42,24 @@ export function SiteHeader({
   const shownRole = roleLabel(role, perms);
   return (
     <header className="no-print sticky top-0 z-40 border-b bg-background/80 backdrop-blur supports-[backdrop-filter]:bg-background/60">
-      <div className="container flex flex-wrap items-center justify-between gap-x-3 gap-y-1.5 py-2 xl:h-14 xl:flex-nowrap xl:py-0">
-        <div className="flex min-w-0 items-center gap-2 sm:gap-4">
-          <Link href="/dashboard" className="shrink-0">
-            <Brand subtitle="Designed by PatzNutthapat" />
-          </Link>
-          {/* nav is inline only on wide desktops (xl+), where even the admin's
-              6-link nav fits beside the action icons; on anything narrower (phones in
-              either orientation, tablets, split windows) it drops to its own
-              scrollable row below so it can never overlap the action icons */}
-          <div className="hidden xl:block">
-            <MainNav perms={perms} />
-          </div>
-        </div>
-        {/* action icons: inline beside the brand on wide desktops (xl+); on anything
-            narrower the whole cluster (w-full) wraps onto its own right-aligned line
-            below the brand so it can never overlap the logo, and flex-wraps again on
-            very narrow phones instead of being clipped */}
-        <div className="flex w-full shrink-0 flex-wrap items-center justify-end gap-x-2 gap-y-1.5 sm:gap-x-3 xl:w-auto xl:flex-nowrap">
+      {/* Brand + identity + action icons. The nav is NOT inline here: with the
+          admin's 7-link nav (incl. Crew) it never reliably fit beside the icons — it
+          overflowed around 1280–1700 and the role badge overlapped the nav — so the
+          nav always sits on its own scrollable row below. The icon cluster is w-full
+          on phones (its own right-aligned line under the brand) and auto from sm up
+          (beside the brand on one row, with room to spare since the nav isn't here). */}
+      <div className="container flex flex-wrap items-center justify-between gap-x-3 gap-y-1.5 py-2">
+        <Link href="/dashboard" className="shrink-0">
+          <Brand subtitle="Designed by PatzNutthapat" />
+        </Link>
+        <div className="flex w-full flex-wrap items-center justify-end gap-x-2 gap-y-1.5 sm:w-auto sm:gap-x-3">
           {shownRole && (
-            <Badge variant="secondary" className="hidden xl:inline-flex">
+            <Badge variant="secondary" className="hidden sm:inline-flex">
               {shownRole}
             </Badge>
           )}
           {name && (
-            <span className="hidden max-w-[16ch] truncate text-sm font-medium xl:inline">
+            <span className="hidden max-w-[16ch] truncate text-sm font-medium sm:inline">
               {name}
             </span>
           )}
@@ -82,12 +75,11 @@ export function SiteHeader({
           <SignOutButton />
         </div>
       </div>
-      {/* mobile / landscape-phone / tablet nav row — keeps all links visible without
-          overflowing the header (shown below xl). Identity (role + name) lives here
-          since the top row hides it until xl. */}
-      <div className="container -mt-1 space-y-1.5 pb-2 xl:hidden">
+      {/* Nav — always its own scrollable row, so it can never overlap the icons.
+          On phones (where the top row hides the identity) the role + name show here. */}
+      <div className="container -mt-1 space-y-1.5 pb-2">
         {(shownRole || name) && (
-          <div className="flex items-center gap-2 text-xs">
+          <div className="flex items-center gap-2 text-xs sm:hidden">
             {shownRole && (
               <Badge variant="secondary" className="text-[10px]">
                 {shownRole}
