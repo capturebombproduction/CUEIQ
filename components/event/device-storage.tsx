@@ -53,7 +53,22 @@ export function DeviceStorage({
 
   useEffect(() => {
     refresh();
-    navigator.storage?.persisted?.().then(setPersisted).catch(() => {});
+    // Default-ON: auto-request persistent storage on load so the browser won't
+    // evict cached show audio when space runs low — no need to tap "ล็อกพื้นที่"
+    // first. persist() is best-effort (Chrome grants it for installed PWAs /
+    // high-engagement sites, may otherwise decline silently); if it's still not
+    // granted the amber banner below stays as a manual retry.
+    navigator.storage
+      ?.persisted?.()
+      .then((p) =>
+        p
+          ? setPersisted(true)
+          : navigator.storage
+              ?.persist?.()
+              .then((ok) => setPersisted(ok ?? false))
+              .catch(() => setPersisted(false))
+      )
+      .catch(() => {});
     const onVisible = () => {
       if (document.visibilityState === "visible") refresh();
     };
