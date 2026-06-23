@@ -94,9 +94,15 @@ export function deadlineInfo(
   const d = new Date(deadline);
   if (isNaN(d.getTime())) return null;
   const diffH = (d.getTime() - now.getTime()) / 3_600_000;
+  // Pin the formatted date to Bangkok so it's identical on the server (Vercel = UTC)
+  // and the client (+7) — otherwise a deadline whose UTC instant lands on a different
+  // calendar day than its Bangkok one renders two different strings and trips a
+  // hydration mismatch (and shows the wrong day). diffH/tone above are absolute-time
+  // differences, so they're already timezone-independent.
   const dateStr = d.toLocaleDateString("th-TH", {
     day: "2-digit",
     month: "short",
+    timeZone: "Asia/Bangkok",
   });
   if (diffH < 0) return { label: "เลยกำหนดแล้ว", tone: "overdue" };
   if (diffH < 24) return { label: `ด่วน! เหลือ ${Math.round(diffH)} ชม.`, tone: "urgent" };
