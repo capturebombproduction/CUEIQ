@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { cn } from "@/lib/utils";
-import { isAdmin, canViewOverview, canViewLibrary, type Perms } from "@/lib/permissions";
+import { isAdmin, canApprove, canViewOverview, canViewLibrary, type Perms } from "@/lib/permissions";
 
 type NavLink = { href: string; label: string };
 
@@ -30,6 +30,11 @@ export function MainNav({ perms }: { perms?: Perms }) {
     if (l.href === "/practice") return !labelStaff; // practice is a band activity
     return true;
   });
+  // Crew directory: admin + label_staff maintain it (RLS 0032). Its own tab now,
+  // not a collapsed block on /overview.
+  if (perms && canApprove(perms)) {
+    links.push({ href: "/crew", label: "Crew" });
+  }
   if (perms && isAdmin(perms)) {
     links.push({ href: "/admin", label: "Admin" });
   }
