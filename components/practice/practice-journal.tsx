@@ -14,6 +14,7 @@ import { toast } from "sonner";
 import { createClient } from "@/lib/supabase/client";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
+import { useConfirm } from "@/components/ui/confirm-dialog";
 import { cn } from "@/lib/utils";
 import {
   PRACTICE_CATEGORY_META,
@@ -70,6 +71,7 @@ export function PracticeJournal({
   refreshSignal: number;
 }) {
   const today = bkkToday();
+  const confirm = useConfirm();
   const [logs, setLogs] = useState<PracticeLog[]>([]);
   const [runs, setRuns] = useState<PracticeRun[]>([]);
   const [attendance, setAttendance] = useState<PracticeAttendance[]>([]);
@@ -167,6 +169,11 @@ export function PracticeJournal({
   }
 
   async function removeLog(id: string) {
+    const ok = await confirm({
+      title: "ลบบันทึกนี้?",
+      description: "บันทึกการซ้อมรายการนี้จะถูกลบถาวร",
+    });
+    if (!ok) return;
     setLogs((prev) => prev.filter((l) => l.id !== id));
     const supabase = createClient();
     await supabase.from("practice_logs").delete().eq("id", id);

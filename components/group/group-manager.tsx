@@ -79,6 +79,7 @@ export function GroupManager({
       description:
         "⚠️ จะลบสมาชิก เพลงในคลัง และงานทั้งหมดของวงนี้ด้วย — กู้คืนไม่ได้",
       confirmText: "ลบวง",
+      requireTyped: g.name,
     });
     if (!ok) return;
     // Gather the R2 audio keys this delete will orphan BEFORE the DB cascade wipes
@@ -180,8 +181,14 @@ export function GroupManager({
   }
 
   async function deleteMember(id: string) {
+    const m = members.find((x) => x.id === id);
+    const ok = await confirm({
+      title: "ลบสมาชิกคนนี้?",
+      description: m?.name ? `“${m.name}” จะถูกลบออกจากวง` : "สมาชิกคนนี้จะถูกลบออกจากวง",
+    });
+    if (!ok) return;
     const snap = members;
-    setMembers((prev) => prev.filter((m) => m.id !== id));
+    setMembers((prev) => prev.filter((x) => x.id !== id));
     const { error } = await supabase.from("members").delete().eq("id", id);
     if (error) {
       toast.error("ลบไม่สำเร็จ", { description: error.message });

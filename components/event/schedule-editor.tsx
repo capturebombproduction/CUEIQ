@@ -8,6 +8,7 @@ import { shortClock } from "@/lib/time";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { useConfirm } from "@/components/ui/confirm-dialog";
 import {
   Select,
   SelectContent,
@@ -46,6 +47,7 @@ export function ScheduleEditor({
   initialItems: ScheduleItem[];
 }) {
   const supabase = createClient();
+  const confirm = useConfirm();
   const [items, setItems] = useState<ScheduleItem[]>(
     [...initialItems].sort((a, b) => a.sort_order - b.sort_order)
   );
@@ -91,6 +93,13 @@ export function ScheduleEditor({
   }
 
   async function removeItem(id: string) {
+    const it = items.find((x) => x.id === id);
+    const name = it?.label || (it ? SCHEDULE_KIND_LABELS[it.kind] : "");
+    const ok = await confirm({
+      title: "ลบรายการคิวนี้?",
+      description: name ? `“${name}” จะถูกลบออกจากตารางเวลา` : "รายการนี้จะถูกลบออกจากตารางเวลา",
+    });
+    if (!ok) return;
     const snapshot = items;
     setItems((prev) => prev.filter((it) => it.id !== id));
     const { error } = await supabase

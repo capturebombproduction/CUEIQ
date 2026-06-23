@@ -5,6 +5,7 @@ import { toast } from "sonner";
 import { Check, Users, CheckCheck, X } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { Button } from "@/components/ui/button";
+import { useConfirm } from "@/components/ui/confirm-dialog";
 import { cn } from "@/lib/utils";
 import type { Member } from "@/lib/types";
 
@@ -25,6 +26,7 @@ export function LineupEditor({
 }) {
   const [lineup, setLineup] = useState<Set<string>>(new Set(initialLineup));
   const supabase = createClient();
+  const confirm = useConfirm();
 
   async function toggle(memberId: string) {
     if (!editable) return;
@@ -67,6 +69,13 @@ export function LineupEditor({
 
   async function clearAll() {
     if (!editable) return;
+    if (lineup.size === 0) return;
+    const ok = await confirm({
+      title: "ล้างรายชื่อทั้งหมด?",
+      description: "จะเอาสมาชิกออกจากรายชื่อขึ้นแสดงของงานนี้ทั้งหมด (เลือกใหม่ได้)",
+      confirmText: "ล้างทั้งหมด",
+    });
+    if (!ok) return;
     const prev = new Set(lineup);
     setLineup(new Set());
     const { error } = await supabase

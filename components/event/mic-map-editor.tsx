@@ -6,6 +6,7 @@ import { Plus, Trash2, ChevronUp, ChevronDown, Mic2 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { useConfirm } from "@/components/ui/confirm-dialog";
 import {
   Card,
   CardContent,
@@ -31,6 +32,7 @@ export function MicMapEditor({
   setlist: SetlistItem[];
 }) {
   const supabase = createClient();
+  const confirm = useConfirm();
   const [mics, setMics] = useState<MicAssignment[]>(initialMics);
 
   // Group holders by mic number (rotation order within each).
@@ -101,6 +103,14 @@ export function MicMapEditor({
   }
 
   async function removeHolder(id: string) {
+    const holder = mics.find((m) => m.id === id);
+    const ok = await confirm({
+      title: "เอาคนนี้ออกจากไมค์?",
+      description: holder?.holder_name
+        ? `“${holder.holder_name}” จะถูกเอาออกจากไมค์ #${holder.mic_number}`
+        : "ผู้ถือไมค์คนนี้จะถูกเอาออก",
+    });
+    if (!ok) return;
     const snapshot = mics;
     setMics((prev) => prev.filter((m) => m.id !== id));
     const { error } = await supabase
@@ -114,6 +124,11 @@ export function MicMapEditor({
   }
 
   async function removeMic(micNumber: number) {
+    const ok = await confirm({
+      title: `ลบไมค์ #${micNumber}?`,
+      description: "ผู้ถือไมค์ทุกคนในไมค์นี้จะถูกเอาออก",
+    });
+    if (!ok) return;
     const snapshot = mics;
     setMics((prev) => prev.filter((m) => m.mic_number !== micNumber));
     const { error } = await supabase

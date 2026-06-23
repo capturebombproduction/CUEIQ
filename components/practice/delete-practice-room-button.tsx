@@ -6,14 +6,7 @@ import { Trash2, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { createClient } from "@/lib/supabase/client";
 import { Button } from "@/components/ui/button";
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogDescription,
-  DialogFooter,
-} from "@/components/ui/dialog";
+import { useConfirm } from "@/components/ui/confirm-dialog";
 
 /**
  * Delete a practice room (a confirm step — there is no undo). Room-scoped rows
@@ -28,17 +21,23 @@ export function DeletePracticeRoomButton({
   roomName: string;
 }) {
   const router = useRouter();
-  const [open, setOpen] = useState(false);
+  const confirm = useConfirm();
   const [busy, setBusy] = useState(false);
 
-  async function remove() {
+  async function onClick() {
     if (busy) return;
+    const ok = await confirm({
+      title: "ลบห้องซ้อมนี้?",
+      description:
+        `จะลบ “${roomName}” อย่างถาวร — รวมลิสต์เพลงซ้อม / บันทึกการซ้อมในห้องนี้ (กู้คืนไม่ได้)\nไฟล์เพลงในคลังไม่ถูกลบ`,
+      confirmText: "ลบห้องซ้อม",
+    });
+    if (!ok) return;
     setBusy(true);
     try {
       const { error } = await createClient().from("events").delete().eq("id", roomId);
       if (error) throw error;
       toast.success("ลบห้องซ้อมแล้ว");
-      setOpen(false);
       router.refresh();
     } catch (err) {
       toast.error("ลบห้องซ้อมไม่สำเร็จ", {
@@ -50,36 +49,15 @@ export function DeletePracticeRoomButton({
   }
 
   return (
-    <>
-      <Button
-        variant="ghost"
-        size="icon"
-        title="ลบห้องซ้อมนี้"
-        className="shrink-0 text-muted-foreground hover:text-destructive"
-        onClick={() => setOpen(true)}
-      >
-        <Trash2 className="h-4 w-4" />
-      </Button>
-      <Dialog open={open} onOpenChange={(o) => !busy && setOpen(o)}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>ลบห้องซ้อมนี้?</DialogTitle>
-            <DialogDescription>
-              จะลบ “{roomName}” อย่างถาวร — รวมลิสต์เพลงซ้อม / บันทึกการซ้อมในห้องนี้ (กู้คืนไม่ได้)
-              ไฟล์เพลงในคลังไม่ถูกลบ
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setOpen(false)} disabled={busy}>
-              ยกเลิก
-            </Button>
-            <Button variant="destructive" onClick={remove} disabled={busy}>
-              {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
-              ลบห้องซ้อม
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-    </>
+    <Button
+      variant="ghost"
+      size="icon"
+      title="ลบห้องซ้อมนี้"
+      className="shrink-0 text-muted-foreground hover:text-destructive"
+      onClick={onClick}
+      disabled={busy}
+    >
+      {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
+    </Button>
   );
 }

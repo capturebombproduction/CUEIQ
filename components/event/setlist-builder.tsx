@@ -28,6 +28,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
+import { useConfirm } from "@/components/ui/confirm-dialog";
 import {
   Select,
   SelectContent,
@@ -429,6 +430,7 @@ export function SetlistBuilder({
   songs: Song[];
 }) {
   const supabase = createClient();
+  const confirm = useConfirm();
   const [items, setItems] = useState<SetlistItem[]>(
     [...initialItems].sort((a, b) => a.sort_order - b.sort_order)
   );
@@ -652,6 +654,13 @@ export function SetlistBuilder({
   async function removeItem(id: string) {
     const snapshot = items;
     const removed = snapshot.find((it) => it.id === id);
+    const ok = await confirm({
+      title: "ลบรายการนี้ออกจากเซ็ตลิสต์?",
+      description: removed?.title
+        ? `“${removed.title}” จะถูกลบออกจากเซ็ตลิสต์`
+        : "รายการนี้จะถูกลบออกจากเซ็ตลิสต์",
+    });
+    if (!ok) return;
     setItems((prev) => prev.filter((it) => it.id !== id));
     const { error } = await supabase.from("setlist_items").delete().eq("id", id);
     if (error) {

@@ -227,10 +227,12 @@ export function UserManager({
   }
 
   async function remove(u: ManagedUser) {
+    const loginId = displayLoginId(u.email) || u.user_id;
     const ok = await confirm({
-      title: `ลบบัญชี ${displayLoginId(u.email) || u.user_id}?`,
-      description: "กู้คืนไม่ได้",
+      title: `ลบบัญชี ${loginId}?`,
+      description: "⚠️ ลบถาวร กู้คืนไม่ได้ — บัญชีนี้จะเข้าใช้งานไม่ได้อีก",
       confirmText: "ลบบัญชี",
+      requireTyped: loginId,
     });
     if (!ok) return;
     setBusy(true);

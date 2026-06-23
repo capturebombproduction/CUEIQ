@@ -30,6 +30,7 @@ import { getSongBlob } from "@/lib/song-cache";
 import { PracticeAudioEngine } from "@/lib/practice-audio";
 import { detectBeats } from "@/lib/bpm-detect";
 import { Button } from "@/components/ui/button";
+import { useConfirm } from "@/components/ui/confirm-dialog";
 import { Input } from "@/components/ui/input";
 import {
   Dialog,
@@ -91,6 +92,7 @@ export function PracticePlayer({
   // (the list + section markers are member-writable; BPM lives on the guarded songs table)
   onRunLogged?: () => void;
 }) {
+  const confirm = useConfirm();
   const songsById = useMemo(() => new Map(songs.map((s) => [s.id, s])), [songs]);
   // library songs that actually have audio — the pool the picker offers
   const library = useMemo(() => songs.filter((s) => !!s.audio_path), [songs]);
@@ -333,6 +335,12 @@ export function PracticePlayer({
     if (!current) return;
     const list = markers[current.id] ?? [];
     if (list.length === 0) return;
+    const ok = await confirm({
+      title: "ล้างท่อนทั้งหมด?",
+      description: `จะลบจุดท่อนทั้ง ${list.length} จุดของเพลงนี้`,
+      confirmText: "ล้างทั้งหมด",
+    });
+    if (!ok) return;
     setMarkers((prev) => ({ ...prev, [current.id]: [] }));
     setEditMarkers(false);
     const { error } = await createClient()
@@ -410,6 +418,14 @@ export function PracticePlayer({
 
   async function removeSong(itemId: string) {
     const snapshot = items;
+    const it = snapshot.find((i) => i.id === itemId);
+    const title = it ? songsById.get(it.song_id)?.title : undefined;
+    const ok = await confirm({
+      title: "เอาเพลงออกจากลิสต์ซ้อม?",
+      description: title ? `“${title}” จะถูกเอาออกจากลิสต์ซ้อม` : "เพลงนี้จะถูกเอาออกจากลิสต์ซ้อม",
+      confirmText: "เอาออก",
+    });
+    if (!ok) return;
     setItems((prev) => prev.filter((i) => i.id !== itemId));
     const { error } = await createClient()
       .from("practice_songs")
