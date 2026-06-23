@@ -148,6 +148,7 @@ export default async function OverviewPage() {
       photoSortOrder: maxSortOf(e.id) + 1,
       copyrightPending: cr.pending,
       copyrightRejected: cr.rejected,
+      notes: e.notes,
     };
   });
 

@@ -37,6 +37,8 @@ export interface OverviewEvent {
   photoSortOrder: number; // sort_order to use when inserting a new photo row
   copyrightPending: number; // library songs in this event's setlist awaiting review
   copyrightRejected: number; // library songs in this event's setlist rejected
+  notes: string | null; // free note shown as a small tag by the name (e.g. the act
+  // name for a slot a band plays under a different unit — "G-D!" under HatoBito)
 }
 
 export interface OverviewBand {
@@ -199,6 +201,24 @@ function CopyrightBadges({ ev }: { ev: OverviewEvent }) {
   return null;
 }
 
+// A small muted tag by the name/band carrying SHORT, label-like notes only — the
+// intended use is an act/unit name when a band plays a slot under a different unit
+// (e.g. "G-D!" on HatoBito's 11:50 slot). Longer notes are descriptions, not labels,
+// so they're left out of the schedule rows to avoid clutter.
+const ACT_NOTE_MAX = 16;
+function ActNote({ ev }: { ev: OverviewEvent }) {
+  const note = ev.notes?.trim();
+  if (!note || note.length > ACT_NOTE_MAX) return null;
+  return (
+    <span
+      className="shrink-0 rounded-full border px-1.5 py-0 text-[11px] font-normal text-muted-foreground"
+      title={note}
+    >
+      {note}
+    </span>
+  );
+}
+
 function EventNameCell({
   ev,
   canOpenDetail,
@@ -222,6 +242,7 @@ function EventNameCell({
       )}
       {isLabelWide && <LiveLink ev={ev} />}
       <CopyrightBadges ev={ev} />
+      <ActNote ev={ev} />
     </div>
   );
 }
@@ -407,6 +428,7 @@ function EventScheduleRow({
         )}
         {isLabelWide && <LiveLink ev={ev} />}
         <CopyrightBadges ev={ev} />
+        <ActNote ev={ev} />
       </div>
 
       {/* Status (+ deadline) — pinned right on the phone's top row, and at the far
