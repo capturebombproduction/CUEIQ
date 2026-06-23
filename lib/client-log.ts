@@ -18,7 +18,28 @@ const IGNORE = [
   /^Script error\.?$/i,
   /^Load failed$/i,
   /^Failed to fetch$/i, // transient network blips; the app already retries/handles these
+  // Hydration-class errors are, in this PWA, almost always a DEPLOY-WINDOW
+  // mismatch: a client still running an OLD service-worker-cached JS chunk against
+  // freshly-deployed SSR HTML. They self-recover once the SW updates, so they're
+  // noise that buries real bugs — a genuine logic error surfaces with a different
+  // message. (#418/420/421/422/423/425 = hydration mismatch, #419 = Suspense SSR.)
+  /Minified React error #(418|419|420|421|422|423|425)\b/i,
+  /hydrat/i, // "Hydration failed", "error while hydrating", "hydrating this Suspense boundary"
+  /Text content does not match server-rendered HTML/i,
 ];
+
+// Dev-origin: our OWN local debugging, never a user hitting a prod problem.
+function isDevOrigin(url?: string | null, stack?: string | null): boolean {
+  if (typeof location !== "undefined") {
+    const h = location.hostname;
+    if (h === "localhost" || h === "127.0.0.1" || h === "0.0.0.0" || h.endsWith(".local"))
+      return true;
+  }
+  // dev-only module scheme (HMR) — never emitted by a production build.
+  if (url?.startsWith("webpack-internal:")) return true;
+  if (stack?.includes("webpack-internal:")) return true;
+  return false;
+}
 
 export async function logClientError(args: {
   userId: string;
@@ -32,6 +53,7 @@ export async function logClientError(args: {
     const message = (args.message || "").slice(0, 2000).trim();
     if (!message) return;
     if (IGNORE.some((re) => re.test(message))) return;
+    if (isDevOrigin(args.url, args.stack)) return;
     if (logged >= MAX_PER_SESSION) return;
     const key = `${args.kind}:${message}`;
     if (seen.has(key)) return; // captured this exact error already this session
