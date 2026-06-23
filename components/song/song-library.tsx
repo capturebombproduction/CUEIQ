@@ -455,6 +455,150 @@ export function SongLibrary({
     }
   }
 
+  // Days left before a temporary (ad-hoc) audio file expires, or null if permanent.
+  const tempDaysLeft = (song: Song) =>
+    song.audio_expires_at
+      ? Math.max(
+          0,
+          Math.ceil(
+            (new Date(song.audio_expires_at).getTime() - Date.now()) / 86400000
+          )
+        )
+      : null;
+
+  // Per-song render pieces shared by the desktop table and the mobile cards so
+  // the two layouts can never drift apart.
+  function audioStatus(song: Song) {
+    const busy = audioBusy[song.id];
+    const hasAudio = !!song.audio_path;
+    const songEditable = canEditSong(song);
+    const tempLeft = tempDaysLeft(song);
+    if (busy) {
+      return (
+        <span className="flex items-center gap-1 text-xs text-muted-foreground">
+          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          {busy === "up" ? "กำลังอัป…" : "กำลังลบ…"}
+        </span>
+      );
+    }
+    if (hasAudio) {
+      return (
+        <div className="flex flex-wrap items-center gap-1.5">
+          {tempLeft != null ? (
+            <Badge variant="secondary" className="gap-1">
+              <Clock3 className="h-3 w-3" /> ชั่วคราว {tempLeft}ว.
+            </Badge>
+          ) : (
+            <span className="flex items-center gap-1 text-xs font-medium text-green-600">
+              <Volume2 className="h-3.5 w-3.5" /> มีไฟล์
+            </span>
+          )}
+          {songEditable && (
+            <>
+              {tempLeft != null && (
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-7 w-7"
+                  title="เก็บเป็นเพลงถาวร (ไม่ให้หมดอายุ)"
+                  onClick={() => promoteSong(song)}
+                >
+                  <Lock className="h-3.5 w-3.5" />
+                </Button>
+              )}
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-7 w-7"
+                title="เปลี่ยนไฟล์เสียง"
+                onClick={() => {
+                  audioTargetRef.current = song;
+                  audioFileRef.current?.click();
+                }}
+              >
+                <CloudUpload className="h-3.5 w-3.5" />
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-7 w-7 text-destructive hover:text-destructive"
+                title="ลบไฟล์เสียง"
+                onClick={() => removeSongAudio(song)}
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+              </Button>
+            </>
+          )}
+        </div>
+      );
+    }
+    if (songEditable) {
+      return (
+        <Button
+          variant="outline"
+          size="sm"
+          className="h-7"
+          onClick={() => {
+            audioTargetRef.current = song;
+            audioFileRef.current?.click();
+          }}
+        >
+          <CloudUpload className="h-3.5 w-3.5" /> อัปไฟล์
+        </Button>
+      );
+    }
+    return <span className="text-xs text-muted-foreground">—</span>;
+  }
+
+  function copyrightControl(song: Song) {
+    const cr = COPYRIGHT_META[song.copyright_status];
+    if (approver) {
+      return (
+        <button
+          type="button"
+          onClick={() => {
+            const order: CopyrightStatus[] = ["pending", "cleared", "rejected"];
+            const next =
+              order[(order.indexOf(song.copyright_status) + 1) % 3];
+            updateCopyright(song, next);
+          }}
+          title="คลิกเพื่อเปลี่ยนสถานะลิขสิทธิ์ (รอตรวจ → ถูกต้อง → ถูกปฏิเสธ)"
+        >
+          <Badge
+            variant={cr.variant}
+            className="cursor-pointer transition hover:opacity-80"
+          >
+            {cr.emoji} {cr.label}
+          </Badge>
+        </button>
+      );
+    }
+    return (
+      <Badge variant={cr.variant}>
+        {cr.emoji} {cr.label}
+      </Badge>
+    );
+  }
+
+  function rowActions(song: Song) {
+    if (!canEditSong(song)) return null;
+    return (
+      <>
+        <Button variant="ghost" size="icon" onClick={() => openEdit(song)}>
+          <Pencil className="h-4 w-4" />
+        </Button>
+        <Button
+          variant="ghost"
+          size="icon"
+          className="text-destructive hover:text-destructive"
+          onClick={() => onDelete(song)}
+        >
+          <Trash2 className="h-4 w-4" />
+        </Button>
+      </>
+    );
+  }
+
   return (
     <div className="space-y-4">
       {/* hidden input for per-song audio upload to R2 (separate from the
@@ -535,7 +679,9 @@ export function SongLibrary({
           )}
         </div>
       ) : (
-        <div className="rounded-lg border">
+        <>
+          {/* Desktop / tablet: full table */}
+          <div className="hidden rounded-lg border md:block">
           <Table>
             <TableHeader>
               <TableRow>
@@ -552,21 +698,7 @@ export function SongLibrary({
               </TableRow>
             </TableHeader>
             <TableBody>
-              {visible.map((song) => {
-                const cr = COPYRIGHT_META[song.copyright_status];
-                const busy = audioBusy[song.id];
-                const hasAudio = !!song.audio_path;
-                const songEditable = canEditSong(song);
-                const tempLeft = song.audio_expires_at
-                  ? Math.max(
-                      0,
-                      Math.ceil(
-                        (new Date(song.audio_expires_at).getTime() - Date.now()) /
-                          86400000
-                      )
-                    )
-                  : null;
-                return (
+              {visible.map((song) => (
                   <TableRow key={song.id}>
                     <TableCell>
                       <div className="font-medium">{song.title}</div>
@@ -582,76 +714,7 @@ export function SongLibrary({
                         ? formatDuration(song.duration_seconds)
                         : "—"}
                     </TableCell>
-                    <TableCell>
-                      {busy ? (
-                        <span className="flex items-center gap-1 text-xs text-muted-foreground">
-                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                          {busy === "up" ? "กำลังอัป…" : "กำลังลบ…"}
-                        </span>
-                      ) : hasAudio ? (
-                        <div className="flex items-center gap-1.5">
-                          {tempLeft != null ? (
-                            <Badge variant="secondary" className="gap-1">
-                              <Clock3 className="h-3 w-3" /> ชั่วคราว {tempLeft}ว.
-                            </Badge>
-                          ) : (
-                            <span className="flex items-center gap-1 text-xs font-medium text-green-600">
-                              <Volume2 className="h-3.5 w-3.5" /> มีไฟล์
-                            </span>
-                          )}
-                          {songEditable && (
-                            <>
-                              {tempLeft != null && (
-                                <Button
-                                  variant="ghost"
-                                  size="icon"
-                                  className="h-7 w-7"
-                                  title="เก็บเป็นเพลงถาวร (ไม่ให้หมดอายุ)"
-                                  onClick={() => promoteSong(song)}
-                                >
-                                  <Lock className="h-3.5 w-3.5" />
-                                </Button>
-                              )}
-                              <Button
-                                variant="ghost"
-                                size="icon"
-                                className="h-7 w-7"
-                                title="เปลี่ยนไฟล์เสียง"
-                                onClick={() => {
-                                  audioTargetRef.current = song;
-                                  audioFileRef.current?.click();
-                                }}
-                              >
-                                <CloudUpload className="h-3.5 w-3.5" />
-                              </Button>
-                              <Button
-                                variant="ghost"
-                                size="icon"
-                                className="h-7 w-7 text-destructive hover:text-destructive"
-                                title="ลบไฟล์เสียง"
-                                onClick={() => removeSongAudio(song)}
-                              >
-                                <Trash2 className="h-3.5 w-3.5" />
-                              </Button>
-                            </>
-                          )}
-                        </div>
-                      ) : songEditable ? (
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          className="h-7"
-                          onClick={() => {
-                            audioTargetRef.current = song;
-                            audioFileRef.current?.click();
-                          }}
-                        >
-                          <CloudUpload className="h-3.5 w-3.5" /> อัปไฟล์
-                        </Button>
-                      ) : (
-                        <span className="text-xs text-muted-foreground">—</span>
-                      )}
-                    </TableCell>
+                    <TableCell>{audioStatus(song)}</TableCell>
                     <TableCell className="text-muted-foreground">
                       {song.language
                         ? SONG_LANGUAGE_LABELS[song.language] ?? song.language
@@ -660,35 +723,7 @@ export function SongLibrary({
                     <TableCell className="text-muted-foreground">
                       {song.category || "—"}
                     </TableCell>
-                    <TableCell>
-                      {approver ? (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            const order: CopyrightStatus[] = [
-                              "pending",
-                              "cleared",
-                              "rejected",
-                            ];
-                            const next =
-                              order[(order.indexOf(song.copyright_status) + 1) % 3];
-                            updateCopyright(song, next);
-                          }}
-                          title="คลิกเพื่อเปลี่ยนสถานะลิขสิทธิ์ (รอตรวจ → ถูกต้อง → ถูกปฏิเสธ)"
-                        >
-                          <Badge
-                            variant={cr.variant}
-                            className="cursor-pointer transition hover:opacity-80"
-                          >
-                            {cr.emoji} {cr.label}
-                          </Badge>
-                        </button>
-                      ) : (
-                        <Badge variant={cr.variant}>
-                          {cr.emoji} {cr.label}
-                        </Badge>
-                      )}
-                    </TableCell>
+                    <TableCell>{copyrightControl(song)}</TableCell>
                     {groups.length > 1 && (
                       <TableCell className="text-muted-foreground">
                         {groupName[song.group_id] ?? "—"}
@@ -697,34 +732,64 @@ export function SongLibrary({
                     {canEditAny && (
                       <TableCell>
                         <div className="flex justify-end gap-1">
-                          {songEditable && (
-                          <>
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            onClick={() => openEdit(song)}
-                          >
-                            <Pencil className="h-4 w-4" />
-                          </Button>
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            className="text-destructive hover:text-destructive"
-                            onClick={() => onDelete(song)}
-                          >
-                            <Trash2 className="h-4 w-4" />
-                          </Button>
-                          </>
-                          )}
+                          {rowActions(song)}
                         </div>
                       </TableCell>
                     )}
                   </TableRow>
-                );
-              })}
+              ))}
             </TableBody>
           </Table>
-        </div>
+          </div>
+
+          {/* Mobile: one card per song so nothing scrolls sideways */}
+          <div className="space-y-3 md:hidden">
+            {visible.map((song) => (
+              <div
+                key={song.id}
+                className="space-y-3 rounded-lg border bg-card p-4"
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="font-medium leading-tight">{song.title}</div>
+                    {song.file_name && (
+                      <div className="mt-0.5 flex items-center gap-1 text-xs text-muted-foreground">
+                        <FileAudio className="h-3 w-3 shrink-0" />
+                        <span className="truncate">{song.file_name}</span>
+                      </div>
+                    )}
+                  </div>
+                  {canEditAny && (
+                    <div className="flex shrink-0 gap-1">{rowActions(song)}</div>
+                  )}
+                </div>
+
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 text-xs text-muted-foreground">
+                  <span className="tabular-nums">
+                    ⏱{" "}
+                    {song.duration_seconds
+                      ? formatDuration(song.duration_seconds)
+                      : "—"}
+                  </span>
+                  {song.language && (
+                    <span>
+                      {SONG_LANGUAGE_LABELS[song.language] ?? song.language}
+                    </span>
+                  )}
+                  {song.category && <span>{song.category}</span>}
+                  {groups.length > 1 && groupName[song.group_id] && (
+                    <span>{groupName[song.group_id]}</span>
+                  )}
+                </div>
+
+                <div className="flex flex-wrap items-center justify-between gap-2 border-t pt-2">
+                  {audioStatus(song)}
+                  {copyrightControl(song)}
+                </div>
+              </div>
+            ))}
+          </div>
+        </>
       )}
 
       <Dialog open={open} onOpenChange={setOpen}>
