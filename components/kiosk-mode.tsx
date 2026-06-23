@@ -45,6 +45,10 @@ function fsSupported(): boolean {
 export function KioskMode() {
   const [fs, setFs] = useState(false);
   const [nudge, setNudge] = useState(false);
+  // Already running as an installed app → it's chrome-free, so the manual
+  // fullscreen toggle is redundant (and a no-op on iOS, which has no
+  // Fullscreen API). Hide the button there; only show it in a browser tab.
+  const [standalone, setStandalone] = useState(false);
   const kioskRef = useRef(false); // installed app + Fullscreen API available
   const wasFsRef = useRef(false);
 
@@ -61,6 +65,7 @@ export function KioskMode() {
   }, [enter]);
 
   useEffect(() => {
+    setStandalone(isStandalone());
     const kiosk = isStandalone() && fsSupported();
     kioskRef.current = kiosk;
 
@@ -86,16 +91,18 @@ export function KioskMode() {
 
   return (
     <>
-      <Button
-        type="button"
-        variant="ghost"
-        size="icon"
-        onClick={toggle}
-        title={fs ? "ออกจากโหมดเต็มจอ" : "โหมดเต็มจอ"}
-        aria-label={fs ? "ออกจากโหมดเต็มจอ" : "เข้าสู่โหมดเต็มจอ"}
-      >
-        {fs ? <Minimize className="h-4 w-4" /> : <Maximize className="h-4 w-4" />}
-      </Button>
+      {!standalone && (
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          onClick={toggle}
+          title={fs ? "ออกจากโหมดเต็มจอ" : "โหมดเต็มจอ"}
+          aria-label={fs ? "ออกจากโหมดเต็มจอ" : "เข้าสู่โหมดเต็มจอ"}
+        >
+          {fs ? <Minimize className="h-4 w-4" /> : <Maximize className="h-4 w-4" />}
+        </Button>
+      )}
 
       <Dialog open={nudge} onOpenChange={setNudge}>
         <DialogContent className="max-w-sm">

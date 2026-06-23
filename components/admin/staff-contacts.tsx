@@ -113,9 +113,9 @@ export function StaffContactsManager({
           </p>
         )}
         {[...rows].sort((a, b) => a.sort_order - b.sort_order).map((r, i, sorted) => (
-          <div key={r.id} className="flex flex-wrap items-center gap-2">
+          <div key={r.id} className="flex items-start gap-2">
             {/* up/down reorder */}
-            <div className="flex flex-col">
+            <div className="flex shrink-0 flex-col pt-1">
               <Button
                 variant="ghost" size="icon" className="h-5 w-6"
                 disabled={i === 0}
@@ -133,33 +133,36 @@ export function StaffContactsManager({
                 <ChevronDown className="h-3.5 w-3.5" />
               </Button>
             </div>
-            <Input
-              value={r.name}
-              placeholder="ชื่อ (เช่น พี่พัชร์)"
-              className="min-w-[140px] flex-1"
-              onChange={(e) => setLocal(r.id, { name: e.target.value })}
-              onBlur={(e) => persist(r.id, { name: e.target.value })}
-              onKeyDown={saveOnEnter}
-            />
-            <Input
-              value={r.role}
-              placeholder="หน้าที่ (เช่น ช่างภาพ)"
-              className="min-w-[140px] flex-1"
-              onChange={(e) => setLocal(r.id, { role: e.target.value })}
-              onBlur={(e) => persist(r.id, { role: e.target.value })}
-              onKeyDown={saveOnEnter}
-            />
-            <Input
-              value={r.phone}
-              placeholder="เบอร์โทร"
-              className="min-w-[120px] flex-1 tabular-nums"
-              onChange={(e) => setLocal(r.id, { phone: e.target.value })}
-              onBlur={(e) => persist(r.id, { phone: e.target.value })}
-              onKeyDown={saveOnEnter}
-            />
+            {/* fields: stacked full-width on phones, inline from sm up */}
+            <div className="flex min-w-0 flex-1 flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
+              <Input
+                value={r.name}
+                placeholder="ชื่อ (เช่น พี่พัชร์)"
+                className="w-full sm:min-w-[140px] sm:flex-1"
+                onChange={(e) => setLocal(r.id, { name: e.target.value })}
+                onBlur={(e) => persist(r.id, { name: e.target.value })}
+                onKeyDown={saveOnEnter}
+              />
+              <Input
+                value={r.role}
+                placeholder="หน้าที่ (เช่น ช่างภาพ)"
+                className="w-full sm:min-w-[140px] sm:flex-1"
+                onChange={(e) => setLocal(r.id, { role: e.target.value })}
+                onBlur={(e) => persist(r.id, { role: e.target.value })}
+                onKeyDown={saveOnEnter}
+              />
+              <Input
+                value={r.phone}
+                placeholder="เบอร์โทร"
+                className="w-full tabular-nums sm:min-w-[120px] sm:flex-1"
+                onChange={(e) => setLocal(r.id, { phone: e.target.value })}
+                onBlur={(e) => persist(r.id, { phone: e.target.value })}
+                onKeyDown={saveOnEnter}
+              />
+            </div>
             <Button
               variant="ghost" size="icon"
-              className="text-destructive hover:text-destructive"
+              className="shrink-0 text-destructive hover:text-destructive"
               onClick={() => removeRow(r.id)}
               aria-label="ลบทีมงาน"
             >
