@@ -44,3 +44,6 @@ docs/*.pdf
 
 # review screenshots inbox — drop images here for Josephine to read (never committed)
 /review-shots/
+
+# database snapshots from scripts/backup.mjs — contains sensitive data, never committed
+/backups/
