@@ -980,11 +980,14 @@ export function OverviewClient({
 
       {/* Off-screen clean schedule — rendered only so it can be captured as a JPG
           for distribution. Kept in layout (not display:none) so html-to-image can
-          measure it; pushed far off-screen and hidden from a11y/pointer. The
-          capture helper forces a light palette + fixed width on exportRef.
+          measure it, but CLIPPED inside a 0×0 overflow-hidden box so it never paints
+          on-screen. (A plain `-left-[10000px]` offset isn't enough: a wide festival
+          schedule can exceed 10000px and its right edge then bleeds back over the
+          page, covering the top with its bg-card.) exportRef keeps its full natural
+          size for the capture; the helper forces a light palette + fixed width on it.
           Gated on `mounted` so it's client-only — see the note by the state. */}
       {mounted && (
-      <div className="pointer-events-none fixed -left-[10000px] top-0" aria-hidden>
+      <div className="pointer-events-none fixed left-0 top-0 h-0 w-0 overflow-hidden" aria-hidden>
         <div ref={exportRef} className="space-y-4 bg-card p-6 text-foreground">
           <div className="border-b pb-3">
             <h2 className="text-xl font-bold leading-tight">{labelName}</h2>
