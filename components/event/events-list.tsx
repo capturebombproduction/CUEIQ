@@ -464,7 +464,7 @@ export function EventsList({
               <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
                 กำลังจะถึง · {upcoming.length}
               </h2>
-              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
                 {upcoming.map((ev) => (
                   <EventCard
                     key={ev.id}
@@ -482,7 +482,7 @@ export function EventsList({
               <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
                 ผ่านมาแล้ว · {past.length}
               </h2>
-              <div className="grid gap-4 opacity-80 sm:grid-cols-2 lg:grid-cols-3">
+              <div className="grid grid-cols-1 gap-4 opacity-80 sm:grid-cols-2 lg:grid-cols-3">
                 {past.map((ev) => (
                   <EventCard
                     key={ev.id}

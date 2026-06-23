@@ -922,7 +922,7 @@ export function SetlistBuilder({
               </div>
 
               {/* Editable fields */}
-              <div className="mt-2 grid gap-2 pl-8 sm:grid-cols-12">
+              <div className="mt-2 grid grid-cols-1 gap-2 pl-8 sm:grid-cols-12">
                 <div className="space-y-1 sm:col-span-2">
                   <Label className="text-xs text-muted-foreground">
                     ความยาว (m:ss)

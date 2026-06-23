@@ -155,7 +155,7 @@ export function EventForm({
             />
           </div>
 
-          <div className="grid gap-4 sm:grid-cols-2">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <div className="space-y-2">
               <Label>วง</Label>
               <Select value={groupId} onValueChange={setGroupId}>
@@ -191,7 +191,7 @@ export function EventForm({
             </div>
           </div>
 
-          <div className="grid gap-4 sm:grid-cols-3">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
             <div className="space-y-2">
               <Label htmlFor="date">วันที่</Label>
               <Input
@@ -221,7 +221,7 @@ export function EventForm({
             </div>
           </div>
 
-          <div className="grid gap-4 sm:grid-cols-2">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <div className="space-y-2">
               <Label htmlFor="venue">สถานที่</Label>
               <Input
@@ -257,7 +257,7 @@ export function EventForm({
             </div>
           </div>
 
-          <div className="grid gap-4 sm:grid-cols-2">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <div className="space-y-2">
               <Label htmlFor="map">Google Map (ลิงก์)</Label>
               <Input
@@ -301,7 +301,7 @@ export function EventForm({
             </div>
           </div>
 
-          <div className="grid gap-4 sm:grid-cols-2">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <div className="space-y-2">
               <Label htmlFor="deadline">เดดไลน์ (ส่งเซ็ตลิสต์)</Label>
               <Input

@@ -196,7 +196,7 @@ export function ScheduleEditor({
           }}
           onDragLeave={() => setDragOverIndex(null)}
         >
-          <div className="grid gap-3 sm:grid-cols-12">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-12">
             <div className="space-y-1 sm:col-span-3">
               <Label className="text-xs text-muted-foreground">Type</Label>
               <Select

@@ -197,7 +197,7 @@ export function MicMapEditor({
   const songsWithMics = setlist.filter((s) => (s.mic_slots?.length ?? 0) > 0);
 
   return (
-    <div className="grid gap-6 lg:grid-cols-2">
+    <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
       {/* Base mic map */}
       <Card>
         <CardHeader>
