@@ -388,7 +388,7 @@ function EventScheduleRow({
 }) {
   const dl = ev.exempt_from_deadline ? null : deadlineInfo(ev.deadline);
   return (
-    <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 rounded-lg border bg-card px-3 py-2.5 text-sm">
+    <div className="flex flex-wrap items-center gap-x-4 gap-y-1 rounded-lg border bg-card px-3 py-2 text-sm">
       {/* Band — fixed column on wide screens so the Stage time aligns row-to-row */}
       <div className="order-1 flex min-w-0 items-center gap-2 font-medium sm:w-44 sm:shrink-0">
         <span
@@ -439,6 +439,137 @@ function EventScheduleRow({
           <PhotoCell ev={ev} />
         </TimeBit>
       </div>
+    </div>
+  );
+}
+
+// Group a flat list of shows by (date + event name) for the export's period views
+// (รายวัน/สัปดาห์/เดือน/ปี) — so a festival's name appears ONCE with its bands
+// beneath instead of repeating on every row. The input is already date→time
+// ordered and a Map keeps first-seen order, so the sub-groups stay sorted.
+function groupEventsByShow(events: OverviewEvent[]) {
+  const map = new Map<
+    string,
+    { name: string; date: string | null; events: OverviewEvent[] }
+  >();
+  for (const ev of events) {
+    const key = `${ev.event_date ?? NO_DATE_KEY}__${ev.name}`;
+    const g = map.get(key) ?? { name: ev.name, date: ev.event_date, events: [] };
+    g.events.push(ev);
+    map.set(key, g);
+  }
+  return Array.from(map.values());
+}
+
+// One schedule table for the export JPG, with the "อะไรซ้ำยุบ" column collapse: any
+// of งาน / วันที่ that's constant down the whole table is hoisted into the header
+// (when not already the label) and its column dropped; วง shows only when bands
+// vary. A trailing spacer keeps the kept columns compact on the left. `nested`
+// renders a lighter sub-header (used under a period header in รายวัน/เดือน/…);
+// `hideDate` drops the date when the period header above already shows it.
+function ExportSchedule({
+  label,
+  color,
+  events,
+  showBandColumn,
+  nested = false,
+  hideDate = false,
+}: {
+  label: string;
+  color?: string | null;
+  events: OverviewEvent[];
+  showBandColumn: boolean;
+  nested?: boolean;
+  hideDate?: boolean;
+}) {
+  const first = events[0];
+  const dropName = events.every((e) => e.name === first.name);
+  const dropDate = events.every((e) => e.event_date === first.event_date);
+  const headerName = dropName && first.name !== label ? first.name : null;
+  const headerDate =
+    !hideDate &&
+    dropDate &&
+    first.event_date &&
+    fmtDateWd(first.event_date) !== label
+      ? first.event_date
+      : null;
+  return (
+    <div className="space-y-1.5">
+      {label && (
+        <h3
+          className={cn(
+            "flex flex-wrap items-center gap-x-1.5",
+            nested
+              ? "text-sm font-semibold text-foreground"
+              : "text-sm font-bold text-primary"
+          )}
+        >
+          {color !== undefined && (
+            <span
+              className="inline-block h-2.5 w-2.5 rounded-full"
+              style={{ background: color || "var(--primary)" }}
+            />
+          )}
+          {label}
+          {headerName && (
+            <span className="font-normal text-foreground">· {headerName}</span>
+          )}
+          {headerDate && (
+            <span className="font-normal tabular-nums text-muted-foreground">
+              · {fmtDateWd(headerDate)}
+            </span>
+          )}
+          <span className="font-normal text-muted-foreground">
+            · {events.length} {nested ? "วง" : "งาน"}
+          </span>
+        </h3>
+      )}
+      <table className="w-full border-collapse text-sm [&_th]:whitespace-nowrap [&_td]:whitespace-nowrap">
+        <thead>
+          <tr className="border-b text-left text-xs text-muted-foreground">
+            {!dropName && <th className="py-1.5 pr-3 font-medium">งาน</th>}
+            {showBandColumn && <th className="py-1.5 pr-3 font-medium">วง</th>}
+            {!dropDate && <th className="py-1.5 pr-3 font-medium">วันที่</th>}
+            <th className="py-1.5 pr-3 font-medium">Stage</th>
+            <th className="py-1.5 pr-3 font-medium">Booth</th>
+            <th className="py-1.5 pr-3 font-medium">Photo</th>
+            {/* Spacer column absorbs the leftover width so the data columns stay
+                compact on the left instead of spreading apart. */}
+            <th className="w-full" />
+          </tr>
+        </thead>
+        <tbody>
+          {events.map((ev) => (
+            <tr key={ev.id} className="border-b last:border-0">
+              {!dropName && (
+                <td className="py-1.5 pr-3 font-medium">{ev.name}</td>
+              )}
+              {showBandColumn && (
+                <td className="py-1.5 pr-3">
+                  <span className="inline-flex items-center gap-1.5">
+                    <span
+                      className="inline-block h-2.5 w-2.5 rounded-full"
+                      style={{ background: ev.group_color || "var(--primary)" }}
+                    />
+                    {ev.group_name}
+                  </span>
+                </td>
+              )}
+              {!dropDate && (
+                <td className="py-1.5 pr-3 tabular-nums">
+                  {fmtDate(ev.event_date)}
+                </td>
+              )}
+              <td className="py-1.5 pr-3 tabular-nums">{fmtRange(ev.stage)}</td>
+              <td className="py-1.5 pr-3 tabular-nums">{fmtRange(ev.booth)}</td>
+              <td className="py-1.5 pr-3 tabular-nums">
+                {fmtRange({ start: ev.photo, end: ev.photoEnd })}
+              </td>
+              <td />
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   );
 }
@@ -860,112 +991,49 @@ export function OverviewClient({
           {buckets
             .filter((b) => b.events.length > 0)
             .map((bucket) => {
-              // Collapse any column whose value repeats down the WHOLE group: the
-              // value is hoisted into the group header (unless it's already the
-              // label) and its column is dropped from the table. The same
-              // "อะไรซ้ำยุบ" rule works in EVERY view mode — รายงาน groups by event
-              // name, รายวง by band, รายเดือน/ปี by period — so e.g. a one-festival
-              // month (every row = "TEST FEST" on "2026-06-28") shows the name +
-              // date once in the header, not on all 8 rows. What still varies keeps
-              // its column.
-              const evs = bucket.events;
-              const first = evs[0];
-              const dropName = evs.every((e) => e.name === first.name);
-              const dropDate = evs.every((e) => e.event_date === first.event_date);
-              const headerName =
-                dropName && first.name !== bucket.label ? first.name : null;
-              const headerDate =
-                dropDate &&
-                first.event_date &&
-                fmtDateWd(first.event_date) !== bucket.label
-                  ? first.event_date
-                  : null;
-              return (
-                <div key={bucket.key} className="space-y-1.5">
-                  {bucket.label && (
+              // The flat period views (รายวัน/สัปดาห์/เดือน/ปี) sub-group each
+              // period's shows by event so a festival's name + date sit ONCE in a
+              // sub-header with its bands beneath — not repeated on every row. The
+              // date is dropped from the sub-header in รายวัน since the period
+              // header already shows it. รายงาน (per-event) and รายวง (per-band)
+              // render as a single collapse-aware table — unchanged.
+              const isPeriod =
+                mode === "day" ||
+                mode === "week" ||
+                mode === "month" ||
+                mode === "year";
+              if (isPeriod) {
+                return (
+                  <div key={bucket.key} className="space-y-2">
                     <h3 className="flex flex-wrap items-center gap-x-1.5 text-sm font-bold text-primary">
-                      {bucket.color !== undefined && (
-                        <span
-                          className="inline-block h-2.5 w-2.5 rounded-full"
-                          style={{ background: bucket.color || "var(--primary)" }}
-                        />
-                      )}
                       {bucket.label}
-                      {headerName && (
-                        <span className="font-normal text-foreground">
-                          · {headerName}
-                        </span>
-                      )}
-                      {headerDate && (
-                        <span className="font-normal tabular-nums text-muted-foreground">
-                          · {fmtDateWd(headerDate)}
-                        </span>
-                      )}
                       <span className="font-normal text-muted-foreground">
                         · {bucket.events.length} งาน
                       </span>
                     </h3>
-                  )}
-                  <table className="w-full border-collapse text-sm [&_th]:whitespace-nowrap [&_td]:whitespace-nowrap">
-                    <thead>
-                      <tr className="border-b text-left text-xs text-muted-foreground">
-                        {!dropName && (
-                          <th className="py-1.5 pr-3 font-medium">งาน</th>
-                        )}
-                        {showBandColumn && (
-                          <th className="py-1.5 pr-3 font-medium">วง</th>
-                        )}
-                        {!dropDate && (
-                          <th className="py-1.5 pr-3 font-medium">วันที่</th>
-                        )}
-                        <th className="py-1.5 pr-3 font-medium">Stage</th>
-                        <th className="py-1.5 pr-3 font-medium">Booth</th>
-                        <th className="py-1.5 pr-3 font-medium">Photo</th>
-                        {/* Spacer column absorbs the leftover width so the data
-                            columns stay compact on the left instead of spreading
-                            apart when a collapse leaves only a few of them. */}
-                        <th className="w-full" />
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {bucket.events.map((ev) => (
-                        <tr key={ev.id} className="border-b last:border-0">
-                          {!dropName && (
-                            <td className="py-1.5 pr-3 font-medium">{ev.name}</td>
-                          )}
-                          {showBandColumn && (
-                            <td className="py-1.5 pr-3">
-                              <span className="inline-flex items-center gap-1.5">
-                                <span
-                                  className="inline-block h-2.5 w-2.5 rounded-full"
-                                  style={{
-                                    background: ev.group_color || "var(--primary)",
-                                  }}
-                                />
-                                {ev.group_name}
-                              </span>
-                            </td>
-                          )}
-                          {!dropDate && (
-                            <td className="py-1.5 pr-3 tabular-nums">
-                              {fmtDate(ev.event_date)}
-                            </td>
-                          )}
-                          <td className="py-1.5 pr-3 tabular-nums">
-                            {fmtRange(ev.stage)}
-                          </td>
-                          <td className="py-1.5 pr-3 tabular-nums">
-                            {fmtRange(ev.booth)}
-                          </td>
-                          <td className="py-1.5 pr-3 tabular-nums">
-                            {fmtRange({ start: ev.photo, end: ev.photoEnd })}
-                          </td>
-                          <td />
-                        </tr>
+                    <div className="space-y-2.5 pl-2">
+                      {groupEventsByShow(bucket.events).map((g) => (
+                        <ExportSchedule
+                          key={`${g.date ?? "x"}__${g.name}`}
+                          label={g.name}
+                          events={g.events}
+                          showBandColumn
+                          hideDate={mode === "day"}
+                          nested
+                        />
                       ))}
-                    </tbody>
-                  </table>
-                </div>
+                    </div>
+                  </div>
+                );
+              }
+              return (
+                <ExportSchedule
+                  key={bucket.key}
+                  label={bucket.label}
+                  color={bucket.color}
+                  events={bucket.events}
+                  showBandColumn={showBandColumn}
+                />
               );
             })}
           {/* Contact block at the BOTTOM — staff read the schedule first, then
