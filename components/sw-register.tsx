@@ -40,13 +40,21 @@ export function SwRegister() {
     if (process.env.NODE_ENV !== "production") return;
     if (typeof navigator === "undefined" || !("serviceWorker" in navigator)) return;
 
-    // When the worker we asked to skip takes control, reload once onto the fresh
-    // build. Guarded so a first-ever install (which also fires controllerchange)
-    // and reload loops can't bounce the page.
-    const onControllerChange = () => {
-      if (!askedToSkip.current || reloading.current) return;
+    // When the worker we asked to skip takes control, refresh onto the fresh build —
+    // but NEVER under the user's hands. A band could be mid-form (event create/edit
+    // is a batch save), so we wait until the page is hidden (tab backgrounded / app
+    // switched away) to reload; until then the now-active worker already serves the
+    // fresh build on the next navigation. Guarded so a first-ever install (which
+    // also fires controllerchange) and reload loops can't bounce the page.
+    const reloadWhenHidden = () => {
+      if (document.visibilityState !== "hidden" || reloading.current) return;
       reloading.current = true;
       window.location.reload();
+    };
+    const onControllerChange = () => {
+      if (!askedToSkip.current || reloading.current) return;
+      if (document.visibilityState === "hidden") reloadWhenHidden();
+      else document.addEventListener("visibilitychange", reloadWhenHidden);
     };
     navigator.serviceWorker.addEventListener("controllerchange", onControllerChange);
 
@@ -85,6 +93,7 @@ export function SwRegister() {
     return () => {
       navigator.serviceWorker.removeEventListener("controllerchange", onControllerChange);
       document.removeEventListener("visibilitychange", onVisible);
+      document.removeEventListener("visibilitychange", reloadWhenHidden);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
