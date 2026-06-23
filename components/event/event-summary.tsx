@@ -132,6 +132,8 @@ export function EventSummary({
   lineup = [],
   completeness,
   editable = false,
+  hasRunOrder = false,
+  canBuildRunOrder = false,
 }: {
   event: EventRow & { group: Group | null };
   schedule: ScheduleItem[];
@@ -142,6 +144,10 @@ export function EventSummary({
   lineup?: string[];
   completeness?: CompletenessResult;
   editable?: boolean;
+  /** This festival has a running order — show the live watch link (everyone). */
+  hasRunOrder?: boolean;
+  /** May build/edit the running order (approvers) — show the builder link. */
+  canBuildRunOrder?: boolean;
 }) {
   const captureRef = useRef<HTMLDivElement>(null);
   const [exporting, setExporting] = useState(false);
@@ -202,7 +208,14 @@ export function EventSummary({
             <Radio className="h-4 w-4" /> เข้า Live Mode
           </Link>
         </Button>
-        {editable && (
+        {hasRunOrder && (
+          <Button variant="outline" asChild title="คิวงานทั้งงานแบบสด — ทุกคนดูได้">
+            <Link href={`/events/${event.id}/run-order/live`}>
+              <Clock className="h-4 w-4" /> คิวงาน (Live)
+            </Link>
+          </Button>
+        )}
+        {canBuildRunOrder && (
           <Button variant="outline" asChild title="ลำดับงานทั้งงาน (สำหรับสตาฟคุมคิว)">
             <Link href={`/events/${event.id}/run-order`}>
               <ListOrdered className="h-4 w-4" /> Running Order

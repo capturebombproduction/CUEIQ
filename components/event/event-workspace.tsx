@@ -44,6 +44,8 @@ export function EventWorkspace({
   members,
   songs,
   lineup,
+  hasRunOrder = false,
+  canBuildRunOrder = false,
 }: {
   event: EventRow & { group: Group | null };
   eventId: string;
@@ -59,6 +61,10 @@ export function EventWorkspace({
   members: Member[];
   songs: Song[];
   lineup: string[];
+  /** This festival has a running order — show the live watch link (everyone). */
+  hasRunOrder?: boolean;
+  /** May build/edit the running order (approvers) — show the builder link. */
+  canBuildRunOrder?: boolean;
 }) {
   const modules = EVENT_TYPES[eventType]?.modules ?? EVENT_TYPES.idol.modules;
   const router = useRouter();
@@ -164,6 +170,8 @@ export function EventWorkspace({
             lineup={lineup}
             completeness={completeness}
             editable={editable}
+            hasRunOrder={hasRunOrder}
+            canBuildRunOrder={canBuildRunOrder}
           />
         </TabsContent>
 

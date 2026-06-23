@@ -46,11 +46,13 @@ export default async function RunOrderLivePage({
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
+        {/* Approvers go back to the builder; watchers (members) can't open it
+            (it redirects), so send them back to the event instead. */}
         <Link
-          href={`/events/${ev.id}/run-order`}
+          href={canControl ? `/events/${ev.id}/run-order` : `/events/${ev.id}`}
           className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:underline"
         >
-          <ArrowLeft className="h-4 w-4" /> Running Order
+          <ArrowLeft className="h-4 w-4" /> {canControl ? "Running Order" : ev.name}
         </Link>
       </div>
       <div>

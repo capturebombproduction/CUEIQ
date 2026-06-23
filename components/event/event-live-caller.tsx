@@ -78,6 +78,12 @@ function driftPhrase(min: number): string {
   return min > 0 ? `ช้า +${min} น.` : `เร็ว ${min} น.`;
 }
 
+/** A play-length delta (minutes, over + / under −) vs the planned window. */
+function durPhrase(min: number): string {
+  if (min === 0) return "พอดีเวลา";
+  return min > 0 ? `เล่นเกิน ${min} น.` : `เล่นสั้น ${-min} น.`;
+}
+
 /**
  * The festival-wide LIVE show-caller (Event Live Mode — Phase 2). Staff run the whole
  * event off this: a big clock, the current + next sequence, and the controls to
@@ -160,6 +166,21 @@ export function EventLiveCaller({
     const p = parseClockToSeconds(r.planned_start);
     if (p == null || !r.actual_start) return null;
     return normMin(Math.round((secOfDay(new Date(r.actual_start)) - p) / 60));
+  }
+
+  // How much LONGER(+)/shorter(−) a finished row actually played vs its planned
+  // window (planned_end − planned_start). Uses the two absolute timestamps, so —
+  // unlike startLateMin — it's timezone-independent; we still gate it behind
+  // `mounted` where it's shown, beside the start-drift log. Null until both real
+  // timestamps and a planned window exist.
+  function durationDeltaMin(r: RunSeqLive): number | null {
+    const ps = parseClockToSeconds(r.planned_start);
+    const pe = parseClockToSeconds(r.planned_end);
+    if (ps == null || pe == null || !r.actual_start || !r.actual_end) return null;
+    let planned = pe - ps;
+    if (planned < 0) planned += 86400; // window wraps past midnight
+    const actual = (Date.parse(r.actual_end) - Date.parse(r.actual_start)) / 1000;
+    return Math.round((actual - planned) / 60);
   }
 
   // --- realtime: refetch when another device changes the order ----------------
@@ -659,22 +680,37 @@ export function EventLiveCaller({
                   ) : isDone ? (
                     (() => {
                       const log = mounted ? startLateMin(r) : null;
+                      const dur = mounted ? durationDeltaMin(r) : null;
                       return (
-                        <span
-                          className={cn(
-                            "inline-flex items-center gap-1 text-xs font-medium",
-                            log == null
-                              ? "text-muted-foreground"
-                              : log > 0
-                                ? "text-destructive"
-                                : log < 0
-                                  ? "text-sky-600 dark:text-sky-400"
-                                  : "text-success"
+                        <div className="flex flex-col items-end gap-0.5">
+                          <span
+                            className={cn(
+                              "inline-flex items-center gap-1 text-xs font-medium",
+                              log == null
+                                ? "text-muted-foreground"
+                                : log > 0
+                                  ? "text-destructive"
+                                  : log < 0
+                                    ? "text-sky-600 dark:text-sky-400"
+                                    : "text-success"
+                            )}
+                          >
+                            <CheckCircle2 className="h-3.5 w-3.5" />
+                            {log == null ? "เสร็จ" : driftPhrase(log)}
+                          </span>
+                          {dur != null && dur !== 0 && (
+                            <span
+                              className={cn(
+                                "text-[10px] font-medium tabular-nums",
+                                dur > 0
+                                  ? "text-destructive"
+                                  : "text-muted-foreground"
+                              )}
+                            >
+                              {durPhrase(dur)}
+                            </span>
                           )}
-                        >
-                          <CheckCircle2 className="h-3.5 w-3.5" />
-                          {log == null ? "เสร็จ" : driftPhrase(log)}
-                        </span>
+                        </div>
                       );
                     })()
                   ) : r.buffer_seconds > 0 ? (

@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import { getEventBundle, getWorkspace } from "@/lib/queries";
 import { canEditGroup, canViewGroup, canApprove } from "@/lib/permissions";
+import { createClient } from "@/lib/supabase/server";
 import { eventCompleteness } from "@/lib/completeness";
 import { EVENT_TYPES, type EventType, type GroupStatus } from "@/lib/types";
 import { shortClock, deadlineInfo } from "@/lib/time";
@@ -108,6 +109,22 @@ export default async function EventPage({
     }));
   const showCopyrightPanel =
     canApprove(ws.perms) && setlistLibrarySongs.length > 0;
+
+  // Does this festival (same name + date) have a running order? If so, surface a
+  // member-discoverable "คิวงาน (Live)" link — the live board is read-only for
+  // non-approvers, so everyone can watch, but until now only approvers could even
+  // FIND it (via the builder). Approvers also get the builder link.
+  const canBuildRunOrder = canApprove(ws.perms);
+  let roq = createClient()
+    .from("run_sequence")
+    .select("id", { count: "exact", head: true })
+    .eq("tenant_id", event.tenant_id)
+    .eq("event_name", event.name);
+  roq = event.event_date
+    ? roq.eq("event_date", event.event_date)
+    : roq.is("event_date", null);
+  const { count: runOrderCount } = await roq;
+  const hasRunOrder = (runOrderCount ?? 0) > 0;
 
   return (
     <div className="space-y-6">
@@ -228,6 +245,8 @@ export default async function EventPage({
         members={bundle.members}
         songs={bundle.songs}
         lineup={bundle.lineup}
+        hasRunOrder={hasRunOrder}
+        canBuildRunOrder={canBuildRunOrder}
       />
     </div>
   );
