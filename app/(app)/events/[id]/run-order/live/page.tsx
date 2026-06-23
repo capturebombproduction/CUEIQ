@@ -17,12 +17,15 @@ export const dynamic = "force-dynamic";
 // enforces the writes too.
 export default async function RunOrderLivePage({
   params,
+  searchParams,
 }: {
   params: { id: string };
+  searchParams: { from?: string };
 }) {
   const ws = await getWorkspace();
   if (!ws.membership || !ws.tenant) redirect("/dashboard");
   const tid = ws.membership.tenant_id;
+  const fromOverview = searchParams?.from === "overview";
   const supabase = createClient();
 
   const { data: ev } = await supabase
@@ -46,13 +49,21 @@ export default async function RunOrderLivePage({
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        {/* Approvers go back to the builder; watchers (members) can't open it
-            (it redirects), so send them back to the event instead. */}
+        {/* Launched from Overview → back to Overview (the Master flow). Otherwise
+            approvers go back to the builder; watchers (members) can't open it (it
+            redirects), so send them back to the event instead. */}
         <Link
-          href={canControl ? `/events/${ev.id}/run-order` : `/events/${ev.id}`}
+          href={
+            fromOverview
+              ? "/overview"
+              : canControl
+                ? `/events/${ev.id}/run-order`
+                : `/events/${ev.id}`
+          }
           className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:underline"
         >
-          <ArrowLeft className="h-4 w-4" /> {canControl ? "Running Order" : ev.name}
+          <ArrowLeft className="h-4 w-4" />{" "}
+          {fromOverview ? "Overview" : canControl ? "Running Order" : ev.name}
         </Link>
       </div>
       <div>

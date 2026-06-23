@@ -47,7 +47,7 @@ export default async function OverviewPage() {
   const canApproveEvents = canApprove(ws.perms);
   const supabase = createClient();
 
-  const [evRes, schedRes, memRes, slRes, songRes, staffRes] = await Promise.all([
+  const [evRes, schedRes, memRes, slRes, songRes, staffRes, roRes] = await Promise.all([
     supabase
       .from("events")
       .select("*")
@@ -79,6 +79,12 @@ export default async function OverviewPage() {
       .select("*")
       .eq("tenant_id", tid)
       .order("sort_order", { ascending: true }),
+    // Which festivals (name + date) already have a running order — drives the
+    // "คุมคิว (Live)" entry on each date header (staff build & run from Overview now).
+    supabase
+      .from("run_sequence")
+      .select("event_name, event_date")
+      .eq("tenant_id", tid),
   ]);
 
   const eventRows = (evRes.data ?? []) as EventRow[];
@@ -87,6 +93,15 @@ export default async function OverviewPage() {
   const slRows = (slRes.data ?? []) as { event_id: string; song_id: string | null }[];
   const songRows = (songRes.data ?? []) as { id: string; copyright_status: string }[];
   const staff = (staffRes.data ?? []) as StaffContact[];
+  const roRows = (roRes.data ?? []) as {
+    event_name: string;
+    event_date: string | null;
+  }[];
+  // Distinct festival keys (name__date) that have a running order. Same key the
+  // client rebuilds from each event's name + date.
+  const runOrderFestivals = Array.from(
+    new Set(roRows.map((r) => `${r.event_name}__${r.event_date ?? ""}`))
+  );
 
   // Per-event copyright rollup — count the distinct library songs used in each
   // event's setlist that are pending / rejected, so approvers spot issues here.
@@ -191,6 +206,7 @@ export default async function OverviewPage() {
           canApproveEvents={canApproveEvents}
           isLabelWide={isLabelWideUser(ws.perms)}
           canOpenDetail={canOpenEventDetail()}
+          runOrderFestivals={runOrderFestivals}
         />
       )}
     </div>

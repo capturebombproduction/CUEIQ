@@ -13,6 +13,7 @@ import { SetlistBuilder } from "@/components/event/setlist-builder";
 import { MicMapEditor } from "@/components/event/mic-map-editor";
 import { LineupEditor } from "@/components/event/lineup-editor";
 import { EventSummary } from "@/components/event/event-summary";
+import { type RunSeqLive } from "@/components/event/event-live-caller";
 import { createClient } from "@/lib/supabase/client";
 import { notify } from "@/lib/notify-client";
 import { type CompletenessResult } from "@/lib/completeness";
@@ -44,8 +45,7 @@ export function EventWorkspace({
   members,
   songs,
   lineup,
-  hasRunOrder = false,
-  canBuildRunOrder = false,
+  runSeq = [],
 }: {
   event: EventRow & { group: Group | null };
   eventId: string;
@@ -61,10 +61,8 @@ export function EventWorkspace({
   members: Member[];
   songs: Song[];
   lineup: string[];
-  /** This festival has a running order — show the live watch link (everyone). */
-  hasRunOrder?: boolean;
-  /** May build/edit the running order (approvers) — show the builder link. */
-  canBuildRunOrder?: boolean;
+  /** This festival's running order — drives the read-only live status card. */
+  runSeq?: RunSeqLive[];
 }) {
   const modules = EVENT_TYPES[eventType]?.modules ?? EVENT_TYPES.idol.modules;
   const router = useRouter();
@@ -170,8 +168,8 @@ export function EventWorkspace({
             lineup={lineup}
             completeness={completeness}
             editable={editable}
-            hasRunOrder={hasRunOrder}
-            canBuildRunOrder={canBuildRunOrder}
+            tenantId={tenantId}
+            runSeq={runSeq}
           />
         </TabsContent>
 

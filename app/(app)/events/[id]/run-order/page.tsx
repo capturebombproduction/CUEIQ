@@ -18,12 +18,15 @@ export const dynamic = "force-dynamic";
 // approvers (admin + label_staff) build it — RLS enforces it too.
 export default async function RunOrderPage({
   params,
+  searchParams,
 }: {
   params: { id: string };
+  searchParams: { from?: string };
 }) {
   const ws = await getWorkspace();
   if (!ws.membership || !ws.tenant) redirect("/dashboard");
   if (!canApprove(ws.perms)) redirect("/dashboard");
+  const fromOverview = searchParams?.from === "overview";
   const tid = ws.membership.tenant_id;
   const supabase = createClient();
 
@@ -77,17 +80,21 @@ export default async function RunOrderPage({
     <div className="space-y-6">
       <div>
         <Link
-          href={`/events/${ev.id}`}
+          href={fromOverview ? "/overview" : `/events/${ev.id}`}
           className="text-sm text-muted-foreground hover:underline"
         >
-          ← {ev.name}
+          ← {fromOverview ? "Overview" : ev.name}
         </Link>
         <div className="flex flex-wrap items-center justify-between gap-2">
           <h1 className="flex items-center gap-2 text-2xl font-bold tracking-tight">
             <ListOrdered className="h-6 w-6" /> Running Order
           </h1>
           <Button asChild>
-            <Link href={`/events/${ev.id}/run-order/live`}>
+            <Link
+              href={`/events/${ev.id}/run-order/live${
+                fromOverview ? "?from=overview" : ""
+              }`}
+            >
               <Radio className="h-4 w-4" /> คุมคิว (Live)
             </Link>
           </Button>

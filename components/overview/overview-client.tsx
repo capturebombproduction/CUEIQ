@@ -3,7 +3,15 @@
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { toast } from "sonner";
-import { AlarmClock, Users, PlayCircle, ImageDown, Loader2 } from "lucide-react";
+import {
+  AlarmClock,
+  Users,
+  PlayCircle,
+  ImageDown,
+  Loader2,
+  Radio,
+  ListOrdered,
+} from "lucide-react";
 import { EventStatusActions } from "@/components/overview/event-status-actions";
 import { PhotoTimeCell } from "@/components/overview/photo-time-cell";
 import { StatusBadge, StatusDot } from "@/components/status-badge";
@@ -483,6 +491,55 @@ function groupEventsByShow(events: OverviewEvent[]) {
   return Array.from(map.values());
 }
 
+// Staff entry-point to the festival-wide running order, shown in a date/festival
+// header on Overview (approvers only). The running order is per festival (name +
+// date), so a header may carry one (รายงาน view) or a few (a busy day) — each gets
+// a "Running Order" (build) link and, once it has rows, a "คุมคิว (Live)" link to
+// run it as Master. `?from=overview` makes those pages return here. Bands don't see
+// this — they watch their own slot's status on their event page.
+function FestivalRunControls({
+  bucketEvents,
+  runOrderSet,
+}: {
+  bucketEvents: OverviewEvent[];
+  runOrderSet: Set<string>;
+}) {
+  const groups = groupEventsByShow(bucketEvents);
+  if (groups.length === 0) return null;
+  const multi = groups.length > 1;
+  return (
+    <div className="ml-auto flex flex-wrap items-center gap-1.5">
+      {groups.map((g) => {
+        const repId = g.events[0]?.id;
+        if (!repId) return null;
+        const key = `${g.name}__${g.date ?? ""}`;
+        const hasOrder = runOrderSet.has(key);
+        return (
+          <div key={key} className="flex items-center gap-1">
+            {multi && (
+              <span className="max-w-[8rem] truncate text-xs text-muted-foreground">
+                {g.name}:
+              </span>
+            )}
+            {hasOrder && (
+              <Button size="sm" variant="default" asChild className="h-7">
+                <Link href={`/events/${repId}/run-order/live?from=overview`}>
+                  <Radio className="h-3.5 w-3.5" /> คุมคิว (Live)
+                </Link>
+              </Button>
+            )}
+            <Button size="sm" variant="outline" asChild className="h-7">
+              <Link href={`/events/${repId}/run-order?from=overview`}>
+                <ListOrdered className="h-3.5 w-3.5" /> Running Order
+              </Link>
+            </Button>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 // One schedule table for the export JPG, with the "อะไรซ้ำยุบ" column collapse: any
 // of งาน / วันที่ that's constant down the whole table is hoisted into the header
 // (when not already the label) and its column dropped; วง shows only when bands
@@ -604,6 +661,7 @@ export function OverviewClient({
   canApproveEvents,
   isLabelWide,
   canOpenDetail,
+  runOrderFestivals = [],
 }: {
   events: OverviewEvent[];
   bands: OverviewBand[];
@@ -612,7 +670,14 @@ export function OverviewClient({
   canApproveEvents: boolean;
   isLabelWide: boolean; // show the view-only Live link (overview audience)
   canOpenDetail: boolean; // false for label_staff (overview-only); name is plain text
+  runOrderFestivals?: string[]; // "name__date" keys that already have a running order
 }) {
+  // Fast lookup of which festivals (name + date) already have a running order, so
+  // the header can offer "คุมคิว (Live)" only when there's something to run.
+  const runOrderSet = useMemo(
+    () => new Set(runOrderFestivals),
+    [runOrderFestivals]
+  );
   const [mode, setMode] = useState<ViewMode>("band");
   const [bandFilter, setBandFilter] = useState<string>("all");
   const [dateFilter, setDateFilter] = useState<string>("all"); // "all" or an ISO date
@@ -875,6 +940,12 @@ export function OverviewClient({
                     · {bucket.events.length} {mode === "event" ? "วง" : "งาน"}
                     {band ? ` · ${band.members.length} คน` : ""}
                   </span>
+                  {canApproveEvents && mode !== "band" && (
+                    <FestivalRunControls
+                      bucketEvents={bucket.events}
+                      runOrderSet={runOrderSet}
+                    />
+                  )}
                 </div>
               )}
 

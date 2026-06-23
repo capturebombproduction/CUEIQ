@@ -14,7 +14,6 @@ import {
   CheckCircle2,
   AlertTriangle,
   Pencil,
-  ListOrdered,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -47,6 +46,8 @@ import {
 } from "@/lib/types";
 import { captureElementToImage } from "@/lib/export-image";
 import { type CompletenessResult } from "@/lib/completeness";
+import { EventRunStatusCard } from "@/components/event/event-run-status";
+import { type RunSeqLive } from "@/components/event/event-live-caller";
 
 function fmtDate(date: string | null): string {
   if (!date) return "—";
@@ -132,8 +133,8 @@ export function EventSummary({
   lineup = [],
   completeness,
   editable = false,
-  hasRunOrder = false,
-  canBuildRunOrder = false,
+  tenantId,
+  runSeq = [],
 }: {
   event: EventRow & { group: Group | null };
   schedule: ScheduleItem[];
@@ -144,10 +145,9 @@ export function EventSummary({
   lineup?: string[];
   completeness?: CompletenessResult;
   editable?: boolean;
-  /** This festival has a running order — show the live watch link (everyone). */
-  hasRunOrder?: boolean;
-  /** May build/edit the running order (approvers) — show the builder link. */
-  canBuildRunOrder?: boolean;
+  tenantId: string;
+  /** This festival's running order — drives the read-only live status card. */
+  runSeq?: RunSeqLive[];
 }) {
   const captureRef = useRef<HTMLDivElement>(null);
   const [exporting, setExporting] = useState(false);
@@ -208,20 +208,6 @@ export function EventSummary({
             <Radio className="h-4 w-4" /> เข้า Live Mode
           </Link>
         </Button>
-        {hasRunOrder && (
-          <Button variant="outline" asChild title="คิวงานทั้งงานแบบสด — ทุกคนดูได้">
-            <Link href={`/events/${event.id}/run-order/live`}>
-              <Clock className="h-4 w-4" /> คิวงาน (Live)
-            </Link>
-          </Button>
-        )}
-        {canBuildRunOrder && (
-          <Button variant="outline" asChild title="ลำดับงานทั้งงาน (สำหรับสตาฟคุมคิว)">
-            <Link href={`/events/${event.id}/run-order`}>
-              <ListOrdered className="h-4 w-4" /> Running Order
-            </Link>
-          </Button>
-        )}
         <Button variant="outline" onClick={exportJpg} disabled={exporting}>
           {exporting ? (
             <Loader2 className="h-4 w-4 animate-spin" />
@@ -235,6 +221,20 @@ export function EventSummary({
           หน้านี้เป็นสรุปอย่างเดียว — แก้ข้อมูลที่แท็บ/ปุ่มด้านล่าง
         </p>
       </div>
+
+      {/* Live status of this band's slot in the festival running order (read-only).
+          Staff drive the show from Overview → the live board; the band watches here. */}
+      {runSeq.length > 0 && (
+        <div className="no-print">
+          <EventRunStatusCard
+            rows={runSeq}
+            selfEventId={event.id}
+            tenantId={tenantId}
+            eventName={event.name}
+            eventDate={event.event_date}
+          />
+        </div>
+      )}
 
       {/* Completeness gate — editors only, while the event is editable
           (draft / pending_review / rejected). Approved is locked. */}
