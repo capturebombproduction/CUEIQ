@@ -102,24 +102,49 @@ function DurationField({
   );
 }
 
+// ---- Mic Preset helpers (localStorage, per-event) --------------------------
+function presetKey(eventId: string) {
+  return `cueiq:mic-preset:${eventId}`;
+}
+function loadPreset(eventId: string): MicSlot[] {
+  try {
+    const raw = localStorage.getItem(presetKey(eventId));
+    return raw ? (JSON.parse(raw) as MicSlot[]) : [];
+  } catch {
+    return [];
+  }
+}
+function savePreset(eventId: string, slots: MicSlot[]) {
+  try {
+    localStorage.setItem(presetKey(eventId), JSON.stringify(slots));
+  } catch {}
+}
+
 // ---- per-item mic slot editor (dialog) -------------------------------------
 function MicSlotsDialog({
   item,
+  eventId,
   members,
   disabled,
   onSave,
 }: {
   item: SetlistItem;
+  eventId: string;
   members: Member[];
   disabled?: boolean;
   onSave: (slots: MicSlot[]) => void;
 }) {
   const [open, setOpen] = useState(false);
   const [slots, setSlots] = useState<MicSlot[]>(item.mic_slots ?? []);
+  const [preset, setPreset] = useState<MicSlot[]>([]);
 
+  // Load preset from localStorage when dialog opens.
   useEffect(() => {
-    if (open) setSlots(item.mic_slots ?? []);
-  }, [open, item.mic_slots]);
+    if (open) {
+      setSlots(item.mic_slots ?? []);
+      setPreset(loadPreset(eventId));
+    }
+  }, [open, item.mic_slots, eventId]);
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
@@ -235,6 +260,43 @@ function MicSlotsDialog({
                 })}
               </div>
             )}
+          </div>
+        )}
+
+        {/* Preset bar — visible only when editing */}
+        {!disabled && (
+          <div className="flex flex-wrap items-center gap-2 border-t pt-3">
+            <span className="text-xs text-muted-foreground">Preset:</span>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={slots.filter((s) => s.mic.trim() || s.member.trim()).length === 0}
+              onClick={() => {
+                const filled = slots.filter((s) => s.mic.trim() || s.member.trim());
+                savePreset(eventId, filled);
+                setPreset(filled);
+                toast.success("บันทึก Preset ไมค์แล้ว");
+              }}
+            >
+              บันทึกเป็น Preset
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={preset.length === 0}
+              title={preset.length === 0 ? "ยังไม่มี Preset — กด 'บันทึกเป็น Preset' ก่อน" : undefined}
+              onClick={() => {
+                setSlots(preset.map((s) => ({ ...s })));
+                toast.success("ใช้ Preset ไมค์แล้ว");
+              }}
+            >
+              ใช้ Preset
+              {preset.length > 0 && (
+                <Badge variant="secondary" className="ml-1.5">{preset.length}</Badge>
+              )}
+            </Button>
           </div>
         )}
 
@@ -945,6 +1007,7 @@ export function SetlistBuilder({
                   <Label className="text-xs text-muted-foreground">ไมค์ + สมาชิก</Label>
                   <MicSlotsDialog
                     item={it}
+                    eventId={eventId}
                     members={members}
                     disabled={!rowEditable}
                     onSave={(slots) => update(it.id, { mic_slots: slots })}
