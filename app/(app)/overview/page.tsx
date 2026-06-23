@@ -17,6 +17,7 @@ import {
   type OverviewBand,
 } from "@/components/overview/overview-client";
 import { type EventRow, type Member, type StaffContact } from "@/lib/types";
+import { StaffContactsManager } from "@/components/admin/staff-contacts";
 
 export const dynamic = "force-dynamic";
 
@@ -191,6 +192,21 @@ export default async function OverviewPage() {
           isLabelWide={isLabelWideUser(ws.perms)}
           canOpenDetail={canOpenEventDetail()}
         />
+      )}
+
+      {/* Label crew directory that feeds the schedule export. Editable by
+          approvers (admin + label_staff) — label_staff owns the Overview, so they
+          maintain it here without needing the admin page (RLS: 0032). Collapsed by
+          default so it doesn't crowd the schedule. */}
+      {canApproveEvents && (
+        <details className="rounded-lg border bg-card/40">
+          <summary className="cursor-pointer px-4 py-3 text-sm font-medium">
+            จัดการทีมงานค่าย (สำหรับตารางงาน)
+          </summary>
+          <div className="border-t p-3">
+            <StaffContactsManager tenantId={tid} initial={staff} />
+          </div>
+        </details>
       )}
     </div>
   );
