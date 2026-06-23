@@ -7,10 +7,13 @@
 // NEVER intercepts Supabase (auth / realtime / storage) or any cross-origin request,
 // so audio downloads, realtime sync and login always hit the real network.
 //
-// Bump VERSION to roll the cache. A new worker does NOT skipWaiting — it waits until
-// every tab is closed before activating, so an update can't disrupt a running show.
+// Bump VERSION to roll the cache. A new worker does NOT skipWaiting on its own — it
+// would otherwise wait until every tab is closed before activating, which an
+// installed kiosk PWA rarely does (so it stays stuck on a stale build). Instead the
+// app (sw-register.tsx) posts {type:"SKIP_WAITING"} to take the update over at once,
+// but only OFF the live/practice pages — so an update can't reload a running show.
 
-const VERSION = "v3";
+const VERSION = "v4";
 const STATIC_CACHE = `cueiq-static-${VERSION}`;
 const PAGE_CACHE = `cueiq-pages-${VERSION}`;
 const PRECACHE = [
@@ -51,6 +54,13 @@ self.addEventListener("activate", (event) => {
       await self.clients.claim();
     })()
   );
+});
+
+// The app asks us to activate immediately (it only does so off the live/practice
+// pages — see sw-register.tsx) so a fresh deploy applies without waiting for every
+// tab to close. On skipWaiting we activate → claim → drop old caches (see above).
+self.addEventListener("message", (event) => {
+  if (event.data && event.data.type === "SKIP_WAITING") self.skipWaiting();
 });
 
 function isStaticAsset(url) {
