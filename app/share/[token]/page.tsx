@@ -32,7 +32,6 @@ interface SharedBundle {
     hard_out_time: string | null;
     status: string;
     notes: string | null;
-    map_url: string | null;
     costume_theme: string | null;
   };
   group: { id: string; name: string; color: string | null; skin: string | null } | null;

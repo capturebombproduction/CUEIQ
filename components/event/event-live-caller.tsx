@@ -134,6 +134,10 @@ export function EventLiveCaller({
       : String(Math.random())
   );
   const channelRef = useRef<RealtimeChannel | null>(null);
+  // Synchronous re-entrancy guard for the status-advancing actions (start / next).
+  // `busy` disables the buttons, but only after a render — this blocks a fast
+  // double-tap on a laggy tablet from firing the transition twice.
+  const inFlightRef = useRef(false);
 
   // ticking wall clock + live elapsed (1s is plenty)
   useEffect(() => {
@@ -231,20 +235,36 @@ export function EventLiveCaller({
     });
   }
 
-  // Keep the screen awake while a sequence is live (kiosk / backstage tablet).
+  // Keep the screen awake while a sequence is live (backstage tablet / kiosk). The
+  // browser auto-releases the lock whenever the tab is hidden (app-switch / screen
+  // lock), so we ALSO re-acquire it on visibilitychange — otherwise the screen
+  // sleeps mid-show and never wakes (mirrors components/event/live-mode.tsx).
+  const wakeLockRef = useRef<WakeLockSentinel | null>(null);
+  const hasLive = liveRow != null;
   useEffect(() => {
-    if (!liveRow) return;
-    let wl: WakeLockSentinel | null = null;
-    navigator.wakeLock
-      ?.request("screen")
-      .then((x) => {
-        wl = x;
-      })
-      .catch(() => {});
-    return () => {
-      wl?.release?.().catch(() => {});
-    };
-  }, [liveRow]);
+    function acquire() {
+      if (!hasLive || wakeLockRef.current) return;
+      navigator.wakeLock
+        ?.request("screen")
+        .then((wl) => {
+          wl.addEventListener("release", () => {
+            if (wakeLockRef.current === wl) wakeLockRef.current = null;
+          });
+          wakeLockRef.current = wl;
+        })
+        .catch(() => {});
+    }
+    if (hasLive) acquire();
+    else {
+      wakeLockRef.current?.release().catch(() => {});
+      wakeLockRef.current = null;
+    }
+    function onVisible() {
+      if (document.visibilityState === "visible") acquire();
+    }
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
+  }, [hasLive]);
 
   // --- mutations --------------------------------------------------------------
   // Optimistically apply, persist each changed row, then tell other devices.
@@ -270,22 +290,27 @@ export function EventLiveCaller({
 
   // Begin the show / start the first pending row (only when nothing is live).
   async function start() {
-    if (liveRow || !firstPending) return;
-    // Only the FIRST start of the whole show pings members — resuming a later row
-    // ("เริ่มลำดับถัดไป") shouldn't. Capture before the optimistic update flips it.
-    const firstStart = !started;
-    const t = new Date();
-    const p = parseClockToSeconds(firstPending.planned_start);
-    const d = p != null ? normMin(Math.round((secOfDay(t) - p) / 60)) : drift;
-    await apply([
-      {
-        id: firstPending.id,
-        partial: { status: "live", actual_start: t.toISOString(), offset_min: d },
-      },
-    ]);
-    // Fire-and-forget AFTER the write lands so the route's anti-spoof (it re-checks
-    // run_sequence has a live row) passes. Notifies the whole label the show is on.
-    if (firstStart) notify("run_order_live", { eventId });
+    if (liveRow || !firstPending || inFlightRef.current) return;
+    inFlightRef.current = true;
+    try {
+      // Only the FIRST start of the whole show pings members — resuming a later row
+      // ("เริ่มลำดับถัดไป") shouldn't. Capture before the optimistic update flips it.
+      const firstStart = !started;
+      const t = new Date();
+      const p = parseClockToSeconds(firstPending.planned_start);
+      const d = p != null ? normMin(Math.round((secOfDay(t) - p) / 60)) : drift;
+      await apply([
+        {
+          id: firstPending.id,
+          partial: { status: "live", actual_start: t.toISOString(), offset_min: d },
+        },
+      ]);
+      // Fire-and-forget AFTER the write lands so the route's anti-spoof (it re-checks
+      // run_sequence has a live row) passes. Notifies the whole label the show is on.
+      if (firstStart) notify("run_order_live", { eventId });
+    } finally {
+      inFlightRef.current = false;
+    }
   }
 
   // End the live row (logs its actual_end + its start-offset as late/early) and start
@@ -295,6 +320,8 @@ export function EventLiveCaller({
       start();
       return;
     }
+    if (inFlightRef.current) return;
+    inFlightRef.current = true;
     const t = new Date();
     const updates: { id: string; partial: Partial<RunSeqLive> }[] = [
       { id: liveRow.id, partial: { status: "done", actual_end: t.toISOString() } },
@@ -310,7 +337,9 @@ export function EventLiveCaller({
         partial: { status: "live", actual_start: t.toISOString(), offset_min: d },
       });
     }
-    apply(updates);
+    apply(updates).finally(() => {
+      inFlightRef.current = false;
+    });
   }
 
   // Push downstream times: nudge the live row's drift by ±minutes (a band overran,

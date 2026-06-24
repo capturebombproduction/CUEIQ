@@ -94,6 +94,25 @@ async function targetEmail(
   return (data?.email as string | null) ?? null;
 }
 
+/**
+ * Is `userId` a member of THIS tenant? Guards the service-role mutations (which can
+ * otherwise reach any account globally) so a tenant admin can only touch accounts
+ * inside their own label — defense-in-depth for a future multi-tenant deployment.
+ */
+async function isTenantMember(
+  admin: ReturnType<typeof createAdminClient>,
+  tenantId: string,
+  userId: string
+): Promise<boolean> {
+  const { data } = await admin
+    .from("tenant_members")
+    .select("user_id")
+    .eq("tenant_id", tenantId)
+    .eq("user_id", userId)
+    .maybeSingle();
+  return !!data;
+}
+
 // ---------------------------------------------------------------------------
 // GET — list every user in the tenant with their tenant role + band roles.
 // ---------------------------------------------------------------------------
@@ -260,6 +279,12 @@ export async function PATCH(req: Request) {
 
   const admin = createAdminClient();
 
+  // The target must belong to the caller's tenant — don't let a tenant admin reset
+  // a password / change roles on an account outside their own label by guessing an id.
+  if (userId !== gate.callerId && !(await isTenantMember(admin, gate.tenantId, userId))) {
+    return NextResponse.json({ error: "ไม่พบผู้ใช้นี้ในค่ายของคุณ" }, { status: 404 });
+  }
+
   // Master Admin can only be modified by itself — block other admins (covers both
   // the role change and the password reset).
   if (userId !== gate.callerId && isMasterAdminEmail(await targetEmail(admin, userId))) {
@@ -329,6 +354,12 @@ export async function DELETE(req: Request) {
 
   const admin = createAdminClient();
   const { tenantId } = gate;
+
+  // The target must belong to the caller's tenant — deleteUser() removes the auth
+  // account globally, so gate it on membership first (never reach another label).
+  if (!(await isTenantMember(admin, tenantId, userId))) {
+    return NextResponse.json({ error: "ไม่พบผู้ใช้นี้ในค่ายของคุณ" }, { status: 404 });
+  }
 
   // Master Admin is protected — no one (not even other admins) can delete it.
   if (isMasterAdminEmail(await targetEmail(admin, userId))) {
