@@ -13,6 +13,7 @@ import {
   clearSongCache,
   type SongCacheSummary,
 } from "@/lib/song-cache";
+import { clearEventSnapshots } from "@/lib/event-store";
 
 function fmtSize(bytes: number): string {
   const mb = bytes / (1024 * 1024);
@@ -121,7 +122,13 @@ export function DeviceStorage({
 
   const clearAll = async () => {
     setBusy(true);
-    await Promise.all([clearAllAudio().catch(() => {}), clearSongCache().catch(() => {})]);
+    // Full wipe = audio caches + the saved show-data snapshots (offline cold-boot
+    // data); the snapshots are tiny but a "ล้างทั้งหมด" should leave nothing behind.
+    await Promise.all([
+      clearAllAudio().catch(() => {}),
+      clearSongCache().catch(() => {}),
+      clearEventSnapshots().catch(() => {}),
+    ]);
     setBusy(false);
     refresh();
     onChanged?.();
