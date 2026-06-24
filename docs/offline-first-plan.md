@@ -1,7 +1,12 @@
 # CueIQ — Offline-First (Local-First) Plan
 
-> สถานะ: **DESIGN** (decisions เคาะกับพี่พัชร์ 2026-06-25) — ยังไม่เริ่มโค้ด รอ review
+> สถานะ: **§11-B + P1 SHIPPED** (2026-06-25) — preflight readiness + offline cold-boot deployed to prod.
+> ⏳ รอพี่ test airplane-mode จริงบนเครื่องก่อนพึ่งพา · **P2 = next, ต้อง confirm scope (น่าจะมี DB migration + ต้อง 2-device test)**
 > ต่อยอดจาก Single Audio Source (`511a26a`) + offline suite ที่มีอยู่
+>
+> **Done so far:**
+> - §11-B `b1846d8` — Show Readiness Check preflight (lib/show-readiness.ts + components/event/show-readiness-check.tsx on the live page): songs-on-device · storage pinned · free space · battery · net, with inline prep/pin actions.
+> - P1 `829be48` — offline cold-boot: lib/event-store.ts (IndexedDB show-data snapshot) + EventSnapshotWriter (live page persists it) + app/live-shell + live-shell-client (static shell reads snapshot → mounts Live Mode) + sw.js v5 (precache shell, serve it for uncached offline /events/<id>/live). Online path untouched. Verified on prod: /live-shell 200, sw.js v5.
 
 ## 1. เป้าหมาย
 - เปิดแอปใช้งานได้ตั้งแต่แรกแม้ไม่มีเน็ต (offline boot)
@@ -106,7 +111,7 @@
 
 ## 12. เริ่มยังไง (สำหรับ session ใหม่)
 1. อ่าน doc นี้ + memory `cueiq-offline-first-plan`
-2. **ทำ §11-B ก่อนเป็นเรื่องแรก** (`storage.persist()` + preflight readiness) — เพราะ "เพลงต้องอยู่ครบ" คือฐานของทุกอย่าง
-3. เริ่ม **P1**: (a) ยืนยัน SW boot offline ได้ทุกหน้าที่ใช้รันโชว์, (b) pull event+setlist ลง IndexedDB (มี song-cache/audio-store แล้ว — เพิ่ม "event data store"), (c) live page อ่าน local-first, (d) ทดสอบ single-device standalone (ปิดเน็ตจริง) รันโชว์ครบ
-4. P2→P3 ตาม §8; แต่ละ phase confirm scope กับพี่ก่อนลงมือ
+2. ~~§11-B~~ **DONE `b1846d8`** — `storage.persist()` (มี global ใน sw-register อยู่แล้ว) + preflight readiness (ShowReadinessCheck บน live page)
+3. ~~P1~~ **DONE `829be48`** — event-store snapshot + EventSnapshotWriter + live-shell + sw.js v5. (a)(b)(c) ครบ. **(d) ทดสอบ single-device standalone ปิดเน็ตจริง = รอพี่ test airplane-mode** (โหลด live page online 1 ครั้งให้ snapshot+audio ลงเครื่อง → ปิดเน็ต → เปิด live ใหม่ → ต้องบูตจาก shell ได้)
+4. **NEXT = P2** (Local authority + write): `deviceId` · Show Main claim + push hand-off · Audio Host lock · show-run local outbox · sync (main-wins). **confirm scope กับพี่ก่อน** + น่าจะมี **DB migration** (= confirm-first) + ต้อง **2-device test**. แล้ว P3 ตาม §8
 5. อย่าลืม: เสียง = zero-tolerance, อย่า hot-build, ทดสอบ 2 เครื่องจริงก่อน deploy
