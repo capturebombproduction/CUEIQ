@@ -33,6 +33,12 @@ import { createClient } from "@/lib/supabase/client";
 import { saveAudio, loadAudioForEvent } from "@/lib/audio-store";
 import { getCachedSongBlob } from "@/lib/song-cache";
 import { persistLastRun } from "@/lib/show-run-outbox";
+import { getDeviceId, deviceLabel } from "@/lib/device-id";
+import {
+  claimAuthority,
+  heartbeatAuthority,
+  releaseAuthority,
+} from "@/lib/show-authority";
 import {
   buildSongAudioPath,
   uploadEventAudio,
@@ -546,6 +552,31 @@ export function LiveMode({
     autoTriggeredForRef.current = null;
     autoAdvanceForRef.current = null;
   }, [state.currentIndex]);
+
+  // Persist this device's SHOW-MAIN authority while it's the controller of a begun
+  // show (P2). Best-effort + layered ON TOP of the existing broadcast control — it
+  // never gates the live path; it only lets other devices SEE who's main on join/
+  // reconnect and detect a ghost main (stale heartbeat) for recovery. The realtime
+  // hand-off still happens via the live: channel; this is the synced mirror.
+  const deviceIdRef = useRef<string>("");
+  if (!deviceIdRef.current) deviceIdRef.current = getDeviceId();
+  useEffect(() => {
+    if (!(isController && state.begun)) return;
+    const tenantId = itemsRef.current[0]?.tenant_id;
+    if (!tenantId) return; // no setlist → nothing to run / claim
+    const did = deviceIdRef.current;
+    const info = { deviceId: did, deviceLabel: deviceLabel() };
+    claimAuthority(tenantId, eventId, "show_main", info);
+    const hb = setInterval(() => {
+      heartbeatAuthority(eventId, "show_main", did);
+    }, 30000);
+    return () => {
+      clearInterval(hb);
+      // only deletes if WE still hold it — a hand-off that already moved the row to
+      // the new main is left intact (releaseAuthority matches on our device_id).
+      releaseAuthority(eventId, "show_main", did);
+    };
+  }, [isController, state.begun, eventId]);
 
   // negative buffer (Auto): pre-roll the NEXT track on the secondary element so it
   // overlaps the current one — current keeps playing, next "เล่นสวนขึ้นมา" |lead| sec early.
@@ -1854,7 +1885,7 @@ export function LiveMode({
       </div>
 
       {/* "What is this device right now" — Show Main / Audio Host / online / sync. */}
-      <LiveStatusStrip isController={isController} soundOutput={soundOutput} />
+      <LiveStatusStrip eventId={eventId} isController={isController} soundOutput={soundOutput} />
 
       {/* Audio needs a tap to (re)start — after a reload / autoplay block. Big target. */}
       {needsAudioResume && (

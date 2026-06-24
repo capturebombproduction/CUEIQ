@@ -1,10 +1,21 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { SlidersHorizontal, Eye, Volume2, VolumeX, Wifi, WifiOff, CloudUpload } from "lucide-react";
+import {
+  SlidersHorizontal,
+  Eye,
+  Volume2,
+  VolumeX,
+  Wifi,
+  WifiOff,
+  CloudUpload,
+  MonitorSmartphone,
+  AlertTriangle,
+} from "lucide-react";
 import { cn } from "@/lib/utils";
-import { deviceLabel } from "@/lib/device-id";
+import { deviceLabel, getDeviceId, shortDeviceId } from "@/lib/device-id";
 import { pendingCount, flushOutbox } from "@/lib/show-run-outbox";
+import { getAuthority, isGhost } from "@/lib/show-authority";
 
 /**
  * At-a-glance "what is THIS device right now" strip for Live Mode — the prominent
@@ -18,28 +29,49 @@ import { pendingCount, flushOutbox } from "@/lib/show-run-outbox";
  * Display-only; changes nothing about control or audio.
  */
 export function LiveStatusStrip({
+  eventId,
   isController,
   soundOutput,
 }: {
+  eventId: string;
   isController: boolean;
   soundOutput: boolean;
 }) {
   const [online, setOnline] = useState(true);
   const [pending, setPending] = useState(0);
   const [label, setLabel] = useState("");
+  // Cross-device awareness: who the persisted authority says is MAIN. null = no
+  // recorded main (or it's this device); set when ANOTHER device holds it.
+  const [otherMain, setOtherMain] = useState<{ label: string; ghost: boolean } | null>(null);
 
   useEffect(() => {
     setLabel(deviceLabel());
     setOnline(navigator.onLine !== false);
     const refreshPending = () => pendingCount().then(setPending).catch(() => {});
-    refreshPending();
+    const refreshAuthority = async () => {
+      const rows = await getAuthority(eventId);
+      const main = rows.find((r) => r.kind === "show_main");
+      if (!main || main.device_id === getDeviceId()) {
+        setOtherMain(null);
+      } else {
+        setOtherMain({
+          label: main.device_label || shortDeviceId(main.device_id),
+          ghost: isGhost(main),
+        });
+      }
+    };
+    const refresh = () => {
+      refreshPending();
+      if (navigator.onLine !== false) refreshAuthority().catch(() => {});
+    };
+    refresh();
     const onUp = () => {
       setOnline(true);
       // a reconnect drains the outbox (also done app-wide) — reflect it here soon after
-      flushOutbox().finally(refreshPending);
+      flushOutbox().finally(refresh);
     };
     const onDown = () => setOnline(false);
-    const id = setInterval(refreshPending, 15000);
+    const id = setInterval(refresh, 15000);
     window.addEventListener("online", onUp);
     window.addEventListener("offline", onDown);
     return () => {
@@ -47,7 +79,7 @@ export function LiveStatusStrip({
       window.removeEventListener("online", onUp);
       window.removeEventListener("offline", onDown);
     };
-  }, []);
+  }, [eventId]);
 
   return (
     <div className="flex flex-wrap items-center gap-2 text-xs">
@@ -73,6 +105,31 @@ export function LiveStatusStrip({
         )}
         {label && <span className="font-mono font-normal opacity-70">· {label}</span>}
       </span>
+
+      {/* Cross-device: another device is the recorded MAIN — so you know where
+          control lives (and if that device went dark, a stale = reclaimable main). */}
+      {otherMain && !isController && (
+        <span
+          className={cn(
+            "inline-flex items-center gap-1.5 rounded-md border px-2 py-1 font-medium",
+            otherMain.ghost
+              ? "border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-400"
+              : "border-border bg-muted/40 text-muted-foreground"
+          )}
+          title={
+            otherMain.ghost
+              ? "เครื่องที่คุมโชว์เงียบไป (ไม่เห็นสัญญาณ) — กดขอควบคุมเพื่อรับช่วงต่อได้"
+              : `เครื่องที่กำลังคุมโชว์: ${otherMain.label}`
+          }
+        >
+          {otherMain.ghost ? (
+            <AlertTriangle className="h-3.5 w-3.5" />
+          ) : (
+            <MonitorSmartphone className="h-3.5 w-3.5" />
+          )}
+          {otherMain.ghost ? `MAIN เดิมหลุด · ${otherMain.label}` : `MAIN · ${otherMain.label}`}
+        </span>
+      )}
 
       {/* Audio Host — is this the device the sound comes out of? */}
       <span
