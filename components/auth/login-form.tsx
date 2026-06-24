@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { createClient } from "@/lib/supabase/client";
 import { loginIdToEmail } from "@/lib/username";
+import { safeInternalPath } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -35,7 +36,8 @@ export function LoginForm({ next }: { next?: string }) {
       return;
     }
     toast.success("ยินดีต้อนรับกลับ 👋");
-    router.replace(next && next.startsWith("/") ? next : "/dashboard");
+    // startsWith("/") alone let `//evil.com` (protocol-relative) through → open redirect.
+    router.replace(safeInternalPath(next));
     router.refresh();
   }
 

@@ -6,7 +6,7 @@ import { Bell, Check, BellRing, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { createClient } from "@/lib/supabase/client";
 import { Button } from "@/components/ui/button";
-import { cn } from "@/lib/utils";
+import { cn, safeInternalPath } from "@/lib/utils";
 
 interface NotifRow {
   id: string;
@@ -118,7 +118,10 @@ export function NotificationBell({
       // cancel an in-flight PATCH, leaving the row unread on the next load.
       await supabase.from("notifications").update({ read_at: now }).eq("id", n.id);
     }
-    if (n.link) router.push(n.link);
+    // n.link is server-set (always internal), but navigate only to an in-app path
+    // as defense-in-depth — never follow an external URL from a stored row.
+    const dest = safeInternalPath(n.link, "");
+    if (dest) router.push(dest);
   }
 
   async function markAllRead() {
