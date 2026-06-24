@@ -32,6 +32,7 @@ import { toast } from "sonner";
 import { createClient } from "@/lib/supabase/client";
 import { saveAudio, loadAudioForEvent } from "@/lib/audio-store";
 import { getCachedSongBlob } from "@/lib/song-cache";
+import { persistLastRun } from "@/lib/show-run-outbox";
 import {
   buildSongAudioPath,
   uploadEventAudio,
@@ -974,12 +975,10 @@ export function LiveMode({
     const at = Date.now();
     const rec = { seconds, at };
     setLastRun(rec);
-    // persist on the event (permanent + cross-device) + live-update other devices
-    createClient()
-      .from("events")
-      .update({ last_run_seconds: seconds, last_run_at: new Date(at).toISOString() })
-      .eq("id", eventId)
-      .then(() => {});
+    // persist on the event (permanent + cross-device) + live-update other devices.
+    // Queued for replay if this device is offline (a fully-offline show still lands
+    // its run time on the server when it reconnects — see show-run-outbox).
+    persistLastRun(eventId, seconds, at).catch(() => {});
     channelRef.current?.send({
       type: "broadcast",
       event: "lastrun",
@@ -1001,11 +1000,7 @@ export function LiveMode({
   function clearLastRun() {
     if (!canEdit) return;
     setLastRun(null);
-    createClient()
-      .from("events")
-      .update({ last_run_seconds: null, last_run_at: null })
-      .eq("id", eventId)
-      .then(() => {});
+    persistLastRun(eventId, null, null).catch(() => {});
     channelRef.current?.send({
       type: "broadcast",
       event: "lastrun",
