@@ -705,13 +705,10 @@ export function LiveMode({
       if (!payload || payload.sender === meId.current) return;
       const s = stateRef.current;
       if (s.begun) {
-        const c = committedRef.current;
         const curId = itemsRef.current[s.currentIndex]?.id ?? null;
-        const af = s.running
-          ? { audioItemId: curId, audioPlaying: true, audioAnchor: s.itemStartedAt }
-          : c.id && c.id !== curId
-            ? { audioItemId: c.id, audioPlaying: true, audioAnchor: c.anchor }
-            : { audioItemId: c.id ?? curId, audioPlaying: false, audioAnchor: c.anchor };
+        // same audio-intent logic as a normal broadcast — incl. the real-position
+        // anchor when this device is the one sounding the track (see audioFields).
+        const af = audioFields(s);
         ch.send({
           type: "broadcast",
           event: "state",
@@ -780,10 +777,23 @@ export function LiveMode({
     const c = committedRef.current;
     const curId = itemsRef.current[s.currentIndex]?.id ?? null;
     if (s.running) {
+      // Anchor to the REAL <audio> position when THIS device is the one actually
+      // sounding the track locally. The <audio> clock drifts from wall-clock over a
+      // long track and the controller never self-corrects (it stays at 1x), so
+      // broadcasting itemStartedAt (pure wall-clock) makes other devices — and
+      // especially a NEW controller right after take-control — re-assert a stale
+      // anchor that hard-seeks the speaker device ("กระโดดแวบ" on hand-off). Fall back
+      // to the wall-clock anchor when we don't hold the file (a file-less remote
+      // controller): by then the committed anchor already tracks the real position.
+      const a = audioRef.current;
+      const anchor =
+        a && playingIdRef.current === curId && !a.paused
+          ? Date.now() - a.currentTime * 1000
+          : s.itemStartedAt;
       return {
         audioItemId: curId,
         audioPlaying: true,
-        audioAnchor: s.itemStartedAt,
+        audioAnchor: anchor,
       };
     }
     if (c.id && c.id !== curId) {
