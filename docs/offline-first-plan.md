@@ -1,12 +1,17 @@
 # CueIQ — Offline-First (Local-First) Plan
 
-> สถานะ: **§11-B + P1 SHIPPED** (2026-06-25) — preflight readiness + offline cold-boot deployed to prod.
-> ⏳ รอพี่ test airplane-mode จริงบนเครื่องก่อนพึ่งพา · **P2 = next, ต้อง confirm scope (น่าจะมี DB migration + ต้อง 2-device test)**
+> สถานะ: **§11-B + P1 + core P2 SHIPPED** (2026-06-25) — preflight readiness, offline cold-boot, show-run outbox, status strip, persisted show-main authority all deployed + Vercel-verified on prod. Migration `0035` applied.
+> ⏳ **NEXT is พี่'s:** airplane-mode test (cold-boot) + 2-device test (handoff/authority). The remainder (audio-host hard lock · strict push-handoff · rank-override on active main · song newer-wins import · version recovery · P4 peer) is GATED on that real-device testing + the zero-tolerance-audio rule.
 > ต่อยอดจาก Single Audio Source (`511a26a`) + offline suite ที่มีอยู่
 >
-> **Done so far:**
-> - §11-B `b1846d8` — Show Readiness Check preflight (lib/show-readiness.ts + components/event/show-readiness-check.tsx on the live page): songs-on-device · storage pinned · free space · battery · net, with inline prep/pin actions.
-> - P1 `829be48` — offline cold-boot: lib/event-store.ts (IndexedDB show-data snapshot) + EventSnapshotWriter (live page persists it) + app/live-shell + live-shell-client (static shell reads snapshot → mounts Live Mode) + sw.js v5 (precache shell, serve it for uncached offline /events/<id>/live). Online path untouched. Verified on prod: /live-shell 200, sw.js v5.
+> **Done so far (all additive / online-safe / Vercel state:success):**
+> - §11-B `b1846d8` — Show Readiness Check preflight (lib/show-readiness.ts + components/event/show-readiness-check.tsx): songs-on-device · storage pinned · free space · battery · net + inline prep/pin.
+> - P1 `829be48` — offline cold-boot: lib/event-store.ts snapshot + EventSnapshotWriter + app/live-shell + live-shell-client + sw.js v5 (precache shell, serve for uncached offline /events/<id>/live). Verified /live-shell 200, sw.js v5.
+> - P1 polish `d0ac208` — event-page pre-stage (EventSnapshotWriter w/ canLiveEdit) + clear-all wipes snapshots + lib/device-id.ts.
+> - P2 outbox `6116064` — lib/show-run-outbox.ts (queue offline last-run writes) + OutboxFlusher in (app) layout + live-mode endShow/clearLastRun via persistLastRun.
+> - P2 status `f16dd0b` — components/event/live-status-strip.tsx (Show Main · Audio Host · online · pending-sync + device label).
+> - P2 migration `3118daa` — 0035_show_authority (applied to prod, rls=true, 4 policies).
+> - P2 authority `daaa81d` — lib/show-authority.ts (claim/heartbeat/release + rank + ghost) + live-mode claims show_main while controller (best-effort, layered on broadcast) + status strip shows cross-device MAIN/ghost.
 
 ## 1. เป้าหมาย
 - เปิดแอปใช้งานได้ตั้งแต่แรกแม้ไม่มีเน็ต (offline boot)
