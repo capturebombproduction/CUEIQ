@@ -149,10 +149,11 @@ export function SongLibrary({
     const expired = initialSongs.filter(isExpired);
     if (expired.length === 0) return;
     (async () => {
+      // R2 removal is per-file (each path differs); the DB rows delete in one shot.
       for (const s of expired) {
         if (s.audio_path) removeEventAudio(s.audio_path).catch(() => {});
-        await supabase.from("songs").delete().eq("id", s.id);
       }
+      await supabase.from("songs").delete().in("id", expired.map((s) => s.id));
       setSongs((prev) => prev.filter((s) => !isExpired(s)));
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps

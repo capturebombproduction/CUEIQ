@@ -105,6 +105,8 @@ export function deadlineInfo(
     timeZone: "Asia/Bangkok",
   });
   if (diffH < 0) return { label: "เลยกำหนดแล้ว", tone: "overdue" };
+  // Under an hour, round(diffH) shows a confusing "เหลือ 0 ชม." — say "ไม่ถึง 1 ชม." instead.
+  if (diffH < 1) return { label: "ด่วน! เหลือไม่ถึง 1 ชม.", tone: "urgent" };
   if (diffH < 24) return { label: `ด่วน! เหลือ ${Math.round(diffH)} ชม.`, tone: "urgent" };
   if (diffH < 72)
     return { label: `เหลือ ${Math.ceil(diffH / 24)} วัน`, tone: "soon" };

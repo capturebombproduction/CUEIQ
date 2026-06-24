@@ -131,17 +131,16 @@ export function DevInbox() {
     await createClient().from("feedback").delete().eq("id", id);
   }
   async function delGroup(ids: string[]) {
+    if (!ids.length) return;
     setErrs((p) => p.filter((r) => !ids.includes(r.id)));
-    const sb = createClient();
-    for (const id of ids) await sb.from("client_errors").delete().eq("id", id);
+    await createClient().from("client_errors").delete().in("id", ids);
   }
   async function clearNoise() {
     if (!(await confirm({ title: "ล้าง noise ทั้งหมด?", description: "ลบ error ที่เป็น hydration / localhost ออก — ลบถาวร" }))) return;
     const noiseIds = errs.filter(isNoise).map((r) => r.id);
     if (!noiseIds.length) return;
     setErrs((p) => p.filter((r) => !noiseIds.includes(r.id)));
-    const sb = createClient();
-    for (const id of noiseIds) await sb.from("client_errors").delete().eq("id", id);
+    await createClient().from("client_errors").delete().in("id", noiseIds);
   }
   async function clearAll() {
     if (!(await confirm({ title: "ล้าง error ทั้งหมด?", description: "ลบทุก row ในตาราง client_errors — ลบถาวร" }))) return;
