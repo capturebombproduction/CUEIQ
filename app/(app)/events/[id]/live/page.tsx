@@ -6,6 +6,7 @@ import { canLiveEdit, canViewGroup } from "@/lib/permissions";
 import { resolveAudioTargets, type SongAudioMap } from "@/lib/audio-targets";
 import { LiveMode } from "@/components/event/live-mode";
 import { ShowReadinessCheck } from "@/components/event/show-readiness-check";
+import { EventSnapshotWriter } from "@/components/event/event-snapshot-writer";
 import { Button } from "@/components/ui/button";
 
 export const dynamic = "force-dynamic";
@@ -44,6 +45,17 @@ export default async function LivePage({
         </Button>
       </div>
       <ShowReadinessCheck eventId={bundle.event.id} targets={audioTargets} />
+      {/* Persist this show's data on-device so it can cold-boot offline (app/live-shell). */}
+      <EventSnapshotWriter
+        eventId={bundle.event.id}
+        groupId={bundle.event.group_id}
+        eventName={bundle.event.name}
+        items={bundle.setlist}
+        songAudio={songAudio}
+        canEdit={canEdit}
+        lastRunSeconds={bundle.event.last_run_seconds ?? null}
+        lastRunAt={bundle.event.last_run_at ?? null}
+      />
       <LiveMode
         eventId={bundle.event.id}
         groupId={bundle.event.group_id}

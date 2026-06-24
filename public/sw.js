@@ -13,7 +13,7 @@
 // app (sw-register.tsx) posts {type:"SKIP_WAITING"} to take the update over at once,
 // but only OFF the live/practice pages — so an update can't reload a running show.
 
-const VERSION = "v4";
+const VERSION = "v5";
 const STATIC_CACHE = `cueiq-static-${VERSION}`;
 const PAGE_CACHE = `cueiq-pages-${VERSION}`;
 const PRECACHE = [
@@ -37,7 +37,13 @@ self.addEventListener("install", (event) => {
   event.waitUntil(
     caches
       .open(STATIC_CACHE)
-      .then((c) => c.addAll(PRECACHE))
+      .then(async (c) => {
+        // Core assets precached atomically.
+        await c.addAll(PRECACHE).catch(() => {});
+        // The Live Mode offline cold-boot shell — best-effort and SEPARATE so a
+        // hiccup fetching it can't void the whole precache above (addAll is atomic).
+        await c.add("/live-shell").catch(() => {});
+      })
       .catch(() => {})
   );
 });
@@ -124,12 +130,18 @@ self.addEventListener("fetch", (event) => {
           const cached =
             (await caches.match(req)) ||
             (await caches.match(req, { ignoreSearch: true }));
-          return (
-            cached ||
-            new Response(OFFLINE_HTML, {
-              headers: { "Content-Type": "text/html; charset=utf-8" },
-            })
-          );
+          if (cached) return cached;
+          // Offline cold-boot: a live show whose full page was never cached (e.g.
+          // only ever reached by in-app soft navigation) falls back to the shell,
+          // which reads the show from IndexedDB and mounts Live Mode. The browser
+          // URL stays /events/<id>/live, so the shell still finds the event id.
+          if (/\/events\/[^/]+\/live\/?$/.test(url.pathname)) {
+            const shell = await caches.match("/live-shell");
+            if (shell) return shell;
+          }
+          return new Response(OFFLINE_HTML, {
+            headers: { "Content-Type": "text/html; charset=utf-8" },
+          });
         })
     );
     return;
