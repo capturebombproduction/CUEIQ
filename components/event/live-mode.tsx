@@ -211,9 +211,6 @@ export function LiveMode({
     playing: boolean;
     anchor: number | null;
   } | null>(null);
-  // ref mirror so the always-on timeupdate listener can read it (continuous sync)
-  const remoteAudioRef = useRef(remoteAudio);
-  remoteAudioRef.current = remoteAudio;
 
   // ticking clock — 500ms is plenty for a whole-second countdown and halves the
   // re-render rate of this (large) component vs 250ms.
@@ -327,30 +324,10 @@ export function LiveMode({
       a.addEventListener("timeupdate", () => {
         if (a !== audioRef.current) return;
         setAudioCurrent(a.currentTime);
-        // Viewer-side CONTINUOUS sync: gently converge toward the controller's
-        // clock so two devices stay aligned mid-track without an audible jump.
-        // Same anchor math as the on-command resync. Controller stays at 1x.
-        const ra = remoteAudioRef.current;
-        if (
-          !isControllerRef.current &&
-          ra &&
-          ra.playing &&
-          ra.anchor != null &&
-          ra.id === playingIdRef.current
-        ) {
-          const pos = (Date.now() - ra.anchor) / 1000;
-          const drift = a.currentTime - pos; // +ve = we're ahead of the controller
-          if (Math.abs(drift) > 1.0) {
-            a.currentTime = Math.max(0, pos); // big gap → snap (a jump is acceptable)
-            a.playbackRate = 1;
-          } else if (Math.abs(drift) > 0.15) {
-            a.playbackRate = drift > 0 ? 0.97 : 1.03; // ahead→slow, behind→speed up
-          } else {
-            a.playbackRate = 1;
-          }
-        } else if (a.playbackRate !== 1) {
-          a.playbackRate = 1; // controller / not syncing → always natural speed
-        }
+        // SINGLE AUDIO SOURCE: the sounding device OWNS its playback position. We
+        // never nudge playbackRate or seek to chase a remote clock — that continuous
+        // convergence was the source of audible mid-show jumps. Always natural 1x.
+        if (a.playbackRate !== 1) a.playbackRate = 1;
       });
       a.addEventListener("loadedmetadata", () => {
         if (a === audioRef.current) setAudioDuration(a.duration);
@@ -598,12 +575,12 @@ export function LiveMode({
     }
   }, [now, state, items, audioUrls]);
 
-  // Viewer audio-sync: a NON-controller device that holds the audio file keeps the
-  // sound coming out and follows the controller's AUDIO INTENT (which item should be
-  // sounding + from where), broadcast separately from the visible currentIndex. That
-  // separation is what makes Manual feel right — the controller can cue/browse the
-  // next row while THIS device keeps playing the committed track, exactly like a
-  // single device, and a file-less remote can still drive the speaker device.
+  // Viewer audio follow (SINGLE AUDIO SOURCE model): a non-controller speaker device
+  // follows the controller's DISCRETE intent only — which item should sound, and
+  // play/pause. It does NOT import the controller's position: after loading a newly
+  // committed track (a one-time start offset), it plays from its OWN clock. This is
+  // what removes every involuntary mid-show seek (drift / hand-off / reconnect jump):
+  // nothing outside this device can move its playhead except a deliberate song change.
   useEffect(() => {
     if (isControllerRef.current) return; // the controller drives its own audio
     const audio = audioRef.current;
@@ -619,22 +596,19 @@ export function LiveMode({
         if (audioPlaying) setAudioPlaying(false);
         return;
       }
-      const pos = cmd.anchor != null ? (Date.now() - cmd.anchor) / 1000 : 0;
       if (playingId !== cmd.id) {
-        // controller committed a new track we have a file for — switch + seek to it
+        // DISCRETE track change committed by the controller (user-intended) — the
+        // ONLY position we ever import: load + seek to the start offset ONCE, then
+        // this device owns the position from here on.
+        const pos = cmd.anchor != null ? (Date.now() - cmd.anchor) / 1000 : 0;
         audio.src = url;
         audio.currentTime = Math.max(0, pos);
-        audio.playbackRate = 1; // clear any leftover sync nudge from the previous track
+        audio.playbackRate = 1;
         setPlayingId(cmd.id);
         audio.play().catch(() => {});
         if (!audioPlaying) setAudioPlaying(true);
       } else {
-        // same track — hard-seek only a big gap; the timeupdate handler does the
-        // continuous fine convergence (playbackRate nudge) so this won't glitch.
-        if (Math.abs(audio.currentTime - pos) > 1.0) {
-          audio.currentTime = Math.max(0, pos);
-          audio.playbackRate = 1;
-        }
+        // same track already loaded — follow PLAY only; NEVER touch the position.
         if (audio.paused) audio.play().catch(() => {});
         if (!audioPlaying) setAudioPlaying(true);
       }
