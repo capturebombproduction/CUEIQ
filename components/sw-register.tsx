@@ -105,6 +105,31 @@ export function SwRegister() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pathname]);
 
+  // Warm the OFFLINE SHELL's code into the cache while online + idle. Precaching the
+  // shell's HTML isn't enough — when the SW serves it offline the browser still needs
+  // the shell's JS chunks, which are only cached once the browser has actually loaded
+  // them. Importing the module pulls its chunk (and Live Mode, usually already cached
+  // from the live page) through the SW's cache-first static handler. Once, best-effort.
+  useEffect(() => {
+    if (process.env.NODE_ENV !== "production") return;
+    if (typeof navigator === "undefined" || navigator.onLine === false) return;
+    let done = false;
+    const warm = () => {
+      if (done) return;
+      done = true;
+      import("@/components/event/live-shell-client").catch(() => {});
+    };
+    const w = window as Window & {
+      requestIdleCallback?: (cb: () => void, opts?: { timeout: number }) => number;
+    };
+    if (typeof w.requestIdleCallback === "function") {
+      w.requestIdleCallback(warm, { timeout: 6000 });
+    } else {
+      const t = setTimeout(warm, 4000);
+      return () => clearTimeout(t);
+    }
+  }, []);
+
   // Ask the browser NOT to evict our storage (IndexedDB audio cache + the SW app
   // shell) to free space — otherwise a low-storage phone could quietly drop a
   // downloaded track mid-show. Best-effort, runs in dev too; only requests if

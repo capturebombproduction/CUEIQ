@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect } from "react";
-import { AlertTriangle, RotateCw } from "lucide-react";
+import { useEffect, useState } from "react";
+import { AlertTriangle, RotateCw, CloudOff } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
 /**
@@ -17,9 +17,34 @@ export default function AppError({
   error: Error & { digest?: string };
   reset: () => void;
 }) {
+  // Offline render/navigation failures (e.g. a soft nav that can't fetch its data)
+  // get a recovery path into the offline shell instead of a dead error screen.
+  const [offline, setOffline] = useState(false);
   useEffect(() => {
+    setOffline(navigator.onLine === false);
     console.error("[CueIQ] in-app render error:", error);
   }, [error]);
+
+  if (offline) {
+    return (
+      <div className="mx-auto max-w-md space-y-4 py-16 text-center">
+        <CloudOff className="mx-auto h-10 w-10 text-amber-500" />
+        <h1 className="text-xl font-bold">ออฟไลน์</h1>
+        <p className="text-sm text-muted-foreground">
+          ตอนนี้ไม่มีการเชื่อมต่อ จึงเปิดหน้านี้ไม่ได้ — เปิด “หน้าโชว์ออฟไลน์”
+          เพื่อรันโชว์ที่เตรียมไว้ในเครื่องนี้ต่อได้
+        </p>
+        <div className="flex justify-center gap-2">
+          <Button onClick={() => window.location.assign("/live-shell")}>
+            <CloudOff className="h-4 w-4" /> เปิดหน้าโชว์ออฟไลน์
+          </Button>
+          <Button variant="outline" onClick={() => window.location.reload()}>
+            โหลดใหม่
+          </Button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="mx-auto max-w-md space-y-4 py-16 text-center">

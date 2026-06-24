@@ -13,7 +13,7 @@
 // app (sw-register.tsx) posts {type:"SKIP_WAITING"} to take the update over at once,
 // but only OFF the live/practice pages — so an update can't reload a running show.
 
-const VERSION = "v5";
+const VERSION = "v6";
 const STATIC_CACHE = `cueiq-static-${VERSION}`;
 const PAGE_CACHE = `cueiq-pages-${VERSION}`;
 const PRECACHE = [
@@ -131,14 +131,13 @@ self.addEventListener("fetch", (event) => {
             (await caches.match(req)) ||
             (await caches.match(req, { ignoreSearch: true }));
           if (cached) return cached;
-          // Offline cold-boot: a live show whose full page was never cached (e.g.
-          // only ever reached by in-app soft navigation) falls back to the shell,
-          // which reads the show from IndexedDB and mounts Live Mode. The browser
-          // URL stays /events/<id>/live, so the shell still finds the event id.
-          if (/\/events\/[^/]+\/live\/?$/.test(url.pathname)) {
-            const shell = await caches.match("/live-shell");
-            if (shell) return shell;
-          }
+          // Offline + uncached → the UNIVERSAL offline shell so the app always boots
+          // with no network instead of dead-ending here. The browser URL is kept, so
+          // the shell routes itself: /events/<id>/live boots that show from IndexedDB,
+          // anything else (cold start at /dashboard, etc.) shows the offline home that
+          // lists the shows prepared on this device. (live-shell-client.tsx)
+          const shell = await caches.match("/live-shell");
+          if (shell) return shell;
           return new Response(OFFLINE_HTML, {
             headers: { "Content-Type": "text/html; charset=utf-8" },
           });
