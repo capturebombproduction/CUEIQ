@@ -41,6 +41,7 @@ import {
 } from "@/lib/audio-remote";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { LiveStatusStrip } from "@/components/event/live-status-strip";
 import { cn } from "@/lib/utils";
 import {
   SETLIST_KIND_SHORT,
@@ -1851,6 +1852,9 @@ export function LiveMode({
           </p>
         </div>
       </div>
+
+      {/* "What is this device right now" — Show Main / Audio Host / online / sync. */}
+      <LiveStatusStrip isController={isController} soundOutput={soundOutput} />
 
       {/* Audio needs a tap to (re)start — after a reload / autoplay block. Big target. */}
       {needsAudioResume && (
