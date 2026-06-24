@@ -13,9 +13,17 @@
 // app (sw-register.tsx) posts {type:"SKIP_WAITING"} to take the update over at once,
 // but only OFF the live/practice pages — so an update can't reload a running show.
 
-const VERSION = "v6";
-const STATIC_CACHE = `cueiq-static-${VERSION}`;
-const PAGE_CACHE = `cueiq-pages-${VERSION}`;
+const VERSION = "v7";
+// STABLE cache names (NOT version-scoped) — this is critical for offline reliability.
+// Static assets are content-hashed + immutable, so a new build just adds new keys; a
+// SW version bump must NOT wipe them, or every update would drop the JS chunks the app
+// already cached online and leave the device unable to boot offline until it re-browses
+// online (exactly the bug พี่ hit: update → cache wiped → offline shell had no chunks →
+// error loop). Pages stay fresh via network-first while online. Old versioned caches
+// from before this scheme are cleaned up once on activate.
+const STATIC_CACHE = "cueiq-static";
+const PAGE_CACHE = "cueiq-pages";
+const KEEP_CACHES = [STATIC_CACHE, PAGE_CACHE];
 const PRECACHE = [
   "/icon-192.png",
   "/icon-512.png",
@@ -52,9 +60,11 @@ self.addEventListener("activate", (event) => {
   event.waitUntil(
     (async () => {
       const keys = await caches.keys();
+      // Drop only the OLD version-scoped caches (cueiq-*-vN) from before the stable
+      // scheme; keep the stable static/page caches so chunks survive SW updates.
       await Promise.all(
         keys
-          .filter((k) => k.startsWith("cueiq-") && !k.endsWith(VERSION))
+          .filter((k) => k.startsWith("cueiq-") && !KEEP_CACHES.includes(k))
           .map((k) => caches.delete(k))
       );
       await self.clients.claim();

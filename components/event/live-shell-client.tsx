@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import dynamic from "next/dynamic";
 import {
   ArrowLeft,
   CloudOff,
@@ -9,8 +10,23 @@ import {
   Radio,
   ChevronRight,
 } from "lucide-react";
-import { LiveMode } from "@/components/event/live-mode";
 import { Button } from "@/components/ui/button";
+
+// Lazy so the OFFLINE HOME (the common cold-boot view) renders from a tiny chunk set
+// instead of pulling Live Mode's whole graph — if any one of those chunks weren't
+// cached, even the home would fail offline. Live Mode loads only when booting a show
+// (its chunks are cached from the live page / warm-up). ssr:false: shell is client-only.
+const LiveMode = dynamic(
+  () => import("@/components/event/live-mode").then((m) => m.LiveMode),
+  {
+    ssr: false,
+    loading: () => (
+      <div className="container flex min-h-[40vh] items-center justify-center py-10 text-muted-foreground">
+        <RefreshCw className="mr-2 h-4 w-4 animate-spin" /> กำลังโหลดโหมดไลฟ์…
+      </div>
+    ),
+  }
+);
 import {
   getEventSnapshot,
   listEventSnapshotIds,

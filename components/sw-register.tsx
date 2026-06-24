@@ -117,7 +117,10 @@ export function SwRegister() {
     const warm = () => {
       if (done) return;
       done = true;
+      // shell (offline home + boot) AND Live Mode (lazy-split out of the shell) so a
+      // device that never opened the live page online can still cold-boot a show offline.
       import("@/components/event/live-shell-client").catch(() => {});
+      import("@/components/event/live-mode").catch(() => {});
     };
     const w = window as Window & {
       requestIdleCallback?: (cb: () => void, opts?: { timeout: number }) => number;
