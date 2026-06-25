@@ -388,11 +388,20 @@ export function LiveMode({
     const onClick = (e: MouseEvent) => {
       const a = (e.target as HTMLElement)?.closest?.("a[href]") as HTMLAnchorElement | null;
       if (a && !(a.getAttribute("href") ?? "").includes(livePath)) {
+        const href = a.getAttribute("href") || "";
+        // Confirm-and-allow: leaving Live Mode cuts the audio on this sound device,
+        // so warn before going — but DO let the user leave (the old hard block felt
+        // like a dead button). On confirm, navigate to the link we intercepted; the
+        // href works as-is on web (/path) and desktop (#/path under HashRouter).
         e.preventDefault();
         e.stopPropagation();
-        toast.warning("ปิด “เสียงออกเครื่องนี้” ก่อนถึงจะออกจาก Live Mode ได้", {
-          description: "กันเสียงดับกลางโชว์ — แก้ละเอียดให้ใช้อีกเครื่อง (รีโมท ปิดเสียง)",
-        });
+        if (
+          window.confirm(
+            "ออกจาก Live Mode ตอนนี้? เสียงที่กำลังเล่นบนเครื่องนี้จะหยุด"
+          )
+        ) {
+          window.location.href = href;
+        }
       }
     };
     const onBeforeUnload = (e: BeforeUnloadEvent) => {
@@ -679,6 +688,12 @@ export function LiveMode({
         isControllerRef.current = false;
         setIsController(false);
         audioRef2.current?.pause(); // stop only any overlap pre-roll on the secondary
+        // เครื่องเสียงคุมคนเดียว: another device just took control → step down to a
+        // SILENT view-only viewer (auto-mute) so there's never two sound hosts and
+        // the new controller's audio is the single source. The taker had to turn ITS
+        // own sound on to take control, so the show audio moves there cleanly — no
+        // stale speaker keeps playing out of step with the new controller's clock.
+        setSoundOutput(false);
       }
       // Correct for clock differences between devices: the sender stamps its own
       // Date.now() as sentAt; we shift its absolute timestamps into OUR clock so
@@ -918,6 +933,17 @@ export function LiveMode({
   // Claim control of the show on this device. Broadcasting our current state tells
   // the previous controller to step down (it'll see our message and become a viewer).
   function takeControl() {
+    // เครื่องเสียงคุมคนเดียว: only the device that's OUTPUTTING sound may drive the
+    // show. A muted (view-only) device can't take control — that's exactly what
+    // stopped a remote from grabbing control and desyncing the countdown from the
+    // real audio. To control from here, turn on "เสียงออกเครื่องนี้" first (the show
+    // sound then moves to this device, so audio + control always travel together).
+    if (!soundOutput) {
+      toast.warning("เครื่องนี้อยู่โหมดดูอย่างเดียว", {
+        description: "เปิด “เสียงออกเครื่องนี้” ก่อน ถ้าจะให้เครื่องนี้คุมโชว์ (เสียงจะมาออกที่เครื่องนี้)",
+      });
+      return;
+    }
     setIsController(true);
     isControllerRef.current = true;
     channelRef.current?.send({
@@ -925,15 +951,6 @@ export function LiveMode({
       event: "state",
       payload: statePayload(stateRef.current),
     });
-    // Default is sound ON, so a remote that takes control would suddenly also blare
-    // the BGM. Remind them to mute this device if it's only meant to drive the show.
-    if (soundOutput) {
-      toast("เครื่องนี้กำลังคุมโชว์ + เปิดเสียงอยู่", {
-        description: "ถ้าจะใช้เป็นรีโมท (ไม่ออกเสียง) แตะเพื่อปิดเสียงเครื่องนี้",
-        action: { label: "ปิดเสียงเครื่องนี้", onClick: () => setSoundOutput(false) },
-        duration: 8000,
-      });
-    }
   }
 
   // audio controls
@@ -2303,14 +2320,19 @@ export function LiveMode({
                 </>
               )}
             </span>
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={takeControl}
-              className="shrink-0 border-amber-400 bg-white"
-            >
-              ขอควบคุม
-            </Button>
+            {/* เครื่องเสียงคุมคนเดียว: only a sound-output device may take control.
+                A muted viewer sees no take-control button — turn on "เสียงออก" below
+                to become the show device (audio + control move here together). */}
+            {soundOutput && (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={takeControl}
+                className="shrink-0 border-amber-400 bg-white"
+              >
+                ขอควบคุม
+              </Button>
+            )}
           </div>
         ) : (
           state.begun && (
