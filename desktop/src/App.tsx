@@ -3,7 +3,11 @@ import { Routes, Route, Navigate, useLocation } from "react-router-dom";
 import type { Session } from "@supabase/supabase-js";
 import { createClient } from "@/lib/supabase/client";
 import { Login } from "~/pages/Login";
-import { Home } from "~/pages/Home";
+import { Dashboard } from "~/pages/dashboard";
+import { EventPage } from "~/pages/event";
+import { ComingSoon } from "~/pages/coming-soon";
+import { Shell } from "~/components/shell";
+import { WorkspaceProvider } from "~/data/workspace-context";
 
 type AuthState = { loading: boolean; session: Session | null };
 
@@ -44,14 +48,29 @@ export function App() {
   return (
     <Routes>
       <Route path="/login" element={session ? <Navigate to="/" replace /> : <Login />} />
+
+      {/* Authenticated app — workspace loaded once, shared with the shell + pages. */}
       <Route
-        path="/"
         element={
           <Protected session={session}>
-            <Home />
+            <WorkspaceProvider>
+              <Shell />
+            </WorkspaceProvider>
           </Protected>
         }
-      />
+      >
+        <Route path="/" element={<Navigate to="/dashboard" replace />} />
+        <Route path="/dashboard" element={<Dashboard />} />
+        <Route path="/events/:id" element={<EventPage />} />
+        {/* Not-yet-ported nav sections — reachable so the reused nav stays honest. */}
+        <Route path="/overview" element={<ComingSoon title="Overview" />} />
+        <Route path="/library" element={<ComingSoon title="Library" />} />
+        <Route path="/practice" element={<ComingSoon title="Training" />} />
+        <Route path="/groups" element={<ComingSoon title="Artists" />} />
+        <Route path="/crew" element={<ComingSoon title="Crew" />} />
+        <Route path="/admin" element={<ComingSoon title="Admin" />} />
+      </Route>
+
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   );

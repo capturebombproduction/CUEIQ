@@ -18,6 +18,7 @@ export default defineConfig({
       // next/* shims so reused client components keep working without Next.
       "next/navigation": fileURLToPath(new URL("./src/shims/next-navigation.tsx", import.meta.url)),
       "next/link": fileURLToPath(new URL("./src/shims/next-link.tsx", import.meta.url)),
+      "next/dynamic": fileURLToPath(new URL("./src/shims/next-dynamic.tsx", import.meta.url)),
     },
   },
   define: {
