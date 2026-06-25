@@ -6,6 +6,11 @@ import { Login } from "~/pages/Login";
 import { Dashboard } from "~/pages/dashboard";
 import { EventPage } from "~/pages/event";
 import { LivePage } from "~/pages/live";
+import { Library } from "~/pages/library";
+import { Artists } from "~/pages/artists";
+import { Overview } from "~/pages/overview";
+import { Training } from "~/pages/training";
+import { PracticeRoom } from "~/pages/practice";
 import { ComingSoon } from "~/pages/coming-soon";
 import { Shell } from "~/components/shell";
 import { WorkspaceProvider } from "~/data/workspace-context";
@@ -64,11 +69,12 @@ export function App() {
         <Route path="/dashboard" element={<Dashboard />} />
         <Route path="/events/:id" element={<EventPage />} />
         <Route path="/events/:id/live" element={<LivePage />} />
-        {/* Not-yet-ported nav sections — reachable so the reused nav stays honest. */}
-        <Route path="/overview" element={<ComingSoon title="Overview" />} />
-        <Route path="/library" element={<ComingSoon title="Library" />} />
-        <Route path="/practice" element={<ComingSoon title="Training" />} />
-        <Route path="/groups" element={<ComingSoon title="Artists" />} />
+        <Route path="/events/:id/practice" element={<PracticeRoom />} />
+        <Route path="/overview" element={<Overview />} />
+        <Route path="/library" element={<Library />} />
+        <Route path="/practice" element={<Training />} />
+        <Route path="/groups" element={<Artists />} />
+        {/* Crew + Admin stay web-managed for now (heavy admin surface). */}
         <Route path="/crew" element={<ComingSoon title="Crew" />} />
         <Route path="/admin" element={<ComingSoon title="Admin" />} />
       </Route>

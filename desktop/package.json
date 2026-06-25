@@ -17,11 +17,23 @@
   "build": {
     "appId": "com.capturebomb.cueiq",
     "productName": "CueIQ",
-    "files": ["dist/**/*", "electron/**/*"],
-    "directories": { "output": "release" },
-    "win": { "target": "nsis" },
-    "mac": { "target": "dmg", "category": "public.app-category.music" },
-    "linux": { "target": "AppImage" }
+    "files": [
+      "dist/**/*",
+      "electron/**/*"
+    ],
+    "directories": {
+      "output": "release"
+    },
+    "win": {
+      "target": "nsis"
+    },
+    "mac": {
+      "target": "dmg",
+      "category": "public.app-category.music"
+    },
+    "linux": {
+      "target": "AppImage"
+    }
   },
   "dependencies": {
     "@radix-ui/react-dialog": "^1.1.17",
@@ -38,6 +50,7 @@
     "react-dom": "^19.2.0",
     "react-router-dom": "^7.1.1",
     "sonner": "^2.0.7",
+    "soundtouchjs": "^0.3.0",
     "tailwind-merge": "^3.6.0",
     "tailwindcss-animate": "^1.0.7"
   },
