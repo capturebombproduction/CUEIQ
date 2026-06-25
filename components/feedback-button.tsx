@@ -34,9 +34,14 @@ const CATS: { value: Category; label: string; icon: typeof Bug }[] = [
 export function FeedbackButton({
   userId,
   tenantId,
+  floating = false,
 }: {
   userId?: string | null;
   tenantId?: string | null;
+  /** Render as a prominent floating button (bottom-right) instead of a header
+   *  icon — so band members actually notice it and report in-app (with the page
+   *  + build auto-attached) rather than messaging the team with no context. */
+  floating?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [category, setCategory] = useState<Category>("bug");
@@ -85,15 +90,27 @@ export function FeedbackButton({
 
   return (
     <>
-      <Button
-        variant="ghost"
-        size="icon"
-        title="ส่งฟีดแบค / แจ้งปัญหา"
-        onClick={() => setOpen(true)}
-      >
-        <MessageSquarePlus className="h-4 w-4" />
-        <span className="sr-only">ส่งฟีดแบค</span>
-      </Button>
+      {floating ? (
+        <button
+          type="button"
+          title="ส่งฟีดแบค / แจ้งปัญหา"
+          onClick={() => setOpen(true)}
+          className="no-print fixed bottom-4 right-4 z-40 inline-flex items-center gap-1.5 rounded-full bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground shadow-lg transition hover:opacity-90 active:scale-95"
+        >
+          <Bug className="h-4 w-4" />
+          แจ้งปัญหา
+        </button>
+      ) : (
+        <Button
+          variant="ghost"
+          size="icon"
+          title="ส่งฟีดแบค / แจ้งปัญหา"
+          onClick={() => setOpen(true)}
+        >
+          <MessageSquarePlus className="h-4 w-4" />
+          <span className="sr-only">ส่งฟีดแบค</span>
+        </Button>
+      )}
 
       <Dialog open={open} onOpenChange={(o) => !busy && setOpen(o)}>
         <DialogContent>

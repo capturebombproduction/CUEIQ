@@ -3,6 +3,7 @@ import { getWorkspace } from "@/lib/queries";
 import { SiteHeader } from "@/components/site-header";
 import { ErrorMonitor, AppErrorBoundary } from "@/components/error-monitor";
 import { ConfirmProvider } from "@/components/ui/confirm-dialog";
+import { FeedbackButton } from "@/components/feedback-button";
 
 export const dynamic = "force-dynamic";
 
@@ -32,6 +33,9 @@ export default async function AppLayout({
           <ConfirmProvider>{children}</ConfirmProvider>
         </AppErrorBoundary>
       </main>
+      {/* Prominent, always-reachable "แจ้งปัญหา" — band members report in-app (page
+          + build auto-attached) instead of messaging with no context. */}
+      <FeedbackButton userId={ws.user.id} tenantId={tenantId} floating />
     </div>
   );
 }
