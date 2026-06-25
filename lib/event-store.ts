@@ -5,8 +5,9 @@
 // those hold the bytes, this holds the running order.
 //
 // Written whenever the device sees fresh server data (a live-page load); read as
-// the local-first source when a show is opened OFFLINE and the server can't render
-// (the cold-boot shell at app/live-shell). See docs/offline-first-plan.md P1.
+// the local-first source when a show is opened OFFLINE and the server can't render.
+// The offline cold-boot consumer now lives in the CueIQ Desktop app (the web app is
+// online-first); on the web this store is only written/cleared, never read back.
 //
 // Distinct DB from the audio stores so clearing one never disturbs the other.
 

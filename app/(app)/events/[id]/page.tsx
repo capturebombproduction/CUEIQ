@@ -10,7 +10,7 @@ import {
   AlertTriangle,
 } from "lucide-react";
 import { getEventBundle, getWorkspace } from "@/lib/queries";
-import { canEditGroup, canViewGroup, canApprove, canLiveEdit } from "@/lib/permissions";
+import { canEditGroup, canViewGroup, canApprove } from "@/lib/permissions";
 import { createClient } from "@/lib/supabase/server";
 import { eventCompleteness } from "@/lib/completeness";
 import { EVENT_TYPES, type EventType, type GroupStatus } from "@/lib/types";
@@ -24,7 +24,6 @@ import { EventWorkspace } from "@/components/event/event-workspace";
 import { type RunSeqLive } from "@/components/event/event-live-caller";
 import { ExportButton } from "@/components/event/export-button";
 import { PrepareDeviceButton } from "@/components/event/prepare-device-button";
-import { EventSnapshotWriter } from "@/components/event/event-snapshot-writer";
 import { EventCopyrightPanel } from "@/components/event/event-copyright-panel";
 import { BandSkin } from "@/components/band-skin";
 
@@ -132,18 +131,6 @@ export default async function EventPage({
   return (
     <div className="space-y-6">
       <BandSkin hex={event.group?.skin} />
-      {/* Pre-stage this show's data on-device (alongside the audio prefetch button)
-          so it can cold-boot offline later even without opening Live Mode first. */}
-      <EventSnapshotWriter
-        eventId={event.id}
-        groupId={event.group_id}
-        eventName={event.name}
-        items={bundle.setlist}
-        songAudio={songAudio}
-        canEdit={canLiveEdit(ws.perms)}
-        lastRunSeconds={event.last_run_seconds ?? null}
-        lastRunAt={event.last_run_at ?? null}
-      />
       <div className="no-print">
         <Button asChild variant="ghost" size="sm" className="-ml-2 mb-2">
           <Link href="/dashboard">

@@ -2,9 +2,10 @@
 // PATH (which carries a version suffix, so a replaced file is a new key).
 //
 // This is the shared on-device store that makes BOTH Practice Mode and Live Mode
-// play instantly: the library prefetcher (lib/library-prefetch.ts) fills it with
-// the whole band library on app open, Practice reads straight from it (no more
-// "spinner then play"), and Live Mode uses it as a fast path before downloading.
+// play instantly. It fills ON DEMAND — a song is cached the first time it's played
+// (getSongBlob), and a show's songs are cached up-front only when the operator
+// explicitly prepares the device (PrepareDeviceButton / ShowReadinessCheck). There
+// is no auto-download on app open: nothing is pulled until the user asks for it.
 //
 // Distinct from lib/audio-store.ts, which keys by `${eventId}::${itemId}` for
 // Live Mode's per-show offline restore. This one is keyed by path so any consumer

@@ -17,8 +17,9 @@ export default function AppError({
   error: Error & { digest?: string };
   reset: () => void;
 }) {
-  // Offline render/navigation failures (e.g. a soft nav that can't fetch its data)
-  // get a recovery path into the offline shell instead of a dead error screen.
+  // Show a clearer message when the failure is just the network being down (e.g. a
+  // soft nav that can't fetch its data) — the web app needs a connection now that
+  // offline show-running lives in the CueIQ Desktop app.
   const [offline, setOffline] = useState(false);
   useEffect(() => {
     setOffline(navigator.onLine === false);
@@ -31,15 +32,11 @@ export default function AppError({
         <CloudOff className="mx-auto h-10 w-10 text-amber-500" />
         <h1 className="text-xl font-bold">ออฟไลน์</h1>
         <p className="text-sm text-muted-foreground">
-          ตอนนี้ไม่มีการเชื่อมต่อ จึงเปิดหน้านี้ไม่ได้ — เปิด “หน้าโชว์ออฟไลน์”
-          เพื่อรันโชว์ที่เตรียมไว้ในเครื่องนี้ต่อได้
+          ตอนนี้ไม่มีการเชื่อมต่อ จึงเปิดหน้านี้ไม่ได้ — เชื่อมต่ออินเทอร์เน็ตแล้วลองโหลดใหม่อีกครั้ง
         </p>
         <div className="flex justify-center gap-2">
-          <Button onClick={() => window.location.assign("/live-shell")}>
-            <CloudOff className="h-4 w-4" /> เปิดหน้าโชว์ออฟไลน์
-          </Button>
-          <Button variant="outline" onClick={() => window.location.reload()}>
-            โหลดใหม่
+          <Button onClick={() => window.location.reload()}>
+            <RotateCw className="h-4 w-4" /> โหลดใหม่
           </Button>
         </div>
       </div>

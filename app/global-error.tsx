@@ -3,13 +3,12 @@
 import { useEffect } from "react";
 
 // Root-level error boundary. Next shows a bare "Application error: a client-side
-// exception has occurred" when something throws above every route boundary — most
-// painfully when an OFFLINE soft navigation can't fetch its RSC payload and bubbles
-// all the way up (the white-screen dead-end). Here we recover: if we're offline,
-// hard-load the universal offline shell (served from cache by the SW, boots from
-// IndexedDB) instead of stranding the user. Guarded against a redirect loop.
+// exception has occurred" when something throws above every route boundary. Here
+// we catch it, log the cause, and offer a retry / full reload. (The web app is
+// online-first now — offline show-running moved to the CueIQ Desktop app — so
+// there's no offline shell to recover into.)
 // global-error must render its own <html>/<body> and can't rely on app CSS, so the
-// styling is inline. See docs/offline-first-plan.md P1.
+// styling is inline.
 export default function GlobalError({
   error,
   reset,
@@ -18,24 +17,6 @@ export default function GlobalError({
   reset: () => void;
 }) {
   useEffect(() => {
-    const offline = typeof navigator !== "undefined" && navigator.onLine === false;
-    if (offline) {
-      try {
-        if (!sessionStorage.getItem("cueiq:offlineRecover")) {
-          sessionStorage.setItem("cueiq:offlineRecover", "1");
-          window.location.replace("/live-shell");
-          return;
-        }
-      } catch {
-        /* sessionStorage blocked — fall through to the manual UI */
-      }
-    } else {
-      try {
-        sessionStorage.removeItem("cueiq:offlineRecover");
-      } catch {
-        /* ignore */
-      }
-    }
     // eslint-disable-next-line no-console
     console.error("[CueIQ] global error:", error);
   }, [error]);
@@ -59,11 +40,11 @@ export default function GlobalError({
           <div style={{ fontSize: 40, marginBottom: 8 }}>⚠️</div>
           <h1 style={{ margin: "0 0 .4em", fontSize: "1.25rem" }}>เกิดข้อผิดพลาด</h1>
           <p style={{ opacity: 0.8, lineHeight: 1.6, margin: "0 0 1.2em" }}>
-            ถ้าอยู่ในงานและไม่มีเน็ต ให้เปิด “หน้าโชว์ออฟไลน์” เพื่อรันโชว์จากข้อมูลในเครื่องต่อได้
+            เกิดข้อผิดพลาดในแอป ลองใหม่อีกครั้ง หรือโหลดหน้าใหม่
           </p>
           <div style={{ display: "flex", gap: 8, justifyContent: "center", flexWrap: "wrap" }}>
             <button
-              onClick={() => window.location.assign("/live-shell")}
+              onClick={() => reset()}
               style={{
                 background: "#f59e0b",
                 color: "#000",
@@ -74,10 +55,10 @@ export default function GlobalError({
                 cursor: "pointer",
               }}
             >
-              เปิดหน้าโชว์ออฟไลน์
+              ลองใหม่
             </button>
             <button
-              onClick={() => reset()}
+              onClick={() => window.location.reload()}
               style={{
                 background: "transparent",
                 color: "#eee",
@@ -87,7 +68,7 @@ export default function GlobalError({
                 cursor: "pointer",
               }}
             >
-              ลองใหม่
+              โหลดหน้าใหม่
             </button>
           </div>
         </div>

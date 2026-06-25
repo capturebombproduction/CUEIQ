@@ -5,10 +5,11 @@ import { saveEventSnapshot, type EventSnapshot } from "@/lib/event-store";
 
 /**
  * Invisible: on every live-page load it persists the show's data (meta + setlist +
- * song→audio map + edit permission) into IndexedDB, so this device can cold-boot
- * the show OFFLINE later via the shell (app/live-shell) even if the page itself was
- * never cached by the service worker. Pure side-effect — it renders nothing and
- * never touches Live Mode's behaviour. See docs/offline-first-plan.md P1.
+ * song→audio map + edit permission) into IndexedDB, so the device can run the show
+ * OFFLINE later from local data. The web app no longer cold-boots offline (that path
+ * moved to the CueIQ Desktop app) — this component now ships only in the desktop
+ * renderer, where its live page reads the snapshot back. Pure side-effect: renders
+ * nothing and never touches Live Mode's behaviour.
  */
 export function EventSnapshotWriter(snap: Omit<EventSnapshot, "savedAt">) {
   useEffect(() => {
