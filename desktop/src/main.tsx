@@ -12,6 +12,7 @@ import "./index.css";
 // with the current session's Bearer token (cookies don't travel cross-origin). The
 // web route accepts either cookie or Bearer auth. Offline, presign simply fails and
 // playback falls back to the IndexedDB cache — exactly the offline-first contract.
+const native = typeof window !== "undefined" ? window.cueiqNative : undefined;
 configureAudioTransport({
   endpointBase: process.env.CUEIQ_WEB_ORIGIN,
   getAuthHeaders: async (): Promise<Record<string, string>> => {
@@ -19,6 +20,15 @@ configureAudioTransport({
     const token = data.session?.access_token;
     return token ? { Authorization: `Bearer ${token}` } : {};
   },
+  // Under Electron, move the R2 bytes through the main process (no browser CORS).
+  // In a plain browser (dev preview) these stay undefined → direct browser fetch.
+  ...(native
+    ? {
+        fetchBlob: async (url: string) => new Blob([await native.fetchAudio(url)]),
+        putBlob: async (url: string, body: Blob, contentType?: string) =>
+          native.putAudio(url, new Uint8Array(await body.arrayBuffer()), contentType),
+      }
+    : {}),
 });
 
 // HashRouter: works under file:// (Electron) and in the browser dev server alike.

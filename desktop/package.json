@@ -4,11 +4,24 @@
   "version": "0.1.0",
   "type": "module",
   "description": "CueIQ Desktop — installable offline-first show runner (Electron + Vite). Syncs with the web app via the same Supabase.",
+  "main": "electron/main.cjs",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
     "typecheck": "tsc --noEmit",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "electron": "electron .",
+    "dist": "vite build && electron-builder",
+    "dist:dir": "vite build && electron-builder --dir"
+  },
+  "build": {
+    "appId": "com.capturebomb.cueiq",
+    "productName": "CueIQ",
+    "files": ["dist/**/*", "electron/**/*"],
+    "directories": { "output": "release" },
+    "win": { "target": "nsis" },
+    "mac": { "target": "dmg", "category": "public.app-category.music" },
+    "linux": { "target": "AppImage" }
   },
   "dependencies": {
     "@radix-ui/react-dialog": "^1.1.17",
@@ -34,6 +47,8 @@
     "@types/react-dom": "^19.2.0",
     "@vitejs/plugin-react": "^4.3.4",
     "autoprefixer": "^10.4.20",
+    "electron": "^42.5.0",
+    "electron-builder": "^26.15.3",
     "postcss": "^8.5.15",
     "tailwindcss": "^3.4.1",
     "typescript": "^5.7.2",

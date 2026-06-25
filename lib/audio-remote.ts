@@ -28,15 +28,28 @@ const PRESIGN_ENDPOINT = "/api/audio/presign";
 // desktop/src/main.tsx (configureAudioTransport) and the route's Bearer/CORS.
 // ---------------------------------------------------------------------------
 type AuthHeaderProvider = () => Promise<Record<string, string>>;
+type BlobFetcher = (url: string) => Promise<Blob>;
+type BlobPutter = (url: string, body: Blob, contentType?: string) => Promise<void>;
 let endpointBase = "";
 let getAuthHeaders: AuthHeaderProvider | null = null;
+// Byte-transfer overrides. The web leaves these null → the browser fetches the
+// presigned R2 URL directly. The desktop app (Electron) routes the actual GET/PUT
+// of bytes through the main process (Node net.fetch — no browser CORS, so the R2
+// bucket never needs the desktop origin whitelisted). The presign call itself
+// still happens here in the renderer (it needs the user's session token).
+let fetchBlobImpl: BlobFetcher | null = null;
+let putBlobImpl: BlobPutter | null = null;
 
 export function configureAudioTransport(opts: {
   endpointBase?: string;
   getAuthHeaders?: AuthHeaderProvider;
+  fetchBlob?: BlobFetcher;
+  putBlob?: BlobPutter;
 }): void {
   if (opts.endpointBase != null) endpointBase = opts.endpointBase.replace(/\/$/, "");
   if (opts.getAuthHeaders) getAuthHeaders = opts.getAuthHeaders;
+  if (opts.fetchBlob) fetchBlobImpl = opts.fetchBlob;
+  if (opts.putBlob) putBlobImpl = opts.putBlob;
 }
 
 async function endpointHeaders(): Promise<Record<string, string>> {
@@ -140,6 +153,11 @@ export async function uploadEventAudio(
   await withRetry(async () => {
     const url = await presign(path, "put");
     const type = contentType || (file as File).type || "";
+    if (putBlobImpl) {
+      // Electron: PUT the bytes via the main process (no browser CORS).
+      await putBlobImpl(url, file instanceof Blob ? file : new Blob([file]), type || undefined);
+      return;
+    }
     const res = await fetch(url, {
       method: "PUT",
       body: file,
@@ -154,6 +172,8 @@ export async function uploadEventAudio(
 export async function downloadEventAudio(path: string): Promise<Blob> {
   return withRetry(async () => {
     const url = await presign(path, "get");
+    // Electron: GET the bytes via the main process (no browser CORS).
+    if (fetchBlobImpl) return fetchBlobImpl(url);
     const res = await fetch(url);
     if (!res.ok) throw new Error(`ดาวน์โหลดไฟล์เสียงไม่สำเร็จ (${res.status})`);
     return res.blob();
