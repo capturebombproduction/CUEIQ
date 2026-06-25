@@ -115,7 +115,6 @@ export interface EventBundle {
   members: Member[];
   songs: Song[];
   lineup: string[]; // member_ids performing at this event (empty = not chosen yet)
-  role: Role | null;
 }
 
 /** Load a single event with all of its child data, or null if not accessible.
@@ -132,14 +131,6 @@ export const getEventBundle = cache(async (
     .maybeSingle();
 
   if (!event) return null;
-
-  const { data: membership } = await supabase
-    .from("tenant_members")
-    .select("role")
-    .eq("tenant_id", event.tenant_id)
-    .order("created_at", { ascending: true })
-    .limit(1)
-    .maybeSingle();
 
   const [schedule, setlist, micMap, members, songs, lineup] = await Promise.all([
     supabase
@@ -185,7 +176,6 @@ export const getEventBundle = cache(async (
     members: (members.data ?? []) as Member[],
     songs: (songs.data ?? []) as Song[],
     lineup: ((lineup.data ?? []) as { member_id: string }[]).map((r) => r.member_id),
-    role: (membership?.role as Role) ?? null,
   };
 });
 
