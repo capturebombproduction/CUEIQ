@@ -564,9 +564,10 @@ function FestivalRunControls({
 // One schedule table for the export JPG, with the "อะไรซ้ำยุบ" column collapse: any
 // of งาน / วันที่ that's constant down the whole table is hoisted into the header
 // (when not already the label) and its column dropped; วง shows only when bands
-// vary. A trailing spacer keeps the kept columns compact on the left. `nested`
-// renders a lighter sub-header (used under a period header in รายวัน/เดือน/…);
-// `hideDate` drops the date when the period header above already shows it.
+// vary. The kept columns spread evenly across the full width (no spacer) so the
+// image reads airy and matches the contact tables below — not packed against the
+// left edge. `nested` renders a lighter sub-header (used under a period header in
+// รายวัน/เดือน/…); `hideDate` drops the date when the period header already shows it.
 function ExportSchedule({
   label,
   color,
@@ -627,25 +628,22 @@ function ExportSchedule({
       <table className="w-full border-collapse text-sm [&_th]:whitespace-nowrap [&_td]:whitespace-nowrap">
         <thead>
           <tr className="border-b text-left text-xs text-muted-foreground">
-            {!dropName && <th className="py-1.5 pr-3 font-medium">งาน</th>}
-            {showBandColumn && <th className="py-1.5 pr-3 font-medium">วง</th>}
-            {!dropDate && <th className="py-1.5 pr-3 font-medium">วันที่</th>}
-            <th className="py-1.5 pr-3 font-medium">Stage</th>
-            <th className="py-1.5 pr-3 font-medium">Booth</th>
-            <th className="py-1.5 pr-3 font-medium">Photo</th>
-            {/* Spacer column absorbs the leftover width so the data columns stay
-                compact on the left instead of spreading apart. */}
-            <th className="w-full" />
+            {!dropName && <th className="py-2 pr-4 font-medium">งาน</th>}
+            {showBandColumn && <th className="py-2 pr-4 font-medium">วง</th>}
+            {!dropDate && <th className="py-2 pr-4 font-medium">วันที่</th>}
+            <th className="py-2 pr-4 font-medium">Stage</th>
+            <th className="py-2 pr-4 font-medium">Booth</th>
+            <th className="py-2 font-medium">Photo</th>
           </tr>
         </thead>
         <tbody>
           {events.map((ev) => (
             <tr key={ev.id} className="border-b last:border-0">
               {!dropName && (
-                <td className="py-1.5 pr-3 font-medium">{ev.name}</td>
+                <td className="py-2 pr-4 font-medium">{ev.name}</td>
               )}
               {showBandColumn && (
-                <td className="py-1.5 pr-3">
+                <td className="py-2 pr-4">
                   <span className="inline-flex items-center gap-1.5">
                     <span
                       className="inline-block h-2.5 w-2.5 rounded-full"
@@ -656,16 +654,15 @@ function ExportSchedule({
                 </td>
               )}
               {!dropDate && (
-                <td className="py-1.5 pr-3 tabular-nums">
+                <td className="py-2 pr-4 tabular-nums">
                   {fmtDate(ev.event_date)}
                 </td>
               )}
-              <td className="py-1.5 pr-3 tabular-nums">{fmtRange(ev.stage)}</td>
-              <td className="py-1.5 pr-3 tabular-nums">{fmtRange(ev.booth)}</td>
-              <td className="py-1.5 pr-3 tabular-nums">
+              <td className="py-2 pr-4 tabular-nums">{fmtRange(ev.stage)}</td>
+              <td className="py-2 pr-4 tabular-nums">{fmtRange(ev.booth)}</td>
+              <td className="py-2 tabular-nums">
                 {fmtRange({ start: ev.photo, end: ev.photoEnd })}
               </td>
-              <td />
             </tr>
           ))}
         </tbody>
@@ -1202,16 +1199,16 @@ export function OverviewClient({
                     <table className="w-full border-collapse text-sm [&_th]:whitespace-nowrap [&_td]:whitespace-nowrap">
                       <thead>
                         <tr className="border-b text-left text-xs text-muted-foreground">
-                          <th className="py-1.5 pr-3 font-medium">ชื่อ</th>
-                          <th className="py-1.5 pr-3 font-medium">{section.col2}</th>
-                          <th className="py-1.5 font-medium">เบอร์</th>
+                          <th className="py-2 pr-4 font-medium">ชื่อ</th>
+                          <th className="py-2 pr-4 font-medium">{section.col2}</th>
+                          <th className="py-2 font-medium">เบอร์</th>
                         </tr>
                       </thead>
                       <tbody>
                         {section.rows.map((c) => (
                           <tr key={c.key} className="border-b last:border-0">
-                            <td className="py-1.5 pr-3 font-medium">{c.name || "—"}</td>
-                            <td className="py-1.5 pr-3">
+                            <td className="py-2 pr-4 font-medium">{c.name || "—"}</td>
+                            <td className="py-2 pr-4">
                               {c.color !== null ? (
                                 <span className="inline-flex items-center gap-1.5">
                                   <span
@@ -1224,7 +1221,7 @@ export function OverviewClient({
                                 c.role || "—"
                               )}
                             </td>
-                            <td className="py-1.5 tabular-nums">{c.phone || "—"}</td>
+                            <td className="py-2 tabular-nums">{c.phone || "—"}</td>
                           </tr>
                         ))}
                       </tbody>
