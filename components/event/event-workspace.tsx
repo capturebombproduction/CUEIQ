@@ -135,6 +135,19 @@ export function EventWorkspace({
   }, []);
 
   function changeView(v: string) {
+    // Entering Summary (which renders the export JPG / printable run-sheet) from
+    // an editor tab: pull fresh server data first, so the summary and its image
+    // reflect edits that auto-saved in the editor but otherwise live only in that
+    // editor's local state until a refresh — the same stale-props class as the
+    // overview photo-time export. Online only (offline we keep what we have
+    // rather than hang on a refetch; it's also a no-op in the desktop shim).
+    if (
+      v === "summary" &&
+      view !== "summary" &&
+      (typeof navigator === "undefined" || navigator.onLine)
+    ) {
+      router.refresh();
+    }
     setView(v);
     if (typeof window !== "undefined") {
       window.history.replaceState(null, "", `#${v}`);
