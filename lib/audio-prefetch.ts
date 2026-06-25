@@ -14,7 +14,6 @@ import { saveAudio, deleteAudio, listCachedItemPaths } from "./audio-store";
 import type { PrefetchTarget } from "./audio-targets";
 
 export type { PrefetchTarget } from "./audio-targets";
-export { resolveAudioTargets } from "./audio-targets";
 
 export interface Readiness {
   total: number; // targets that have audio
