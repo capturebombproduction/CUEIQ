@@ -17,6 +17,7 @@
     "forceConsistentCasingInFileNames": true,
     "baseUrl": ".",
     "paths": {
+      "@/lib/supabase/client": ["./src/shims/supabase-client.ts"],
       "@/*": ["../*"],
       "~/*": ["./src/*"],
       "next/navigation": ["./src/shims/next-navigation.tsx"],

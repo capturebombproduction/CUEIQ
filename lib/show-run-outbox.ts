@@ -8,7 +8,9 @@
 // Keyed per (kind, eventId) so re-queuing the same datum just updates the pending
 // value instead of stacking duplicates (last value wins — correct for last-run).
 
-import { createClient } from "./supabase/client";
+// Absolute path so the desktop build's "@/lib/supabase/client" alias applies
+// (see lib/show-authority.ts for why a relative import would break under file://).
+import { createClient } from "@/lib/supabase/client";
 
 const DB_NAME = "cueiq-outbox";
 const STORE = "ops";

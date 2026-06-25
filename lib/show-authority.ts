@@ -8,7 +8,11 @@
 // it can NEVER block or break the zero-tolerance live path. See
 // docs/offline-first-plan.md §3/§6/§7.
 
-import { createClient } from "./supabase/client";
+// Absolute path (not "./supabase/client") so the desktop build's
+// "@/lib/supabase/client" alias swaps in the localStorage-backed client too —
+// a relative import would bypass the alias and pull the web's cookie client,
+// which can't authenticate under Electron's file:// origin.
+import { createClient } from "@/lib/supabase/client";
 import type { Role } from "./types";
 
 export type AuthorityKind = "show_main" | "audio_host";

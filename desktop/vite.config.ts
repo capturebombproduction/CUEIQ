@@ -12,6 +12,13 @@ export default defineConfig({
   plugins: [react()],
   resolve: {
     alias: {
+      // Override JUST the Supabase client with a localStorage-backed one (the web
+      // lib's cookie session doesn't work under Electron's file:// origin). MUST
+      // come before the "@" entry — alias matching takes the first hit, and "@"
+      // also matches "@/lib/supabase/client".
+      "@/lib/supabase/client": fileURLToPath(
+        new URL("./src/shims/supabase-client.ts", import.meta.url)
+      ),
       // "@/..." → repo root (shared components / lib), "~/..." → desktop src.
       "@": repoRoot,
       "~": fileURLToPath(new URL("./src", import.meta.url)),
