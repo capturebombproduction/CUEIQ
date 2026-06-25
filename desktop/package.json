@@ -4,6 +4,7 @@
   "version": "0.1.0",
   "type": "module",
   "description": "CueIQ Desktop — installable offline-first show runner (Electron + Vite). Syncs with the web app via the same Supabase.",
+  "author": "Capture Bomb",
   "main": "electron/main.cjs",
   "scripts": {
     "dev": "vite",
@@ -22,17 +23,30 @@
       "electron/**/*"
     ],
     "directories": {
-      "output": "release"
+      "output": "release",
+      "buildResources": "build"
     },
+    "artifactName": "CueIQ-Setup-${version}.${ext}",
     "win": {
-      "target": "nsis"
+      "target": "nsis",
+      "icon": "build/icon.png"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "CueIQ"
     },
     "mac": {
       "target": "dmg",
-      "category": "public.app-category.music"
+      "category": "public.app-category.music",
+      "icon": "build/icon.png"
     },
     "linux": {
-      "target": "AppImage"
+      "target": "AppImage",
+      "icon": "build/icon.png"
     }
   },
   "dependencies": {

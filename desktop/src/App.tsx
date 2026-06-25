@@ -11,7 +11,8 @@ import { Artists } from "~/pages/artists";
 import { Overview } from "~/pages/overview";
 import { Training } from "~/pages/training";
 import { PracticeRoom } from "~/pages/practice";
-import { ComingSoon } from "~/pages/coming-soon";
+import { Crew } from "~/pages/crew";
+import { Admin } from "~/pages/admin";
 import { Shell } from "~/components/shell";
 import { WorkspaceProvider } from "~/data/workspace-context";
 
@@ -74,9 +75,10 @@ export function App() {
         <Route path="/library" element={<Library />} />
         <Route path="/practice" element={<Training />} />
         <Route path="/groups" element={<Artists />} />
-        {/* Crew + Admin stay web-managed for now (heavy admin surface). */}
-        <Route path="/crew" element={<ComingSoon title="Crew" />} />
-        <Route path="/admin" element={<ComingSoon title="Admin" />} />
+        <Route path="/crew" element={<Crew />} />
+        {/* Admin needs server-side secrets (service_role/R2) the renderer can't
+            bundle, so it opens the web Admin in the system browser. */}
+        <Route path="/admin" element={<Admin />} />
       </Route>
 
       <Route path="*" element={<Navigate to="/" replace />} />
