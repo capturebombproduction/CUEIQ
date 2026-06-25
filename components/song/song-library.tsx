@@ -14,6 +14,8 @@ import {
   Volume2,
   Clock3,
   Lock,
+  FolderInput,
+  Undo2,
 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { notify } from "@/lib/notify-client";
@@ -23,6 +25,13 @@ import {
   uploadEventAudio,
   removeEventAudio,
 } from "@/lib/audio-remote";
+import { cacheSongBlob } from "@/lib/song-cache";
+import {
+  getLocalSource,
+  setLocalSource,
+  clearLocalSource,
+  listLocalSourceIds,
+} from "@/lib/local-source";
 import { formatDuration, parseDurationToSeconds } from "@/lib/time";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -133,6 +142,16 @@ export function SongLibrary({
   const [audioBusy, setAudioBusy] = useState<Record<string, "up" | "del">>({});
   const audioFileRef = useRef<HTMLInputElement>(null);
   const audioTargetRef = useRef<Song | null>(null);
+  // Desktop-only (Electron): per-device local audio source. `native` is the
+  // Electron bridge (undefined in a browser → these controls never render).
+  // localIds = songs that currently have a local override on THIS device.
+  const native = typeof window !== "undefined" ? window.cueiqNative : undefined;
+  const [localIds, setLocalIds] = useState<Set<string>>(new Set());
+  const [localBusy, setLocalBusy] = useState<Record<string, boolean>>({});
+  useEffect(() => {
+    if (!native) return;
+    listLocalSourceIds().then(setLocalIds).catch(() => {});
+  }, [native]);
 
   const groupName = useMemo(
     () => Object.fromEntries(groups.map((g) => [g.id, g.name])),
@@ -355,7 +374,9 @@ export function SongLibrary({
   // Upload (or replace) a song's audio to R2. A library upload is PERMANENT, so
   // we also clear any temp-expiry the song carried (e.g. it was first created
   // ad-hoc from Live Mode).
-  async function uploadSongAudio(song: Song, file: File) {
+  // Returns the new R2 object path on success (so "ดันขึ้นเป็นต้นฉบับ" can seed the
+  // device cache), or null on failure. Existing callers ignore the return.
+  async function uploadSongAudio(song: Song, file: File): Promise<string | null> {
     setAudioBusy((b) => ({ ...b, [song.id]: "up" }));
     try {
       const prevPath = song.audio_path ?? null;
@@ -376,10 +397,12 @@ export function SongLibrary({
       if (prevPath && prevPath !== path) removeEventAudio(prevPath).catch(() => {});
       broadcastSongsChanged(song.group_id); // live update any open Live Mode
       toast.success("อัปโหลดไฟล์เพลงขึ้นคลังแล้ว 🎵");
+      return path;
     } catch (e) {
       toast.error("อัปโหลดไม่สำเร็จ", {
         description: e instanceof Error ? e.message : String(e),
       });
+      return null;
     } finally {
       setAudioBusy((b) => {
         const n = { ...b };
@@ -433,6 +456,165 @@ export function SongLibrary({
         return n;
       });
     }
+  }
+
+  // --- Per-device local source (desktop only) -----------------------------
+  // Best-effort MIME from the file name so the pushed master + cached blob carry
+  // a sensible content type (the bytes come from the native picker without one).
+  function guessAudioType(name: string): string {
+    const ext = name.split(".").pop()?.toLowerCase();
+    return ext === "mp3"
+      ? "audio/mpeg"
+      : ext === "wav"
+        ? "audio/wav"
+        : ext === "m4a" || ext === "aac"
+          ? "audio/mp4"
+          : ext === "flac"
+            ? "audio/flac"
+            : ext === "ogg"
+              ? "audio/ogg"
+              : "";
+  }
+
+  // Pick a file off THIS machine and make it the song's playback source here —
+  // overrides the R2 master locally without changing anything online.
+  async function pickLocalSource(song: Song) {
+    if (!native) return;
+    setLocalBusy((b) => ({ ...b, [song.id]: true }));
+    try {
+      const picked = await native.pickAudioFile();
+      if (!picked) return; // user cancelled the native dialog
+      // The native picker returns an exact, full-buffer Uint8Array; use its
+      // ArrayBuffer (a plain Uint8Array isn't a BlobPart under strict lib types).
+      const blob = new Blob([picked.bytes.buffer as ArrayBuffer], {
+        type: guessAudioType(picked.name),
+      });
+      await setLocalSource(song.id, blob, picked.name);
+      setLocalIds((prev) => new Set(prev).add(song.id));
+      toast.success("ใช้ไฟล์ในเครื่องนี้เป็นแหล่งเล่นแล้ว 📁", {
+        description: `${picked.name} — เฉพาะเครื่องนี้`,
+      });
+    } catch (e) {
+      toast.error("ตั้งไฟล์ในเครื่องไม่สำเร็จ", {
+        description: e instanceof Error ? e.message : String(e),
+      });
+    } finally {
+      setLocalBusy((b) => {
+        const n = { ...b };
+        delete n[song.id];
+        return n;
+      });
+    }
+  }
+
+  // Drop the local override → this device goes back to playing the R2 master.
+  async function revertToMaster(song: Song) {
+    try {
+      await clearLocalSource(song.id);
+      setLocalIds((prev) => {
+        const n = new Set(prev);
+        n.delete(song.id);
+        return n;
+      });
+      toast.success("กลับไปใช้ต้นฉบับ (R2) แล้ว ☁");
+    } catch (e) {
+      toast.error("เปลี่ยนกลับไม่สำเร็จ", {
+        description: e instanceof Error ? e.message : String(e),
+      });
+    }
+  }
+
+  // Upload the local file as the song's R2 master (everyone gets it), seed this
+  // device's cache so it won't re-download, then clear the now-redundant override.
+  async function pushLocalAsMaster(song: Song) {
+    if (!native) return;
+    setLocalBusy((b) => ({ ...b, [song.id]: true }));
+    try {
+      const local = await getLocalSource(song.id);
+      if (!local) {
+        toast.error("ไม่พบไฟล์ในเครื่องสำหรับเพลงนี้");
+        return;
+      }
+      const file = new File([local.blob], local.name, {
+        type: local.blob.type || guessAudioType(local.name),
+      });
+      const newPath = await uploadSongAudio(song, file); // shows its own toast
+      if (!newPath) return; // upload failed → keep the override
+      await cacheSongBlob(newPath, local.blob, local.name).catch(() => {});
+      await clearLocalSource(song.id);
+      setLocalIds((prev) => {
+        const n = new Set(prev);
+        n.delete(song.id);
+        return n;
+      });
+    } finally {
+      setLocalBusy((b) => {
+        const n = { ...b };
+        delete n[song.id];
+        return n;
+      });
+    }
+  }
+
+  // Desktop-only per-device source controls for one song. Shown only under
+  // Electron AND only when the song already has an R2 master (the override
+  // chooses which BYTES this device plays for an existing library song).
+  function localSourceControls(song: Song) {
+    if (!native || !song.audio_path) return null;
+    const busy = !!localBusy[song.id];
+    if (localIds.has(song.id)) {
+      return (
+        <div className="flex flex-wrap items-center gap-1.5">
+          <Badge variant="secondary" className="gap-1">
+            <FolderInput className="h-3 w-3" /> ไฟล์ในเครื่องนี้ (ยังไม่อัป)
+          </Badge>
+          {canEditSong(song) && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7"
+              disabled={busy}
+              title="อัปไฟล์ในเครื่องนี้ขึ้นเป็นต้นฉบับ (R2) ให้ทุกเครื่องได้ไฟล์นี้"
+              onClick={() => pushLocalAsMaster(song)}
+            >
+              {busy ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <CloudUpload className="h-3.5 w-3.5" />
+              )}{" "}
+              ดันขึ้นเป็นต้นฉบับ
+            </Button>
+          )}
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-7"
+            disabled={busy}
+            title="เลิกใช้ไฟล์ในเครื่อง กลับไปเล่นจากต้นฉบับ (R2)"
+            onClick={() => revertToMaster(song)}
+          >
+            <Undo2 className="h-3.5 w-3.5" /> ใช้ต้นฉบับ
+          </Button>
+        </div>
+      );
+    }
+    return (
+      <Button
+        variant="ghost"
+        size="sm"
+        className="h-7 text-muted-foreground"
+        disabled={busy}
+        title="เล่นเพลงนี้จากไฟล์ในเครื่องนี้แทนต้นฉบับ (เฉพาะเครื่องนี้)"
+        onClick={() => pickLocalSource(song)}
+      >
+        {busy ? (
+          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+        ) : (
+          <FolderInput className="h-3.5 w-3.5" />
+        )}{" "}
+        ใช้ไฟล์ในเครื่องนี้
+      </Button>
+    );
   }
 
   // Promote a temporary (ad-hoc) song to permanent — keep its file forever.
@@ -715,7 +897,12 @@ export function SongLibrary({
                         ? formatDuration(song.duration_seconds)
                         : "—"}
                     </TableCell>
-                    <TableCell>{audioStatus(song)}</TableCell>
+                    <TableCell>
+                      <div className="space-y-1.5">
+                        {audioStatus(song)}
+                        {localSourceControls(song)}
+                      </div>
+                    </TableCell>
                     <TableCell className="text-muted-foreground">
                       {song.language
                         ? SONG_LANGUAGE_LABELS[song.language] ?? song.language
@@ -783,9 +970,12 @@ export function SongLibrary({
                   )}
                 </div>
 
-                <div className="flex flex-wrap items-center justify-between gap-2 border-t pt-2">
-                  {audioStatus(song)}
-                  {copyrightControl(song)}
+                <div className="space-y-2 border-t pt-2">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    {audioStatus(song)}
+                    {copyrightControl(song)}
+                  </div>
+                  {localSourceControls(song)}
                 </div>
               </div>
             ))}

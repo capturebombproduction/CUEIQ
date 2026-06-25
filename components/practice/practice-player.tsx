@@ -27,6 +27,7 @@ import {
 import { toast } from "sonner";
 import { createClient } from "@/lib/supabase/client";
 import { getSongBlob } from "@/lib/song-cache";
+import { getLocalSource } from "@/lib/local-source";
 import { PracticeAudioEngine } from "@/lib/practice-audio";
 import { detectBeats } from "@/lib/bpm-detect";
 import { Button } from "@/components/ui/button";
@@ -252,9 +253,11 @@ export function PracticePlayer({
     flushRun(); // finalize the previous song's practice time
     setLoadingId(song.id);
     try {
-      // Cache-first: a prefetched song opens instantly; otherwise download once
-      // (and the cache keeps it for next time).
-      const blob = await getSongBlob(song.audio_path);
+      // Source order: a per-device local override (desktop "ใช้ไฟล์ในเครื่องนี้")
+      // wins; otherwise cache-first — a prefetched song opens instantly, else
+      // download once (and the cache keeps it for next time).
+      const local = await getLocalSource(song.id);
+      const blob = local?.blob ?? (await getSongBlob(song.audio_path));
       await engine.load(blob); // decode happens here, inside the spinner
       setCurrentId(song.id);
       runRef.current.song = song; // start accounting for the new song

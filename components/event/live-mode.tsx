@@ -32,6 +32,7 @@ import { toast } from "sonner";
 import { createClient } from "@/lib/supabase/client";
 import { saveAudio, loadAudioForEvent } from "@/lib/audio-store";
 import { getCachedSongBlob } from "@/lib/song-cache";
+import { getLocalSource } from "@/lib/local-source";
 import { persistLastRun } from "@/lib/show-run-outbox";
 import { getDeviceId, deviceLabel } from "@/lib/device-id";
 import {
@@ -472,9 +473,13 @@ export function LiveMode({
         if (cachedPathRef.current[it.id] === path && audioUrlsRef.current[it.id]) continue;
         setAudioBusy((prev) => ({ ...prev, [it.id]: "down" }));
         try {
-          // Fast path: if the band-library prefetch already cached this file
-          // on this device, use it instead of hitting the network.
-          const blob = (await getCachedSongBlob(path)) ?? (await downloadEventAudio(path));
+          // Source order: a per-device local override (desktop "ใช้ไฟล์ในเครื่องนี้")
+          // wins; else the band-library prefetch cache; else hit the network. This
+          // only swaps which BYTES load — the transport/position logic below is
+          // untouched (the zero-tolerance single-audio-source path stays intact).
+          const local = await getLocalSource(it.song_id);
+          const blob =
+            local?.blob ?? (await getCachedSongBlob(path)) ?? (await downloadEventAudio(path));
           if (cancelled) return;
           const url = URL.createObjectURL(blob);
           if (audioUrlsRef.current[it.id]) URL.revokeObjectURL(audioUrlsRef.current[it.id]);
