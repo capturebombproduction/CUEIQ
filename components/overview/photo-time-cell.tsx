@@ -19,6 +19,7 @@ export function PhotoTimeCell({
   initialTime,
   initialEnd,
   nextSortOrder,
+  onSaved,
 }: {
   eventId: string;
   tenantId: string;
@@ -26,6 +27,14 @@ export function PhotoTimeCell({
   initialTime: string | null; // start, "HH:MM" or "HH:MM:SS"
   initialEnd: string | null; // end, "HH:MM" or "HH:MM:SS"
   nextSortOrder: number;
+  // Bubble a saved value up so the parent's events (and the export image, which
+  // reads ev.photo directly — not this editor's state) reflect the edit without a
+  // reload. Fires only after the write lands.
+  onSaved?: (next: {
+    start: string | null;
+    end: string | null;
+    itemId: string | null;
+  }) => void;
 }) {
   const [itemId, setItemId] = useState<string | null>(initialItemId);
   const [start, setStart] = useState(initialTime ? initialTime.slice(0, 5) : "");
@@ -41,6 +50,7 @@ export function PhotoTimeCell({
     setBusy(true);
     const supabase = createClient();
     try {
+      let savedItemId = itemId;
       if (itemId) {
         const { error } = await supabase
           .from("schedule_items")
@@ -62,10 +72,12 @@ export function PhotoTimeCell({
           .select("id")
           .single();
         if (error) throw error;
-        setItemId(data.id as string);
+        savedItemId = data.id as string;
+        setItemId(savedItemId);
       }
       setCommittedStart(start);
       setCommittedEnd(end);
+      onSaved?.({ start: nextStart, end: nextEnd, itemId: savedItemId });
     } catch (e) {
       toast.error("บันทึกเวลาถ่ายรูปไม่สำเร็จ", {
         description: (e as Error).message,

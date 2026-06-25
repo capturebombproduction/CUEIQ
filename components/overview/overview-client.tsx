@@ -1,6 +1,15 @@
 "use client";
 
-import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import {
+  type ReactNode,
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import Link from "next/link";
 import { toast } from "sonner";
 import {
@@ -267,7 +276,18 @@ function BandTag({ ev }: { ev: OverviewEvent }) {
   );
 }
 
+// Lets the inline PhotoTimeCell push a saved time back up to OverviewClient (which
+// owns the events the export image is rendered from) without threading a callback
+// through every row/card/table renderer in between.
+const PhotoSaveContext = createContext<
+  (
+    eventId: string,
+    next: { start: string | null; end: string | null; itemId: string | null }
+  ) => void
+>(() => {});
+
 function PhotoCell({ ev }: { ev: OverviewEvent }) {
+  const onPhotoSaved = useContext(PhotoSaveContext);
   return ev.canEditPhoto ? (
     <PhotoTimeCell
       eventId={ev.id}
@@ -276,6 +296,7 @@ function PhotoCell({ ev }: { ev: OverviewEvent }) {
       initialTime={ev.photo}
       initialEnd={ev.photoEnd}
       nextSortOrder={ev.photoSortOrder}
+      onSaved={(next) => onPhotoSaved(ev.id, next)}
     />
   ) : (
     <>{fmtRange({ start: ev.photo, end: ev.photoEnd })}</>
@@ -691,17 +712,41 @@ export function OverviewClient({
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);
 
+  // Photo-time edits made in the inline cells, kept here so BOTH the on-screen rows
+  // and the off-screen export image reflect them without a reload — the export reads
+  // ev.photo/ev.photoEnd directly, not through the editor's own state.
+  const [photoEdits, setPhotoEdits] = useState<
+    Record<string, { start: string | null; end: string | null; itemId: string | null }>
+  >({});
+  const handlePhotoSaved = useCallback(
+    (
+      eventId: string,
+      next: { start: string | null; end: string | null; itemId: string | null }
+    ) => setPhotoEdits((prev) => ({ ...prev, [eventId]: next })),
+    []
+  );
+  const mergedEvents = useMemo(
+    () =>
+      events.map((e) => {
+        const edit = photoEdits[e.id];
+        return edit
+          ? { ...e, photo: edit.start, photoEnd: edit.end, photoItemId: edit.itemId }
+          : e;
+      }),
+    [events, photoEdits]
+  );
+
   // Order the whole schedule by date, then by each show's EARLIEST activity time —
   // staff read a day top-to-bottom in time order, regardless of band.
   const sortedEvents = useMemo(
     () =>
-      [...events].sort((a, b) => {
+      [...mergedEvents].sort((a, b) => {
         const da = a.event_date ?? "9999-12-31";
         const db = b.event_date ?? "9999-12-31";
         if (da !== db) return da < db ? -1 : 1;
         return earliestMinutes(a) - earliestMinutes(b);
       }),
-    [events]
+    [mergedEvents]
   );
   const byBand = useMemo(
     () =>
@@ -842,6 +887,7 @@ export function OverviewClient({
   const showRosters = mode === "band";
 
   return (
+    <PhotoSaveContext.Provider value={handlePhotoSaved}>
     <div className="space-y-6">
       {/* Filter controls */}
       <div className="flex flex-wrap items-center gap-3 rounded-lg border bg-muted/20 p-3">
@@ -1194,5 +1240,6 @@ export function OverviewClient({
       </div>
       )}
     </div>
+    </PhotoSaveContext.Provider>
   );
 }
