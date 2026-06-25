@@ -3,7 +3,6 @@ import { getWorkspace } from "@/lib/queries";
 import { SiteHeader } from "@/components/site-header";
 import { ErrorMonitor, AppErrorBoundary } from "@/components/error-monitor";
 import { ConfirmProvider } from "@/components/ui/confirm-dialog";
-import { OutboxFlusher } from "@/components/outbox-flusher";
 
 export const dynamic = "force-dynamic";
 
@@ -21,8 +20,6 @@ export default async function AppLayout({
     <div className="min-h-screen bg-muted/30">
       {/* auto-capture client errors for the whole authenticated app */}
       <ErrorMonitor userId={ws.user.id} tenantId={tenantId} />
-      {/* replay offline show-run writes once the device is back online */}
-      <OutboxFlusher />
       <SiteHeader
         name={ws.user.name}
         role={ws.membership?.role ?? null}

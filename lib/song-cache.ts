@@ -3,9 +3,10 @@
 //
 // This is the shared on-device store that makes BOTH Practice Mode and Live Mode
 // play instantly. It fills ON DEMAND — a song is cached the first time it's played
-// (getSongBlob), and a show's songs are cached up-front only when the operator
-// explicitly prepares the device (PrepareDeviceButton / ShowReadinessCheck). There
-// is no auto-download on app open: nothing is pulled until the user asks for it.
+// (getSongBlob). On the desktop app a show's songs can also be cached up-front via
+// the readiness preflight (ShowReadinessCheck); the web app has no pre-cache UI and
+// relies purely on play-time caching. There is no auto-download on app open:
+// nothing is pulled until a song is played (or, on desktop, explicitly prepared).
 //
 // Distinct from lib/audio-store.ts, which keys by `${eventId}::${itemId}` for
 // Live Mode's per-show offline restore. This one is keyed by path so any consumer

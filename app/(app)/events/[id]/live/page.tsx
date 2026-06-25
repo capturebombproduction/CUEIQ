@@ -3,9 +3,8 @@ import Link from "next/link";
 import { ArrowLeft } from "lucide-react";
 import { getEventBundle, getWorkspace } from "@/lib/queries";
 import { canLiveEdit, canViewGroup } from "@/lib/permissions";
-import { resolveAudioTargets, type SongAudioMap } from "@/lib/audio-targets";
+import { type SongAudioMap } from "@/lib/audio-targets";
 import { LiveMode } from "@/components/event/live-mode";
-import { ShowReadinessCheck } from "@/components/event/show-readiness-check";
 import { Button } from "@/components/ui/button";
 
 export const dynamic = "force-dynamic";
@@ -30,9 +29,6 @@ export default async function LivePage({
   const songAudio: SongAudioMap = Object.fromEntries(
     bundle.songs.map((s) => [s.id, { path: s.audio_path ?? null, name: s.audio_name ?? null }])
   );
-  // Audio files this show plays — for the preflight readiness check (are they all
-  // on THIS device at the current version, so it can run offline?).
-  const audioTargets = resolveAudioTargets(bundle.setlist, songAudio);
 
   return (
     <div className="space-y-4">
@@ -43,7 +39,6 @@ export default async function LivePage({
           </Link>
         </Button>
       </div>
-      <ShowReadinessCheck eventId={bundle.event.id} targets={audioTargets} />
       <LiveMode
         eventId={bundle.event.id}
         groupId={bundle.event.group_id}

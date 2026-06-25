@@ -216,6 +216,14 @@ export function EventsList({
   const canEditEvent = (ev: EventWithGroup) =>
     !!ev.group_id && editableGroupIds.includes(ev.group_id);
 
+  // Offline-prep — per-device readiness badges, the bulk "เตรียมทุกงาน" download,
+  // and the storage-clear footer — is a DESKTOP-only concern now. The web app is
+  // online-first + casual practice and caches a song's audio on demand when it's
+  // played, so none of this runs/renders in a browser. `native` is the Electron
+  // bridge (undefined in a browser); this same component is reused by the desktop
+  // dashboard, where it stays fully featured.
+  const native = typeof window !== "undefined" ? window.cueiqNative : undefined;
+
   const { upcoming, past } = useMemo(() => {
     const needle = q.trim().toLowerCase();
     const matched = needle
@@ -271,6 +279,7 @@ export function EventsList({
   const [bulk, setBulk] = useState<{ done: number; total: number } | null>(null);
 
   const computeReadiness = useCallback(async () => {
+    if (!native) return; // desktop-only; web plays on demand, no pre-cache badges
     const today = todayKey();
     const wanted = items.filter(
       (e) => e.group_id && (!e.event_date || e.event_date >= today)
@@ -319,7 +328,7 @@ export function EventsList({
     } catch {
       /* best-effort — no badge on failure */
     }
-  }, [items]);
+  }, [items, native]);
 
   // Files still missing across all upcoming shows, and a one-tap "prepare them all".
   const notReadyIds = useMemo(
@@ -352,6 +361,7 @@ export function EventsList({
   }, [notReadyIds, readiness, targetsByEvent, computeReadiness]);
 
   useEffect(() => {
+    if (!native) return; // desktop-only — skip the readiness polling on the web
     computeReadiness();
     const onVisible = () => {
       if (document.visibilityState === "visible") computeReadiness();
@@ -362,7 +372,7 @@ export function EventsList({
       document.removeEventListener("visibilitychange", onVisible);
       window.removeEventListener("online", computeReadiness);
     };
-  }, [computeReadiness]);
+  }, [computeReadiness, native]);
 
   return (
     <div className="space-y-6">
@@ -483,7 +493,9 @@ export function EventsList({
         </>
       )}
 
-      <DeviceStorage pastEventIds={allPastIds} onChanged={computeReadiness} />
+      {native && (
+        <DeviceStorage pastEventIds={allPastIds} onChanged={computeReadiness} />
+      )}
     </div>
   );
 }
