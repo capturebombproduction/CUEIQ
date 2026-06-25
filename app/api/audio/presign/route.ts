@@ -19,7 +19,8 @@ import {
   PutObjectCommand,
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
-import { createClient } from "@/lib/supabase/server";
+import { createClient as createServerClient } from "@/lib/supabase/server";
+import { createClient as createTokenClient } from "@supabase/supabase-js";
 import { r2Client, r2Configured, R2_BUCKET } from "@/lib/r2";
 
 export const runtime = "nodejs";
@@ -30,19 +31,59 @@ const URL_TTL = 60 * 15; // 15 min — generous for a big WAV over venue Wi-Fi
 
 type Op = "get" | "put" | "delete";
 
+// CORS — the WEB app calls this same-origin (these headers are inert there). The
+// DESKTOP app calls it cross-origin with a Bearer token (no cookies), so reflect
+// the caller's Origin and allow the Authorization header. Auth is still the real
+// gate (a valid session/token + the per-band RLS predicates below), so reflecting
+// the origin grants nothing a holder of the token couldn't already do.
+function corsHeaders(req: Request): Record<string, string> {
+  const origin = req.headers.get("origin");
+  return {
+    "Access-Control-Allow-Origin": origin ?? "*",
+    "Access-Control-Allow-Methods": "POST, OPTIONS",
+    "Access-Control-Allow-Headers": "authorization, content-type",
+    "Access-Control-Max-Age": "86400",
+    Vary: "Origin",
+  };
+}
+
+function json(req: Request, body: unknown, status = 200) {
+  return NextResponse.json(body, { status, headers: corsHeaders(req) });
+}
+
+export async function OPTIONS(req: Request) {
+  return new NextResponse(null, { status: 204, headers: corsHeaders(req) });
+}
+
+/** Resolve the caller's Supabase client: a Bearer token (desktop, cross-origin)
+ *  takes precedence; otherwise the cookie session (web, same-origin). Either way
+ *  both auth.getUser() AND the RLS rpc() calls run as that user. */
+async function callerClient(req: Request) {
+  const auth = req.headers.get("authorization") ?? "";
+  const token = auth.toLowerCase().startsWith("bearer ") ? auth.slice(7).trim() : "";
+  if (token) {
+    return createTokenClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!.trim(),
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!.trim(),
+      {
+        global: { headers: { Authorization: `Bearer ${token}` } },
+        auth: { persistSession: false, autoRefreshToken: false },
+      }
+    );
+  }
+  return createServerClient();
+}
+
 export async function POST(req: Request) {
   if (!r2Configured()) {
-    return NextResponse.json(
-      { error: "R2 ยังไม่ได้ตั้งค่า (ขาด R2_* env)" },
-      { status: 503 }
-    );
+    return json(req, { error: "R2 ยังไม่ได้ตั้งค่า (ขาด R2_* env)" }, 503);
   }
 
   let body: { key?: string; op?: string };
   try {
     body = await req.json();
   } catch {
-    return NextResponse.json({ error: "bad request" }, { status: 400 });
+    return json(req, { error: "bad request" }, 400);
   }
 
   const key = (body.key ?? "").trim();
@@ -53,7 +94,7 @@ export async function POST(req: Request) {
     key.includes("..") ||
     !["get", "put", "delete"].includes(op)
   ) {
-    return NextResponse.json({ error: "bad request" }, { status: 400 });
+    return json(req, { error: "bad request" }, 400);
   }
 
   // Key layout (see lib/audio-remote.ts buildAudioPath / buildSongAudioPath):
@@ -65,16 +106,16 @@ export async function POST(req: Request) {
   const segs = key.split("/");
   const tenantId = segs[0];
   if (!UUID.test(tenantId)) {
-    return NextResponse.json({ error: "bad key" }, { status: 400 });
+    return json(req, { error: "bad key" }, 400);
   }
   const groupId = segs.length >= 4 && UUID.test(segs[1]) ? segs[1] : null;
 
-  const supabase = await createClient();
+  const supabase = await callerClient(req);
   const {
     data: { user },
   } = await supabase.auth.getUser();
   if (!user) {
-    return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+    return json(req, { error: "unauthorized" }, 401);
   }
 
   // Reads need view rights; writes/deletes need edit rights — evaluated under the
@@ -91,13 +132,10 @@ export async function POST(req: Request) {
       };
   const { data: allowed, error: rpcErr } = await supabase.rpc(rpc, arg);
   if (rpcErr) {
-    return NextResponse.json(
-      { error: "permission check failed" },
-      { status: 500 }
-    );
+    return json(req, { error: "permission check failed" }, 500);
   }
   if (!allowed) {
-    return NextResponse.json({ error: "forbidden" }, { status: 403 });
+    return json(req, { error: "forbidden" }, 403);
   }
 
   const client = r2Client();
@@ -107,7 +145,7 @@ export async function POST(req: Request) {
       await client.send(
         new DeleteObjectCommand({ Bucket: R2_BUCKET, Key: key })
       );
-      return NextResponse.json({ ok: true });
+      return json(req, { ok: true });
     }
 
     const command =
@@ -115,9 +153,9 @@ export async function POST(req: Request) {
         ? new PutObjectCommand({ Bucket: R2_BUCKET, Key: key })
         : new GetObjectCommand({ Bucket: R2_BUCKET, Key: key });
     const url = await getSignedUrl(client, command, { expiresIn: URL_TTL });
-    return NextResponse.json({ url });
+    return json(req, { url });
   } catch (e) {
     console.error("[presign] R2 error:", e);
-    return NextResponse.json({ error: "r2 error" }, { status: 502 });
+    return json(req, { error: "r2 error" }, 502);
   }
 }

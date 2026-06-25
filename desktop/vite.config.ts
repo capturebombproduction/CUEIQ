@@ -29,6 +29,12 @@ export default defineConfig({
       process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? "sb_publishable_x7v5zxGEJFfx6L5Yd2fYzg_xwynxSrW"
     ),
     "process.env.NODE_ENV": JSON.stringify(process.env.NODE_ENV ?? "production"),
+    // The web origin that hosts the /api/audio/presign route. The desktop app has
+    // no API routes of its own, so it calls the web app's route cross-origin (with
+    // a Bearer token) to mint R2 presigned URLs. See src/main.tsx.
+    "process.env.CUEIQ_WEB_ORIGIN": JSON.stringify(
+      process.env.CUEIQ_WEB_ORIGIN ?? "https://cueiq-mu.vercel.app"
+    ),
   },
   server: { port: 5273 },
   // Electron loads from file:// → relative asset paths.

@@ -18,6 +18,33 @@
 
 const PRESIGN_ENDPOINT = "/api/audio/presign";
 
+// ---------------------------------------------------------------------------
+// Transport config — the one seam that lets the desktop app reuse this file.
+// The WEB app leaves these at their defaults: a same-origin relative endpoint
+// authorized by the cookie session. The DESKTOP app (no API routes of its own)
+// points `endpointBase` at the web origin and supplies a Bearer token via
+// `getAuthHeaders`, since cross-origin requests don't carry the web's cookies.
+// Both paths hit the SAME /api/audio/presign route (it accepts either). See
+// desktop/src/main.tsx (configureAudioTransport) and the route's Bearer/CORS.
+// ---------------------------------------------------------------------------
+type AuthHeaderProvider = () => Promise<Record<string, string>>;
+let endpointBase = "";
+let getAuthHeaders: AuthHeaderProvider | null = null;
+
+export function configureAudioTransport(opts: {
+  endpointBase?: string;
+  getAuthHeaders?: AuthHeaderProvider;
+}): void {
+  if (opts.endpointBase != null) endpointBase = opts.endpointBase.replace(/\/$/, "");
+  if (opts.getAuthHeaders) getAuthHeaders = opts.getAuthHeaders;
+}
+
+async function endpointHeaders(): Promise<Record<string, string>> {
+  const base: Record<string, string> = { "Content-Type": "application/json" };
+  if (!getAuthHeaders) return base;
+  return { ...base, ...(await getAuthHeaders()) };
+}
+
 function extOf(fileName: string): string {
   const m = /\.([a-z0-9]+)$/i.exec(fileName);
   return m ? m[1].toLowerCase() : "audio";
@@ -67,9 +94,9 @@ export function buildSongAudioPath(
 }
 
 async function presign(key: string, op: "get" | "put"): Promise<string> {
-  const res = await fetch(PRESIGN_ENDPOINT, {
+  const res = await fetch(`${endpointBase}${PRESIGN_ENDPOINT}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: await endpointHeaders(),
     body: JSON.stringify({ key, op }),
   });
   if (!res.ok) {
@@ -136,9 +163,9 @@ export async function downloadEventAudio(path: string): Promise<Blob> {
 export async function removeEventAudio(path: string): Promise<void> {
   // DELETE runs server-side (no presigned URL) so the browser needs no R2 CORS
   // entry for it and the key is re-validated against the session.
-  const res = await fetch(PRESIGN_ENDPOINT, {
+  const res = await fetch(`${endpointBase}${PRESIGN_ENDPOINT}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: await endpointHeaders(),
     body: JSON.stringify({ key: path, op: "delete" }),
   });
   if (!res.ok) throw new Error(`ลบไฟล์เสียงไม่สำเร็จ (${res.status})`);

@@ -5,6 +5,7 @@ import { createClient } from "@/lib/supabase/client";
 import { Login } from "~/pages/Login";
 import { Dashboard } from "~/pages/dashboard";
 import { EventPage } from "~/pages/event";
+import { LivePage } from "~/pages/live";
 import { ComingSoon } from "~/pages/coming-soon";
 import { Shell } from "~/components/shell";
 import { WorkspaceProvider } from "~/data/workspace-context";
@@ -62,6 +63,7 @@ export function App() {
         <Route path="/" element={<Navigate to="/dashboard" replace />} />
         <Route path="/dashboard" element={<Dashboard />} />
         <Route path="/events/:id" element={<EventPage />} />
+        <Route path="/events/:id/live" element={<LivePage />} />
         {/* Not-yet-ported nav sections — reachable so the reused nav stays honest. */}
         <Route path="/overview" element={<ComingSoon title="Overview" />} />
         <Route path="/library" element={<ComingSoon title="Library" />} />
