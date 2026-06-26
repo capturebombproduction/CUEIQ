@@ -1,0 +1,65 @@
+# Builds the CueIQ desktop app (Electron) for macOS (.dmg) AND Windows (.exe) on
+# GitHub's cloud runners — so we can ship a Mac build WITHOUT owning a Mac (macOS
+# apps can only be built on macOS; this repo's dev box is Windows-only).
+#
+# No secrets needed: desktop/vite.config.ts bakes in public Supabase URL + anon key
+# + web origin as defaults, so `npm run dist` builds straight through.
+#
+# How to run:
+#   • Actions tab → "Desktop build" → "Run workflow" (manual), OR
+#   • push a tag like `v0.1.0` (git tag v0.1.0 && git push origin v0.1.0).
+# The installers land as downloadable artifacts on the run (not auto-published).
+#
+# ⚠️ Unsigned: the .dmg has no Apple Developer cert ($99/yr we don't have), so on
+# first open a Mac user must right-click → Open (Gatekeeper). Fine for internal use.
+name: Desktop build
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            label: mac-dmg
+          - os: windows-latest
+            label: win-exe
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      # Root deps: the desktop renderer reuses the repo-root components/lib via the
+      # "@" → repo-root alias, so those packages must resolve during the vite build.
+      - name: Install root deps
+        run: npm ci
+
+      - name: Install desktop deps
+        run: npm ci
+        working-directory: desktop
+
+      # vite build + electron-builder. CSC_IDENTITY_AUTO_DISCOVERY=false stops
+      # electron-builder from hunting for a (non-existent) macOS signing identity.
+      - name: Build installer
+        run: npm run dist
+        working-directory: desktop
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: CueIQ-${{ matrix.label }}
+          path: |
+            desktop/release/*.dmg
+            desktop/release/*.exe
+          if-no-files-found: ignore
