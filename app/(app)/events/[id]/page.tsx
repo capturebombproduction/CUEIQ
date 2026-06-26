@@ -69,6 +69,7 @@ export default async function EventPage({
     schedule: bundle.schedule,
     setlist: bundle.setlist,
     micCount: bundle.micMap.length,
+    hasSongMics: bundle.setlist.some((s) => (s.mic_slots?.length ?? 0) > 0),
   });
 
   // Approved = LOCKED: read-only for everyone until reverted. The band's editor

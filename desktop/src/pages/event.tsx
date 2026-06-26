@@ -82,6 +82,7 @@ export function EventPage() {
     schedule: bundle.schedule,
     setlist: bundle.setlist,
     micCount: bundle.micMap.length,
+    hasSongMics: bundle.setlist.some((s) => (s.mic_slots?.length ?? 0) > 0),
   });
   const canEdit = !!ws && canEditGroup(ws.perms, event.group_id);
   const editable = canEdit && event.status !== "approved";

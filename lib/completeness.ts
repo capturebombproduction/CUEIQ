@@ -54,6 +54,11 @@ export function eventCompleteness(args: {
   schedule: Pick<ScheduleItem, "kind" | "start_time">[];
   setlist: Pick<SetlistItem, "kind">[];
   micCount: number;
+  // Per-song mic_slots (the "ไมค์ + สมาชิก" set on setlist items) ALSO satisfy the
+  // mic requirement — they're the same info as the event-level Mic Map, just more
+  // granular. Without this the gate nagged "ขาด Mic Map" even after a band assigned
+  // every song's mics in the setlist (the two were never linked).
+  hasSongMics?: boolean;
 }): CompletenessResult {
   const { event, schedule, setlist, micCount } = args;
   const modules = EVENT_TYPES[event.event_type]?.modules ?? EVENT_TYPES.idol.modules;
@@ -78,8 +83,8 @@ export function eventCompleteness(args: {
   if (songCount < 1)
     missing.push({ key: "setlist", label: "เพลงใน Setlist อย่างน้อย 1 เพลง" });
 
-  if (modules.micMap && micCount < 1)
-    missing.push({ key: "mic", label: "ตำแหน่งไมค์ (Mic Map)" });
+  if (modules.micMap && micCount < 1 && !args.hasSongMics)
+    missing.push({ key: "mic", label: "ตำแหน่งไมค์ (Mic Map หรือไมค์ในเพลง)" });
   if (modules.costume && !filled(event.costume_theme))
     missing.push({ key: "costume", label: "ธีมการแต่งกาย (Costume)" });
 

@@ -76,7 +76,7 @@ export default async function OverviewPage() {
       .order("sort_order", { ascending: true }),
     supabase
       .from("setlist_items")
-      .select("event_id, song_id, kind")
+      .select("event_id, song_id, kind, mic_slots")
       .eq("tenant_id", tid),
     supabase
       .from("songs")
@@ -104,6 +104,7 @@ export default async function OverviewPage() {
     event_id: string;
     song_id: string | null;
     kind: string;
+    mic_slots: { mic: string; member: string }[] | null;
   }[];
   const songRows = (songRes.data ?? []) as { id: string; copyright_status: string }[];
   const staff = (staffRes.data ?? []) as StaffContact[];
@@ -144,10 +145,12 @@ export default async function OverviewPage() {
   const micByEvent = new Map<string, number>();
   for (const m of micRows) micByEvent.set(m.event_id, (micByEvent.get(m.event_id) ?? 0) + 1);
   const setlistByEvent = new Map<string, { kind: string }[]>();
+  const songMicByEvent = new Map<string, boolean>(); // any setlist song with mic_slots
   for (const r of slRows) {
     const arr = setlistByEvent.get(r.event_id) ?? [];
     arr.push({ kind: r.kind });
     setlistByEvent.set(r.event_id, arr);
+    if ((r.mic_slots?.length ?? 0) > 0) songMicByEvent.set(r.event_id, true);
   }
   const schedByEvent = new Map<string, SchedRow[]>();
   for (const s of sched) {
@@ -166,6 +169,7 @@ export default async function OverviewPage() {
         kind: s.kind,
       })) as Pick<SetlistItem, "kind">[],
       micCount: micByEvent.get(e.id) ?? 0,
+      hasSongMics: songMicByEvent.get(e.id) ?? false,
     });
 
   const groupById = new Map(viewableGroups.map((g) => [g.id, g]));

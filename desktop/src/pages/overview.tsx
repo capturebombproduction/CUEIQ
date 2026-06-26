@@ -13,7 +13,14 @@ import {
   canViewOverview,
   isLabelWideUser,
 } from "@/lib/permissions";
-import { type EventRow, type Member, type StaffContact } from "@/lib/types";
+import {
+  type EventRow,
+  type Member,
+  type StaffContact,
+  type ScheduleItem,
+  type SetlistItem,
+} from "@/lib/types";
+import { eventCompleteness } from "@/lib/completeness";
 import {
   OverviewClient,
   type OverviewEvent,
@@ -53,7 +60,7 @@ export function Overview() {
     const tid = ws.membership.tenant_id;
     const sb = createClient();
     (async () => {
-      const [evRes, schedRes, memRes, slRes, songRes, staffRes, roRes] = await Promise.all([
+      const [evRes, schedRes, memRes, slRes, songRes, staffRes, roRes, micRes] = await Promise.all([
         sb
           .from("events")
           .select("*")
@@ -64,19 +71,26 @@ export function Overview() {
           .order("event_date", { ascending: true, nullsFirst: false }),
         sb.from("schedule_items").select("id, event_id, kind, start_time, end_time, sort_order").eq("tenant_id", tid),
         sb.from("members").select("*").eq("tenant_id", tid).in("group_id", ids).order("sort_order", { ascending: true }),
-        sb.from("setlist_items").select("event_id, song_id").eq("tenant_id", tid),
+        sb.from("setlist_items").select("event_id, song_id, kind, mic_slots").eq("tenant_id", tid),
         sb.from("songs").select("id, copyright_status").eq("tenant_id", tid),
         sb.from("staff_contacts").select("*").eq("tenant_id", tid).order("sort_order", { ascending: true }),
         sb.from("run_sequence").select("event_name, event_date").eq("tenant_id", tid),
+        sb.from("mic_assignments").select("event_id").eq("tenant_id", tid),
       ]);
 
       const eventRows = (evRes.data ?? []) as EventRow[];
       const sched = (schedRes.data ?? []) as SchedRow[];
       const members = (memRes.data ?? []) as Member[];
-      const slRows = (slRes.data ?? []) as { event_id: string; song_id: string | null }[];
+      const slRows = (slRes.data ?? []) as {
+        event_id: string;
+        song_id: string | null;
+        kind: string;
+        mic_slots: { mic: string; member: string }[] | null;
+      }[];
       const songRows = (songRes.data ?? []) as { id: string; copyright_status: string }[];
       const staff = (staffRes.data ?? []) as StaffContact[];
       const roRows = (roRes.data ?? []) as { event_name: string; event_date: string | null }[];
+      const micRows = (micRes.data ?? []) as { event_id: string }[];
 
       const runOrderFestivals = Array.from(
         new Set(roRows.map((r) => `${r.event_name}__${r.event_date ?? ""}`))
@@ -101,6 +115,38 @@ export function Overview() {
         return { pending, rejected };
       };
 
+      // Per-event prep maps for the readiness badge — reuse eventCompleteness so the
+      // desktop Overview agrees with the web Overview + the event Summary.
+      const micByEvent = new Map<string, number>();
+      for (const m of micRows) micByEvent.set(m.event_id, (micByEvent.get(m.event_id) ?? 0) + 1);
+      const setlistByEvent = new Map<string, { kind: string }[]>();
+      const songMicByEvent = new Map<string, boolean>();
+      for (const r of slRows) {
+        const arr = setlistByEvent.get(r.event_id) ?? [];
+        arr.push({ kind: r.kind });
+        setlistByEvent.set(r.event_id, arr);
+        if ((r.mic_slots?.length ?? 0) > 0) songMicByEvent.set(r.event_id, true);
+      }
+      const schedByEvent = new Map<string, SchedRow[]>();
+      for (const s of sched) {
+        const arr = schedByEvent.get(s.event_id) ?? [];
+        arr.push(s);
+        schedByEvent.set(s.event_id, arr);
+      }
+      const completenessOf = (e: EventRow) =>
+        eventCompleteness({
+          event: e,
+          schedule: (schedByEvent.get(e.id) ?? []).map((s) => ({
+            kind: s.kind,
+            start_time: s.start_time,
+          })) as Pick<ScheduleItem, "kind" | "start_time">[],
+          setlist: (setlistByEvent.get(e.id) ?? []).map((s) => ({
+            kind: s.kind,
+          })) as Pick<SetlistItem, "kind">[],
+          micCount: micByEvent.get(e.id) ?? 0,
+          hasSongMics: songMicByEvent.get(e.id) ?? false,
+        });
+
       const groupById = new Map(viewable.map((g) => [g.id, g]));
       const rangeOf = (eventId: string, kind: string) => {
         const it = sched.find((s) => s.event_id === eventId && s.kind === kind);
@@ -115,6 +161,7 @@ export function Overview() {
         const g = groupById.get(e.group_id);
         const photoRow = photoOf(e.id);
         const cr = copyrightOf(e.id);
+        const comp = completenessOf(e);
         return {
           id: e.id,
           name: e.name,
@@ -135,6 +182,8 @@ export function Overview() {
           photoSortOrder: maxSortOf(e.id) + 1,
           copyrightPending: cr.pending,
           copyrightRejected: cr.rejected,
+          incomplete: comp.missing.length,
+          missingLabels: comp.missing.map((m) => m.label),
           notes: e.notes,
         };
       });
