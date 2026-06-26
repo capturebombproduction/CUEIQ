@@ -4,14 +4,7 @@
 // prep / festival run-order) are deferred to a later milestone.
 import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import {
-  ArrowLeft,
-  CalendarDays,
-  MapPin,
-  Music2,
-  Pencil,
-  AlarmClock,
-} from "lucide-react";
+import { ArrowLeft, CalendarDays, MapPin, Music2, AlarmClock } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { StatusBadge } from "@/components/status-badge";
 import { EventWorkspace } from "@/components/event/event-workspace";
@@ -145,15 +138,9 @@ export function EventPage() {
             </div>
           </div>
 
-          {editable && (
-            <div className="flex flex-wrap items-center gap-2">
-              <Button asChild variant="outline">
-                <Link to={`/events/${event.id}/edit`}>
-                  <Pencil className="h-4 w-4" /> แก้ไข
-                </Link>
-              </Button>
-            </div>
-          )}
+          {/* No "แก้ไข" (event-metadata form) button here: that route is deferred on
+              desktop (see the file header). The EventWorkspace below still edits the
+              setlist / schedule / mic / lineup inline — which is the day-of need. */}
         </div>
       </div>
 
