@@ -85,7 +85,9 @@ export function EventPage() {
     hasSongMics: bundle.setlist.some((s) => (s.mic_slots?.length ?? 0) > 0),
   });
   const canEdit = !!ws && canEditGroup(ws.perms, event.group_id);
-  const editable = canEdit && event.status !== "approved";
+  // Editing is not gated by approval — edit any time, any status (approval is just a
+  // staff completeness badge). Matches the web event page.
+  const editable = canEdit;
 
   return (
     <div className="space-y-6">

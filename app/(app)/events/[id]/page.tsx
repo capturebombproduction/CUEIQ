@@ -72,12 +72,12 @@ export default async function EventPage({
     hasSongMics: bundle.setlist.some((s) => (s.mic_slots?.length ?? 0) > 0),
   });
 
-  // Approved = LOCKED: read-only for everyone until reverted. The band's editor
-  // (admin / Ar) or an approver may revert it to pending_review to make changes;
-  // a rejected event's editor may resubmit once it's complete again.
+  // Editing is NOT gated by approval — whoever may edit the band (admin / Ar) can
+  // change a show ANY time, in ANY status (พี่: "วงควรแก้เมื่อไหร่ก็ได้ ไม่ต้องสน
+  // อนุมัติแล้ว"). Approval is now purely a staff-facing completeness/status badge,
+  // not a lock. A rejected event's editor can still resubmit once it's complete.
   const canEdit = canEditGroup(ws.perms, event.group_id);
-  const editable = canEdit && event.status !== "approved";
-  const canRevert = canEdit || canApprove(ws.perms);
+  const editable = canEdit;
   const canResubmit = canEdit && completeness.complete;
 
   // Reject warning — songs used in THIS event's setlist whose copyright was
@@ -195,7 +195,6 @@ export default async function EventPage({
             <ApprovalControl
               eventId={event.id}
               status={event.status as GroupStatus}
-              canRevert={canRevert}
               canResubmit={canResubmit}
             />
           </div>

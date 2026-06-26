@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { Pencil, Send, Loader2 } from "lucide-react";
+import { Send, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { createClient } from "@/lib/supabase/client";
 import { notify } from "@/lib/notify-client";
@@ -10,24 +10,21 @@ import { Button } from "@/components/ui/button";
 import type { GroupStatus } from "@/lib/types";
 
 /**
- * Approval-lifecycle buttons on the event detail header, for the transitions the
- * completeness gate does NOT auto-manage:
- *  - APPROVED is locked → "แก้ไข (จะกลับไปรออนุมัติ)" reverts it to pending_review
- *    so it can be edited (and must be re-approved). Shown to the band's editor or
- *    an approver.
- *  - REJECTED → "ส่งขออนุมัติอีกครั้ง" lets the band's editor resubmit once the
- *    event is complete again.
- * draft ↔ pending_review is automatic (see EventWorkspace), so nothing here.
+ * Approval-lifecycle button on the event detail header. Editing is no longer gated
+ * by approval (a band edits any time — approval is just a staff completeness badge),
+ * so an approved event needs no "unlock". The only explicit transition left here is:
+ *  - REJECTED → "ส่งขออนุมัติอีกครั้ง": the band's editor resubmits once the event
+ *    is complete again.
+ * draft ↔ pending_review is automatic (see EventWorkspace); approve/reject is the
+ * staff action on the Overview (EventStatusActions).
  */
 export function ApprovalControl({
   eventId,
   status,
-  canRevert,
   canResubmit,
 }: {
   eventId: string;
   status: GroupStatus;
-  canRevert: boolean; // approved → pending_review (editor or approver)
   canResubmit: boolean; // rejected → pending_review (editor, when complete)
 }) {
   const router = useRouter();
@@ -48,19 +45,6 @@ export function ApprovalControl({
     // resubmit/revert both land on pending_review → ping the approvers
     if (next === "pending_review") notify("event_submitted", { eventId });
     router.refresh();
-  }
-
-  if (status === "approved" && canRevert) {
-    return (
-      <Button
-        variant="outline"
-        disabled={busy}
-        onClick={() => setStatus("pending_review", "ปลดล็อกแล้ว — กลับไปรออนุมัติ")}
-      >
-        {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Pencil className="h-4 w-4" />}
-        แก้ไข (จะกลับไปรออนุมัติ)
-      </Button>
-    );
   }
 
   if (status === "rejected" && canResubmit) {
