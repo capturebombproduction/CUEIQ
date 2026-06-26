@@ -11,7 +11,8 @@
 // request time so `next build` and an un-configured dev box don't crash on import.
 // ---------------------------------------------------------------------------
 
-import { S3Client, ListObjectsV2Command } from "@aws-sdk/client-s3";
+import { S3Client, ListObjectsV2Command, GetObjectCommand } from "@aws-sdk/client-s3";
+import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 
 export const R2_BUCKET = process.env.R2_BUCKET ?? "";
 
@@ -48,6 +49,63 @@ export function r2Client(): S3Client {
     responseChecksumValidation: "WHEN_REQUIRED",
   });
   return _client;
+}
+
+export interface BackupObject {
+  key: string;
+  size: number;
+  lastModified: string; // ISO
+}
+
+/**
+ * Off-machine DB snapshots under the backups/ prefix (written by the daily backup
+ * cron), newest first. Empty when R2 isn't configured. Server-only — used by the
+ * Admin backup panel + the gated download route.
+ */
+export async function listBackups(): Promise<BackupObject[]> {
+  if (!r2Configured()) return [];
+  const client = r2Client();
+  const out: BackupObject[] = [];
+  let token: string | undefined;
+  do {
+    const res = await client.send(
+      new ListObjectsV2Command({
+        Bucket: R2_BUCKET,
+        Prefix: "backups/",
+        ContinuationToken: token,
+      })
+    );
+    for (const o of res.Contents ?? []) {
+      if (!o.Key || o.Key.endsWith("/")) continue; // skip the folder placeholder
+      out.push({
+        key: o.Key,
+        size: o.Size ?? 0,
+        lastModified: (o.LastModified ?? new Date(0)).toISOString(),
+      });
+    }
+    token = res.IsTruncated ? res.NextContinuationToken : undefined;
+  } while (token);
+  out.sort((a, b) => (a.lastModified < b.lastModified ? 1 : -1)); // newest first
+  return out;
+}
+
+/**
+ * Short-lived presigned GET for a backup object, forced to download (not display).
+ * Refuses any key outside backups/ so this can never be used to sign the audio
+ * masters or anything else in the bucket. Caller MUST gate on admin first.
+ */
+export async function presignBackupGet(key: string, expiresSec = 60): Promise<string> {
+  if (!key.startsWith("backups/")) throw new Error("refusing to sign a non-backup key");
+  const filename = key.split("/").pop() || "backup.json";
+  return getSignedUrl(
+    r2Client(),
+    new GetObjectCommand({
+      Bucket: R2_BUCKET,
+      Key: key,
+      ResponseContentDisposition: `attachment; filename="${filename}"`,
+    }),
+    { expiresIn: expiresSec }
+  );
 }
 
 /**
