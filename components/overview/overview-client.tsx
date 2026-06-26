@@ -158,15 +158,14 @@ function toMinutes(t: string): number {
   const [h, m] = t.split(":");
   return (Number(h) || 0) * 60 + (Number(m) || 0);
 }
-// An event's EARLIEST scheduled activity (stage / booth / photo start). Shows with
-// no time set sort last so they don't jump ahead of timed ones.
-function earliestMinutes(ev: OverviewEvent): number {
-  const starts = [ev.stage?.start, ev.booth?.start, ev.photo].filter(
-    (t): t is string => !!t
-  );
-  return starts.length
-    ? Math.min(...starts.map(toMinutes))
-    : Number.POSITIVE_INFINITY;
+// An event's STAGE start (when the band actually performs) — the time staff sort a
+// day by, so every list reads in show order (พี่: เรียงตามเวลาขึ้นเวที). NOT the
+// earliest prep activity: an early photo/booth time must not pull a late-stage act
+// up the list. Falls back to booth → photo when there's no stage time; a show with
+// no time at all sorts last.
+function stageMinutes(ev: OverviewEvent): number {
+  const t = ev.stage?.start ?? ev.booth?.start ?? ev.photo;
+  return t ? toMinutes(t) : Number.POSITIVE_INFINITY;
 }
 
 interface Bucket {
@@ -754,15 +753,15 @@ export function OverviewClient({
     [events, photoEdits]
   );
 
-  // Order the whole schedule by date, then by each show's EARLIEST activity time —
-  // staff read a day top-to-bottom in time order, regardless of band.
+  // Order the whole schedule by date, then by each show's STAGE time — staff read a
+  // day top-to-bottom in performance order, regardless of band.
   const sortedEvents = useMemo(
     () =>
       [...mergedEvents].sort((a, b) => {
         const da = a.event_date ?? "9999-12-31";
         const db = b.event_date ?? "9999-12-31";
         if (da !== db) return da < db ? -1 : 1;
-        return earliestMinutes(a) - earliestMinutes(b);
+        return stageMinutes(a) - stageMinutes(b);
       }),
     [mergedEvents]
   );
