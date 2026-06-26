@@ -5,6 +5,9 @@
 import { createClient } from "@/lib/supabase/client";
 import { makePerms, type GroupRoleRow, type Perms } from "@/lib/permissions";
 import type { Group, Role, Tenant } from "@/lib/types";
+import { isOffline, readCache, writeCache } from "~/data/cache";
+
+const WS_CACHE_KEY = "workspace";
 
 export interface WorkspaceData {
   user: { id: string; email: string | null; name: string | null } | null;
@@ -28,9 +31,28 @@ const empty = (
 
 export async function loadWorkspace(): Promise<WorkspaceData> {
   const supabase = createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+
+  // Offline: the table reads below all need the network, so serve the last good
+  // workspace from cache instead — but only if a session still exists locally, so
+  // a signed-out device never resurfaces the previous user's data.
+  if (isOffline()) {
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
+    const cached = readCache<WorkspaceData>(WS_CACHE_KEY);
+    if (session && cached) return cached;
+    return empty(session?.user ? { id: session.user.id, email: session.user.email ?? null, name: null } : null);
+  }
+
+  // Flaky network even though navigator says online — getUser can reject; treat
+  // any failure as "fall back to cache".
+  const userResult = await supabase.auth.getUser().catch(() => null);
+  if (!userResult) {
+    const cached = readCache<WorkspaceData>(WS_CACHE_KEY);
+    if (cached) return cached;
+    return empty(null);
+  }
+  const user = userResult.data.user;
   if (!user) return empty(null);
 
   const name =
@@ -45,7 +67,13 @@ export async function loadWorkspace(): Promise<WorkspaceData> {
     .limit(1)
     .maybeSingle();
 
-  if (!memberRow) return empty(base);
+  if (!memberRow) {
+    // No membership found — but a transient network blip can also yield null.
+    // If we have a cached workspace for this same user, trust it over an empty.
+    const cached = readCache<WorkspaceData>(WS_CACHE_KEY);
+    if (cached && cached.user?.id === user.id && cached.membership) return cached;
+    return empty(base);
+  }
 
   const role = memberRow.role as Role;
 
@@ -67,9 +95,16 @@ export async function loadWorkspace(): Promise<WorkspaceData> {
         .eq("user_id", user.id),
     ]);
 
+  // membership read succeeded but the parallel reads didn't return a tenant — a
+  // blip mid-batch. Don't clobber a good cache with this half-empty result.
+  if (!tenant) {
+    const cached = readCache<WorkspaceData>(WS_CACHE_KEY);
+    if (cached && cached.user?.id === user.id && cached.membership) return cached;
+  }
+
   const groupRoles = (groupRoleRows ?? []) as GroupRoleRow[];
 
-  return {
+  const ws: WorkspaceData = {
     user: base,
     membership: { tenant_id: memberRow.tenant_id as string, role },
     tenant: (tenant as Tenant) ?? null,
@@ -77,4 +112,6 @@ export async function loadWorkspace(): Promise<WorkspaceData> {
     groupRoles,
     perms: makePerms(role, groupRoles),
   };
+  writeCache(WS_CACHE_KEY, ws);
+  return ws;
 }

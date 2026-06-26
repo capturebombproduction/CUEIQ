@@ -1,6 +1,7 @@
 // Client-side mirror of lib/queries.ts `getEventBundle` for the desktop SPA.
 // Loads one event with all of its child data through the browser Supabase client.
 import { createClient } from "@/lib/supabase/client";
+import { isOffline, readCache, writeCache } from "~/data/cache";
 import type {
   EventRow,
   Group,
@@ -25,14 +26,30 @@ export interface EventBundle {
 
 export async function loadEventBundle(eventId: string): Promise<EventBundle | null> {
   const supabase = createClient();
+  const cacheKey = `event:${eventId}`;
 
-  const { data: event } = await supabase
-    .from("events")
-    .select("*, groups(*)")
-    .eq("id", eventId)
-    .maybeSingle();
+  // Offline: the network reads below would all fail, so serve the last good
+  // bundle for this event from cache (null if it was never opened online).
+  if (isOffline()) return readCache<EventBundle>(cacheKey);
 
-  if (!event) return null;
+  let eventRes;
+  try {
+    eventRes = await supabase
+      .from("events")
+      .select("*, groups(*)")
+      .eq("id", eventId)
+      .maybeSingle();
+  } catch {
+    // Network failure mid-read → fall back to the cached bundle.
+    return readCache<EventBundle>(cacheKey);
+  }
+
+  const event = eventRes.data;
+  if (!event) {
+    // Tell a real "deleted" (read succeeded, row gone) apart from an error: only
+    // resurface the cache on an actual error, never for a genuine deletion.
+    return eventRes.error ? readCache<EventBundle>(cacheKey) : null;
+  }
 
   const { data: membership } = await supabase
     .from("tenant_members")
@@ -75,7 +92,7 @@ export async function loadEventBundle(eventId: string): Promise<EventBundle | nu
       .eq("event_id", eventId),
   ]);
 
-  return {
+  const bundle: EventBundle = {
     event: {
       ...(event as unknown as EventRow),
       group: (event.groups as unknown as Group) ?? null,
@@ -88,4 +105,6 @@ export async function loadEventBundle(eventId: string): Promise<EventBundle | nu
     lineup: ((lineup.data ?? []) as { member_id: string }[]).map((r) => r.member_id),
     role: (membership?.role as Role) ?? null,
   };
+  writeCache(cacheKey, bundle);
+  return bundle;
 }

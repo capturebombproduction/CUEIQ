@@ -4,17 +4,12 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { Music2, Plus } from "lucide-react";
-import { createClient } from "@/lib/supabase/client";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { EventsList } from "@/components/event/events-list";
 import { canCreateAnyEvent, canEditGroup, viewableGroups } from "@/lib/permissions";
-import { type EventRow } from "@/lib/types";
 import { useWorkspace } from "~/data/workspace-context";
-
-type EventWithGroup = EventRow & {
-  groups: { name: string; color: string | null; exempt_from_deadline: boolean } | null;
-};
+import { loadEventsList, type EventWithGroup } from "~/data/events-list";
 
 export function Dashboard() {
   const { ws } = useWorkspace();
@@ -32,19 +27,9 @@ export function Dashboard() {
   useEffect(() => {
     if (!ws?.membership) return;
     let alive = true;
-    const supabase = createClient();
-    supabase
-      .from("events")
-      .select("*, groups(name, color, exempt_from_deadline)")
-      .eq("tenant_id", ws.membership.tenant_id)
-      .in("group_id", viewableGroupIds)
-      .eq("is_template", false)
-      .eq("is_practice", false)
-      .order("event_date", { ascending: false, nullsFirst: false })
-      .order("created_at", { ascending: false })
-      .then(({ data }) => {
-        if (alive) setEvents((data ?? []) as EventWithGroup[]);
-      });
+    loadEventsList(ws.membership.tenant_id, viewableGroupIds).then((data) => {
+      if (alive) setEvents(data);
+    });
     return () => {
       alive = false;
     };

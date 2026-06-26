@@ -8,6 +8,7 @@ import { Badge } from "@/components/ui/badge";
 import { MainNav } from "@/components/main-nav";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { SignOutButton } from "@/components/sign-out-button";
+import { OfflineBanner } from "@/components/offline-banner";
 import { ConfirmProvider } from "@/components/ui/confirm-dialog";
 import { ROLE_SHORT, type Role } from "@/lib/types";
 import { isLabelWideUser, type Perms } from "@/lib/permissions";
@@ -39,6 +40,7 @@ export function Shell() {
 
   return (
     <div className="min-h-screen bg-muted/30">
+      <OfflineBanner />
       <header className="no-print sticky top-0 z-40 border-b bg-background/80 backdrop-blur supports-[backdrop-filter]:bg-background/60">
         <div className="container flex flex-wrap items-center justify-between gap-x-3 gap-y-1.5 py-2">
           <Link to="/dashboard" className="shrink-0">
