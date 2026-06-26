@@ -5,6 +5,8 @@ import { createClient } from "@/lib/supabase/client";
 import { Login } from "~/pages/Login";
 import { Dashboard } from "~/pages/dashboard";
 import { EventPage } from "~/pages/event";
+import { NewEventPage } from "~/pages/event-new";
+import { EditEventPage } from "~/pages/event-edit";
 import { LivePage } from "~/pages/live";
 import { Library } from "~/pages/library";
 import { Artists } from "~/pages/artists";
@@ -68,7 +70,9 @@ export function App() {
       >
         <Route path="/" element={<Navigate to="/dashboard" replace />} />
         <Route path="/dashboard" element={<Dashboard />} />
+        <Route path="/events/new" element={<NewEventPage />} />
         <Route path="/events/:id" element={<EventPage />} />
+        <Route path="/events/:id/edit" element={<EditEventPage />} />
         <Route path="/events/:id/live" element={<LivePage />} />
         <Route path="/events/:id/practice" element={<PracticeRoom />} />
         <Route path="/overview" element={<Overview />} />

@@ -2,11 +2,13 @@
 // fetches client-side, then renders the SAME EventsList component the web uses
 // (search + next-show banner + offline-ready badges all reused verbatim).
 import { useEffect, useState } from "react";
-import { Music2 } from "lucide-react";
+import { Link } from "react-router-dom";
+import { Music2, Plus } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { EventsList } from "@/components/event/events-list";
-import { canEditGroup, viewableGroups } from "@/lib/permissions";
+import { canCreateAnyEvent, canEditGroup, viewableGroups } from "@/lib/permissions";
 import { type EventRow } from "@/lib/types";
 import { useWorkspace } from "~/data/workspace-context";
 
@@ -59,6 +61,8 @@ export function Dashboard() {
     );
   }
 
+  const canCreate = canCreateAnyEvent(ws.perms);
+
   return (
     <div className="space-y-6">
       <div className="flex items-end justify-between gap-4">
@@ -69,6 +73,13 @@ export function Dashboard() {
             {events ? ` · ${events.length} ${events.length === 1 ? "Event" : "Events"}` : ""}
           </p>
         </div>
+        {canCreate && (
+          <Button asChild>
+            <Link to="/events/new">
+              <Plus className="h-4 w-4" /> New Event
+            </Link>
+          </Button>
+        )}
       </div>
 
       {events === null ? (
@@ -78,6 +89,13 @@ export function Dashboard() {
           <CardContent className="flex flex-col items-center justify-center gap-3 py-16 text-center">
             <Music2 className="h-10 w-10 text-muted-foreground" />
             <p className="text-muted-foreground">No events yet</p>
+            {canCreate && (
+              <Button asChild variant="outline">
+                <Link to="/events/new">
+                  <Plus className="h-4 w-4" /> Create your first event
+                </Link>
+              </Button>
+            )}
           </CardContent>
         </Card>
       ) : (
