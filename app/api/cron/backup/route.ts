@@ -1,7 +1,15 @@
 import { NextResponse } from "next/server";
-import { PutObjectCommand } from "@aws-sdk/client-s3";
+import {
+  PutObjectCommand,
+  ListObjectsV2Command,
+  DeleteObjectsCommand,
+} from "@aws-sdk/client-s3";
 import { createAdminClient, hasServiceRole } from "@/lib/supabase/admin";
 import { r2Client, r2Configured, R2_BUCKET } from "@/lib/r2";
+
+// Daily snapshots are tiny (~few hundred rows of JSON) but unbounded growth is
+// still untidy — keep only the most recent RETAIN. 30 daily = ~a month of history.
+const RETAIN = 30;
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -82,5 +90,38 @@ export async function GET(req: Request) {
     );
   }
 
-  return NextResponse.json({ ok: true, key, tables: TABLES.length, rows: totalRows, errors });
+  // Prune old snapshots — keep the most recent RETAIN. The key embeds the ISO
+  // timestamp, so a plain lexicographic sort is chronological. Best-effort: a
+  // pruning failure must never fail the backup we just wrote.
+  let pruned = 0;
+  try {
+    const listed = await r2Client().send(
+      new ListObjectsV2Command({ Bucket: R2_BUCKET, Prefix: "backups/" })
+    );
+    const keys = (listed.Contents ?? [])
+      .map((o) => o.Key)
+      .filter((k): k is string => !!k && k.endsWith(".json"))
+      .sort();
+    const stale = keys.slice(0, Math.max(0, keys.length - RETAIN));
+    if (stale.length > 0) {
+      await r2Client().send(
+        new DeleteObjectsCommand({
+          Bucket: R2_BUCKET,
+          Delete: { Objects: stale.map((Key) => ({ Key })), Quiet: true },
+        })
+      );
+      pruned = stale.length;
+    }
+  } catch {
+    /* keep the fresh backup even if pruning the old ones fails */
+  }
+
+  return NextResponse.json({
+    ok: true,
+    key,
+    tables: TABLES.length,
+    rows: totalRows,
+    pruned,
+    errors,
+  });
 }
