@@ -54,6 +54,9 @@ export interface OverviewEvent {
   photoSortOrder: number; // sort_order to use when inserting a new photo row
   copyrightPending: number; // library songs in this event's setlist awaiting review
   copyrightRejected: number; // library songs in this event's setlist rejected
+  incomplete: number; // # of required-but-missing prep items (0 = ready). NOT shown
+  // for already-approved events (they passed the gate).
+  missingLabels: string[]; // the missing items, for the readiness badge's tooltip
   notes: string | null; // free note shown as a small tag by the name (e.g. the act
   // name for a slot a band plays under a different unit — "G-D!" under HatoBito)
 }
@@ -218,6 +221,23 @@ function CopyrightBadges({ ev }: { ev: OverviewEvent }) {
   return null;
 }
 
+// Readiness badge — mirrors CopyrightBadges (only shows when there's something to
+// flag). "ยังขาด N" amber tag when the event is missing required prep (setlist/mic/
+// call-times/…); the tooltip lists exactly what. Hidden once the event is approved
+// (it passed the completeness gate) so only in-prep shows get nagged.
+function ReadyBadge({ ev }: { ev: OverviewEvent }) {
+  if (ev.status === "approved" || ev.incomplete < 1) return null;
+  return (
+    <Link
+      href={`/events/${ev.id}`}
+      title={`ยังขาด: ${ev.missingLabels.join(", ")}`}
+      className="inline-flex items-center gap-0.5 rounded bg-amber-400/20 px-1 text-xs font-semibold text-amber-700 dark:text-amber-400"
+    >
+      ⚠ ขาด {ev.incomplete}
+    </Link>
+  );
+}
+
 // A small muted tag by the name/band carrying SHORT, label-like notes only — the
 // intended use is an act/unit name when a band plays a slot under a different unit
 // (e.g. "G-D!" on HatoBito's 11:50 slot). Longer notes are descriptions, not labels,
@@ -259,6 +279,7 @@ function EventNameCell({
       )}
       {isLabelWide && <LiveLink ev={ev} />}
       <CopyrightBadges ev={ev} />
+      <ReadyBadge ev={ev} />
       <ActNote ev={ev} />
     </div>
   );

@@ -16,7 +16,14 @@ import {
   type OverviewEvent,
   type OverviewBand,
 } from "@/components/overview/overview-client";
-import { type EventRow, type Member, type StaffContact } from "@/lib/types";
+import { eventCompleteness } from "@/lib/completeness";
+import {
+  type EventRow,
+  type Member,
+  type StaffContact,
+  type ScheduleItem,
+  type SetlistItem,
+} from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 
@@ -47,7 +54,8 @@ export default async function OverviewPage() {
   const canApproveEvents = canApprove(ws.perms);
   const supabase = await createClient();
 
-  const [evRes, schedRes, memRes, slRes, songRes, staffRes, roRes] = await Promise.all([
+  const [evRes, schedRes, memRes, slRes, songRes, staffRes, roRes, micRes] =
+    await Promise.all([
     supabase
       .from("events")
       .select("*")
@@ -68,7 +76,7 @@ export default async function OverviewPage() {
       .order("sort_order", { ascending: true }),
     supabase
       .from("setlist_items")
-      .select("event_id, song_id")
+      .select("event_id, song_id, kind")
       .eq("tenant_id", tid),
     supabase
       .from("songs")
@@ -85,18 +93,25 @@ export default async function OverviewPage() {
       .from("run_sequence")
       .select("event_name, event_date")
       .eq("tenant_id", tid),
+    // Mic assignments — counted per event for the readiness (completeness) badge.
+    supabase.from("mic_assignments").select("event_id").eq("tenant_id", tid),
   ]);
 
   const eventRows = (evRes.data ?? []) as EventRow[];
   const sched = (schedRes.data ?? []) as SchedRow[];
   const members = (memRes.data ?? []) as Member[];
-  const slRows = (slRes.data ?? []) as { event_id: string; song_id: string | null }[];
+  const slRows = (slRes.data ?? []) as {
+    event_id: string;
+    song_id: string | null;
+    kind: string;
+  }[];
   const songRows = (songRes.data ?? []) as { id: string; copyright_status: string }[];
   const staff = (staffRes.data ?? []) as StaffContact[];
   const roRows = (roRes.data ?? []) as {
     event_name: string;
     event_date: string | null;
   }[];
+  const micRows = (micRes.data ?? []) as { event_id: string }[];
   // Distinct festival keys (name__date) that have a running order. Same key the
   // client rebuilds from each event's name + date.
   const runOrderFestivals = Array.from(
@@ -124,6 +139,35 @@ export default async function OverviewPage() {
     return { pending, rejected };
   };
 
+  // Per-event prep maps for the readiness (completeness) badge — reuse the single
+  // source of truth eventCompleteness() so the Overview agrees with the event Summary.
+  const micByEvent = new Map<string, number>();
+  for (const m of micRows) micByEvent.set(m.event_id, (micByEvent.get(m.event_id) ?? 0) + 1);
+  const setlistByEvent = new Map<string, { kind: string }[]>();
+  for (const r of slRows) {
+    const arr = setlistByEvent.get(r.event_id) ?? [];
+    arr.push({ kind: r.kind });
+    setlistByEvent.set(r.event_id, arr);
+  }
+  const schedByEvent = new Map<string, SchedRow[]>();
+  for (const s of sched) {
+    const arr = schedByEvent.get(s.event_id) ?? [];
+    arr.push(s);
+    schedByEvent.set(s.event_id, arr);
+  }
+  const completenessOf = (e: EventRow) =>
+    eventCompleteness({
+      event: e,
+      schedule: (schedByEvent.get(e.id) ?? []).map((s) => ({
+        kind: s.kind,
+        start_time: s.start_time,
+      })) as Pick<ScheduleItem, "kind" | "start_time">[],
+      setlist: (setlistByEvent.get(e.id) ?? []).map((s) => ({
+        kind: s.kind,
+      })) as Pick<SetlistItem, "kind">[],
+      micCount: micByEvent.get(e.id) ?? 0,
+    });
+
   const groupById = new Map(viewableGroups.map((g) => [g.id, g]));
   // Stage/Booth carry a start→end window for the staff schedule; missing end is
   // fine (rendered as a single time). Photo stays start-only (inline-editable).
@@ -143,6 +187,7 @@ export default async function OverviewPage() {
     const g = groupById.get(e.group_id);
     const photoRow = photoOf(e.id);
     const cr = copyrightOf(e.id);
+    const comp = completenessOf(e);
     return {
       id: e.id,
       name: e.name,
@@ -163,6 +208,8 @@ export default async function OverviewPage() {
       photoSortOrder: maxSortOf(e.id) + 1,
       copyrightPending: cr.pending,
       copyrightRejected: cr.rejected,
+      incomplete: comp.missing.length,
+      missingLabels: comp.missing.map((m) => m.label),
       notes: e.notes,
     };
   });
