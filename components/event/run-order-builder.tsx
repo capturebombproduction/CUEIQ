@@ -1,12 +1,13 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { toast } from "sonner";
-import { Plus, Trash2, ArrowUp, ArrowDown, Download } from "lucide-react";
+import { Plus, Trash2, ArrowUp, ArrowDown, Download, ImageDown } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useConfirm } from "@/components/ui/confirm-dialog";
+import { captureElementToImage } from "@/lib/export-image";
 
 export type RunSequence = {
   id: string;
@@ -66,6 +67,8 @@ export function RunOrderBuilder({
   const confirm = useConfirm();
   const [rows, setRows] = useState<RunSequence[]>(initial);
   const [busy, setBusy] = useState(false);
+  const [exportBusy, setExportBusy] = useState(false);
+  const cardRef = useRef<HTMLDivElement>(null);
 
   function setLocal(id: string, partial: Partial<RunSequence>) {
     setRows((prev) => prev.map((r) => (r.id === id ? { ...r, ...partial } : r)));
@@ -178,6 +181,30 @@ export function RunOrderBuilder({
     toast.success(`เพิ่ม ${created.length} วงจากเวที`);
   }
 
+  // Save the whole running order as a clean light-theme JPG to share with the band
+  // members / crew (like the organiser's own timetable image). Captures the
+  // off-screen card below; no `now`/timezone data in it, so no hydration gate needed.
+  async function exportImage() {
+    const el = cardRef.current;
+    if (!el) return;
+    setExportBusy(true);
+    try {
+      const safe = eventName.replace(/[^\w\-]+/g, "_") || "run-order";
+      const how = await captureElementToImage(el, {
+        filename: `${safe}_runorder.jpg`,
+        shareTitle: `${eventName} — ลำดับงาน`,
+        width: 600,
+      });
+      toast.success(how === "shared" ? "แชร์รูปแล้ว" : "บันทึกรูปแล้ว 🖼️");
+    } catch (e) {
+      toast.error("บันทึกรูปไม่สำเร็จ", {
+        description: e instanceof Error ? e.message : String(e),
+      });
+    } finally {
+      setExportBusy(false);
+    }
+  }
+
   const ordered = [...rows].sort((a, b) => a.sort_order - b.sort_order);
 
   return (
@@ -188,6 +215,15 @@ export function RunOrderBuilder({
         </Button>
         <Button size="sm" onClick={addRow} disabled={busy}>
           <Plus className="h-4 w-4" /> เพิ่มลำดับ
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={exportImage}
+          disabled={busy || exportBusy || ordered.length === 0}
+          title="บันทึกลำดับงานเป็นรูป ไว้แชร์ให้สมาชิกวง/ทีมงาน"
+        >
+          <ImageDown className="h-4 w-4" /> {exportBusy ? "กำลังสร้าง…" : "บันทึกเป็นรูป"}
         </Button>
       </div>
 
@@ -290,6 +326,43 @@ export function RunOrderBuilder({
               </div>
             </div>
           ))}
+        </div>
+      )}
+
+      {/* Off-screen shareable timetable — captureElementToImage() shoots this to a
+          clean light-theme JPG. Uses only server-provided planned times/titles (no
+          `now`), so it's safe to render without a mounted gate. */}
+      {ordered.length > 0 && (
+        <div
+          ref={cardRef}
+          aria-hidden
+          className="pointer-events-none fixed -left-[9999px] top-0 w-[600px] bg-card p-6 text-foreground"
+        >
+          <div className="mb-4 border-b pb-3">
+            <h2 className="text-2xl font-bold tracking-tight">{eventName}</h2>
+            <p className="text-sm text-muted-foreground">
+              {eventDate ? `${eventDate} · ` : ""}ลำดับงาน (Running Order)
+            </p>
+          </div>
+          <div className="divide-y">
+            {ordered.map((r) => {
+              const time = r.planned_start
+                ? `${hhmm(r.planned_start)}${r.planned_end ? "–" + hhmm(r.planned_end) : ""}`
+                : "";
+              const isBand = r.kind === "band";
+              return (
+                <div key={r.id} className="flex items-baseline gap-3 py-2">
+                  <span className="w-28 shrink-0 text-sm font-medium tabular-nums text-muted-foreground">
+                    {time}
+                  </span>
+                  <span className={isBand ? "text-base font-semibold" : "text-sm"}>
+                    {r.title || "—"}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+          <p className="mt-4 text-right text-[10px] text-muted-foreground">CueIQ</p>
         </div>
       )}
     </div>
