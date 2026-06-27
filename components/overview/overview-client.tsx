@@ -167,6 +167,17 @@ function stageMinutes(ev: OverviewEvent): number {
   const t = ev.stage?.start ?? ev.booth?.start ?? ev.photo;
   return t ? toMinutes(t) : Number.POSITIVE_INFINITY;
 }
+// Each activity sorts by ITS OWN start time so its table reads in that activity's
+// order (a late-stage act with an early photo slot must sit early in the PHOTO
+// table, not be dragged down by its stage time). Untimed acts sort last.
+function photoMinutes(ev: OverviewEvent): number {
+  return ev.photo ? toMinutes(ev.photo) : Number.POSITIVE_INFINITY;
+}
+function boothMinutes(ev: OverviewEvent): number {
+  return ev.booth?.start ? toMinutes(ev.booth.start) : Number.POSITIVE_INFINITY;
+}
+const hasPhoto = (ev: OverviewEvent) => !!ev.photo;
+const hasBooth = (ev: OverviewEvent) => !!(ev.booth && (ev.booth.start || ev.booth.end));
 
 interface Bucket {
   key: string;
@@ -255,35 +266,6 @@ function ActNote({ ev }: { ev: OverviewEvent }) {
   );
 }
 
-function EventNameCell({
-  ev,
-  canOpenDetail,
-  isLabelWide,
-}: {
-  ev: OverviewEvent;
-  canOpenDetail: boolean;
-  isLabelWide: boolean;
-}) {
-  return (
-    <div className="flex min-w-0 flex-wrap items-center gap-2">
-      {canOpenDetail ? (
-        <Link
-          href={`/events/${ev.id}`}
-          className="break-words font-medium hover:text-primary hover:underline"
-        >
-          {ev.name}
-        </Link>
-      ) : (
-        <span className="break-words font-medium">{ev.name}</span>
-      )}
-      {isLabelWide && <LiveLink ev={ev} />}
-      <CopyrightBadges ev={ev} />
-      <ReadyBadge ev={ev} />
-      <ActNote ev={ev} />
-    </div>
-  );
-}
-
 function BandTag({ ev }: { ev: OverviewEvent }) {
   return (
     <span className="inline-flex items-center gap-1.5">
@@ -366,150 +348,224 @@ function StatusCell({
   );
 }
 
-// One show as a vertical card (mobile) — everything visible, no horizontal scroll.
-function EventCard({
+// The act's identity for a schedule row: the band (color dot + name) when several
+// bands share a bucket, otherwise the event name. `withBadges` adds the live link /
+// copyright / readiness / act-note chips — used only in the main Stage table so the
+// Photo/Booth tables stay clean. `secondary` is a muted tag (event name and/or date)
+// shown only when those vary within the bucket, so a multi-show/multi-date bucket
+// (week/month/…) stays unambiguous without a dedicated column.
+function ActIdentity({
   ev,
-  showBand,
+  bandPrimary,
+  secondary,
+  withBadges = false,
   canOpenDetail,
   isLabelWide,
-  canApproveEvents,
 }: {
   ev: OverviewEvent;
-  showBand: boolean;
+  bandPrimary: boolean;
+  secondary: string;
+  withBadges?: boolean;
   canOpenDetail: boolean;
   isLabelWide: boolean;
-  canApproveEvents: boolean;
 }) {
   return (
-    <div className="space-y-2 rounded-lg border bg-card p-3">
-      <div className="flex items-start justify-between gap-2">
-        <div className="min-w-0 flex-1">
-          <EventNameCell ev={ev} canOpenDetail={canOpenDetail} isLabelWide={isLabelWide} />
-        </div>
-        <div className="shrink-0">
-          <StatusCell ev={ev} canApproveEvents={canApproveEvents} />
-        </div>
-      </div>
-      {showBand && (
-        <div className="text-sm">
+    <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5">
+      {bandPrimary ? (
+        canOpenDetail ? (
+          <Link
+            href={`/events/${ev.id}`}
+            className="inline-flex items-center gap-1.5 font-medium hover:text-primary hover:underline"
+          >
+            <span
+              className="inline-block h-2.5 w-2.5 shrink-0 rounded-full"
+              style={{ background: ev.group_color || "var(--primary)" }}
+            />
+            {ev.group_name}
+          </Link>
+        ) : (
           <BandTag ev={ev} />
-        </div>
+        )
+      ) : canOpenDetail ? (
+        <Link
+          href={`/events/${ev.id}`}
+          className="break-words font-medium hover:text-primary hover:underline"
+        >
+          {ev.name}
+        </Link>
+      ) : (
+        <span className="break-words font-medium">{ev.name}</span>
       )}
-      <dl className="grid grid-cols-[4.5rem_1fr] gap-x-3 gap-y-1 text-sm">
-        <dt className="text-muted-foreground">วันที่</dt>
-        <dd className="tabular-nums">{fmtDate(ev.event_date)}</dd>
-        <dt className="text-muted-foreground">Stage</dt>
-        <dd className="tabular-nums">{fmtRange(ev.stage)}</dd>
-        <dt className="text-muted-foreground">Booth</dt>
-        <dd className="tabular-nums">{fmtRange(ev.booth)}</dd>
-        <dt className="text-muted-foreground">Photo</dt>
-        <dd className="tabular-nums">
-          <PhotoCell ev={ev} />
-        </dd>
-        <dt className="text-muted-foreground">เดดไลน์</dt>
-        <dd>
-          <DeadlineCell ev={ev} />
-        </dd>
-      </dl>
+      {secondary && (
+        <span className="text-xs text-muted-foreground">· {secondary}</span>
+      )}
+      {withBadges && (
+        <>
+          {isLabelWide && <LiveLink ev={ev} />}
+          <CopyrightBadges ev={ev} />
+          <ReadyBadge ev={ev} />
+          <ActNote ev={ev} />
+        </>
+      )}
     </div>
   );
 }
 
-// One time value for the compact report row. On a phone it carries its own label
-// ("Stage 10:00–10:30") since the stacked rows have no shared header; on a wide
-// screen the label is dropped — the STAGE/BOOTH/PHOTO column header above the group
-// labels them ONCE — and `className` fixes the column width so values line up.
-function TimeBit({
-  label,
+// A minimal "act → time" table (the Photo and Booth tables). Sorted by its own
+// activity time by the caller; lists only the acts that have that time.
+function MiniTimeTable({
+  title,
+  count,
   children,
-  className,
 }: {
-  label: string;
+  title: string;
+  count: number;
   children: ReactNode;
-  className?: string;
 }) {
   return (
-    <span className={cn("flex items-center gap-1.5", className)}>
-      <span className="text-xs font-medium uppercase text-muted-foreground sm:hidden">
-        {label}
-      </span>
-      <span>{children}</span>
-    </span>
+    <div className="overflow-hidden rounded-lg border">
+      <div className="border-b bg-muted/40 px-3 py-1.5 text-xs font-semibold uppercase text-muted-foreground">
+        {title} · {count}
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <tbody>{children}</tbody>
+        </table>
+      </div>
+    </div>
   );
 }
 
-// A single show in the compact "รายงาน" view. On a phone (portrait) it's two tidy
-// rows — BAND + tappable status on top, the three times (Stage / Booth / Photo)
-// below. On a wider screen (landscape phone / laptop, ≥sm) it collapses to ONE line
-// — band, then the times, then the status at the far right — using the horizontal
-// room a phone doesn't have. The band sits in a fixed column so the Stage time lines
-// up row-to-row. Event name + date live in the group header above; the deadline chip
-// shows only when it matters (soon / urgent / overdue).
-function EventScheduleRow({
-  ev,
+// The three activity tables for one bucket — ขึ้นแสดง (Stage) · ถ่ายรูป (Photo) ·
+// บูธ (Booth) — each sorted by ITS OWN time so a band's photo/booth slot reads in
+// that activity's order, not pulled out of place by its stage time (พี่: เวลาถ่ายรูป
+// ไม่เรียงตามสเตจ → วงโดด). Stage is the main table (every act + deadline + status);
+// Photo & Booth are minimal (act + time) and list only acts that have that time.
+// Replaces the old single 3-time table/cards — works the same at every view mode.
+function ActivityTables({
+  events,
+  showBandColumn,
   canOpenDetail,
   isLabelWide,
   canApproveEvents,
 }: {
-  ev: OverviewEvent;
+  events: OverviewEvent[];
+  showBandColumn: boolean;
   canOpenDetail: boolean;
   isLabelWide: boolean;
   canApproveEvents: boolean;
 }) {
-  const dl = ev.exempt_from_deadline ? null : deadlineInfo(ev.deadline);
+  const stageRows = useMemo(
+    () => [...events].sort((a, b) => stageMinutes(a) - stageMinutes(b)),
+    [events]
+  );
+  const photoRows = useMemo(
+    () => events.filter(hasPhoto).sort((a, b) => photoMinutes(a) - photoMinutes(b)),
+    [events]
+  );
+  const boothRows = useMemo(
+    () => events.filter(hasBooth).sort((a, b) => boothMinutes(a) - boothMinutes(b)),
+    [events]
+  );
+  // Muted secondary tag (event name and/or date) — only when those vary in the
+  // bucket, so multi-show / multi-date views stay clear without a separate column.
+  const mixNames = showBandColumn && new Set(events.map((e) => e.name)).size > 1;
+  const mixDates = new Set(events.map((e) => e.event_date)).size > 1;
+  const secondaryOf = (ev: OverviewEvent) => {
+    const parts: string[] = [];
+    if (mixNames) parts.push(ev.name);
+    if (mixDates) parts.push(fmtDate(ev.event_date));
+    return parts.join(" · ");
+  };
+
   return (
-    <div className="flex flex-wrap items-center gap-x-4 gap-y-1 rounded-lg border bg-card px-3 py-2 text-sm">
-      {/* Band — fixed column on wide screens so the Stage time aligns row-to-row */}
-      <div className="order-1 flex min-w-0 items-center gap-2 font-medium sm:w-44 sm:shrink-0">
-        <span
-          className="inline-block h-2.5 w-2.5 shrink-0 rounded-full"
-          style={{ background: ev.group_color || "var(--primary)" }}
-        />
-        {canOpenDetail ? (
-          <Link
-            href={`/events/${ev.id}`}
-            className="truncate hover:text-primary hover:underline"
-          >
-            {ev.group_name}
-          </Link>
-        ) : (
-          <span className="truncate">{ev.group_name}</span>
-        )}
-        {isLabelWide && <LiveLink ev={ev} />}
-        <CopyrightBadges ev={ev} />
-        <ActNote ev={ev} />
+    <div className="space-y-4">
+      {/* Stage — the main table: every act, plus deadline + status + badges */}
+      <div className="overflow-hidden rounded-lg border">
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b bg-muted/40 text-left text-xs uppercase text-muted-foreground">
+                <th className="px-3 py-2 font-medium">{showBandColumn ? "วง" : "งาน"}</th>
+                <th className="px-3 py-2 font-medium tabular-nums">ขึ้นแสดง</th>
+                <th className="px-3 py-2 text-right font-medium">สถานะ</th>
+              </tr>
+            </thead>
+            <tbody>
+              {stageRows.map((ev) => (
+                <tr key={ev.id} className="border-b align-middle last:border-0">
+                  <td className="px-3 py-2">
+                    <ActIdentity
+                      ev={ev}
+                      bandPrimary={showBandColumn}
+                      secondary={secondaryOf(ev)}
+                      withBadges
+                      canOpenDetail={canOpenDetail}
+                      isLabelWide={isLabelWide}
+                    />
+                  </td>
+                  <td className="whitespace-nowrap px-3 py-2 tabular-nums text-muted-foreground">
+                    {fmtRange(ev.stage)}
+                  </td>
+                  <td className="px-3 py-2">
+                    <div className="flex items-center justify-end gap-2">
+                      <DeadlineCell ev={ev} />
+                      <StatusCell ev={ev} canApproveEvents={canApproveEvents} />
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       </div>
 
-      {/* Status (+ deadline) — pinned right on the phone's top row, and at the far
-          right of the single line on a wide screen. Compact colour dot only so the
-          variable-width text badge can't crowd the times (push them onto 2 lines). */}
-      <div className="order-2 ml-auto flex shrink-0 items-center gap-2 sm:order-3 sm:ml-0">
-        {dl && (
-          <span
-            className={cn(
-              "inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs font-medium",
-              DEADLINE_BADGE[dl.tone]
-            )}
-          >
-            <AlarmClock className="h-3 w-3" /> {dl.label}
-          </span>
-        )}
-        <StatusCell ev={ev} canApproveEvents={canApproveEvents} compact />
-      </div>
-
-      {/* The three times staff need. Wraps to its own line under the band on a phone
-          (portrait); slots between the band and the status on a wider screen. */}
-      <div className="order-3 flex basis-full flex-wrap items-center gap-x-4 gap-y-1 pl-[1.125rem] tabular-nums sm:order-2 sm:basis-0 sm:flex-1 sm:flex-nowrap sm:pl-0">
-        <TimeBit label="Stage" className="sm:w-28">
-          {fmtRange(ev.stage)}
-        </TimeBit>
-        <TimeBit label="Booth" className="sm:w-28">
-          {fmtRange(ev.booth)}
-        </TimeBit>
-        <TimeBit label="Photo">
-          <PhotoCell ev={ev} />
-        </TimeBit>
-      </div>
+      {/* Photo + Booth — minimal, each in its own time order; side-by-side on wide
+          screens (like the organiser's Portrait/Stage sheets), hidden when empty. */}
+      {(photoRows.length > 0 || boothRows.length > 0) && (
+        <div className="grid gap-4 md:grid-cols-2">
+          {photoRows.length > 0 && (
+            <MiniTimeTable title="ถ่ายรูป" count={photoRows.length}>
+              {photoRows.map((ev) => (
+                <tr key={ev.id} className="border-b last:border-0">
+                  <td className="px-3 py-2">
+                    <ActIdentity
+                      ev={ev}
+                      bandPrimary={showBandColumn}
+                      secondary={secondaryOf(ev)}
+                      canOpenDetail={canOpenDetail}
+                      isLabelWide={isLabelWide}
+                    />
+                  </td>
+                  <td className="whitespace-nowrap px-3 py-2 text-right tabular-nums text-muted-foreground">
+                    <PhotoCell ev={ev} />
+                  </td>
+                </tr>
+              ))}
+            </MiniTimeTable>
+          )}
+          {boothRows.length > 0 && (
+            <MiniTimeTable title="บูธ" count={boothRows.length}>
+              {boothRows.map((ev) => (
+                <tr key={ev.id} className="border-b last:border-0">
+                  <td className="px-3 py-2">
+                    <ActIdentity
+                      ev={ev}
+                      bandPrimary={showBandColumn}
+                      secondary={secondaryOf(ev)}
+                      canOpenDetail={canOpenDetail}
+                      isLabelWide={isLabelWide}
+                    />
+                  </td>
+                  <td className="whitespace-nowrap px-3 py-2 text-right tabular-nums text-muted-foreground">
+                    {fmtRange(ev.booth)}
+                  </td>
+                </tr>
+              ))}
+            </MiniTimeTable>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -588,6 +644,65 @@ function FestivalRunControls({
 // image reads airy and matches the contact tables below — not packed against the
 // left edge. `nested` renders a lighter sub-header (used under a period header in
 // รายวัน/เดือน/…); `hideDate` drops the date when the period header already shows it.
+// One activity column in the export image: a small "act → time" table sorted by the
+// caller. `secondary(ev)` appends the event name / date as a muted tag when they vary
+// within the group (so a band-spanning or multi-date group stays unambiguous).
+function ExportActivityCol({
+  title,
+  rows,
+  showBandColumn,
+  secondary,
+  timeOf,
+}: {
+  title: string;
+  rows: OverviewEvent[];
+  showBandColumn: boolean;
+  secondary: (ev: OverviewEvent) => string;
+  timeOf: (ev: OverviewEvent) => string;
+}) {
+  return (
+    <div className="space-y-1">
+      <h4 className="text-xs font-semibold uppercase text-muted-foreground">
+        {title} · {rows.length}
+      </h4>
+      {rows.length === 0 ? (
+        <p className="text-xs text-muted-foreground">—</p>
+      ) : (
+        <table className="w-full border-collapse text-sm [&_td]:whitespace-nowrap">
+          <tbody>
+            {rows.map((ev) => (
+              <tr key={ev.id} className="border-b last:border-0">
+                <td className="py-1.5 pr-3 font-medium">
+                  {showBandColumn ? (
+                    <span className="inline-flex items-center gap-1.5">
+                      <span
+                        className="inline-block h-2.5 w-2.5 rounded-full"
+                        style={{ background: ev.group_color || "var(--primary)" }}
+                      />
+                      {ev.group_name}
+                    </span>
+                  ) : (
+                    ev.name
+                  )}
+                  {secondary(ev) && (
+                    <span className="ml-1 font-normal text-muted-foreground">
+                      {secondary(ev)}
+                    </span>
+                  )}
+                </td>
+                <td className="py-1.5 text-right tabular-nums">{timeOf(ev)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </div>
+  );
+}
+
+// One festival/band block in the export image, split into the three activity tables
+// (Stage / Photo / Booth) — each in its own time order, mirroring the on-screen view
+// and the organiser's separate Portrait/Stage sheets.
 function ExportSchedule({
   label,
   color,
@@ -614,8 +729,21 @@ function ExportSchedule({
     fmtDateWd(first.event_date) !== label
       ? first.event_date
       : null;
+
+  const stageRows = [...events].sort((a, b) => stageMinutes(a) - stageMinutes(b));
+  const photoRows = events.filter(hasPhoto).sort((a, b) => photoMinutes(a) - photoMinutes(b));
+  const boothRows = events.filter(hasBooth).sort((a, b) => boothMinutes(a) - boothMinutes(b));
+
+  // Disambiguate rows when the group mixes shows/dates: append the differing bits.
+  const secondary = (ev: OverviewEvent) => {
+    const parts: string[] = [];
+    if (showBandColumn && !dropName) parts.push(ev.name);
+    if (!dropDate) parts.push(fmtDate(ev.event_date));
+    return parts.length ? ` · ${parts.join(" · ")}` : "";
+  };
+
   return (
-    <div className="space-y-1.5">
+    <div className="space-y-2">
       {label && (
         <h3
           className={cn(
@@ -645,48 +773,29 @@ function ExportSchedule({
           </span>
         </h3>
       )}
-      <table className="w-full border-collapse text-sm [&_th]:whitespace-nowrap [&_td]:whitespace-nowrap">
-        <thead>
-          <tr className="border-b text-left text-xs text-muted-foreground">
-            {!dropName && <th className="py-2 pr-4 font-medium">งาน</th>}
-            {showBandColumn && <th className="py-2 pr-4 font-medium">วง</th>}
-            {!dropDate && <th className="py-2 pr-4 font-medium">วันที่</th>}
-            <th className="py-2 pr-4 font-medium">Stage</th>
-            <th className="py-2 pr-4 font-medium">Booth</th>
-            <th className="py-2 font-medium">Photo</th>
-          </tr>
-        </thead>
-        <tbody>
-          {events.map((ev) => (
-            <tr key={ev.id} className="border-b last:border-0">
-              {!dropName && (
-                <td className="py-2 pr-4 font-medium">{ev.name}</td>
-              )}
-              {showBandColumn && (
-                <td className="py-2 pr-4">
-                  <span className="inline-flex items-center gap-1.5">
-                    <span
-                      className="inline-block h-2.5 w-2.5 rounded-full"
-                      style={{ background: ev.group_color || "var(--primary)" }}
-                    />
-                    {ev.group_name}
-                  </span>
-                </td>
-              )}
-              {!dropDate && (
-                <td className="py-2 pr-4 tabular-nums">
-                  {fmtDate(ev.event_date)}
-                </td>
-              )}
-              <td className="py-2 pr-4 tabular-nums">{fmtRange(ev.stage)}</td>
-              <td className="py-2 pr-4 tabular-nums">{fmtRange(ev.booth)}</td>
-              <td className="py-2 tabular-nums">
-                {fmtRange({ start: ev.photo, end: ev.photoEnd })}
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+      <ExportActivityCol
+        title="ขึ้นแสดง (Stage)"
+        rows={stageRows}
+        showBandColumn={showBandColumn}
+        secondary={secondary}
+        timeOf={(ev) => fmtRange(ev.stage)}
+      />
+      <div className="grid grid-cols-2 gap-4">
+        <ExportActivityCol
+          title="ถ่ายรูป (Photo)"
+          rows={photoRows}
+          showBandColumn={showBandColumn}
+          secondary={secondary}
+          timeOf={(ev) => fmtRange({ start: ev.photo, end: ev.photoEnd })}
+        />
+        <ExportActivityCol
+          title="บูธ (Booth)"
+          rows={boothRows}
+          showBandColumn={showBandColumn}
+          secondary={secondary}
+          timeOf={(ev) => fmtRange(ev.booth)}
+        />
+      </div>
     </div>
   );
 }
@@ -1012,109 +1121,18 @@ export function OverviewClient({
                 </div>
               )}
 
-              {bucket.events.length > 0 &&
-                (mode === "event" ? (
-                  // Compact report rows — the name + date sit in the header above, so
-                  // each row leads with the band and the three times staff need. On a
-                  // wide screen the STAGE/BOOTH/PHOTO labels collapse into ONE column
-                  // header here (mirrors the row's band-width + column widths so the
-                  // times line up under it); on a phone each row keeps its own labels.
-                  // Capped width so the compact rows don't stretch edge-to-edge on a
-                  // big monitor (they only need ~720px) — the cap is wider than any
-                  // phone so mobile is unaffected.
-                  <div className="max-w-3xl space-y-1.5">
-                    <div className="hidden items-center gap-x-4 px-3 text-xs font-medium uppercase text-muted-foreground sm:flex">
-                      <div className="w-44 shrink-0" />
-                      <div className="flex flex-1 items-center gap-x-4">
-                        <span className="w-28">Stage</span>
-                        <span className="w-28">Booth</span>
-                        <span>Photo</span>
-                      </div>
-                    </div>
-                    {bucket.events.map((ev) => (
-                      <EventScheduleRow
-                        key={ev.id}
-                        ev={ev}
-                        canOpenDetail={canOpenDetail}
-                        isLabelWide={isLabelWide}
-                        canApproveEvents={canApproveEvents}
-                      />
-                    ))}
-                  </div>
-                ) : (
-                  <>
-                    {/* Laptop/desktop (≥xl): full table. A phone in landscape clears
-                      md (768) but is still too narrow for 8 columns — times wrap to
-                      two lines — so the table is held back to xl; everything below
-                      that gets the stacked cards. */}
-                  <div className="hidden overflow-x-auto rounded-lg border xl:block">
-                    <table className="w-full text-sm">
-                      <thead>
-                        <tr className="border-b bg-muted/40 text-left text-xs text-muted-foreground">
-                          <th className="px-3 py-2 font-medium">งาน</th>
-                          {showBandColumn && <th className="px-3 py-2 font-medium">วง</th>}
-                          <th className="px-3 py-2 font-medium">วันที่</th>
-                          <th className="px-3 py-2 font-medium tabular-nums">Stage</th>
-                          <th className="px-3 py-2 font-medium tabular-nums">Booth</th>
-                          <th className="px-3 py-2 font-medium tabular-nums">Photo</th>
-                          <th className="px-3 py-2 font-medium">เดดไลน์</th>
-                          <th className="px-3 py-2 font-medium">สถานะ</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {bucket.events.map((ev) => (
-                          <tr key={ev.id} className="border-b last:border-0 align-middle">
-                            <td className="px-3 py-2">
-                              <EventNameCell
-                                ev={ev}
-                                canOpenDetail={canOpenDetail}
-                                isLabelWide={isLabelWide}
-                              />
-                            </td>
-                            {showBandColumn && (
-                              <td className="px-3 py-2">
-                                <BandTag ev={ev} />
-                              </td>
-                            )}
-                            <td className="px-3 py-2 text-muted-foreground">
-                              {fmtDate(ev.event_date)}
-                            </td>
-                            <td className="px-3 py-2 tabular-nums text-muted-foreground">
-                              {fmtRange(ev.stage)}
-                            </td>
-                            <td className="px-3 py-2 tabular-nums text-muted-foreground">
-                              {fmtRange(ev.booth)}
-                            </td>
-                            <td className="px-3 py-2 tabular-nums text-muted-foreground">
-                              <PhotoCell ev={ev} />
-                            </td>
-                            <td className="px-3 py-2">
-                              <DeadlineCell ev={ev} />
-                            </td>
-                            <td className="px-3 py-2">
-                              <StatusCell ev={ev} canApproveEvents={canApproveEvents} />
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                  {/* Phone (portrait + landscape) & tablet: stacked cards —
-                      everything visible, no side-scroll */}
-                  <div className="space-y-2 xl:hidden">
-                    {bucket.events.map((ev) => (
-                      <EventCard
-                        key={ev.id}
-                        ev={ev}
-                        showBand={showBandColumn}
-                        canOpenDetail={canOpenDetail}
-                        isLabelWide={isLabelWide}
-                        canApproveEvents={canApproveEvents}
-                      />
-                    ))}
-                  </div>
-                  </>
-                ))}
+              {bucket.events.length > 0 && (
+                // Three time-ordered tables (Stage / Photo / Booth) — same at every
+                // view mode. The bucket header already carries the name/date, so the
+                // tables lead with the act and its time.
+                <ActivityTables
+                  events={bucket.events}
+                  showBandColumn={showBandColumn}
+                  canOpenDetail={canOpenDetail}
+                  isLabelWide={isLabelWide}
+                  canApproveEvents={canApproveEvents}
+                />
+              )}
 
               {band && band.members.length > 0 && (
                 <div className="flex flex-wrap items-center gap-1.5">
