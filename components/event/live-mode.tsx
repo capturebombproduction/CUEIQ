@@ -152,6 +152,13 @@ export function LiveMode({
   stateRef.current = state;
   const isControllerRef = useRef(isController);
   isControllerRef.current = isController;
+  // When this device became the ACTIVE controller (began the show or took control).
+  // null = never actively claimed: a fresh device defaults to isController=true but
+  // must YIELD to any device that actually began/claimed. Settles the race where two
+  // default-controller devices press "เริ่มโชว์" at the same instant — the more-recent
+  // claim wins (ties broken by sender id) so exactly one stays in control instead of
+  // both demoting each other into a silent, uncontrolled show.
+  const controllerSinceRef = useRef<number | null>(null);
   const meId = useRef<string>(
     typeof crypto !== "undefined" && "randomUUID" in crypto
       ? crypto.randomUUID()
@@ -685,6 +692,29 @@ export function LiveMode({
       // fight it. (We do NOT pause audio: a speaker-wired device keeps playing and
       // follows the new controller's commands — see the viewer audio-sync effect.)
       if (fromController && isControllerRef.current) {
+        // Two devices both think they're the controller (e.g. both pressed "เริ่มโชว์"
+        // before either's broadcast arrived). Settle it deterministically instead of
+        // both stepping down (which left a silent, uncontrolled show): a device that
+        // never actively claimed (mine == null) always yields; otherwise the MORE-RECENT
+        // claim wins (intentional take-control refreshes its stamp), ties broken by
+        // sender id so every device reaches the same verdict.
+        const mine = controllerSinceRef.current;
+        const theirs =
+          typeof payload.controllerSince === "number" ? payload.controllerSince : null;
+        const iYield =
+          mine == null ||
+          (theirs != null &&
+            (theirs > mine || (theirs === mine && payload.sender > meId.current)));
+        if (!iYield) {
+          // I hold the stronger claim → keep control and re-assert so the OTHER device
+          // steps down. Don't adopt its state — I'm the authority.
+          channelRef.current?.send({
+            type: "broadcast",
+            event: "state",
+            payload: statePayload(stateRef.current),
+          });
+          return;
+        }
         isControllerRef.current = false;
         setIsController(false);
         audioRef2.current?.pause(); // stop only any overlap pre-roll on the secondary
@@ -744,6 +774,7 @@ export function LiveMode({
             sender: meId.current,
             sentAt: Date.now(),
             fromController: isControllerRef.current,
+            controllerSince: controllerSinceRef.current,
             currentItemId: curId,
             ...af,
           },
@@ -794,6 +825,10 @@ export function LiveMode({
       supabase.removeChannel(ch);
       supabase.removeChannel(songCh);
     };
+    // Registered once per (eventId, groupId): every value the handlers read is a ref
+    // (stateRef/itemsRef/isControllerRef/controllerSinceRef/meId/refetchRef) or a
+    // ref-only helper (audioFields/statePayload), so there is no stale closure to fix.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [eventId, groupId]);
 
   // Derive the audio intent for a broadcast: which item should be SOUNDING, whether
@@ -841,6 +876,8 @@ export function LiveMode({
       // whether THIS device is the active controller — receivers only step down for
       // a real controller, never for a viewer's sync-reply (survives reconnects).
       fromController: isControllerRef.current,
+      // when we claimed control — lets a competing controller settle the race deterministically
+      controllerSince: controllerSinceRef.current,
       currentItemId: itemsRef.current[s.currentIndex]?.id ?? null,
       ...audioFields(s),
     };
@@ -944,6 +981,7 @@ export function LiveMode({
       });
       return;
     }
+    controllerSinceRef.current = Date.now(); // fresh claim → wins over the current controller's older stamp
     setIsController(true);
     isControllerRef.current = true;
     channelRef.current?.send({
@@ -1410,6 +1448,7 @@ export function LiveMode({
   // show-level controls
   function start() {
     const ts = Date.now();
+    controllerSinceRef.current = ts; // this device began the show → it is the controller as of now
     if (state.mode === "auto") {
       // Auto: begin running + play first track immediately (run clock starts now)
       apply({ running: true, begun: true, startedAt: ts, itemStartedAt: ts, itemElapsedAtPause: null, currentIndex: 0, mode: "auto" });
