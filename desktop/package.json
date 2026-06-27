@@ -40,7 +40,10 @@
       "shortcutName": "CueIQ"
     },
     "mac": {
-      "target": "dmg",
+      "target": [
+        { "target": "dmg", "arch": ["arm64", "x64"] }
+      ],
+      "artifactName": "CueIQ-Setup-${version}-${arch}.${ext}",
       "category": "public.app-category.music",
       "icon": "build/icon.png"
     },
