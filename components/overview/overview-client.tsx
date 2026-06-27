@@ -668,11 +668,15 @@ function ExportActivityCol({
       {rows.length === 0 ? (
         <p className="text-xs text-muted-foreground">—</p>
       ) : (
+        /* Name + time packed to the LEFT (a trailing spacer eats the slack) so the
+           time sits right next to the band — not flung to the far right edge of a
+           full-width table, which made the eye travel across an empty gap. The time
+           still shares a column, so values stay vertically aligned row-to-row. */
         <table className="w-full border-collapse text-sm [&_td]:whitespace-nowrap">
           <tbody>
             {rows.map((ev) => (
               <tr key={ev.id} className="border-b last:border-0">
-                <td className="py-1.5 pr-3 font-medium">
+                <td className="py-1.5 pr-4 font-medium">
                   {showBandColumn ? (
                     <span className="inline-flex items-center gap-1.5">
                       <span
@@ -690,7 +694,8 @@ function ExportActivityCol({
                     </span>
                   )}
                 </td>
-                <td className="py-1.5 text-right tabular-nums">{timeOf(ev)}</td>
+                <td className="py-1.5 tabular-nums">{timeOf(ev)}</td>
+                <td className="w-full" />
               </tr>
             ))}
           </tbody>
