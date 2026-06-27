@@ -27,8 +27,10 @@
       "buildResources": "build"
     },
     "artifactName": "CueIQ-Setup-${version}.${ext}",
+    "afterAllArtifactBuild": "build/rename-mac-arch.cjs",
     "win": {
       "target": "nsis",
+      "artifactName": "CueIQ-${version}-Windows.${ext}",
       "icon": "build/icon.png"
     },
     "nsis": {
@@ -43,7 +45,7 @@
       "target": [
         { "target": "dmg", "arch": ["arm64", "x64"] }
       ],
-      "artifactName": "CueIQ-Setup-${version}-${arch}.${ext}",
+      "artifactName": "CueIQ-${version}-Mac-${arch}.${ext}",
       "category": "public.app-category.music",
       "icon": "build/icon.png"
     },
