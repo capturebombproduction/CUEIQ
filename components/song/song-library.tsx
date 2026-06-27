@@ -25,7 +25,7 @@ import {
   uploadEventAudio,
   removeEventAudio,
 } from "@/lib/audio-remote";
-import { cacheSongBlob } from "@/lib/song-cache";
+import { cacheSongBlob, pruneSupersededSongs } from "@/lib/song-cache";
 import {
   getLocalSource,
   setLocalSource,
@@ -177,6 +177,30 @@ export function SongLibrary({
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Garbage-collect the on-device audio cache. It's keyed by R2 path, so replacing
+  // a song's file (new random suffix) orphans the old version's blob — it's never
+  // played again but lingers until a manual cache wipe. Sweep superseded blobs
+  // whenever we know the songs' CURRENT audio_path: on open, and again after an
+  // upload changes a path (the signature below re-fires the effect). Safe by
+  // construction — pruneSupersededSongs only drops a cached path whose songId IS in
+  // this map but differs from its current path; a band not listed here is untouched.
+  const audioPathSig = useMemo(
+    () =>
+      songs
+        .filter((s) => s.audio_path)
+        .map((s) => `${s.id}:${s.audio_path}`)
+        .sort()
+        .join("|"),
+    [songs]
+  );
+  useEffect(() => {
+    const current = new Map<string, string>();
+    for (const s of songs) if (s.audio_path) current.set(s.id, s.audio_path);
+    if (current.size === 0) return;
+    pruneSupersededSongs(current).catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [audioPathSig]);
 
   const visible = useMemo(() => {
     const needle = query.trim().toLowerCase();
