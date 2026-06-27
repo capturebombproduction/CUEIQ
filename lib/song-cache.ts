@@ -157,17 +157,23 @@ function songIdFromPath(path: string): string | null {
 }
 
 /**
- * Drop cached blobs that are SUPERSEDED versions of songs we currently know:
- * same songId, but a different (older) path than the song's current audio_path —
- * i.e. the file was replaced (the random suffix changed), orphaning the old blob.
+ * Drop cached library blobs that can no longer be the current file for a song the
+ * caller knows, in two provably-safe cases:
+ *   • SUPERSEDED — same songId, but a different (older) path than the song's
+ *     current audio_path (the file was replaced; the random suffix changed).
+ *   • REMOVED — the song's audio was cleared entirely (current audio_path is null),
+ *     so every cached blob for that songId is now orphaned.
  *
- * Safe by construction: a cached path whose songId isn't in `currentBySong`
- * (e.g. a band the caller didn't enumerate) is KEPT, so this never deletes a file
- * that might still be in use — it only removes provably-stale versions. Returns
- * how many it removed. Best-effort: resolves 0 if IndexedDB is unavailable.
+ * `currentBySong` maps songId → its current audio_path (null = audio removed) and
+ * must list EVERY song the caller can see. A cached path whose songId ISN'T in the
+ * map (e.g. a band the caller can't enumerate) is KEPT — so this never deletes a
+ * file that might still be in use, only provably-stale ones. (A wholly DELETED song
+ * is indistinguishable here from an invisible band's song, so it's left for a manual
+ * cache wipe — we only sweep what we can prove is stale.) Returns how many it
+ * removed. Best-effort: resolves 0 if IndexedDB is unavailable.
  */
 export async function pruneSupersededSongs(
-  currentBySong: Map<string, string>
+  currentBySong: Map<string, string | null>
 ): Promise<number> {
   if (currentBySong.size === 0) return 0;
   let db: IDBDatabase;
@@ -185,10 +191,14 @@ export async function pruneSupersededSongs(
       if (cursor) {
         const path = String(cursor.key);
         const sid = songIdFromPath(path);
-        const current = sid ? currentBySong.get(sid) : undefined;
-        if (current && current !== path) {
-          cursor.delete();
-          removed++;
+        // Only act on songs the caller knows; an unknown songId = invisible band = keep.
+        if (sid && currentBySong.has(sid)) {
+          // current === null → audio removed entirely; current !== path → older version.
+          const current = currentBySong.get(sid) ?? null;
+          if (current !== path) {
+            cursor.delete();
+            removed++;
+          }
         }
         cursor.continue();
       }

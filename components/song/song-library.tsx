@@ -179,24 +179,24 @@ export function SongLibrary({
   }, []);
 
   // Garbage-collect the on-device audio cache. It's keyed by R2 path, so replacing
-  // a song's file (new random suffix) orphans the old version's blob — it's never
-  // played again but lingers until a manual cache wipe. Sweep superseded blobs
-  // whenever we know the songs' CURRENT audio_path: on open, and again after an
-  // upload changes a path (the signature below re-fires the effect). Safe by
-  // construction — pruneSupersededSongs only drops a cached path whose songId IS in
-  // this map but differs from its current path; a band not listed here is untouched.
+  // a song's file (new random suffix) orphans the old version's blob, and removing a
+  // song's audio entirely orphans it too — neither is ever played again but both
+  // linger until a manual cache wipe. Sweep them whenever we know the songs' CURRENT
+  // audio_path: on open, and again after an upload/removal changes a path (the
+  // signature below re-fires the effect). Map EVERY visible song (audio_path null
+  // when its file was removed) so the GC can prove the removed case; pruneSupersededSongs
+  // only drops a cached path whose songId IS in this map, so a band not listed is untouched.
   const audioPathSig = useMemo(
     () =>
       songs
-        .filter((s) => s.audio_path)
-        .map((s) => `${s.id}:${s.audio_path}`)
+        .map((s) => `${s.id}:${s.audio_path ?? ""}`)
         .sort()
         .join("|"),
     [songs]
   );
   useEffect(() => {
-    const current = new Map<string, string>();
-    for (const s of songs) if (s.audio_path) current.set(s.id, s.audio_path);
+    const current = new Map<string, string | null>();
+    for (const s of songs) current.set(s.id, s.audio_path ?? null);
     if (current.size === 0) return;
     pruneSupersededSongs(current).catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
