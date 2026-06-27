@@ -785,22 +785,31 @@ function ExportSchedule({
         secondary={secondary}
         timeOf={(ev) => fmtRange(ev.stage)}
       />
-      <div className="grid grid-cols-2 gap-4">
-        <ExportActivityCol
-          title="ถ่ายรูป (Photo)"
-          rows={photoRows}
-          showBandColumn={showBandColumn}
-          secondary={secondary}
-          timeOf={(ev) => fmtRange({ start: ev.photo, end: ev.photoEnd })}
-        />
-        <ExportActivityCol
-          title="บูธ (Booth)"
-          rows={boothRows}
-          showBandColumn={showBandColumn}
-          secondary={secondary}
-          timeOf={(ev) => fmtRange(ev.booth)}
-        />
-      </div>
+      {/* Photo + Booth side by side; each hidden when empty so a stage-only show
+          (e.g. WARUDO has no photo) doesn't print an empty "ถ่ายรูป · 0 —" table.
+          Mirrors the on-screen ActivityTables. */}
+      {(photoRows.length > 0 || boothRows.length > 0) && (
+        <div className="grid grid-cols-2 gap-4">
+          {photoRows.length > 0 && (
+            <ExportActivityCol
+              title="ถ่ายรูป (Photo)"
+              rows={photoRows}
+              showBandColumn={showBandColumn}
+              secondary={secondary}
+              timeOf={(ev) => fmtRange({ start: ev.photo, end: ev.photoEnd })}
+            />
+          )}
+          {boothRows.length > 0 && (
+            <ExportActivityCol
+              title="บูธ (Booth)"
+              rows={boothRows}
+              showBandColumn={showBandColumn}
+              secondary={secondary}
+              timeOf={(ev) => fmtRange(ev.booth)}
+            />
+          )}
+        </div>
+      )}
     </div>
   );
 }

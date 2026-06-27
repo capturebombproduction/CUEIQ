@@ -71,8 +71,28 @@ export function PhotoTimeCell({
           })
           .select("id")
           .single();
-        if (error) throw error;
-        savedItemId = data.id as string;
+        if (error) {
+          // One-photo-per-event unique index (mig 0036): a concurrent device
+          // already created the row. Adopt it and write our value in, rather than
+          // failing or leaving a duplicate.
+          if (error.code !== "23505") throw error;
+          const { data: existing, error: findErr } = await supabase
+            .from("schedule_items")
+            .select("id")
+            .eq("event_id", eventId)
+            .eq("kind", "photo")
+            .limit(1)
+            .single();
+          if (findErr || !existing) throw error;
+          const { error: updErr } = await supabase
+            .from("schedule_items")
+            .update({ start_time: nextStart, end_time: nextEnd })
+            .eq("id", existing.id);
+          if (updErr) throw updErr;
+          savedItemId = existing.id as string;
+        } else {
+          savedItemId = data.id as string;
+        }
         setItemId(savedItemId);
       }
       setCommittedStart(start);

@@ -70,3 +70,10 @@ delete from public.schedule_items s
 update public.run_sequence
    set planned_start = '12:30', planned_end = '12:50'
  where id = '0000001a-0000-0000-0000-0000001a2e01';
+
+-- (4) Live-caller act name → "G-D!" (the official act billing). The slot is still
+--     HatoBito's group in the Overview (kept so HatoBito's members keep edit access);
+--     only the run-order title the show-caller reads changes.
+update public.run_sequence
+   set title = 'G-D!'
+ where id = '0000001a-0000-0000-0000-0000001a2e01';

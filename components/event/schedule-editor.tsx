@@ -61,15 +61,32 @@ export function ScheduleEditor({
     );
   }
 
+  // One ถ่ายรูป (photo) item per event — enforced by mig 0036's unique index. A
+  // unique-violation (23505) means a duplicate photo row; show it in plain Thai.
+  const DUP_PHOTO = {
+    title: "มีรายการถ่ายรูปอยู่แล้ว",
+    description: "ตั้งเวลาถ่ายรูปได้รายการเดียวต่อหนึ่งงาน",
+  };
+
   async function persist(id: string, partial: Partial<ScheduleItem>) {
     const { error } = await supabase
       .from("schedule_items")
       .update(partial)
       .eq("id", id);
-    if (error) toast.error("Save failed", { description: error.message });
+    if (error) {
+      if (error.code === "23505")
+        toast.error(DUP_PHOTO.title, { description: DUP_PHOTO.description });
+      else toast.error("Save failed", { description: error.message });
+    }
   }
 
   async function addItem(kind: ScheduleKind = "other") {
+    // Guard the common case client-side so the band gets a clear message instead
+    // of a raw DB error (the index is the race-proof backstop).
+    if (kind === "photo" && items.some((i) => i.kind === "photo")) {
+      toast.error(DUP_PHOTO.title, { description: DUP_PHOTO.description });
+      return;
+    }
     setBusy(true);
     const sort = items.length
       ? Math.max(...items.map((i) => i.sort_order)) + 1
@@ -86,7 +103,9 @@ export function ScheduleEditor({
       .single();
     setBusy(false);
     if (error || !data) {
-      toast.error("Failed to add item", { description: error?.message });
+      if (error?.code === "23505")
+        toast.error(DUP_PHOTO.title, { description: DUP_PHOTO.description });
+      else toast.error("Failed to add item", { description: error?.message });
       return;
     }
     setItems((prev) => [...prev, data as ScheduleItem]);
@@ -203,8 +222,18 @@ export function ScheduleEditor({
                 value={it.kind}
                 disabled={!editable}
                 onValueChange={(v) => {
-                  setLocal(it.id, { kind: v as ScheduleKind });
-                  persist(it.id, { kind: v as ScheduleKind });
+                  const next = v as ScheduleKind;
+                  if (
+                    next === "photo" &&
+                    items.some((i) => i.id !== it.id && i.kind === "photo")
+                  ) {
+                    toast.error(DUP_PHOTO.title, {
+                      description: DUP_PHOTO.description,
+                    });
+                    return;
+                  }
+                  setLocal(it.id, { kind: next });
+                  persist(it.id, { kind: next });
                 }}
               >
                 <SelectTrigger>
