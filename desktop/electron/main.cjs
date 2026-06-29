@@ -58,6 +58,34 @@ function registerIpc() {
   ipcMain.handle("cueiq:pick-audio-file", () => pickAudioFile());
 }
 
+/**
+ * Check GitHub Releases for a newer build and, if found, download it in the
+ * background and install it on the NEXT quit — so an update can NEVER interrupt a
+ * running show. Wired to the "publish: github" config in package.json.
+ *
+ * Gated to a packaged WINDOWS build on purpose:
+ *   • dev / unpacked (`!app.isPackaged`) has nothing to update;
+ *   • macOS auto-update needs a signed app (Squirrel.Mac) and we ship UNSIGNED,
+ *     so it would only ever error — Mac users re-download the .dmg manually.
+ * Every failure is swallowed: a flaky network or missing release must not delay
+ * or break app start (this is the zero-tolerance live path's host).
+ */
+function initAutoUpdate() {
+  if (!app.isPackaged || DEV_URL || SMOKE || process.platform !== "win32") return;
+  let autoUpdater;
+  try {
+    ({ autoUpdater } = require("electron-updater"));
+  } catch {
+    return; // dependency not bundled — never block startup
+  }
+  autoUpdater.autoDownload = true;
+  autoUpdater.autoInstallOnAppQuit = true;
+  autoUpdater.on("error", (err) => console.log("AUTOUPDATE_ERROR " + String(err)));
+  autoUpdater
+    .checkForUpdatesAndNotify()
+    .catch((e) => console.log("AUTOUPDATE_CHECK_FAIL " + String(e)));
+}
+
 async function createWindow() {
   const win = new BrowserWindow({
     width: 1280,
@@ -104,6 +132,7 @@ async function createWindow() {
 app.whenReady().then(() => {
   registerIpc();
   createWindow();
+  initAutoUpdate();
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
