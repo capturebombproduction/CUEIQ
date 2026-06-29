@@ -7,6 +7,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "migrate": "node --env-file=.env.local scripts/migrate.mjs"
   },
   "dependencies": {
@@ -42,7 +44,8 @@
     "eslint-config-next": "^15.5.19",
     "postcss": "^8.5.15",
     "tailwindcss": "^3.4.1",
-    "typescript": "^5"
+    "typescript": "^5",
+    "vitest": "^4.1.9"
   },
   "overrides": {
     "postcss": "$postcss"
