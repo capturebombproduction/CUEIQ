@@ -17,6 +17,7 @@ import { Training } from "~/pages/training";
 import { PracticeRoom } from "~/pages/practice";
 import { Crew } from "~/pages/crew";
 import { Admin } from "~/pages/admin";
+import { EmergencyPlayer } from "~/pages/emergency";
 import { Shell } from "~/components/shell";
 import { WorkspaceProvider } from "~/data/workspace-context";
 import { clearCache } from "~/data/cache";
@@ -87,6 +88,9 @@ export function App() {
   return (
     <Routes>
       <Route path="/login" element={authed ? <Navigate to="/" replace /> : <Login />} />
+      {/* Last-resort local player — deliberately OUTSIDE the auth gate: a brand-new
+          machine that has never logged in must still be able to play the set. */}
+      <Route path="/emergency" element={<EmergencyPlayer />} />
 
       {/* Authenticated app — workspace loaded once, shared with the shell + pages. */}
       <Route
