@@ -50,6 +50,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { LiveStatusStrip } from "@/components/event/live-status-strip";
+import { AudioOutputPicker, AUDIO_SINK_KEY, loadAudioSink } from "@/components/event/audio-output-picker";
 import { cn } from "@/lib/utils";
 import {
   SETLIST_KIND_SHORT,
@@ -201,6 +202,14 @@ export function LiveMode({
   // actually makes sound (e.g. plugged into the PA)? A remote/control device sets
   // this OFF so it stays silent without muting the PA device. Default ON.
   const [soundOutput, setSoundOutput] = useState(true);
+  // Per-device OUTPUT ROUTING (desktop): pin the show audio to a chosen output
+  // device via setSinkId ("" = system default = today's behavior), so a Bluetooth
+  // headset / HDMI screen connecting mid-show can't silently steal the PA feed.
+  const [sinkId, setSinkId] = useState("");
+  const sinkLoadedRef = useRef(false); // don't persist before the saved value loads
+  // Crossfade (opt-in, per device, default OFF = the old hard cut): on a track
+  // change the outgoing song fades out (~2s) while the new one starts.
+  const [crossfade, setCrossfade] = useState(false);
   const volumesRef = useRef(volumes); // stable read for the overlap pre-roll effect
   volumesRef.current = volumes;
   const fadeRef = useRef<number | null>(null); // rAF id for the volume fade animation
@@ -369,10 +378,36 @@ export function LiveMode({
   useEffect(() => {
     try {
       if (localStorage.getItem("cueiq:soundOutput") === "0") setSoundOutput(false);
+      if (localStorage.getItem("cueiq:crossfade") === "1") setCrossfade(true);
+      setSinkId(loadAudioSink());
     } catch {
       /* ignore */
     }
+    sinkLoadedRef.current = true;
   }, []);
+
+  // Route BOTH elements to the chosen output device + persist the choice.
+  // setSinkId is Chromium-only (the desktop app; on web sinkId stays "" and this
+  // is a no-op). A failed route falls back to the system default and keeps
+  // playing — output routing must never be the reason a show goes silent.
+  useEffect(() => {
+    if (sinkLoadedRef.current) {
+      try {
+        localStorage.setItem(AUDIO_SINK_KEY, sinkId);
+      } catch {
+        /* ignore */
+      }
+    }
+    const route = (a: HTMLAudioElement | null) => {
+      const el = a as
+        | (HTMLAudioElement & { setSinkId?: (id: string) => Promise<void> })
+        | null;
+      if (!el?.setSinkId) return;
+      el.setSinkId(sinkId).catch(() => el.setSinkId!("").catch(() => {}));
+    };
+    route(audioRef.current);
+    route(audioRef2.current);
+  }, [sinkId]);
 
   // Apply sound-output to BOTH elements (muted is a persistent element property, so
   // this covers every src change / play / overlap) + persist the choice. When OFF
@@ -1335,12 +1370,17 @@ export function LiveMode({
             setAudioPlaying(true);
           }
         } else if (url) {
-          // committing a newly-cued track that has audio — play from the offset
-          audio.src = url;
-          audio.currentTime = Math.max(0, offset);
-          setPlayingId(cur.id);
-          audio.play().catch(() => {});
-          setAudioPlaying(true);
+          // committing a newly-cued track that has audio — play from the offset.
+          // Crossfade (opt-in): the previously-sounding track fades out under it.
+          if (crossfade && !audio.paused && playingId && playingId !== cur.id) {
+            crossfadeSwap(cur.id, url, offset);
+          } else {
+            audio.src = url;
+            audio.currentTime = Math.max(0, offset);
+            setPlayingId(cur.id);
+            audio.play().catch(() => {});
+            setAudioPlaying(true);
+          }
         } else {
           // cued item has no audio file (e.g. MC) — stop whatever was still playing
           audio.pause();
@@ -1431,6 +1471,43 @@ export function LiveMode({
       setAudioCurrent(0);
       setAudioDuration(0);
     }
+  }
+
+  // Crossfade path (OPT-IN via the toggle; default = playItemAudio's hard cut):
+  // start the incoming track on the secondary element, promote it to primary, and
+  // fade the outgoing one down (~2s) before stopping it. The negative-buffer
+  // overlap pre-roll (its own mechanism) takes precedence over this in Auto.
+  const outFadeTokenRef = useRef(0);
+  function crossfadeSwap(itemId: string, url: string, fromOffset = 0) {
+    const incoming = audioRef2.current;
+    if (!incoming || !audioRef.current) return;
+    overlapNextIdRef.current = null; // the secondary element is ours now
+    incoming.pause();
+    incoming.src = url;
+    incoming.currentTime = Math.max(0, fromOffset);
+    incoming.volume = Math.min(1, Math.max(0, (volumesRef.current[itemId] ?? 100) / 100));
+    incoming.play().catch(() => {});
+    swapAudio(); // incoming → primary (scrubber/volume follow it); outgoing → secondary
+    setPlayingId(itemId);
+    setAudioPlaying(true);
+    const el = audioRef2.current; // the outgoing element
+    if (!el || el.paused) return;
+    const token = ++outFadeTokenRef.current;
+    const srcAtStart = el.src;
+    const startVol = el.volume;
+    const t0 = performance.now();
+    const MS = 2000;
+    const step = (t: number) => {
+      // bow out silently if superseded: a newer crossfade started, or the element
+      // was reused (another swap / an overlap pre-roll loaded a new track on it)
+      if (outFadeTokenRef.current !== token) return;
+      if (el !== audioRef2.current || el.src !== srcAtStart) return;
+      const p = Math.min(1, (t - t0) / MS);
+      el.volume = startVol * (1 - p);
+      if (p < 1) requestAnimationFrame(step);
+      else el.pause();
+    };
+    requestAnimationFrame(step);
   }
 
   // Resume audio after a reload / autoplay-block: load the sounding track and seek to
@@ -1596,7 +1673,16 @@ export function LiveMode({
         running: true,
         startedAt: state.startedAt ?? Date.now(),
       });
-      if (it) playItemAudio(it.id);
+      if (it) {
+        const url = audioUrls[it.id];
+        const a = audioRef.current;
+        // crossfade (opt-in): fade the sounding track out instead of hard-cutting
+        if (crossfade && url && a && !a.paused && playingId !== it.id) {
+          crossfadeSwap(it.id, url);
+        } else {
+          playItemAudio(it.id);
+        }
+      }
     } else {
       // Manual: cue the new item FROZEN (countdown waits for รันโชว์). Leave the
       // previous track playing — its row keeps the 🔊 until it ends or is replaced.
@@ -2432,6 +2518,37 @@ export function LiveMode({
           >
             <Sparkles className="h-4 w-4" /> Auto
           </Button>
+        </div>
+
+        {/* per-device playback options: crossfade (opt-in) + output routing
+            (desktop-only picker). Defaults keep the old behavior exactly. */}
+        <div className="mb-2 flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={() => {
+              const next = !crossfade;
+              setCrossfade(next);
+              try {
+                localStorage.setItem("cueiq:crossfade", next ? "1" : "0");
+              } catch {
+                /* ignore */
+              }
+            }}
+            title={
+              crossfade
+                ? "Crossfade เปิด — ตอนเปลี่ยนเพลง เพลงเดิมจะเฟดออก ~2 วิ (แตะเพื่อปิด)"
+                : "Crossfade ปิด — เปลี่ยนเพลงแบบตัดทันที (แตะเพื่อเปิดเฟดไขว้)"
+            }
+            className={cn(
+              "flex h-7 shrink-0 items-center gap-1 rounded-md border px-2 text-xs font-medium transition-colors",
+              crossfade
+                ? "border-primary/50 bg-primary/15 text-primary"
+                : "text-muted-foreground hover:bg-muted"
+            )}
+          >
+            <Volume1 className="h-3.5 w-3.5" /> Crossfade {crossfade ? "เปิด" : "ปิด"}
+          </button>
+          <AudioOutputPicker value={sinkId} onChange={setSinkId} />
         </div>
 
         {!state.begun ? (

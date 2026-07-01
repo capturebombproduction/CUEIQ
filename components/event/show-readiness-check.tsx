@@ -12,12 +12,14 @@ import {
   ShieldCheck,
   HardDrive,
   BatteryMedium,
+  Speaker,
   Wifi,
   WifiOff,
   ListChecks,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { loadAudioSink } from "@/components/event/audio-output-picker";
 import { prefetchEventAudio, type PrefetchTarget } from "@/lib/audio-prefetch";
 import {
   getShowReadiness,
@@ -99,6 +101,50 @@ export function ShowReadinessCheck({
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
   const [pinBusy, setPinBusy] = useState(false);
   const cancelRef = useRef(false);
+  // Desktop-only extras (the standalone show machine): which output the show
+  // audio is pinned to, and whether this event's data is cached for an offline
+  // cold boot. Both stay null on the web build → the rows never render there.
+  const isDesktop =
+    typeof window !== "undefined" &&
+    !!(window as { cueiqNative?: unknown }).cueiqNative;
+  const [sink, setSink] = useState<{ label: string; missing: boolean } | null>(null);
+  const [offlineData, setOfflineData] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    if (!isDesktop) return;
+    let alive = true;
+    const check = async () => {
+      // same key the desktop read-cache writes (desktop/src/data/cache.ts)
+      try {
+        setOfflineData(localStorage.getItem(`cueiq:cache:event:${eventId}`) != null);
+      } catch {
+        setOfflineData(null);
+      }
+      const saved = loadAudioSink();
+      if (!saved) {
+        if (alive) setSink({ label: "ลำโพงเริ่มต้นของระบบ", missing: false });
+        return;
+      }
+      try {
+        const all = await navigator.mediaDevices.enumerateDevices();
+        const dev = all.find((d) => d.kind === "audiooutput" && d.deviceId === saved);
+        if (alive)
+          setSink(
+            dev
+              ? { label: dev.label || "อุปกรณ์เสียงที่เลือกไว้", missing: false }
+              : { label: "อุปกรณ์ที่เลือกไว้ไม่ได้เสียบอยู่", missing: true }
+          );
+      } catch {
+        if (alive) setSink(null);
+      }
+    };
+    check();
+    navigator.mediaDevices?.addEventListener?.("devicechange", check);
+    return () => {
+      alive = false;
+      navigator.mediaDevices?.removeEventListener?.("devicechange", check);
+    };
+  }, [isDesktop, eventId]);
 
   const refresh = useCallback(() => {
     getShowReadiness(eventId, targets)
@@ -163,7 +209,12 @@ export function ShowReadinessCheck({
     r.battery.level != null &&
     r.battery.level < LOW_BATTERY &&
     !r.battery.charging;
-  const hasWarn = lowSpace || notPinned || lowBattery;
+  const hasWarn =
+    lowSpace ||
+    notPinned ||
+    lowBattery ||
+    (sink?.missing ?? false) ||
+    offlineData === false;
 
   const verdict: RowTone = !audioReady ? "bad" : hasWarn ? "warn" : "ok";
   const verdictText = !audioReady
@@ -299,6 +350,26 @@ export function ShowReadinessCheck({
               icon={<BatteryMedium className="h-4 w-4" />}
               label="แบตเตอรี่"
               value={`${Math.round(r.battery.level * 100)}%${r.battery.charging ? " · กำลังชาร์จ" : ""}`}
+            />
+          )}
+
+          {/* desktop-only: where the show audio is routed (set in Live Mode) */}
+          {sink && (
+            <Row
+              tone={sink.missing ? "warn" : "ok"}
+              icon={<Speaker className="h-4 w-4" />}
+              label="เสียงออกที่"
+              value={sink.label}
+            />
+          )}
+
+          {/* desktop-only: can this event cold-boot offline (data cached)? */}
+          {offlineData != null && (
+            <Row
+              tone={offlineData ? "ok" : "warn"}
+              icon={<HardDrive className="h-4 w-4" />}
+              label="ข้อมูลงานในเครื่อง (เปิดแบบไม่มีเน็ตได้)"
+              value={offlineData ? "พร้อม" : "เปิดงานนี้ตอนออนไลน์ 1 ครั้งก่อน"}
             />
           )}
 
