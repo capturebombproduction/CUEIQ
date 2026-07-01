@@ -13,14 +13,14 @@ export function Login() {
           <p className="mt-1 text-sm text-muted-foreground">Desktop · Smart cues for every show</p>
         </div>
         <LoginForm />
-        {/* Show-must-go-on escape hatch: play local files with no account at all
-            (a fresh machine at a no-internet venue can still run the set). */}
+        {/* Show-must-go-on: the fully-local standalone show runner — no account,
+            no network, everything saved on this machine (Live-Mode-grade clock). */}
         <Link
-          to="/emergency"
+          to="/my-show"
           className="flex items-center justify-center gap-1.5 text-center text-xs text-muted-foreground hover:text-primary hover:underline"
         >
           <Music2 className="h-3.5 w-3.5" />
-          โหมดฉุกเฉิน — เปิดเพลงจากไฟล์ในเครื่อง (ไม่ต้องเข้าสู่ระบบ)
+          My Show — โหมดโชว์เดี่ยว เปิดเพลง+จับเวลาจากเครื่องนี้ (ไม่ต้องเข้าสู่ระบบ)
         </Link>
       </div>
     </div>

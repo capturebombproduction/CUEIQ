@@ -76,8 +76,16 @@ export function Shell() {
               {name && <span className="min-w-0 truncate font-medium">{name}</span>}
             </div>
           )}
-          <div className="overflow-x-auto">
+          <div className="flex items-center gap-2 overflow-x-auto">
             <MainNav perms={ws.perms} />
+            {/* MY SHOW — the local standalone runner; also reachable when logged in */}
+            <Link
+              to="/my-show"
+              className="shrink-0 whitespace-nowrap rounded-md px-2 py-1 text-sm font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+              title="โหมดโชว์เดี่ยว — เปิดเพลง+จับเวลาจากไฟล์ในเครื่องนี้ (ออฟไลน์ 100%)"
+            >
+              My Show
+            </Link>
           </div>
         </div>
       </header>
