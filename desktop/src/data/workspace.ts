@@ -6,6 +6,7 @@ import { createClient } from "@/lib/supabase/client";
 import { makePerms, type GroupRoleRow, type Perms } from "@/lib/permissions";
 import type { Group, Role, Tenant } from "@/lib/types";
 import { isOffline, readCache, writeCache } from "~/data/cache";
+import { getStoredSessionUser } from "~/data/stored-session";
 
 const WS_CACHE_KEY = "workspace";
 
@@ -33,29 +34,28 @@ export async function loadWorkspace(): Promise<WorkspaceData> {
   const supabase = createClient();
 
   // Offline: the table reads below all need the network, so serve the last good
-  // workspace from cache instead — but only if a session still exists locally AND
-  // the cache belongs to that same user (sign-out wipes it too — see App.tsx —
+  // workspace from cache instead — but only if a persisted session still exists
+  // AND the cache belongs to that same user (sign-out wipes both — see App.tsx —
   // but a shared band device must never resurface another account's workspace).
+  // Identity comes from the RAW stored session, NOT getSession(): with an expired
+  // access token getSession() tries a network refresh and returns null offline
+  // (the /login bounce this offline pass exists to prevent) — the stored session
+  // survives network failures and only disappears on a real sign-out.
   if (isOffline()) {
-    const {
-      data: { session },
-    } = await supabase.auth.getSession();
+    const stored = getStoredSessionUser();
     const cached = readCache<WorkspaceData>(WS_CACHE_KEY);
-    if (session && cached && cached.user?.id === session.user.id) return cached;
-    return empty(session?.user ? { id: session.user.id, email: session.user.email ?? null, name: null } : null);
+    if (stored && cached && cached.user?.id === stored.id) return cached;
+    return empty(stored ? { id: stored.id, email: stored.email, name: null } : null);
   }
 
   // Flaky network even though navigator says online — getUser can reject; treat
-  // any failure as "fall back to cache" (same owner check as the offline path;
-  // getSession reads the local session without needing the network).
+  // any failure as "fall back to cache" (same stored-identity owner check as the
+  // offline path; an instant storage read, no doomed refresh attempt).
   const userResult = await supabase.auth.getUser().catch(() => null);
   if (!userResult) {
-    const session = await supabase.auth
-      .getSession()
-      .then((r) => r.data.session)
-      .catch(() => null);
+    const stored = getStoredSessionUser();
     const cached = readCache<WorkspaceData>(WS_CACHE_KEY);
-    if (session && cached && cached.user?.id === session.user.id) return cached;
+    if (stored && cached && cached.user?.id === stored.id) return cached;
     return empty(null);
   }
   const user = userResult.data.user;

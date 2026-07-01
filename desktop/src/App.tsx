@@ -20,38 +20,61 @@ import { Admin } from "~/pages/admin";
 import { Shell } from "~/components/shell";
 import { WorkspaceProvider } from "~/data/workspace-context";
 import { clearCache } from "~/data/cache";
+import { getStoredSessionUser } from "~/data/stored-session";
 
-type AuthState = { loading: boolean; session: Session | null };
+type AuthState = {
+  loading: boolean;
+  session: Session | null;
+  /** Offline show pass: getSession() came back null (expired token + no network
+   * to refresh) but a persisted session still exists — the user never signed
+   * out. Lets the app boot into cached data + cached audio instead of bouncing
+   * to /login at a no-internet venue; upgraded to a real session automatically
+   * when the network returns (TOKEN_REFRESHED). See ~/data/stored-session. */
+  offlineAuthed: boolean;
+};
 
 /** Watches the Supabase auth session (same backend as the web app) and gates routes. */
 function useAuth(): AuthState {
-  const [state, setState] = useState<AuthState>({ loading: true, session: null });
+  const [state, setState] = useState<AuthState>({
+    loading: true,
+    session: null,
+    offlineAuthed: false,
+  });
   useEffect(() => {
     const supabase = createClient();
+    const next = (session: Session | null) =>
+      setState({
+        loading: false,
+        session,
+        offlineAuthed: !session && getStoredSessionUser() != null,
+      });
     supabase.auth
       .getSession()
-      .then(({ data }) => setState({ loading: false, session: data.session }))
-      .catch(() => setState({ loading: false, session: null }));
+      .then(({ data }) => next(data.session))
+      .catch(() => next(null));
     const { data: sub } = supabase.auth.onAuthStateChange((event, session) => {
       // Shared band device: wipe the offline management cache the moment a user
       // signs out, so the NEXT account on this machine can never boot offline
       // into the previous user's cached workspace/events (different per-band perms).
+      // (A real sign-out also removes the persisted session, so the offline pass
+      // closes with it — SIGNED_OUT is never emitted for mere network failures.)
       if (event === "SIGNED_OUT") clearCache();
-      setState({ loading: false, session });
+      next(session);
     });
     return () => sub.subscription.unsubscribe();
   }, []);
   return state;
 }
 
-function Protected({ session, children }: { session: Session | null; children: React.ReactNode }) {
+function Protected({ authed, children }: { authed: boolean; children: React.ReactNode }) {
   const loc = useLocation();
-  if (!session) return <Navigate to="/login" replace state={{ from: loc.pathname }} />;
+  if (!authed) return <Navigate to="/login" replace state={{ from: loc.pathname }} />;
   return <>{children}</>;
 }
 
 export function App() {
-  const { loading, session } = useAuth();
+  const { loading, session, offlineAuthed } = useAuth();
+  const authed = !!session || offlineAuthed;
 
   if (loading) {
     return (
@@ -63,12 +86,12 @@ export function App() {
 
   return (
     <Routes>
-      <Route path="/login" element={session ? <Navigate to="/" replace /> : <Login />} />
+      <Route path="/login" element={authed ? <Navigate to="/" replace /> : <Login />} />
 
       {/* Authenticated app — workspace loaded once, shared with the shell + pages. */}
       <Route
         element={
-          <Protected session={session}>
+          <Protected authed={authed}>
             <WorkspaceProvider>
               <Shell />
             </WorkspaceProvider>
