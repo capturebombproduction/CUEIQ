@@ -34,6 +34,7 @@ import { saveAudio, loadAudioForEvent } from "@/lib/audio-store";
 import { getCachedSongBlob } from "@/lib/song-cache";
 import { getLocalSource } from "@/lib/local-source";
 import { persistLastRun } from "@/lib/show-run-outbox";
+import { setLiveShowActive } from "@/lib/live-guard";
 import { getDeviceId, deviceLabel } from "@/lib/device-id";
 import {
   claimAuthority,
@@ -391,6 +392,10 @@ export function LiveMode({
   // To leave, turn off "เสียงออกเครื่องนี้" first (then edit on a remote with sound off).
   useEffect(() => {
     if (!(soundOutput && state.begun)) return;
+    // Tell out-of-tree actions (the header Sign-out button) that a sounding show is
+    // live here, so they confirm before cutting it — the click/beforeunload guards
+    // below can't see a programmatic sign-out navigation.
+    setLiveShowActive(true);
     const livePath = `/events/${eventId}/live`;
     const onClick = (e: MouseEvent) => {
       const a = (e.target as HTMLElement)?.closest?.("a[href]") as HTMLAnchorElement | null;
@@ -418,6 +423,7 @@ export function LiveMode({
     document.addEventListener("click", onClick, true);
     window.addEventListener("beforeunload", onBeforeUnload);
     return () => {
+      setLiveShowActive(false);
       document.removeEventListener("click", onClick, true);
       window.removeEventListener("beforeunload", onBeforeUnload);
     };
