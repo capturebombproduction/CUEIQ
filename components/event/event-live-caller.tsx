@@ -284,7 +284,11 @@ export function EventLiveCaller({
     );
     setBusy(false);
     const err = results.find((r) => r.error)?.error;
-    if (err) toast.error("บันทึกไม่สำเร็จ", { description: err.message });
+    if (err) {
+      toast.error("บันทึกไม่สำเร็จ", { description: err.message });
+      // pull the board back to server truth so the optimistic rows don't linger
+      refetchRef.current();
+    }
     bcast();
   }
 
