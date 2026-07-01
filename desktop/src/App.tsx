@@ -19,6 +19,7 @@ import { Crew } from "~/pages/crew";
 import { Admin } from "~/pages/admin";
 import { Shell } from "~/components/shell";
 import { WorkspaceProvider } from "~/data/workspace-context";
+import { clearCache } from "~/data/cache";
 
 type AuthState = { loading: boolean; session: Session | null };
 
@@ -31,7 +32,11 @@ function useAuth(): AuthState {
       .getSession()
       .then(({ data }) => setState({ loading: false, session: data.session }))
       .catch(() => setState({ loading: false, session: null }));
-    const { data: sub } = supabase.auth.onAuthStateChange((_e, session) => {
+    const { data: sub } = supabase.auth.onAuthStateChange((event, session) => {
+      // Shared band device: wipe the offline management cache the moment a user
+      // signs out, so the NEXT account on this machine can never boot offline
+      // into the previous user's cached workspace/events (different per-band perms).
+      if (event === "SIGNED_OUT") clearCache();
       setState({ loading: false, session });
     });
     return () => sub.subscription.unsubscribe();

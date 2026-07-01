@@ -33,23 +33,29 @@ export async function loadWorkspace(): Promise<WorkspaceData> {
   const supabase = createClient();
 
   // Offline: the table reads below all need the network, so serve the last good
-  // workspace from cache instead — but only if a session still exists locally, so
-  // a signed-out device never resurfaces the previous user's data.
+  // workspace from cache instead — but only if a session still exists locally AND
+  // the cache belongs to that same user (sign-out wipes it too — see App.tsx —
+  // but a shared band device must never resurface another account's workspace).
   if (isOffline()) {
     const {
       data: { session },
     } = await supabase.auth.getSession();
     const cached = readCache<WorkspaceData>(WS_CACHE_KEY);
-    if (session && cached) return cached;
+    if (session && cached && cached.user?.id === session.user.id) return cached;
     return empty(session?.user ? { id: session.user.id, email: session.user.email ?? null, name: null } : null);
   }
 
   // Flaky network even though navigator says online — getUser can reject; treat
-  // any failure as "fall back to cache".
+  // any failure as "fall back to cache" (same owner check as the offline path;
+  // getSession reads the local session without needing the network).
   const userResult = await supabase.auth.getUser().catch(() => null);
   if (!userResult) {
+    const session = await supabase.auth
+      .getSession()
+      .then((r) => r.data.session)
+      .catch(() => null);
     const cached = readCache<WorkspaceData>(WS_CACHE_KEY);
-    if (cached) return cached;
+    if (session && cached && cached.user?.id === session.user.id) return cached;
     return empty(null);
   }
   const user = userResult.data.user;
@@ -112,6 +118,8 @@ export async function loadWorkspace(): Promise<WorkspaceData> {
     groupRoles,
     perms: makePerms(role, groupRoles),
   };
-  writeCache(WS_CACHE_KEY, ws);
+  // Cache only a COMPLETE read: a tenant-less result here means the parallel batch
+  // blipped (and there was no cache to fall back on) — don't make it the offline copy.
+  if (ws.tenant) writeCache(WS_CACHE_KEY, ws);
   return ws;
 }
