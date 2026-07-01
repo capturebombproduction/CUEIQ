@@ -5,27 +5,18 @@
 # No secrets needed: desktop/vite.config.ts bakes in public Supabase URL + anon key
 # + web origin as defaults, so `npm run dist` builds straight through.
 #
-# How to run:
-#   • Actions tab → "Desktop build" → "Run workflow" (manual) → installers land
-#     as downloadable run ARTIFACTS only (nothing published), OR
-#   • push a tag like `v0.1.1` (git tag v0.1.1 && git push origin v0.1.1) →
-#     electron-builder ALSO publishes the WINDOWS installer + `latest.yml` update
-#     manifest to a drafted GitHub Release (publish is scoped to `win` in
-#     package.json — see below). electron-updater in the packaged Windows app reads
-#     that release to auto-update (electron/main.cjs initAutoUpdate). After the
-#     tagged run, review the DRAFT release under "Releases" and click Publish —
-#     only then do installed Windows apps see it. The MAC .dmg is NOT published (it
-#     can't auto-update anyway); grab it from the run's ARTIFACTS.
-#   (electron-builder's default publish policy is onTagOrDraft, so a manual
-#    dispatch run on a branch never publishes; only a v* tag does.)
-#   NOTE: publish is win-only ON PURPOSE — the mac `afterAllArtifactBuild` rename
-#   hook (arm64→Apple-Silicon, x64→Intel) collides with electron-builder's publish
-#   (it reopens the pre-rename dmg name → ENOENT), so mac publishes nothing.
+# How to get the installers (BOTH a manual dispatch and a v* tag work the same):
+#   Actions tab → this run → scroll to "Artifacts" → download `CueIQ-mac-dmg`
+#   (the .dmg, zipped) or `CueIQ-win-exe` (the .exe). That's it — ARTIFACT-ONLY.
 #
-# ⚠️ Unsigned: the .dmg has no Apple Developer cert ($99/yr we don't have), so on
-# first open a Mac user must right-click → Open (Gatekeeper). Fine for internal use.
-# macOS auto-update is NOT wired (Squirrel.Mac needs a signed app) — Mac users
-# re-download the .dmg. Windows auto-update works unsigned.
+# We build with `--publish never`: electron-builder's implicit publish-on-tag kept
+# breaking (mac: rename-hook vs publish → ENOENT; then a publish-config resolution
+# error on both). Auto-update via a published GitHub Release is DEFERRED — the
+# electron-updater code in electron/main.cjs stays but is dormant (no release to
+# check) until the release pipeline is set up separately and reliably.
+#
+# ⚠️ Unsigned: the .dmg has no Apple Developer cert, so on first open a Mac user runs
+# `xattr -dr com.apple.quarantine /Applications/CueIQ.app`. Fine for internal use.
 name: Desktop build
 
 on:
@@ -33,10 +24,6 @@ on:
   push:
     tags:
       - "v*"
-
-# Let the build-provided GITHUB_TOKEN create/update the GitHub Release on tag runs.
-permissions:
-  contents: write
 
 jobs:
   build:
@@ -65,18 +52,18 @@ jobs:
         run: npm ci
         working-directory: desktop
 
-      # vite build + electron-builder. CSC_IDENTITY_AUTO_DISCOVERY=false stops
-      # electron-builder from hunting for a (non-existent) macOS signing identity.
+      # vite build + electron-builder, ARTIFACT-ONLY (--publish never). This is the
+      # exact command that builds cleanly locally; plain `npm run dist` on a tag
+      # triggers electron-builder's implicit publish, which was failing.
+      # CSC_IDENTITY_AUTO_DISCOVERY=false stops it hunting for a macOS signing cert.
       - name: Build installer
-        run: npm run dist
+        run: npm run dist -- --publish never
         working-directory: desktop
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: false
-          # Present so electron-builder can publish to a GitHub Release on a v* tag
-          # run (onTagOrDraft). Harmless on dispatch runs — no tag means no publish.
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Upload installer
+        if: always() # upload whatever built even if the other matrix leg failed
         uses: actions/upload-artifact@v4
         with:
           name: CueIQ-${{ matrix.label }}
