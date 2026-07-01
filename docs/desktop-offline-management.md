@@ -1,9 +1,14 @@
 # Desktop Offline MANAGEMENT — write path (⭐#1 step 2)
 
-> สถานะ: **DESIGN — ready to build, GATED.** Step 1 (read-cache) shipped `af36d7f`
-> (`desktop/src/data/cache.ts` + workspace/event-bundle/events-list loaders
-> write-through online, fall back to cache offline). Step 2 below is the WRITE
-> half: create/edit management data offline and sync on reconnect.
+> สถานะ: **DESIGN + PURE CORE built; WIRING gated.** Read-cache shipped `af36d7f`.
+> The **pure, side-effect-free core of the write path is now built + tested** in
+> [lib/mgmt-outbox.ts](../lib/mgmt-outbox.ts) (`applyPending` overlay,
+> `shouldApplyOnFlush` online-wins guard, `newEventId` client uuid) + 13 vitest
+> cases — it needs no device, so it landed ahead of the gate. **Still GATED** (below):
+> the IndexedDB queue I/O, the loader overlay, the write-path seam, and the
+> setlist/schedule/mic/lineup ops — everything that touches the live desktop write
+> path waits for พี่'s `.exe` read-cache confirmation. Step 2 = create/edit
+> management data offline and sync on reconnect.
 >
 > ⛔ **GATE — do NOT start coding until พี่ confirms the read-cache works on the
 > real `.exe`** (open online once → airplane → reopen → dashboard + cached events +
@@ -103,9 +108,13 @@ On reconnect (the existing `OutboxFlusher` / online event already wired in the w
   Cleanest seam = a thin wrapper in `desktop/src/shims/` so the web stays untouched.
 
 ## 6. แผนสร้าง (incremental, each พี่-testable on the .exe)
-1. `outbox.ts` (queue + `applyPending` pure helper) **+ vitest** for `applyPending`
-   and the online-wins base check (pure logic, zero device needed).
-2. Loader overlay (events-list + event-bundle) → offline create/edit **shows**.
+1. ✅ **DONE — pure helper** `lib/mgmt-outbox.ts` (`applyPending` overlay +
+   `shouldApplyOnFlush` online-wins guard + `newEventId`) **+ 13 vitest cases**
+   (`lib/mgmt-outbox.test.ts`). Zero device needed; shipped ahead of the gate.
+   *Remaining for this step: the IndexedDB queue I/O (enqueue/list/flush, mirror
+   `lib/show-run-outbox.ts`) — deferred with the wiring since it's I/O, not pure.*
+2. Loader overlay (events-list + event-bundle, using `applyPending`) → offline
+   create/edit **shows**. **← GATE STARTS HERE** (touches the packaged read path).
 3. `mgmtWrite()` seam + wire `EventForm` create/edit through it.
 4. Flush + conflict store + status chips.
 5. Setlist/schedule/mic/lineup ops.
