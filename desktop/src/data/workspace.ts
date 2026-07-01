@@ -48,18 +48,20 @@ export async function loadWorkspace(): Promise<WorkspaceData> {
     return empty(stored ? { id: stored.id, email: stored.email, name: null } : null);
   }
 
-  // Flaky network even though navigator says online — getUser can reject; treat
-  // any failure as "fall back to cache" (same stored-identity owner check as the
-  // offline path; an instant storage read, no doomed refresh attempt).
+  // Flaky network even though navigator says online (venue router, no internet):
+  // auth-js resolves getUser() with `user: null` on a network failure rather than
+  // rejecting, so treat null-user and rejection the SAME — fall back to the cache
+  // under the stored-identity owner check (an instant storage read, no doomed
+  // refresh attempt). A genuinely signed-out device has no stored session, so it
+  // still lands on empty().
   const userResult = await supabase.auth.getUser().catch(() => null);
-  if (!userResult) {
+  const user = userResult?.data.user ?? null;
+  if (!user) {
     const stored = getStoredSessionUser();
     const cached = readCache<WorkspaceData>(WS_CACHE_KEY);
     if (stored && cached && cached.user?.id === stored.id) return cached;
     return empty(null);
   }
-  const user = userResult.data.user;
-  if (!user) return empty(null);
 
   const name =
     (user.user_metadata?.full_name as string | undefined) ?? user.email ?? null;
