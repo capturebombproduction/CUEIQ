@@ -6,6 +6,7 @@ import { Link, Outlet } from "react-router-dom";
 import { Brand } from "@/components/brand";
 import { Badge } from "@/components/ui/badge";
 import { MainNav } from "@/components/main-nav";
+import { AccentPicker } from "@/components/accent-picker";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { SignOutButton } from "@/components/sign-out-button";
 import { OfflineBanner } from "@/components/offline-banner";
@@ -57,6 +58,7 @@ export function Shell() {
                 {name}
               </span>
             )}
+            <AccentPicker />
             <ThemeToggle />
             <SignOutButton />
           </div>

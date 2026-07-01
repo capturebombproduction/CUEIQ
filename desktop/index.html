@@ -10,6 +10,17 @@
         if (localStorage.getItem("cueiq:theme") === "light")
           document.documentElement.classList.remove("dark");
       } catch (e) {}
+      // Pre-paint accent skin: re-inject the per-device brand color the AccentPicker
+      // saved (mirrors app/layout.tsx on web) so the chosen color survives a restart.
+      try {
+        var a = JSON.parse(localStorage.getItem("cueiq:accent") || "null");
+        if (a && a.css) {
+          var st = document.createElement("style");
+          st.id = "cueiq-skin";
+          st.textContent = a.css;
+          document.head.appendChild(st);
+        }
+      } catch (e) {}
     </script>
   </head>
   <body>
