@@ -18,13 +18,6 @@
   "build": {
     "appId": "com.capturebomb.cueiq",
     "productName": "CueIQ",
-    "publish": [
-      {
-        "provider": "github",
-        "owner": "capturebombproduction",
-        "repo": "CUEIQ"
-      }
-    ],
     "files": [
       "dist/**/*",
       "electron/**/*"
@@ -38,7 +31,14 @@
     "win": {
       "target": "nsis",
       "artifactName": "CueIQ-${version}-Windows.${ext}",
-      "icon": "build/icon.png"
+      "icon": "build/icon.png",
+      "publish": [
+        {
+          "provider": "github",
+          "owner": "capturebombproduction",
+          "repo": "CUEIQ"
+        }
+      ]
     },
     "nsis": {
       "oneClick": false,

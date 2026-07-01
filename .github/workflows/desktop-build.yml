@@ -9,13 +9,18 @@
 #   • Actions tab → "Desktop build" → "Run workflow" (manual) → installers land
 #     as downloadable run ARTIFACTS only (nothing published), OR
 #   • push a tag like `v0.1.1` (git tag v0.1.1 && git push origin v0.1.1) →
-#     electron-builder ALSO publishes to a GitHub Release (drafted) carrying the
-#     installers + the `latest.yml` update manifest. electron-updater in the
-#     packaged Windows app reads that release to auto-update (see electron/main.cjs
-#     initAutoUpdate). After the tagged run, review the DRAFT release under
-#     "Releases" and click Publish — only then do installed Windows apps see it.
+#     electron-builder ALSO publishes the WINDOWS installer + `latest.yml` update
+#     manifest to a drafted GitHub Release (publish is scoped to `win` in
+#     package.json — see below). electron-updater in the packaged Windows app reads
+#     that release to auto-update (electron/main.cjs initAutoUpdate). After the
+#     tagged run, review the DRAFT release under "Releases" and click Publish —
+#     only then do installed Windows apps see it. The MAC .dmg is NOT published (it
+#     can't auto-update anyway); grab it from the run's ARTIFACTS.
 #   (electron-builder's default publish policy is onTagOrDraft, so a manual
 #    dispatch run on a branch never publishes; only a v* tag does.)
+#   NOTE: publish is win-only ON PURPOSE — the mac `afterAllArtifactBuild` rename
+#   hook (arm64→Apple-Silicon, x64→Intel) collides with electron-builder's publish
+#   (it reopens the pre-rename dmg name → ENOENT), so mac publishes nothing.
 #
 # ⚠️ Unsigned: the .dmg has no Apple Developer cert ($99/yr we don't have), so on
 # first open a Mac user must right-click → Open (Gatekeeper). Fine for internal use.
