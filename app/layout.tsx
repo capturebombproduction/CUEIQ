@@ -4,6 +4,7 @@ import "./globals.css";
 import { Toaster } from "@/components/ui/sonner";
 import { SwRegister } from "@/components/sw-register";
 import { OfflineBanner } from "@/components/offline-banner";
+import { OutboxFlusher } from "@/components/outbox-flusher";
 
 // Kanit — the brand Thai font (covers Latin too); self-hosted via next/font.
 const kanit = Kanit({
@@ -58,6 +59,7 @@ export default function RootLayout({
           }}
         />
         <OfflineBanner />
+        <OutboxFlusher />
         {children}
         <Toaster richColors position="top-center" />
         <SwRegister />
