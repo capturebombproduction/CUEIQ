@@ -3,6 +3,7 @@
 // same components so it looks identical, and wraps the routed Outlet in the same
 // ConfirmProvider the web (app)/layout provides (delete buttons call useConfirm).
 import { Link, Outlet } from "react-router-dom";
+import { Play } from "lucide-react";
 import { Brand } from "@/components/brand";
 import { Badge } from "@/components/ui/badge";
 import { MainNav } from "@/components/main-nav";
@@ -80,13 +81,13 @@ export function Shell() {
           )}
           <div className="flex items-center gap-2 overflow-x-auto">
             <MainNav perms={ws.perms} />
-            {/* MY SHOW — the local standalone runner; also reachable when logged in */}
+            {/* QUICK SHOW — the local standalone runner; also reachable when logged in */}
             <Link
               to="/my-show"
-              className="shrink-0 whitespace-nowrap rounded-md px-2 py-1 text-sm font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-              title="โหมดโชว์เดี่ยว — เปิดเพลง+จับเวลาจากไฟล์ในเครื่องนี้ (ออฟไลน์ 100%)"
+              className="flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full border border-primary/40 bg-primary/10 px-2.5 py-1 text-sm font-semibold text-primary transition-colors hover:bg-primary/20"
+              title="Quick Show — โหมดโชว์เดี่ยว เปิดเพลง+จับเวลาจากไฟล์ในเครื่องนี้ (ออฟไลน์ 100%)"
             >
-              My Show
+              <Play className="h-3.5 w-3.5" /> Quick Show
             </Link>
           </div>
         </div>

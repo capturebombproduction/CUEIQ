@@ -94,10 +94,12 @@ export function App() {
   return (
     <Routes>
       <Route path="/login" element={authed ? <Navigate to="/" replace /> : <Login />} />
-      {/* MY SHOW (โหมดโชว์เดี่ยว) — deliberately OUTSIDE the auth gate: fully local
-          standalone show runner (no login, no cloud), usable on a brand-new machine.
-          Grew out of the emergency player; /emergency stays as a redirect. */}
+      {/* QUICK SHOW (โหมดโชว์เดี่ยว, formerly "My Show") — deliberately OUTSIDE the
+          auth gate: fully local standalone show runner (no login, no cloud), usable
+          on a brand-new machine. Grew out of the emergency player; /emergency and
+          /quick-show are aliases (route stays /my-show so saved data/links hold). */}
       <Route path="/my-show" element={<MyShow />} />
+      <Route path="/quick-show" element={<Navigate to="/my-show" replace />} />
       <Route path="/emergency" element={<Navigate to="/my-show" replace />} />
 
       {/* Authenticated app — workspace loaded once, shared with the shell + pages. */}

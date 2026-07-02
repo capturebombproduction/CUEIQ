@@ -22,6 +22,9 @@ export interface SoloItem {
   durationSeconds: number;
   /** Extra time appended after the song (talk/changeover) before the slot ends. */
   bufferAfterSeconds: number;
+  /** เล่นสวน: this song pre-rolls |lead| sec BEFORE the previous slot ends (Auto),
+   *  overlapping it — the Quick Show port of Live Mode's negative buffer_before. */
+  overlapLeadSeconds: number;
   loop: boolean;
   volume: number; // 0–100 preset for this track
   sortOrder: number;
@@ -58,7 +61,12 @@ export async function listSoloItems(): Promise<SoloItem[]> {
       req.onsuccess = () => {
         db.close();
         const rows = (req.result as SoloItem[]) ?? [];
-        resolve(rows.sort((a, b) => a.sortOrder - b.sortOrder));
+        resolve(
+          rows
+            .sort((a, b) => a.sortOrder - b.sortOrder)
+            // fields added after first release default in-place (records predate them)
+            .map((r) => ({ ...r, overlapLeadSeconds: r.overlapLeadSeconds ?? 0 }))
+        );
       };
       req.onerror = () => {
         db.close();

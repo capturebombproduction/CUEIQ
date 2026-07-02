@@ -1,4 +1,5 @@
-// MY SHOW (โหมดโชว์เดี่ยว) — the fully-LOCAL standalone show runner.
+// QUICK SHOW (โหมดโชว์เดี่ยว, formerly "My Show") — the fully-LOCAL standalone
+// show runner.
 //
 // พี่'s design call (2026-07-02): a special Live Mode that needs NO login, NO
 // event, NO network — "ออฟไลน์เน้น ๆ แบบโง่ ๆ ทุกอย่างจบบนเครื่องตัวเอง". Songs,
@@ -10,12 +11,13 @@
 // same state machine (running/begun/startedAt/itemStartedAt/itemElapsedAtPause/
 // currentIndex/mode), same Manual-cue-then-commit and Auto-advance semantics,
 // same crash-restore, wake lock, per-track volume + fade buttons, opt-in
-// crossfade, and the same output-device lock (SHARED localStorage keys, so the
-// machine keeps one output/crossfade preference across both modes). Everything
-// multi-device (realtime channel, controller/viewer, authority) is gone — one
-// machine is the whole show here, which is exactly the point.
+// crossfade, the เล่นสวน overlap pre-roll (per-item lead-in on the secondary
+// element, promoted on advance), and the same output-device lock (SHARED
+// localStorage keys, so the machine keeps one output/crossfade preference across
+// both modes). Everything multi-device (realtime channel, controller/viewer,
+// authority) is gone — one machine is the whole show here, which is the point.
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Link } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 import {
   ArrowLeft,
   ChevronDown,
@@ -160,6 +162,13 @@ export function MyShow() {
   const sinkLoadedRef = useRef(false);
   const [crossfade, setCrossfade] = useState(false);
   const autoAdvanceForRef = useRef<string | null>(null);
+  // เล่นสวน (overlap): the item pre-rolling on the secondary element + its trigger key
+  const overlapNextIdRef = useRef<string | null>(null);
+  const overlapTriggeredForRef = useRef<string | null>(null);
+  // the item whose file played to its NATURAL end (slot may run longer via buffer) —
+  // suppresses the "แตะเพื่อเล่นเสียงต่อ" tap, which is only for reload/autoplay-block
+  const endedItemIdRef = useRef<string | null>(null);
+  const navigate = useNavigate();
 
   const addInputRef = useRef<HTMLInputElement>(null);
   const replaceInputRef = useRef<HTMLInputElement>(null);
@@ -218,6 +227,8 @@ export function MyShow() {
       const a = new Audio();
       a.addEventListener("ended", () => {
         if (a === audioRef.current) {
+          // remember which item finished so we don't offer a bogus "resume" tap
+          endedItemIdRef.current = playingIdRef.current;
           setPlayingId(null);
           setAudioPlaying(false);
         }
@@ -373,11 +384,24 @@ export function MyShow() {
   }, [state.running]);
 
   // ---- audio helpers (single device — the sounding track is always local) -----
+  /** Swap primary/secondary elements; the scrubber follows the new primary. */
+  function swapAudio() {
+    const tmp = audioRef.current;
+    audioRef.current = audioRef2.current;
+    audioRef2.current = tmp;
+    const p = audioRef.current;
+    if (p) {
+      setAudioCurrent(p.currentTime);
+      setAudioDuration(isFinite(p.duration) ? p.duration : 0);
+    }
+  }
+
   function playItemAudio(it: SoloItem) {
     const audio = audioRef.current;
     if (!audio) return;
     const url = urls[it.id];
     if (it.kind === "song" && url) {
+      endedItemIdRef.current = null;
       if (playingId === it.id && !audio.paused) {
         setAudioPlaying(true);
         return;
@@ -403,20 +427,14 @@ export function MyShow() {
   function crossfadeSwap(itemId: string, url: string, fromOffset = 0) {
     const incoming = audioRef2.current;
     if (!incoming || !audioRef.current) return;
+    overlapNextIdRef.current = null; // the secondary element is ours now
+    endedItemIdRef.current = null;
     incoming.pause();
     incoming.src = url;
     incoming.currentTime = Math.max(0, fromOffset);
     incoming.volume = Math.min(1, Math.max(0, (volumesRef.current[itemId] ?? 100) / 100));
     incoming.play().catch(() => {});
-    // swap: incoming → primary (scrubber follows it); outgoing → secondary
-    const tmp = audioRef.current;
-    audioRef.current = audioRef2.current;
-    audioRef2.current = tmp;
-    const p = audioRef.current;
-    if (p) {
-      setAudioCurrent(p.currentTime);
-      setAudioDuration(isFinite(p.duration) ? p.duration : 0);
-    }
+    swapAudio(); // incoming → primary (scrubber follows it); outgoing → secondary
     setPlayingId(itemId);
     setAudioPlaying(true);
     const el = audioRef2.current;
@@ -532,7 +550,9 @@ export function MyShow() {
         : (state.itemElapsedAtPause ?? 0);
       setState({ ...state, running: false, itemElapsedAtPause: frozen });
       audio?.pause();
-      audioRef2.current?.pause();
+      audioRef2.current?.pause(); // also halts any เล่นสวน pre-roll
+      overlapNextIdRef.current = null;
+      overlapTriggeredForRef.current = null; // let the pre-roll re-arm on resume
       setAudioPlaying(false);
     } else {
       const offset = state.itemElapsedAtPause ?? 0;
@@ -589,6 +609,26 @@ export function MyShow() {
       return;
     }
     if (state.mode === "auto") {
+      // เล่นสวน hand-off: the next track has been pre-rolling on the secondary
+      // element — promote it instead of restarting from 0. The outgoing track
+      // keeps sounding on the (now) secondary until its natural end.
+      if (it && overlapNextIdRef.current === it.id) {
+        const lead = Math.max(0, it.overlapLeadSeconds ?? 0);
+        swapAudio();
+        endedItemIdRef.current = null;
+        setPlayingId(it.id);
+        setAudioPlaying(true);
+        overlapNextIdRef.current = null;
+        setState({
+          ...state,
+          currentIndex: index,
+          itemStartedAt: Date.now() - lead * 1000, // audio is already |lead| sec in
+          itemElapsedAtPause: null,
+          running: true,
+          startedAt: state.startedAt ?? Date.now(),
+        });
+        return;
+      }
       setState({
         ...state,
         currentIndex: index,
@@ -653,6 +693,11 @@ export function MyShow() {
         setAudioPlaying(true);
       }
     } else {
+      if (mode === "manual" && overlapNextIdRef.current) {
+        // switching to Manual — stop any pending เล่นสวน pre-roll on the secondary
+        audioRef2.current?.pause();
+        overlapNextIdRef.current = null;
+      }
       setState({ ...state, mode });
     }
   }
@@ -668,6 +713,9 @@ export function MyShow() {
     audioRef.current?.pause();
     audioRef2.current?.pause();
     autoAdvanceForRef.current = null;
+    overlapNextIdRef.current = null;
+    overlapTriggeredForRef.current = null;
+    endedItemIdRef.current = null;
     setPlayingId(null);
     setAudioPlaying(false);
     setAudioCurrent(0);
@@ -712,7 +760,36 @@ export function MyShow() {
   }, [now, state, remaining, items]);
   useEffect(() => {
     autoAdvanceForRef.current = null;
+    endedItemIdRef.current = null;
   }, [state.currentIndex]);
+
+  // เล่นสวน (Auto): pre-roll the NEXT song on the secondary element so it comes in
+  // |lead| sec before this slot ends — the current track keeps playing to its own
+  // end. Port of live-mode's negative-buffer overlap; promoted to primary in goto().
+  useEffect(() => {
+    if (state.mode !== "auto" || !state.running || !state.itemStartedAt) return;
+    const cur = items[state.currentIndex];
+    const nxt = items[state.currentIndex + 1];
+    if (!cur || !nxt || nxt.kind !== "song") return;
+    const lead = nxt.overlapLeadSeconds ?? 0;
+    if (lead <= 0) return;
+    const rem = blockSeconds(cur) - (now - state.itemStartedAt) / 1000;
+    const triggerKey = `${cur.id}→${nxt.id}`;
+    if (overlapTriggeredForRef.current === triggerKey) return;
+    if (rem > 0 && rem <= lead) {
+      overlapTriggeredForRef.current = triggerKey;
+      const url = urls[nxt.id];
+      const sec = audioRef2.current;
+      if (url && sec) {
+        sec.pause();
+        sec.src = url;
+        sec.currentTime = 0;
+        sec.volume = Math.min(1, Math.max(0, (volumesRef.current[nxt.id] ?? 100) / 100));
+        sec.play().catch(() => {});
+        overlapNextIdRef.current = nxt.id; // promoted to primary on advance
+      }
+    }
+  }, [now, state, items, urls]);
 
   // loop items: fade out over the last 3s so they end right on time (Live Mode port)
   const loopFadeRef = useRef<{ id: string; prevVol: number } | null>(null);
@@ -758,13 +835,16 @@ export function MyShow() {
     }
   }
 
-  // resume audio after a reload/autoplay block — the tap supplies the gesture
+  // resume audio after a reload/autoplay block — the tap supplies the gesture.
+  // NOT offered when the file simply played to its natural end inside a longer
+  // slot (buffer) — there is nothing to resume then, only time left to count.
   const needsAudioResume =
     state.running &&
     !audioPlaying &&
     !!current &&
     current.kind === "song" &&
-    !!urls[current.id];
+    !!urls[current.id] &&
+    endedItemIdRef.current !== current.id;
   function resumeAudio() {
     const audio = audioRef.current;
     const cur = items[state.currentIndex];
@@ -812,6 +892,30 @@ export function MyShow() {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
+  // ---- exit guard: once the show has begun, leaving must be deliberate ----------
+  // Closing the window/app mid-show gets the native confirm; the back button asks
+  // the same question. (Crash-restore still covers a force-quit — within 6h.)
+  useEffect(() => {
+    if (!state.begun) return;
+    const h = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = "";
+    };
+    window.addEventListener("beforeunload", h);
+    return () => window.removeEventListener("beforeunload", h);
+  }, [state.begun]);
+
+  function exitToLogin() {
+    if (
+      stateRef.current.begun &&
+      !window.confirm(
+        "โชว์กำลังดำเนินอยู่ — ออกจากหน้านี้เลยไหม?\n(เวลา/ตำแหน่งถูกเก็บไว้ กลับเข้ามาต่อได้ภายใน 6 ชั่วโมง)"
+      )
+    )
+      return;
+    navigate("/login");
+  }
+
   // ---- editing (persist straight to IndexedDB) ---------------------------------
   async function addFiles(files: FileList | null) {
     if (!files || files.length === 0) return;
@@ -832,6 +936,7 @@ export function MyShow() {
           blob: f,
           durationSeconds: dur,
           bufferAfterSeconds: 0,
+          overlapLeadSeconds: 0,
           loop: false,
           volume: 100,
           sortOrder: base + i,
@@ -871,6 +976,7 @@ export function MyShow() {
       blob: null,
       durationSeconds: 300,
       bufferAfterSeconds: 0,
+      overlapLeadSeconds: 0,
       loop: false,
       volume: 100,
       sortOrder: base,
@@ -986,10 +1092,8 @@ export function MyShow() {
         />
 
         <div className="flex items-center justify-between gap-2">
-          <Button asChild variant="ghost" size="sm" className="-ml-2">
-            <Link to="/login">
-              <ArrowLeft className="h-4 w-4" /> กลับหน้าเข้าสู่ระบบ
-            </Link>
+          <Button variant="ghost" size="sm" className="-ml-2" onClick={exitToLogin}>
+            <ArrowLeft className="h-4 w-4" /> กลับหน้าเข้าสู่ระบบ
           </Button>
           <span className="text-[11px] text-muted-foreground">
             เก็บในเครื่องนี้เท่านั้น · {items.length} รายการ
@@ -1006,7 +1110,7 @@ export function MyShow() {
                 state.running ? "text-destructive" : "text-muted-foreground"
               )}
             />
-            <span className="truncate">My Show</span>
+            <span className="truncate">Quick Show</span>
             <span className="shrink-0 text-[10px] font-normal text-muted-foreground">
               โหมดโชว์เดี่ยว · ออฟไลน์ 100%
             </span>
@@ -1381,6 +1485,14 @@ export function MyShow() {
                         >
                           {it.title || "—"}
                         </span>
+                        {(it.overlapLeadSeconds ?? 0) > 0 && (
+                          <span
+                            className="shrink-0 rounded bg-primary/10 px-1 text-[10px] font-medium text-primary"
+                            title={`เพลงนี้ดังสวนขึ้นมาก่อนรายการก่อนหน้าจบ ${fmtTime(it.overlapLeadSeconds ?? 0)}`}
+                          >
+                            สวน {fmtTime(it.overlapLeadSeconds ?? 0)}
+                          </span>
+                        )}
                         <span className="shrink-0 tabular-nums text-xs text-muted-foreground">
                           {formatDuration(blockSeconds(it))}
                         </span>
@@ -1475,7 +1587,7 @@ export function MyShow() {
                             />
                           </label>
                           <label className="flex items-center gap-1 text-muted-foreground">
-                            <Timer className="h-3 w-3" /> เผื่อ
+                            <Timer className="h-3 w-3" /> บัฟเฟอร์
                             <input
                               key={`${it.id}-b${it.bufferAfterSeconds}`}
                               defaultValue={fmtTime(it.bufferAfterSeconds)}
@@ -1485,10 +1597,28 @@ export function MyShow() {
                                   updateItem(it.id, { bufferAfterSeconds: sec });
                                 else e.target.value = fmtTime(it.bufferAfterSeconds);
                               }}
-                              title="เวลาเผื่อต่อท้าย (พูด/เปลี่ยนชุด) — นาที:วินาที"
+                              title="บัฟเฟอร์ต่อท้ายรายการนี้ (พูด/เปลี่ยนชุด) — นาที:วินาที นับรวมในเวลาของช่วง"
                               className="h-7 w-16 rounded-md border bg-background px-2 text-center tabular-nums"
                             />
                           </label>
+                          {it.kind === "song" && (
+                            <label className="flex items-center gap-1 text-muted-foreground">
+                              <Volume2 className="h-3 w-3" /> สวน
+                              <input
+                                key={`${it.id}-o${it.overlapLeadSeconds ?? 0}`}
+                                defaultValue={fmtTime(it.overlapLeadSeconds ?? 0)}
+                                onBlur={(e) => {
+                                  const sec = parseMmss(e.target.value);
+                                  const cur = it.overlapLeadSeconds ?? 0;
+                                  if (sec != null && sec !== cur)
+                                    updateItem(it.id, { overlapLeadSeconds: sec });
+                                  else e.target.value = fmtTime(cur);
+                                }}
+                                title="เพลงนี้ดังสวนขึ้นมาก่อนรายการก่อนหน้าจบ (นาที:วินาที) — 0:00 = ปิด · ทำงานในโหมด Auto"
+                                className="h-7 w-16 rounded-md border bg-background px-2 text-center tabular-nums"
+                              />
+                            </label>
+                          )}
                         </div>
                       )}
                     </div>

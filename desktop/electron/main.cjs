@@ -107,6 +107,25 @@ async function createWindow() {
     return { action: "deny" };
   });
 
+  // Live Mode + Quick Show arm a `beforeunload` guard while a show is running. In a
+  // BROWSER that shows the native leave-confirm; in Electron it silently VETOES the
+  // close instead — the ❌ button looks dead mid-show. Surface the choice natively:
+  // ask, and if the user says leave, preventDefault() (which here means "ignore the
+  // beforeunload veto and let the window close/reload proceed").
+  win.webContents.on("will-prevent-unload", (event) => {
+    const choice = dialog.showMessageBoxSync(win, {
+      type: "warning",
+      buttons: ["อยู่ต่อ (โชว์รันอยู่)", "ออกเลย"],
+      defaultId: 0,
+      cancelId: 0,
+      title: "CueIQ",
+      message: "โชว์กำลังดำเนินอยู่",
+      detail:
+        "ปิดตอนนี้เสียงจะหยุดทันที — เวลา/ตำแหน่งโชว์ถูกเก็บไว้ กลับเข้ามาต่อได้ภายใน 6 ชั่วโมง",
+    });
+    if (choice === 1) event.preventDefault();
+  });
+
   if (DEV_URL) {
     await win.loadURL(DEV_URL);
   } else {
