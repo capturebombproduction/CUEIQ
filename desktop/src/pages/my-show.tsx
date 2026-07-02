@@ -97,13 +97,19 @@ function fmtTime(sec: number) {
   return `${m}:${s.toString().padStart(2, "0")}`;
 }
 
-/** "3:45" → 225; a plain number is taken as seconds. null = unparseable. */
+/** สวน is DISPLAYED negative (Live-Mode negative-buffer convention): 5 → "-0:05". */
+function fmtOverlap(lead: number) {
+  return lead > 0 ? `-${fmtTime(lead)}` : fmtTime(0);
+}
+
+/** "3:45" → 225, "-0:05" → -5; a plain number is taken as seconds. null = unparseable. */
 function parseMmss(v: string): number | null {
   const t = v.trim();
-  const m = /^(\d+):([0-5]?\d)$/.exec(t);
-  if (m) return Number(m[1]) * 60 + Number(m[2]);
-  if (/^\d+$/.test(t)) return Number(t);
-  return null;
+  const neg = t.startsWith("-");
+  const u = neg ? t.slice(1) : t;
+  const m = /^(\d+):([0-5]?\d)$/.exec(u);
+  const sec = m ? Number(m[1]) * 60 + Number(m[2]) : /^\d+$/.test(u) ? Number(u) : null;
+  return sec == null ? null : neg ? -sec : sec;
 }
 
 /** The audio length of a picked file, via a throwaway element (0 if undecodable). */
@@ -1071,7 +1077,7 @@ export function MyShow() {
   // ---- render -------------------------------------------------------------------
   return (
     <div className="min-h-screen bg-muted/30">
-      <div className="mx-auto max-w-2xl space-y-4 p-4 sm:p-6">
+      <div className="mx-auto max-w-2xl space-y-4 p-4 sm:p-6 lg:max-w-5xl">
         <input
           ref={addInputRef}
           type="file"
@@ -1143,10 +1149,13 @@ export function MyShow() {
           </button>
         ) : (
           <>
+            {/* จอใหญ่ (lg+): การ์ดหลักซ้าย · ถัดไป/สถิติ/ปุ่มคุมขวา — จอเล็กเรียงแนวตั้งเหมือนเดิม */}
+            <div className="space-y-4 lg:grid lg:grid-cols-5 lg:items-stretch lg:gap-4 lg:space-y-0">
+            <div className="lg:col-span-3">
             {/* main countdown card */}
             <div
               className={cn(
-                "rounded-2xl border p-6 text-center shadow-sm transition-colors",
+                "flex h-full flex-col justify-center rounded-2xl border p-6 text-center shadow-sm transition-colors",
                 zoneClasses
               )}
             >
@@ -1160,10 +1169,10 @@ export function MyShow() {
                   {state.currentIndex + 1} / {items.length}
                 </span>
               </div>
-              <h2 className="mb-3 break-words px-1 text-xl font-bold leading-tight sm:text-2xl">
+              <h2 className="mb-3 break-words px-1 text-xl font-bold leading-tight sm:text-2xl lg:text-3xl">
                 {current?.title || "—"}
               </h2>
-              <p className="text-5xl font-bold tabular-nums sm:text-6xl">
+              <p className="text-5xl font-bold tabular-nums sm:text-6xl lg:text-8xl">
                 {formatCountdown(Math.round(remaining))}
               </p>
               <p className="mt-2 text-sm opacity-80">
@@ -1250,6 +1259,47 @@ export function MyShow() {
                 </div>
               )}
             </div>
+            </div>
+
+            <div className="mt-4 space-y-4 lg:col-span-2 lg:mt-0">
+            {/* next item — what's coming, at a glance (mirrors Live Mode's panel) */}
+            <div className="rounded-xl border bg-card p-4">
+              <p className="mb-1.5 flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+                <SkipForward className="h-3.5 w-3.5" /> รายการถัดไป
+                {next && (
+                  <span className="tabular-nums">
+                    {state.currentIndex + 2} / {items.length}
+                  </span>
+                )}
+              </p>
+              {next ? (
+                <>
+                  <div className="flex min-w-0 items-center gap-2">
+                    <Badge variant="outline" className="shrink-0">
+                      {next.kind === "break" ? "MC" : "เพลง"}
+                    </Badge>
+                    <span className="min-w-0 truncate text-lg font-bold leading-tight lg:text-xl">
+                      {next.title}
+                    </span>
+                  </div>
+                  <p className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-muted-foreground">
+                    <span className="tabular-nums">
+                      เวลาเต็ม (รวมบัฟเฟอร์) <b className="text-foreground">{formatDuration(blockSeconds(next))}</b>
+                    </span>
+                    {(next.overlapLeadSeconds ?? 0) > 0 && (
+                      <span
+                        className="rounded bg-primary/10 px-1.5 py-0.5 text-xs font-medium text-primary"
+                        title={`เพลงนี้จะดังสวนขึ้นมาก่อนรายการปัจจุบันจบ ${fmtTime(next.overlapLeadSeconds ?? 0)}`}
+                      >
+                        สวน {fmtOverlap(next.overlapLeadSeconds ?? 0)}
+                      </span>
+                    )}
+                  </p>
+                </>
+              ) : (
+                <p className="text-lg font-bold text-muted-foreground">— จบโชว์ —</p>
+              )}
+            </div>
 
             {/* stats */}
             <div className="grid grid-cols-2 gap-3">
@@ -1258,12 +1308,8 @@ export function MyShow() {
                 <p className="text-2xl font-bold tabular-nums">{formatDuration(totalElapsed)}</p>
               </div>
               <div className="rounded-xl border bg-card p-4 text-center">
-                <p className="text-xs text-muted-foreground">รวมตามแผน · ถัดไป</p>
-                <p className="truncate text-lg font-semibold">
-                  <span className="tabular-nums">{formatDuration(plannedTotal)}</span>
-                  <span className="mx-1 text-muted-foreground">·</span>
-                  {next?.title || "— จบโชว์ —"}
-                </p>
+                <p className="text-xs text-muted-foreground">รวมตามแผน</p>
+                <p className="text-2xl font-bold tabular-nums">{formatDuration(plannedTotal)}</p>
               </div>
             </div>
 
@@ -1389,6 +1435,8 @@ export function MyShow() {
                   : "Manual: กด NEXT เพื่อข้ามรายการ · Space เริ่ม/หยุด"}
               </p>
             </div>
+            </div>
+            </div>
 
             {/* setlist — edit-in-place, everything on this one page */}
             <div className="space-y-2">
@@ -1490,7 +1538,7 @@ export function MyShow() {
                             className="shrink-0 rounded bg-primary/10 px-1 text-[10px] font-medium text-primary"
                             title={`เพลงนี้ดังสวนขึ้นมาก่อนรายการก่อนหน้าจบ ${fmtTime(it.overlapLeadSeconds ?? 0)}`}
                           >
-                            สวน {fmtTime(it.overlapLeadSeconds ?? 0)}
+                            สวน {fmtOverlap(it.overlapLeadSeconds ?? 0)}
                           </span>
                         )}
                         <span className="shrink-0 tabular-nums text-xs text-muted-foreground">
@@ -1578,7 +1626,7 @@ export function MyShow() {
                               defaultValue={fmtTime(it.durationSeconds)}
                               onBlur={(e) => {
                                 const sec = parseMmss(e.target.value);
-                                if (sec != null && sec !== it.durationSeconds)
+                                if (sec != null && sec >= 0 && sec !== it.durationSeconds)
                                   updateItem(it.id, { durationSeconds: sec });
                                 else e.target.value = fmtTime(it.durationSeconds);
                               }}
@@ -1593,7 +1641,7 @@ export function MyShow() {
                               defaultValue={fmtTime(it.bufferAfterSeconds)}
                               onBlur={(e) => {
                                 const sec = parseMmss(e.target.value);
-                                if (sec != null && sec !== it.bufferAfterSeconds)
+                                if (sec != null && sec >= 0 && sec !== it.bufferAfterSeconds)
                                   updateItem(it.id, { bufferAfterSeconds: sec });
                                 else e.target.value = fmtTime(it.bufferAfterSeconds);
                               }}
@@ -1606,15 +1654,19 @@ export function MyShow() {
                               <Volume2 className="h-3 w-3" /> สวน
                               <input
                                 key={`${it.id}-o${it.overlapLeadSeconds ?? 0}`}
-                                defaultValue={fmtTime(it.overlapLeadSeconds ?? 0)}
+                                defaultValue={fmtOverlap(it.overlapLeadSeconds ?? 0)}
                                 onBlur={(e) => {
+                                  // ค่าติดลบเหมือนบัฟเฟอร์ติดลบใน Live Mode: -0:05 =
+                                  // เพลงนี้ดังสวนตอนรายการก่อนหน้ายังไม่จบ 5 วิ (เก็บเป็น
+                                  // lead บวกภายใน; พิมพ์บวกมาก็ตีความให้เหมือนกัน)
                                   const sec = parseMmss(e.target.value);
                                   const cur = it.overlapLeadSeconds ?? 0;
-                                  if (sec != null && sec !== cur)
-                                    updateItem(it.id, { overlapLeadSeconds: sec });
-                                  else e.target.value = fmtTime(cur);
+                                  if (sec != null && Math.abs(sec) !== cur)
+                                    updateItem(it.id, { overlapLeadSeconds: Math.abs(sec) });
+                                  else e.target.value = fmtOverlap(cur);
                                 }}
-                                title="เพลงนี้ดังสวนขึ้นมาก่อนรายการก่อนหน้าจบ (นาที:วินาที) — 0:00 = ปิด · ทำงานในโหมด Auto"
+                                placeholder="-0:05"
+                                title="ใส่ค่าติดลบ เช่น -0:05 = เพลงนี้ดังสวนขึ้นมาก่อนรายการก่อนหน้าจบ 5 วิ (เหมือนบัฟเฟอร์ติดลบใน Live Mode) — 0:00 = ปิด · ทำงานในโหมด Auto"
                                 className="h-7 w-16 rounded-md border bg-background px-2 text-center tabular-nums"
                               />
                             </label>
