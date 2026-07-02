@@ -4,6 +4,8 @@ import { useRef, useState } from "react";
 import { toast } from "sonner";
 import { GripVertical, Trash2, Plus, Clock } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
+import { newLocalRowId } from "@/lib/mgmt-outbox";
+import { OFFLINE_QUEUED_MESSAGE, tryQueueChildList } from "@/lib/mgmt-write";
 import { shortClock } from "@/lib/time";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -40,11 +42,13 @@ export function ScheduleEditor({
   tenantId,
   editable,
   initialItems,
+  eventName,
 }: {
   eventId: string;
   tenantId: string;
   editable: boolean;
   initialItems: ScheduleItem[];
+  eventName?: string;
 }) {
   const supabase = createClient();
   const confirm = useConfirm();
@@ -61,6 +65,28 @@ export function ScheduleEditor({
     );
   }
 
+  // ⭐#1 step 5: a write that failed on a DEAD NETWORK queues the whole post-edit
+  // list as one offline snapshot and returns true — the caller keeps its
+  // optimistic state instead of rolling back. Web (no sink) / real rejections
+  // (RLS, 23505) return false and the original error handling runs unchanged.
+  // `items` here is this render's list = the pre-edit state (the guard's base).
+  async function queueOffline(
+    next: ScheduleItem[],
+    errorMessage: string | null | undefined
+  ): Promise<boolean> {
+    const queued = await tryQueueChildList({
+      kind: "schedule.upsert",
+      eventId,
+      tenantId,
+      eventName,
+      rows: next,
+      baseRows: items,
+      errorMessage: errorMessage ?? null,
+    });
+    if (queued) toast.success(OFFLINE_QUEUED_MESSAGE, { id: "mgmt-offline-queued" });
+    return queued;
+  }
+
   // One ถ่ายรูป (photo) item per event — enforced by mig 0036's unique index. A
   // unique-violation (23505) means a duplicate photo row; show it in plain Thai.
   const DUP_PHOTO = {
@@ -74,6 +100,8 @@ export function ScheduleEditor({
       .update(partial)
       .eq("id", id);
     if (error) {
+      const next = items.map((it) => (it.id === id ? { ...it, ...partial } : it));
+      if (await queueOffline(next, error.message)) return;
       if (error.code === "23505")
         toast.error(DUP_PHOTO.title, { description: DUP_PHOTO.description });
       else toast.error("Save failed", { description: error.message });
@@ -103,6 +131,23 @@ export function ScheduleEditor({
       .single();
     setBusy(false);
     if (error || !data) {
+      // Offline: mint the row locally (stable client uuid — no remap on sync).
+      const local: ScheduleItem = {
+        id: newLocalRowId(),
+        tenant_id: tenantId,
+        event_id: eventId,
+        kind,
+        label: null,
+        location: null,
+        start_time: null,
+        end_time: null,
+        notes: null,
+        sort_order: sort,
+      };
+      if (await queueOffline([...items, local], error?.message)) {
+        setItems((prev) => [...prev, local]);
+        return;
+      }
       if (error?.code === "23505")
         toast.error(DUP_PHOTO.title, { description: DUP_PHOTO.description });
       else toast.error("Failed to add item", { description: error?.message });
@@ -126,6 +171,7 @@ export function ScheduleEditor({
       .delete()
       .eq("id", id);
     if (error) {
+      if (await queueOffline(snapshot.filter((it) => it.id !== id), error.message)) return;
       toast.error("Delete failed", { description: error.message });
       setItems(snapshot);
     }
@@ -162,6 +208,7 @@ export function ScheduleEditor({
       )
     ).then((results) => results.find((r) => r.error) ?? { error: null });
     if (error) {
+      if (await queueOffline(renumbered, error.message)) return;
       toast.error("Reorder failed", { description: error.message });
       setItems(items);
     }

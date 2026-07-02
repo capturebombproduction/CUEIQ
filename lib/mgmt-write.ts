@@ -10,11 +10,18 @@
 // becomes a queued op + an immediate optimistic result.
 import { createClient } from "@/lib/supabase/client";
 import {
+  fingerprintChildRows,
   isQueueableWriteError,
   newEventId,
+  sanitizeChildRows,
+  type ChildListKind,
   type NewMgmtOp,
 } from "@/lib/mgmt-outbox";
 import type { EventRow } from "@/lib/types";
+
+/** Shared toast copy for any management write that got queued for later sync. */
+export const OFFLINE_QUEUED_MESSAGE =
+  "ออฟไลน์อยู่ — บันทึกไว้ในเครื่องแล้ว จะซิงค์ให้เมื่อเน็ตกลับ";
 
 type MgmtQueueSink = (op: NewMgmtOp) => Promise<void>;
 
@@ -67,6 +74,51 @@ export async function saveEventWrite(args: {
     // failure — queueable when the desktop sink exists.
     if (queueSink) return queueWrite(args);
     return { ok: false, message: e instanceof Error ? e.message : undefined };
+  }
+}
+
+/**
+ * ⭐#1 step 5 — the child-list fallback the 4 editors (setlist/schedule/mic/lineup)
+ * call AFTER their normal online write failed. When a queue sink exists (desktop)
+ * and the failure was a network failure (or we're plainly offline), the editor's
+ * whole post-edit list is queued as ONE snapshot op and `true` comes back — the
+ * caller keeps its optimistic state instead of rolling back. On the web (no sink)
+ * or for a real rejection (RLS/validation/constraint) this returns `false` and the
+ * editor's original error handling runs unchanged.
+ *
+ * `rows` = the post-edit full list; `baseRows` = the PRE-edit list (the last-known
+ * server state — the online-wins guard's reference). For lineup both are
+ * member_id arrays. When a snapshot is already queued for this (event × table),
+ * the planner keeps the original base, so passing locally-advanced baseRows on
+ * later edits is correct.
+ */
+export async function tryQueueChildList(args: {
+  kind: ChildListKind;
+  eventId: string;
+  tenantId: string;
+  /** Display only — makes the "ชนกัน" panel readable. */
+  eventName?: string | null;
+  rows: unknown[];
+  baseRows: unknown[];
+  errorMessage?: string | null;
+}): Promise<boolean> {
+  if (!queueSink) return false;
+  const onLine = typeof navigator === "undefined" || navigator.onLine !== false;
+  if (!isQueueableWriteError(args.errorMessage ?? null, onLine)) return false;
+  try {
+    await queueSink({
+      kind: args.kind,
+      id: args.eventId,
+      tenantId: args.tenantId,
+      eventName: args.eventName ?? null,
+      rows: sanitizeChildRows(args.kind, args.rows),
+      base: fingerprintChildRows(args.kind, args.baseRows),
+    });
+    return true;
+  } catch {
+    // IndexedDB unavailable/full — genuinely can't queue; let the caller surface
+    // its normal error (the write is lost either way, but never silently).
+    return false;
   }
 }
 

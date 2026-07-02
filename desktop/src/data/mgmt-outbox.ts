@@ -11,9 +11,14 @@
 // thin I/O around it.
 import { createClient } from "@/lib/supabase/client";
 import {
+  CHILD_TABLES,
+  CHILD_WRITE_COLUMNS,
+  childFlushDecision,
+  isChildListOp,
   isQueueableWriteError,
   planEnqueue,
   shouldApplyOnFlush,
+  type ChildListOp,
   type MgmtOp,
   type NewMgmtOp,
 } from "@/lib/mgmt-outbox";
@@ -189,6 +194,78 @@ async function parkConflict(rec: OpRec, reason: string): Promise<void> {
   });
 }
 
+/** Classify one failed write during a flush: still-offline throws, rejection parks. */
+function failOrThrow(message: string, onLine: boolean): { conflict: string } {
+  if (isQueueableWriteError(message, onLine)) throw new Error(message);
+  return { conflict: message };
+}
+
+/**
+ * Land one child-list snapshot (⭐#1 step 5): a guarded REPLACE-SET on the event's
+ * rows in that table. Upsert the snapshot rows FIRST, then delete the rows the
+ * snapshot no longer contains — crash-safe (no window where the data is gone) and
+ * idempotent (a re-run upserts no-ops and re-deletes nothing). `force` skips the
+ * online-wins guard (the user chose "ใช้ของฉัน" on a parked conflict).
+ */
+async function applyChildListOp(
+  op: ChildListOp,
+  onLine: boolean,
+  force: boolean
+): Promise<"applied" | { conflict: string }> {
+  const supabase = createClient();
+  const table = CHILD_TABLES[op.kind];
+  const isLineup = op.kind === "lineup.upsert";
+
+  if (!force) {
+    // Online-wins guard: no updated_at on the child tables, so compare the
+    // server's current rows (fingerprinted) against the rows this edit was based
+    // on. See childFlushDecision for the already-applied re-run shortcut.
+    const sel =
+      op.kind === "lineup.upsert" ? "member_id" : CHILD_WRITE_COLUMNS[op.kind].join(",");
+    const { data, error } = await supabase.from(table).select(sel).eq("event_id", op.id);
+    if (error) return failOrThrow(error.message, onLine);
+    const serverRows = isLineup
+      ? ((data ?? []) as unknown as { member_id: string }[]).map((r) => r.member_id)
+      : ((data ?? []) as unknown[]);
+    const decision = childFlushDecision(op, serverRows);
+    if (decision === "already-applied") return "applied";
+    if (decision === "conflict") {
+      return { conflict: "เวอร์ชันออนไลน์ถูกแก้ไขใหม่กว่าของเครื่องนี้" };
+    }
+  }
+
+  if (isLineup) {
+    const memberIds = op.rows as string[];
+    if (memberIds.length) {
+      const { error } = await supabase.from(table).upsert(
+        memberIds.map((member_id) => ({
+          tenant_id: op.tenantId,
+          event_id: op.id,
+          member_id,
+        })),
+        { onConflict: "event_id,member_id", ignoreDuplicates: true }
+      );
+      if (error) return failOrThrow(error.message, onLine);
+    }
+    let del = supabase.from(table).delete().eq("event_id", op.id);
+    if (memberIds.length) del = del.not("member_id", "in", `(${memberIds.join(",")})`);
+    const { error } = await del;
+    if (error) return failOrThrow(error.message, onLine);
+    return "applied";
+  }
+
+  const rows = op.rows as Record<string, unknown>[];
+  if (rows.length) {
+    const { error } = await supabase.from(table).upsert(rows);
+    if (error) return failOrThrow(error.message, onLine);
+  }
+  let del = supabase.from(table).delete().eq("event_id", op.id);
+  if (rows.length) del = del.not("id", "in", `(${rows.map((r) => r.id).join(",")})`);
+  const { error } = await del;
+  if (error) return failOrThrow(error.message, onLine);
+  return "applied";
+}
+
 /**
  * Apply one op online. Returns "applied", or a conflict reason to park it.
  * Throws only on a NETWORK failure (still offline) — the flush loop stops there.
@@ -196,6 +273,8 @@ async function parkConflict(rec: OpRec, reason: string): Promise<void> {
 async function applyOp(op: NewMgmtOp): Promise<"applied" | { conflict: string }> {
   const supabase = createClient();
   const onLine = typeof navigator === "undefined" || navigator.onLine !== false;
+
+  if (isChildListOp(op)) return applyChildListOp(op, onLine, false);
 
   if (op.kind === "event.create") {
     // upsert on the client-minted id → idempotent when a half-flushed queue re-runs.
@@ -291,13 +370,19 @@ export async function resolveMgmtConflict(
       try {
         const supabase = createClient();
         const op = found.rec.op;
-        const { error } =
-          op.kind === "event.create"
-            ? await supabase.from("events").upsert({ ...op.values, id: op.id })
-            : op.kind === "event.update"
-              ? await supabase.from("events").update(op.patch).eq("id", op.id)
-              : await supabase.from("events").delete().eq("id", op.id);
-        if (error) return false;
+        if (isChildListOp(op)) {
+          const onLine = typeof navigator === "undefined" || navigator.onLine !== false;
+          const res = await applyChildListOp(op, onLine, true);
+          if (res !== "applied") return false;
+        } else {
+          const { error } =
+            op.kind === "event.create"
+              ? await supabase.from("events").upsert({ ...op.values, id: op.id })
+              : op.kind === "event.update"
+                ? await supabase.from("events").update(op.patch).eq("id", op.id)
+                : await supabase.from("events").delete().eq("id", op.id);
+          if (error) return false;
+        }
       } catch {
         return false;
       }

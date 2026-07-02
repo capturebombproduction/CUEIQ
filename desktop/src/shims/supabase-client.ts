@@ -35,6 +35,13 @@ export function createClient(): SupabaseClient {
         detectSessionInUrl: false,
         storage: window.localStorage,
       },
+      global: {
+        // Resolve fetch at CALL time instead of letting supabase-js capture the
+        // function once at client creation. Identical behavior in production —
+        // but a live window.fetch override (offline simulation in browser E2E,
+        // request tracing) then actually reaches this client.
+        fetch: (...args) => window.fetch(...args),
+      },
     }
   );
   return client;

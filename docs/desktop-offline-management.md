@@ -1,22 +1,22 @@
 # Desktop Offline MANAGEMENT — write path (⭐#1 step 2)
 
-> สถานะ 2026-07-02: **BUILT for the EVENT path (สร้าง/แก้ข้อมูลงาน) — steps 1–4 ของ
-> §6 เสร็จ + browser-E2E ผ่านครบทุกเส้นบน Supabase จริง** (offline create → เปิดได้
-> ทันที → offline edit coalesce → reconnect auto-flush → RLS รับ client-uuid insert →
-> concurrent-edit ถูก park เป็น conflict ไม่เขียนทับ → resolve panel ใช้ได้ 2 ทาง →
-> cleanup ศูนย์ residue). Pieces: pure core + planner ใน
-> [lib/mgmt-outbox.ts](../lib/mgmt-outbox.ts) (vitest ครอบ), write seam
-> [lib/mgmt-write.ts](../lib/mgmt-write.ts) (web ไม่ register sink → inert),
-> IndexedDB queue+flush+conflicts
+> สถานะ 2026-07-02 (เย็น): **steps 1–5 ของ §6 เสร็จหมด — ทั้ง EVENT path และ
+> CHILD-LIST path (setlist/schedule/mic/lineup) + browser-E2E ผ่านครบทุกเส้นบน
+> Supabase จริง** (offline create/edit ทั้ง 4 editor → เห็นทันที + chip ค้างซิงค์ →
+> ออก-เข้างานใหม่ตอนออฟไลน์ยังเห็นครบ (overlay) → reconnect auto-flush ลง DB จริง
+> ด้วย client-minted uuid → server แก้ชนกัน → park เป็น conflict + resolve ได้ทั้ง
+> ใช้ของออนไลน์/ใช้ของฉัน → cleanup ศูนย์ residue). Pieces: pure core + planner +
+> child-snapshot fingerprint guard ใน [lib/mgmt-outbox.ts](../lib/mgmt-outbox.ts)
+> (vitest ครอบ), write seam [lib/mgmt-write.ts](../lib/mgmt-write.ts)
+> (web ไม่ register sink → inert), IndexedDB queue+flush+conflicts
 > [desktop/src/data/mgmt-outbox.ts](../desktop/src/data/mgmt-outbox.ts), loader
-> overlays (events-list + event-bundle synthesis), status chips
+> overlays (events-list + event-bundle synthesis + child snapshots), status chips
 > [desktop/src/components/mgmt-sync-status.tsx](../desktop/src/components/mgmt-sync-status.tsx).
 >
-> ⛔ **ยังเหลือด่านเครื่องจริง:** พี่เทสบน `.exe` ที่ pack แล้ว — รอบเดียวเก็บทั้ง
-> read-cache (เปิดออนไลน์ครั้งหนึ่ง → airplane → เปิดใหม่ → dashboard+งาน cache โชว์)
-> และ write path (สร้างงานตอน airplane → เห็นทันที → ต่อเน็ต → ขึ้นเว็บ) —
-> step 5 (setlist/schedule/mic/lineup ops, ~30 จุดเขียนใน component ที่เว็บใช้รันโชว์)
-> **รอผลเทสนี้ก่อนค่อยต่อ** ตามกติกา incremental เดิม
+> ⛔ **ยังเหลือด่านเครื่องจริง (release gate):** พี่เทสบน `.exe` ที่ pack แล้ว —
+> รอบเดียวเก็บทั้ง read-cache (เปิดออนไลน์ครั้งหนึ่ง → airplane → เปิดใหม่ →
+> dashboard+งาน cache โชว์) และ write path (สร้างงาน + แก้เซ็ตลิสต์/นัดหมาย/ไมค์/
+> รายชื่อตอน airplane → เห็นทันที + ออก-เข้าใหม่ยังอยู่ → ต่อเน็ต → ขึ้นเว็บ)
 >
 > Pairs with [docs/offline-first-plan.md](offline-first-plan.md) (the web show-run
 > outbox + conflict zones) and reuses the proven pattern in
@@ -130,8 +130,16 @@ On reconnect (the existing `OutboxFlusher` / online event already wired in the w
    ใน `desktop/src/components/mgmt-sync-status.tsx`.
    **Browser-E2E 2026-07-02 ผ่านครบ** (create/edit offline → overlay → flush →
    conflict park → resolve; DB จริง, ศูนย์ residue). **← พี่เทสบน .exe ถึงตรงนี้**
-5. Setlist/schedule/mic/lineup ops — **รอผลเทส .exe ของ step 1–4 ก่อน** (แตะ ~30
-   จุดเขียนใน 4 editor ที่เว็บใช้จริง — zero-tolerance, ห้ามรีบ).
+5. ✅ **DONE (2026-07-02 เย็น — พี่สั่ง "ลุย step 5 ไปก่อน", .exe ยังเป็น release
+   gate)** — Setlist/schedule/mic/lineup ops เป็น **whole-list SNAPSHOT ต่อ
+   (งาน × ตาราง)** แทนการ replay ทีละแถว: editor เขียนออนไลน์ตามเดิม; network
+   failure → คิว snapshot ทั้งลิสต์หลังแก้ (op ชนิด `*.upsert`, `id` = event id,
+   base = **fingerprint** ของแถวก่อนแก้ เพราะตารางลูกไม่มี updated_at) + เก็บ
+   optimistic state ไว้ (ไม่ rollback) + toast ออฟไลน์. Flush = guarded
+   replace-set (upsert snapshot ก่อน → ค่อยลบแถวที่หาย = crash-safe/idempotent;
+   server fp ตรงกับ snapshot เรา = already-applied กัน false-conflict ตอน re-run).
+   แถวใหม่ตอนออฟไลน์ mint uuid ฝั่ง client (`newLocalRowId`). Browser-E2E ผ่านครบ
+   (ทั้ง 4 editor + overlay + conflict park + resolve 2 ทาง + ศูนย์ residue).
 6. (later) offline audio-upload queue.
 
 ⚠️ After every step: `cd desktop && npx tsc --noEmit` (root build excludes desktop),

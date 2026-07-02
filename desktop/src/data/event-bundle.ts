@@ -5,7 +5,7 @@
 // synthesized bundle so it opens like any other event (empty children; members +
 // songs borrowed from a cached sibling bundle of the same band when available).
 import { createClient } from "@/lib/supabase/client";
-import { materializeEventRow } from "@/lib/mgmt-outbox";
+import { applyPendingChildren, materializeEventRow } from "@/lib/mgmt-outbox";
 import { isOffline, readCache, readCacheKeys, writeCache } from "~/data/cache";
 import { pendingMgmtOps } from "~/data/mgmt-outbox";
 import type { WorkspaceData } from "~/data/workspace";
@@ -72,7 +72,9 @@ async function withPendingOverlay(
   for (const op of ops) {
     if (op.kind === "event.update") out = { ...out, event: { ...out.event, ...op.patch } };
   }
-  return out;
+  // Child-list snapshots (⭐#1 step 5): a queued offline setlist/schedule/mic/
+  // lineup edit replaces its whole list, so reopening the event shows it.
+  return applyPendingChildren(out, ops, eventId);
 }
 
 export async function loadEventBundle(eventId: string): Promise<EventBundle | null> {

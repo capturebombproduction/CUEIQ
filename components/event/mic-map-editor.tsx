@@ -4,6 +4,8 @@ import { useMemo, useState } from "react";
 import { toast } from "sonner";
 import { Plus, Trash2, ChevronUp, ChevronDown, Mic2 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
+import { newLocalRowId } from "@/lib/mgmt-outbox";
+import { OFFLINE_QUEUED_MESSAGE, tryQueueChildList } from "@/lib/mgmt-write";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useConfirm } from "@/components/ui/confirm-dialog";
@@ -23,6 +25,7 @@ export function MicMapEditor({
   initialMics,
   members,
   setlist,
+  eventName,
 }: {
   eventId: string;
   tenantId: string;
@@ -30,6 +33,7 @@ export function MicMapEditor({
   initialMics: MicAssignment[];
   members: Member[];
   setlist: SetlistItem[];
+  eventName?: string;
 }) {
   const supabase = createClient();
   const confirm = useConfirm();
@@ -51,12 +55,50 @@ export function MicMapEditor({
       }));
   }, [mics]);
 
+  // ⭐#1 step 5: a write that failed on a DEAD NETWORK queues the whole post-edit
+  // mic map as one offline snapshot and returns true — keep the optimistic state.
+  // Web (no sink) / real rejections return false → original handling. `mics` in
+  // this render's closure is the pre-edit list = the online-wins guard's base.
+  async function queueOffline(
+    next: MicAssignment[],
+    errorMessage: string | null | undefined
+  ): Promise<boolean> {
+    const queued = await tryQueueChildList({
+      kind: "mic.upsert",
+      eventId,
+      tenantId,
+      eventName,
+      rows: next,
+      baseRows: mics,
+      errorMessage: errorMessage ?? null,
+    });
+    if (queued) toast.success(OFFLINE_QUEUED_MESSAGE, { id: "mgmt-offline-queued" });
+    return queued;
+  }
+
   async function persist(id: string, partial: Partial<MicAssignment>) {
     const { error } = await supabase
       .from("mic_assignments")
       .update(partial)
       .eq("id", id);
-    if (error) toast.error("บันทึกไม่สำเร็จ", { description: error.message });
+    if (error) {
+      const next = mics.map((m) => (m.id === id ? { ...m, ...partial } : m));
+      if (await queueOffline(next, error.message)) return;
+      toast.error("บันทึกไม่สำเร็จ", { description: error.message });
+    }
+  }
+
+  /** Offline insert fallback: mint the row locally (stable client uuid). */
+  function mintLocalMic(micNumber: number, holderName: string, orderIndex: number): MicAssignment {
+    return {
+      id: newLocalRowId(),
+      tenant_id: tenantId,
+      event_id: eventId,
+      mic_number: micNumber,
+      holder_name: holderName,
+      order_index: orderIndex,
+      created_at: new Date().toISOString(),
+    };
   }
 
   async function addMic() {
@@ -73,6 +115,11 @@ export function MicMapEditor({
       .select("*")
       .single();
     if (error || !data) {
+      const local = mintLocalMic(nextNum, "", 1);
+      if (await queueOffline([...mics, local], error?.message)) {
+        setMics((prev) => [...prev, local]);
+        return;
+      }
       toast.error("เพิ่มไมค์ไม่สำเร็จ", { description: error?.message });
       return;
     }
@@ -96,6 +143,11 @@ export function MicMapEditor({
       .select("*")
       .single();
     if (error || !data) {
+      const local = mintLocalMic(micNumber, name, order);
+      if (await queueOffline([...mics, local], error?.message)) {
+        setMics((prev) => [...prev, local]);
+        return;
+      }
       toast.error("เพิ่มคนไม่สำเร็จ", { description: error?.message });
       return;
     }
@@ -118,6 +170,7 @@ export function MicMapEditor({
       .delete()
       .eq("id", id);
     if (error) {
+      if (await queueOffline(snapshot.filter((m) => m.id !== id), error.message)) return;
       toast.error("ลบไม่สำเร็จ", { description: error.message });
       setMics(snapshot);
     }
@@ -137,6 +190,8 @@ export function MicMapEditor({
       .eq("event_id", eventId)
       .eq("mic_number", micNumber);
     if (error) {
+      if (await queueOffline(snapshot.filter((m) => m.mic_number !== micNumber), error.message))
+        return;
       toast.error("ลบไม่สำเร็จ", { description: error.message });
       setMics(snapshot);
     }
@@ -153,17 +208,20 @@ export function MicMapEditor({
       });
       return false;
     }
-    setMics((prev) =>
-      prev.map((m) => (m.mic_number === oldNum ? { ...m, mic_number: newNum } : m))
+    const next = mics.map((m) =>
+      m.mic_number === oldNum ? { ...m, mic_number: newNum } : m
     );
+    setMics(next);
     supabase
       .from("mic_assignments")
       .update({ mic_number: newNum })
       .eq("event_id", eventId)
       .eq("mic_number", oldNum)
-      .then(({ error }) => {
-        if (error)
+      .then(async ({ error }) => {
+        if (error) {
+          if (await queueOffline(next, error.message)) return;
           toast.error("เปลี่ยนเบอร์ไมค์ไม่สำเร็จ", { description: error.message });
+        }
       });
     return true;
   }
@@ -175,14 +233,13 @@ export function MicMapEditor({
     if (target < 0 || target >= group.holders.length) return;
     const a = group.holders[index];
     const b = group.holders[target];
-    setMics((prev) =>
-      prev.map((m) => {
-        if (m.id === a.id) return { ...m, order_index: b.order_index };
-        if (m.id === b.id) return { ...m, order_index: a.order_index };
-        return m;
-      })
-    );
-    await Promise.all([
+    const next = mics.map((m) => {
+      if (m.id === a.id) return { ...m, order_index: b.order_index };
+      if (m.id === b.id) return { ...m, order_index: a.order_index };
+      return m;
+    });
+    setMics(next);
+    const results = await Promise.all([
       supabase
         .from("mic_assignments")
         .update({ order_index: b.order_index })
@@ -192,6 +249,12 @@ export function MicMapEditor({
         .update({ order_index: a.order_index })
         .eq("id", b.id),
     ]);
+    const failed = results.find((r) => r.error);
+    if (failed?.error) {
+      if (await queueOffline(next, failed.error.message)) return;
+      toast.error("สลับลำดับไม่สำเร็จ", { description: failed.error.message });
+      setMics(mics);
+    }
   }
 
   const songsWithMics = setlist.filter((s) => (s.mic_slots?.length ?? 0) > 0);

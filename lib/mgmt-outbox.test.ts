@@ -1,13 +1,19 @@
 import { describe, expect, it } from "vitest";
 import {
+  type ChildListOp,
+  type EventScopedOp,
   type MgmtOp,
   type NewMgmtOp,
   applyPending,
+  applyPendingChildren,
+  childFlushDecision,
   describeOp,
+  fingerprintChildRows,
   isQueueableWriteError,
   materializeEventRow,
   newEventId,
   planEnqueue,
+  sanitizeChildRows,
   shouldApplyOnFlush,
 } from "./mgmt-outbox";
 
@@ -65,16 +71,15 @@ describe("applyPending — overlay offline writes so they're visible", () => {
 });
 
 describe("shouldApplyOnFlush — the online-wins reconciliation guard", () => {
-  const update = (base: number | null): MgmtOp => ({
+  const update = (base: number | null): EventScopedOp => ({
     kind: "event.update",
-    seq: 1,
     id: "a",
     patch: {},
     base,
   });
 
   it("always applies a create (brand-new row, no base)", () => {
-    const create: MgmtOp = { kind: "event.create", seq: 1, id: "a", values: {} };
+    const create: EventScopedOp = { kind: "event.create", id: "a", values: {} };
     expect(shouldApplyOnFlush(create, 999)).toBe(true);
   });
 
@@ -93,7 +98,7 @@ describe("shouldApplyOnFlush — the online-wins reconciliation guard", () => {
   });
 
   it("guards a delete the same way", () => {
-    const del = (base: number | null): MgmtOp => ({ kind: "event.delete", seq: 1, id: "a", base });
+    const del = (base: number | null): EventScopedOp => ({ kind: "event.delete", id: "a", base });
     expect(shouldApplyOnFlush(del(1000), 900)).toBe(true);
     expect(shouldApplyOnFlush(del(1000), 1500)).toBe(false);
   });
@@ -249,5 +254,196 @@ describe("newEventId", () => {
     const b = newEventId();
     expect(a).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
     expect(a).not.toBe(b);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Child-list snapshots (step 5)
+// ---------------------------------------------------------------------------
+
+function childOp(over: Partial<ChildListOp> = {}): ChildListOp {
+  return {
+    kind: "schedule.upsert",
+    id: "ev1",
+    tenantId: "t1",
+    rows: [],
+    base: null,
+    ...over,
+  };
+}
+
+describe("sanitizeChildRows — write-column projection + normalization", () => {
+  it("projects to the write columns and turns undefined into null", () => {
+    const rows = [
+      { id: "a", tenant_id: "t", event_id: "e", kind: "other", sort_order: 1, junk: "x" },
+    ];
+    const out = sanitizeChildRows("schedule.upsert", rows) as Record<string, unknown>[];
+    expect(out[0]).toEqual({
+      id: "a",
+      tenant_id: "t",
+      event_id: "e",
+      kind: "other",
+      label: null,
+      location: null,
+      start_time: null,
+      end_time: null,
+      notes: null,
+      sort_order: 1,
+    });
+    expect("junk" in out[0]).toBe(false);
+  });
+
+  it("normalizes editor HH:MM times to the server's HH:MM:SS", () => {
+    const rows = [{ id: "a", start_time: "14:30", end_time: "15:00:00" }];
+    const out = sanitizeChildRows("schedule.upsert", rows) as Record<string, unknown>[];
+    expect(out[0].start_time).toBe("14:30:00");
+    expect(out[0].end_time).toBe("15:00:00");
+  });
+
+  it("sorts lineup member ids (set semantics)", () => {
+    expect(sanitizeChildRows("lineup.upsert", ["b", "a"])).toEqual(["a", "b"]);
+  });
+});
+
+describe("fingerprintChildRows — canonical, order-independent", () => {
+  it("is stable across row order and object key order", () => {
+    const a = [
+      { id: "r1", tenant_id: "t", event_id: "e", mic_number: 1, holder_name: "A", order_index: 1 },
+      { id: "r2", tenant_id: "t", event_id: "e", mic_number: 2, holder_name: "B", order_index: 1 },
+    ];
+    const b = [
+      { order_index: 1, holder_name: "B", mic_number: 2, event_id: "e", tenant_id: "t", id: "r2" },
+      { order_index: 1, holder_name: "A", mic_number: 1, event_id: "e", tenant_id: "t", id: "r1" },
+    ];
+    expect(fingerprintChildRows("mic.upsert", a)).toBe(fingerprintChildRows("mic.upsert", b));
+  });
+
+  it("changes when any written field changes", () => {
+    const a = [{ id: "r1", holder_name: "A" }];
+    const b = [{ id: "r1", holder_name: "B" }];
+    expect(fingerprintChildRows("mic.upsert", a)).not.toBe(fingerprintChildRows("mic.upsert", b));
+  });
+
+  it("sorts nested jsonb keys (mic_slots survives a jsonb round-trip)", () => {
+    const a = [{ id: "r1", mic_slots: [{ mic: 1, member: "A" }] }];
+    const b = [{ id: "r1", mic_slots: [{ member: "A", mic: 1 }] }];
+    expect(fingerprintChildRows("setlist.upsert", a)).toBe(fingerprintChildRows("setlist.upsert", b));
+  });
+});
+
+describe("childFlushDecision — online-wins guard without updated_at", () => {
+  const baseRows = [{ id: "r1", holder_name: "A" }];
+  const myRows = [{ id: "r1", holder_name: "B" }];
+
+  it("applies when the server still matches the rows I edited against", () => {
+    const op = childOp({
+      kind: "mic.upsert",
+      rows: sanitizeChildRows("mic.upsert", myRows),
+      base: fingerprintChildRows("mic.upsert", baseRows),
+    });
+    expect(childFlushDecision(op, baseRows)).toBe("apply");
+  });
+
+  it("treats a server that already matches MY snapshot as already-applied (re-run safe)", () => {
+    const op = childOp({
+      kind: "mic.upsert",
+      rows: sanitizeChildRows("mic.upsert", myRows),
+      base: fingerprintChildRows("mic.upsert", baseRows),
+    });
+    expect(childFlushDecision(op, myRows)).toBe("already-applied");
+  });
+
+  it("parks a conflict when the server changed under me", () => {
+    const op = childOp({
+      kind: "mic.upsert",
+      rows: sanitizeChildRows("mic.upsert", myRows),
+      base: fingerprintChildRows("mic.upsert", baseRows),
+    });
+    expect(childFlushDecision(op, [{ id: "r1", holder_name: "C" }])).toBe("conflict");
+  });
+
+  it("applies best-effort when there is no base to compare", () => {
+    const op = childOp({ kind: "mic.upsert", rows: myRows, base: null });
+    expect(childFlushDecision(op, [{ id: "zzz", holder_name: "?" }])).toBe("apply");
+  });
+});
+
+describe("planEnqueue — child snapshots coalesce per (event x table)", () => {
+  it("replaces a queued snapshot of the same kind, keeping the ORIGINAL base", () => {
+    const first: MgmtOp = { ...childOp({ base: "fp-original" }), seq: 3 };
+    const plan = planEnqueue([first], childOp({ rows: ["newer"], base: "fp-newer" }));
+    expect(plan.replaceSeq).toBe(3);
+    expect(plan.dropSeqs).toEqual([]);
+    expect(plan.op && (plan.op as ChildListOp).base).toBe("fp-original");
+    expect(plan.op && (plan.op as ChildListOp).rows).toEqual(["newer"]);
+  });
+
+  it("keeps snapshots of DIFFERENT kinds or events separate", () => {
+    const first: MgmtOp = { ...childOp({ kind: "setlist.upsert" }), seq: 1 };
+    const other: MgmtOp = { ...childOp({ id: "ev2" }), seq: 2 };
+    const plan = planEnqueue([first, other], childOp());
+    expect(plan.replaceSeq).toBeNull();
+    expect(plan.dropSeqs).toEqual([]);
+  });
+
+  it("an event.delete drops the event's queued child snapshots too", () => {
+    const child: MgmtOp = { ...childOp(), seq: 2 };
+    const upd: MgmtOp = { kind: "event.update", seq: 1, id: "ev1", patch: {}, base: null };
+    const plan = planEnqueue([upd, child], { kind: "event.delete", id: "ev1", base: null });
+    expect(plan.dropSeqs.sort()).toEqual([1, 2]);
+    expect(plan.op?.kind).toBe("event.delete");
+  });
+
+  it("offline create + child edits + delete cancel out entirely", () => {
+    const create: MgmtOp = { kind: "event.create", seq: 1, id: "ev1", values: {} };
+    const child: MgmtOp = { ...childOp(), seq: 2 };
+    const plan = planEnqueue([create, child], { kind: "event.delete", id: "ev1", base: null });
+    expect(plan.dropSeqs.sort()).toEqual([1, 2]);
+    expect(plan.op).toBeNull();
+  });
+});
+
+describe("applyPending / applyPendingChildren — overlays", () => {
+  it("applyPending ignores child snapshots (they never touch the events list)", () => {
+    const rows = [{ id: "ev1" }];
+    expect(applyPending(rows, [{ ...childOp(), seq: 1 }])).toEqual(rows);
+  });
+
+  it("applyPendingChildren replaces the right list for the right event, in seq order", () => {
+    const bundle = {
+      setlist: [{ id: "s1" }],
+      schedule: [{ id: "c1" }],
+      micMap: [{ id: "m1" }],
+      lineup: ["mem1"],
+    };
+    const ops: MgmtOp[] = [
+      { ...childOp({ kind: "schedule.upsert", rows: [{ id: "c2" }] }), seq: 2 },
+      { ...childOp({ kind: "schedule.upsert", rows: [{ id: "c3" }] }), seq: 3 },
+      { ...childOp({ kind: "lineup.upsert", rows: ["mem2"] }), seq: 4 },
+      { ...childOp({ kind: "setlist.upsert", id: "OTHER", rows: [{ id: "sX" }] }), seq: 5 },
+    ];
+    const out = applyPendingChildren(bundle, ops, "ev1");
+    expect(out.schedule).toEqual([{ id: "c3" }]); // latest snapshot wins
+    expect(out.lineup).toEqual(["mem2"]);
+    expect(out.setlist).toEqual([{ id: "s1" }]); // other event's op ignored
+    expect(out.micMap).toEqual([{ id: "m1" }]);
+  });
+
+  it("fills a created_at fallback on overlaid mic rows (dropped from the projection)", () => {
+    const bundle = { setlist: [], schedule: [], micMap: [], lineup: [] };
+    const ops: MgmtOp[] = [{ ...childOp({ kind: "mic.upsert", rows: [{ id: "m2" }] }), seq: 1 }];
+    const out = applyPendingChildren(bundle, ops, "ev1");
+    expect((out.micMap as Record<string, unknown>[])[0].created_at).toBeTruthy();
+  });
+});
+
+describe("describeOp — child snapshot labels", () => {
+  it("uses the event name when known", () => {
+    expect(describeOp(childOp({ kind: "setlist.upsert", eventName: "WARUDO" }))).toContain(
+      "WARUDO"
+    );
+  });
+  it("falls back to the event id snippet", () => {
+    expect(describeOp(childOp({ id: "12345678-x" }))).toContain("12345678");
   });
 });

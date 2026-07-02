@@ -18,6 +18,8 @@ import {
   RotateCcw,
 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
+import { newLocalRowId } from "@/lib/mgmt-outbox";
+import { OFFLINE_QUEUED_MESSAGE, tryQueueChildList } from "@/lib/mgmt-write";
 import { deleteAudio } from "@/lib/audio-store";
 import { removeEventAudio } from "@/lib/audio-remote";
 import {
@@ -419,6 +421,7 @@ export function SetlistBuilder({
   hardOutTime,
   members,
   songs,
+  eventName,
 }: {
   eventId: string;
   tenantId: string;
@@ -428,6 +431,7 @@ export function SetlistBuilder({
   hardOutTime: string | null;
   members: Member[];
   songs: Song[];
+  eventName?: string;
 }) {
   const supabase = createClient();
   const confirm = useConfirm();
@@ -492,7 +496,17 @@ export function SetlistBuilder({
         .from("setlist_items")
         .insert(rows)
         .select("*");
-      if (error) throw error;
+      if (error) {
+        // Offline restore: mint the snapshot rows locally and queue the whole
+        // list — flush lands the restore (or parks it if online changed first).
+        const minted = snapshot.map((s) => mintLocalItem(s.sort_order, { ...s }));
+        if (await queueOffline(minted, error.message)) {
+          old.forEach((it) => deleteAudio(eventId, it.id).catch(() => {}));
+          setItems([...minted].sort((a, b) => a.sort_order - b.sort_order));
+          return;
+        }
+        throw error;
+      }
       inserted = data as SetlistItem[];
     }
     if (old.length) {
@@ -503,6 +517,14 @@ export function SetlistBuilder({
           "id",
           old.map((it) => it.id)
         );
+      if (error && inserted.length === 0) {
+        // Restoring an EMPTY snapshot offline: queue "clear the setlist".
+        if (await queueOffline([], error.message)) {
+          old.forEach((it) => deleteAudio(eventId, it.id).catch(() => {}));
+          setItems([]);
+          return;
+        }
+      }
       if (error) {
         // The snapshot rows are already in; deleting the old ones failed → roll the
         // insert back so we don't leave BOTH sets (duplicates). Original setlist intact.
@@ -540,13 +562,38 @@ export function SetlistBuilder({
     );
   }
 
+  // ⭐#1 step 5: a write that failed on a DEAD NETWORK queues the whole post-edit
+  // setlist as one offline snapshot and returns true — keep the optimistic state
+  // (no notifyLive: the realtime channel is down with the network anyway). Web
+  // (no sink) / real rejections return false → the original error handling runs.
+  // `items` in this render's closure is the pre-edit list = the guard's base.
+  async function queueOffline(
+    next: SetlistItem[],
+    errorMessage: string | null | undefined
+  ): Promise<boolean> {
+    const queued = await tryQueueChildList({
+      kind: "setlist.upsert",
+      eventId,
+      tenantId,
+      eventName,
+      rows: next,
+      baseRows: items,
+      errorMessage: errorMessage ?? null,
+    });
+    if (queued) toast.success(OFFLINE_QUEUED_MESSAGE, { id: "mgmt-offline-queued" });
+    return queued;
+  }
+
   async function persist(id: string, partial: Partial<SetlistItem>) {
     const { error } = await supabase
       .from("setlist_items")
       .update(partial)
       .eq("id", id);
-    if (error) toast.error("บันทึกไม่สำเร็จ", { description: error.message });
-    else notifyLive();
+    if (error) {
+      const next = items.map((it) => (it.id === id ? { ...it, ...partial } : it));
+      if (await queueOffline(next, error.message)) return;
+      toast.error("บันทึกไม่สำเร็จ", { description: error.message });
+    } else notifyLive();
   }
 
   function update(id: string, partial: Partial<SetlistItem>) {
@@ -588,6 +635,30 @@ export function SetlistBuilder({
     toast.success(`คืนความยาวเดิม ${formatDuration(old)}`);
   }
 
+  /** Offline insert fallback: mint the full row locally (stable client uuid). */
+  function mintLocalItem(
+    sort: number,
+    extra: Partial<SetlistItem> & { kind: SetlistKind }
+  ): SetlistItem {
+    return {
+      id: newLocalRowId(),
+      tenant_id: tenantId,
+      event_id: eventId,
+      title: "",
+      duration_seconds: 0,
+      buffer_before_seconds: 0,
+      buffer_after_seconds: 0,
+      mic_slots: [],
+      notes: null,
+      sort_order: sort,
+      song_id: null,
+      audio_path: null,
+      audio_name: null,
+      loop_audio: false,
+      ...extra,
+    };
+  }
+
   async function insertItem(extra: Partial<SetlistItem> & { kind: SetlistKind }) {
     const sort = items.length
       ? Math.max(...items.map((i) => i.sort_order)) + 1
@@ -606,6 +677,11 @@ export function SetlistBuilder({
       .select("*")
       .single();
     if (error || !data) {
+      const local = mintLocalItem(sort, extra);
+      if (await queueOffline([...items, local], error?.message)) {
+        setItems((prev) => [...prev, local]);
+        return;
+      }
       toast.error("เพิ่มไม่สำเร็จ", { description: error?.message });
       return;
     }
@@ -664,6 +740,11 @@ export function SetlistBuilder({
     setItems((prev) => prev.filter((it) => it.id !== id));
     const { error } = await supabase.from("setlist_items").delete().eq("id", id);
     if (error) {
+      if (await queueOffline(snapshot.filter((it) => it.id !== id), error.message)) {
+        deleteAudio(eventId, id).catch(() => {}); // local cache
+        // legacy per-item R2 audio can't be deleted offline; benign orphan at worst
+        return;
+      }
       toast.error("ลบไม่สำเร็จ", { description: error.message });
       setItems(snapshot);
     } else {
@@ -685,7 +766,7 @@ export function SetlistBuilder({
     next[target] = { ...a, sort_order: b.sort_order };
     next.sort((x, y) => x.sort_order - y.sort_order);
     setItems(next);
-    await Promise.all([
+    const results = await Promise.all([
       supabase
         .from("setlist_items")
         .update({ sort_order: b.sort_order })
@@ -695,6 +776,13 @@ export function SetlistBuilder({
         .update({ sort_order: a.sort_order })
         .eq("id", b.id),
     ]);
+    const failed = results.find((r) => r.error);
+    if (failed?.error) {
+      if (await queueOffline(next, failed.error.message)) return;
+      toast.error("สลับลำดับไม่สำเร็จ", { description: failed.error.message });
+      setItems(items);
+      return;
+    }
     notifyLive();
   }
 
@@ -723,6 +811,7 @@ export function SetlistBuilder({
     );
     const failed = results.find((r) => r.error);
     if (failed?.error) {
+      if (await queueOffline(renumbered, failed.error.message)) return;
       toast.error("เรียงลำดับไม่สำเร็จ", { description: failed.error.message });
       setItems(prev);
     } else {

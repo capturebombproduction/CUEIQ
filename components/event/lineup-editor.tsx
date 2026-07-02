@@ -4,6 +4,7 @@ import { useState } from "react";
 import { toast } from "sonner";
 import { Check, Users, CheckCheck, X } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
+import { OFFLINE_QUEUED_MESSAGE, tryQueueChildList } from "@/lib/mgmt-write";
 import { Button } from "@/components/ui/button";
 import { useConfirm } from "@/components/ui/confirm-dialog";
 import { cn } from "@/lib/utils";
@@ -17,16 +18,39 @@ export function LineupEditor({
   editable,
   members,
   initialLineup,
+  eventName,
 }: {
   eventId: string;
   tenantId: string;
   editable: boolean;
   members: Member[];
   initialLineup: string[];
+  eventName?: string;
 }) {
   const [lineup, setLineup] = useState<Set<string>>(new Set(initialLineup));
   const supabase = createClient();
   const confirm = useConfirm();
+
+  // ⭐#1 step 5: a write that failed on a DEAD NETWORK queues the whole post-edit
+  // member set as one offline snapshot and returns true — keep the optimistic
+  // state. Web (no sink) / real rejections return false → original handling.
+  async function queueOffline(
+    next: Set<string>,
+    base: Set<string>,
+    errorMessage: string | null | undefined
+  ): Promise<boolean> {
+    const queued = await tryQueueChildList({
+      kind: "lineup.upsert",
+      eventId,
+      tenantId,
+      eventName,
+      rows: Array.from(next),
+      baseRows: Array.from(base),
+      errorMessage: errorMessage ?? null,
+    });
+    if (queued) toast.success(OFFLINE_QUEUED_MESSAGE, { id: "mgmt-offline-queued" });
+    return queued;
+  }
 
   async function toggle(memberId: string) {
     if (!editable) return;
@@ -45,6 +69,7 @@ export function LineupEditor({
           .from("event_members")
           .insert({ tenant_id: tenantId, event_id: eventId, member_id: memberId });
     if (error) {
+      if (await queueOffline(next, lineup, error.message)) return;
       toast.error("บันทึกไม่สำเร็จ", { description: error.message });
       setLineup(new Set(lineup)); // roll back
     }
@@ -62,6 +87,7 @@ export function LineupEditor({
       .from("event_members")
       .upsert(rows, { onConflict: "event_id,member_id", ignoreDuplicates: true });
     if (error) {
+      if (await queueOffline(new Set(members.map((m) => m.id)), prev, error.message)) return;
       toast.error("เลือกทั้งหมดไม่สำเร็จ", { description: error.message });
       setLineup(prev);
     }
@@ -83,6 +109,7 @@ export function LineupEditor({
       .delete()
       .eq("event_id", eventId);
     if (error) {
+      if (await queueOffline(new Set(), prev, error.message)) return;
       toast.error("ล้างไม่สำเร็จ", { description: error.message });
       setLineup(prev);
     }

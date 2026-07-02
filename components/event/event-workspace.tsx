@@ -220,6 +220,7 @@ export function EventWorkspace({
             hardOutTime={hardOutTime}
             members={members}
             songs={songs}
+            eventName={event.name}
           />
         </TabsContent>
 
@@ -229,6 +230,7 @@ export function EventWorkspace({
             tenantId={tenantId}
             editable={editable}
             initialItems={schedule}
+            eventName={event.name}
           />
         </TabsContent>
 
@@ -239,6 +241,7 @@ export function EventWorkspace({
             editable={editable}
             members={members}
             initialLineup={lineup}
+            eventName={event.name}
           />
         </TabsContent>
 
@@ -251,6 +254,7 @@ export function EventWorkspace({
               initialMics={micMap}
               members={members}
               setlist={setlist}
+              eventName={event.name}
             />
           </TabsContent>
         )}
