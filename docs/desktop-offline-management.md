@@ -1,19 +1,22 @@
 # Desktop Offline MANAGEMENT — write path (⭐#1 step 2)
 
-> สถานะ: **DESIGN + PURE CORE built; WIRING gated.** Read-cache shipped `af36d7f`.
-> The **pure, side-effect-free core of the write path is now built + tested** in
-> [lib/mgmt-outbox.ts](../lib/mgmt-outbox.ts) (`applyPending` overlay,
-> `shouldApplyOnFlush` online-wins guard, `newEventId` client uuid) + 13 vitest
-> cases — it needs no device, so it landed ahead of the gate. **Still GATED** (below):
-> the IndexedDB queue I/O, the loader overlay, the write-path seam, and the
-> setlist/schedule/mic/lineup ops — everything that touches the live desktop write
-> path waits for พี่'s `.exe` read-cache confirmation. Step 2 = create/edit
-> management data offline and sync on reconnect.
+> สถานะ 2026-07-02: **BUILT for the EVENT path (สร้าง/แก้ข้อมูลงาน) — steps 1–4 ของ
+> §6 เสร็จ + browser-E2E ผ่านครบทุกเส้นบน Supabase จริง** (offline create → เปิดได้
+> ทันที → offline edit coalesce → reconnect auto-flush → RLS รับ client-uuid insert →
+> concurrent-edit ถูก park เป็น conflict ไม่เขียนทับ → resolve panel ใช้ได้ 2 ทาง →
+> cleanup ศูนย์ residue). Pieces: pure core + planner ใน
+> [lib/mgmt-outbox.ts](../lib/mgmt-outbox.ts) (vitest ครอบ), write seam
+> [lib/mgmt-write.ts](../lib/mgmt-write.ts) (web ไม่ register sink → inert),
+> IndexedDB queue+flush+conflicts
+> [desktop/src/data/mgmt-outbox.ts](../desktop/src/data/mgmt-outbox.ts), loader
+> overlays (events-list + event-bundle synthesis), status chips
+> [desktop/src/components/mgmt-sync-status.tsx](../desktop/src/components/mgmt-sync-status.tsx).
 >
-> ⛔ **GATE — do NOT start coding until พี่ confirms the read-cache works on the
-> real `.exe`** (open online once → airplane → reopen → dashboard + cached events +
-> amber offline banner; open a cached event → detail shows). Step 2 overlays on the
-> read-cache; if the cache foundation is shaky on the packaged app, build that first.
+> ⛔ **ยังเหลือด่านเครื่องจริง:** พี่เทสบน `.exe` ที่ pack แล้ว — รอบเดียวเก็บทั้ง
+> read-cache (เปิดออนไลน์ครั้งหนึ่ง → airplane → เปิดใหม่ → dashboard+งาน cache โชว์)
+> และ write path (สร้างงานตอน airplane → เห็นทันที → ต่อเน็ต → ขึ้นเว็บ) —
+> step 5 (setlist/schedule/mic/lineup ops, ~30 จุดเขียนใน component ที่เว็บใช้รันโชว์)
+> **รอผลเทสนี้ก่อนค่อยต่อ** ตามกติกา incremental เดิม
 >
 > Pairs with [docs/offline-first-plan.md](offline-first-plan.md) (the web show-run
 > outbox + conflict zones) and reuses the proven pattern in
@@ -108,16 +111,27 @@ On reconnect (the existing `OutboxFlusher` / online event already wired in the w
   Cleanest seam = a thin wrapper in `desktop/src/shims/` so the web stays untouched.
 
 ## 6. แผนสร้าง (incremental, each พี่-testable on the .exe)
-1. ✅ **DONE — pure helper** `lib/mgmt-outbox.ts` (`applyPending` overlay +
-   `shouldApplyOnFlush` online-wins guard + `newEventId`) **+ 13 vitest cases**
-   (`lib/mgmt-outbox.test.ts`). Zero device needed; shipped ahead of the gate.
-   *Remaining for this step: the IndexedDB queue I/O (enqueue/list/flush, mirror
-   `lib/show-run-outbox.ts`) — deferred with the wiring since it's I/O, not pure.*
-2. Loader overlay (events-list + event-bundle, using `applyPending`) → offline
-   create/edit **shows**. **← GATE STARTS HERE** (touches the packaged read path).
-3. `mgmtWrite()` seam + wire `EventForm` create/edit through it.
-4. Flush + conflict store + status chips.
-5. Setlist/schedule/mic/lineup ops.
+1. ✅ **DONE — pure core** `lib/mgmt-outbox.ts`: `applyPending` overlay +
+   `shouldApplyOnFlush` online-wins guard + `newEventId` + **`planEnqueue`
+   queue-coalescer** (สำคัญ: รวม op ต่อ event กัน false-conflict ตอน flush ต่อเนื่อง —
+   flush op แรกทำให้ server `updated_at` ขยับ ถ้ามี op ที่สองของ event เดิมจะโดน guard
+   park ทั้งที่ไม่ใช่ conflict จริง) + `materializeEventRow`/`describeOp`/
+   `isQueueableWriteError` — vitest ครอบทั้งหมดใน `lib/mgmt-outbox.test.ts`.
+2. ✅ **DONE** — IndexedDB queue (`desktop/src/data/mgmt-outbox.ts`, db
+   `cueiq-mgmt-outbox` stores `ops`+`conflicts`, autoIncrement key = seq, owner-check
+   ต่อ userId, ล้างตอน SIGNED_OUT) + loader overlay (events-list + event-bundle;
+   งานที่สร้าง offline ได้ bundle สังเคราะห์ — ยืม members/songs จาก bundle cache
+   ของวงเดียวกันถ้ามี — เปิดได้ทั้งตอน offline และตอน online ที่ยัง flush ไม่ลง).
+3. ✅ **DONE** — write seam `lib/mgmt-write.ts` (`saveEventWrite` + `registerMgmtQueueSink`
+   ที่ desktop `main.tsx` register; เว็บไม่ register → พฤติกรรมเดิมเป๊ะ); network
+   failure เท่านั้นที่เข้าคิว — RLS/validation ยัง error โชว์ตามปกติ.
+4. ✅ **DONE** — flush on boot+reconnect + conflicts store + chips "ค้างซิงค์ N"
+   (เหลือง, กด = sync เดี๋ยวนี้) / "ชนกัน N" (แดง, กด = แผง resolve ใช้ของฉัน/ของออนไลน์)
+   ใน `desktop/src/components/mgmt-sync-status.tsx`.
+   **Browser-E2E 2026-07-02 ผ่านครบ** (create/edit offline → overlay → flush →
+   conflict park → resolve; DB จริง, ศูนย์ residue). **← พี่เทสบน .exe ถึงตรงนี้**
+5. Setlist/schedule/mic/lineup ops — **รอผลเทส .exe ของ step 1–4 ก่อน** (แตะ ~30
+   จุดเขียนใน 4 editor ที่เว็บใช้จริง — zero-tolerance, ห้ามรีบ).
 6. (later) offline audio-upload queue.
 
 ⚠️ After every step: `cd desktop && npx tsc --noEmit` (root build excludes desktop),

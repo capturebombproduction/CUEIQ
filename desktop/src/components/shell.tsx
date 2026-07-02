@@ -14,6 +14,7 @@ import { OutboxFlusher } from "@/components/outbox-flusher";
 import { ConfirmProvider } from "@/components/ui/confirm-dialog";
 import { ROLE_SHORT, type Role } from "@/lib/types";
 import { isLabelWideUser, type Perms } from "@/lib/permissions";
+import { MgmtSyncStatus } from "~/components/mgmt-sync-status";
 import { useWorkspace } from "~/data/workspace-context";
 
 /** Same rule as the web header: band-scoped accounts show their REAL per-band role
@@ -60,6 +61,7 @@ export function Shell() {
                 {name}
               </span>
             )}
+            <MgmtSyncStatus />
             <AccentPicker />
             <ThemeToggle />
             <SignOutButton />

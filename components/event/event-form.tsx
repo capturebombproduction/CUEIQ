@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
-import { createClient } from "@/lib/supabase/client";
+import { saveEventWrite } from "@/lib/mgmt-write";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -89,7 +89,6 @@ export function EventForm({
       return;
     }
     setLoading(true);
-    const supabase = createClient();
     const payload = {
       tenant_id: tenantId,
       group_id: groupId,
@@ -107,31 +106,33 @@ export function EventForm({
       deadline_note: deadlineNote.trim() || null,
     };
 
+    // saveEventWrite = the online write it always was; on the desktop it can also
+    // queue the write when the network is down (web: unchanged, error surfaces).
     if (mode === "create") {
-      const { data, error } = await supabase
-        .from("events")
-        .insert({ ...payload, created_by: userId })
-        .select("id")
-        .single();
+      const res = await saveEventWrite({ mode: "create", payload, createdBy: userId });
       setLoading(false);
-      if (error || !data) {
-        toast.error("สร้างงานไม่สำเร็จ", { description: error?.message });
+      if (!res.ok) {
+        toast.error("สร้างงานไม่สำเร็จ", { description: res.message });
         return;
       }
-      toast.success("สร้างงานสำเร็จ 🎉");
-      router.push(`/events/${data.id}`);
+      if (res.queued) toast.success("ออฟไลน์อยู่ — สร้างงานไว้ในเครื่องแล้ว จะซิงค์ให้เมื่อเน็ตกลับ");
+      else toast.success("สร้างงานสำเร็จ 🎉");
+      router.push(`/events/${res.id}`);
       router.refresh();
     } else if (event) {
-      const { error } = await supabase
-        .from("events")
-        .update(payload)
-        .eq("id", event.id);
+      const res = await saveEventWrite({
+        mode: "edit",
+        payload,
+        eventId: event.id,
+        baseUpdatedAt: event.updated_at,
+      });
       setLoading(false);
-      if (error) {
-        toast.error("บันทึกไม่สำเร็จ", { description: error.message });
+      if (!res.ok) {
+        toast.error("บันทึกไม่สำเร็จ", { description: res.message });
         return;
       }
-      toast.success("บันทึกแล้ว");
+      if (res.queued) toast.success("ออฟไลน์อยู่ — บันทึกไว้ในเครื่องแล้ว จะซิงค์ให้เมื่อเน็ตกลับ");
+      else toast.success("บันทึกแล้ว");
       router.push(`/events/${event.id}`);
       router.refresh();
     }

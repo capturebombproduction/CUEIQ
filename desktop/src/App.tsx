@@ -21,6 +21,7 @@ import { MyShow } from "~/pages/my-show";
 import { Shell } from "~/components/shell";
 import { WorkspaceProvider } from "~/data/workspace-context";
 import { clearCache } from "~/data/cache";
+import { clearMgmtOutbox } from "~/data/mgmt-outbox";
 import { getStoredSessionUser } from "~/data/stored-session";
 
 type AuthState = {
@@ -59,7 +60,12 @@ function useAuth(): AuthState {
       // into the previous user's cached workspace/events (different per-band perms).
       // (A real sign-out also removes the persisted session, so the offline pass
       // closes with it — SIGNED_OUT is never emitted for mere network failures.)
-      if (event === "SIGNED_OUT") clearCache();
+      // The mgmt outbox goes too: queued writes must never flush as the next
+      // account (the "ค้างซิงค์" chip makes pending work visible before sign-out).
+      if (event === "SIGNED_OUT") {
+        clearCache();
+        clearMgmtOutbox().catch(() => {});
+      }
       next(session);
     });
     return () => sub.subscription.unsubscribe();

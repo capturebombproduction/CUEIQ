@@ -29,6 +29,20 @@ export function writeCache<T>(key: string, data: T): void {
   }
 }
 
+/** Cache keys (sans prefix) that start with `keyPrefix` — e.g. every "event:" bundle. */
+export function readCacheKeys(keyPrefix: string): string[] {
+  try {
+    const out: string[] = [];
+    for (let i = 0; i < window.localStorage.length; i++) {
+      const k = window.localStorage.key(i);
+      if (k && k.startsWith(PREFIX + keyPrefix)) out.push(k.slice(PREFIX.length));
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
 /** Wipe every cached management entry (e.g. on sign-out). */
 export function clearCache(): void {
   try {

@@ -1,8 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
   type MgmtOp,
+  type NewMgmtOp,
   applyPending,
+  describeOp,
+  isQueueableWriteError,
+  materializeEventRow,
   newEventId,
+  planEnqueue,
   shouldApplyOnFlush,
 } from "./mgmt-outbox";
 
@@ -91,6 +96,150 @@ describe("shouldApplyOnFlush — the online-wins reconciliation guard", () => {
     const del = (base: number | null): MgmtOp => ({ kind: "event.delete", seq: 1, id: "a", base });
     expect(shouldApplyOnFlush(del(1000), 900)).toBe(true);
     expect(shouldApplyOnFlush(del(1000), 1500)).toBe(false);
+  });
+});
+
+describe("planEnqueue — coalesce a new write into the queue (one op per event)", () => {
+  const qCreate = (seq: number, id = "x"): MgmtOp => ({
+    kind: "event.create",
+    seq,
+    id,
+    values: { name: "A", venue: "V1" },
+  });
+  const qUpdate = (seq: number, id = "x", base: number | null = 1000): MgmtOp => ({
+    kind: "event.update",
+    seq,
+    id,
+    patch: { name: "B" },
+    base,
+  });
+
+  it("appends when the queue holds nothing for this event", () => {
+    const incoming: NewMgmtOp = { kind: "event.update", id: "x", patch: { name: "B" }, base: 1 };
+    expect(planEnqueue([qUpdate(1, "other")], incoming)).toEqual({
+      dropSeqs: [],
+      replaceSeq: null,
+      op: incoming,
+    });
+  });
+
+  it("always appends a create (fresh uuid — can't collide)", () => {
+    const incoming: NewMgmtOp = { kind: "event.create", id: "new", values: { name: "N" } };
+    expect(planEnqueue([qCreate(1)], incoming)).toEqual({
+      dropSeqs: [],
+      replaceSeq: null,
+      op: incoming,
+    });
+  });
+
+  it("folds an update into a queued create's values", () => {
+    const plan = planEnqueue([qCreate(1)], {
+      kind: "event.update",
+      id: "x",
+      patch: { name: "B" },
+      base: null,
+    });
+    expect(plan).toEqual({
+      dropSeqs: [],
+      replaceSeq: 1,
+      op: { kind: "event.create", id: "x", values: { name: "B", venue: "V1" } },
+    });
+  });
+
+  it("merges update-onto-update, keeping the ORIGINAL base (guard reference)", () => {
+    const plan = planEnqueue([qUpdate(1, "x", 1000)], {
+      kind: "event.update",
+      id: "x",
+      patch: { venue: "V2" },
+      base: 2000, // later local timestamp must NOT displace the original base
+    });
+    expect(plan).toEqual({
+      dropSeqs: [],
+      replaceSeq: 1,
+      op: { kind: "event.update", id: "x", patch: { name: "B", venue: "V2" }, base: 1000 },
+    });
+  });
+
+  it("cancels out create→delete entirely (server never saw the row)", () => {
+    const plan = planEnqueue([qCreate(1), qUpdate(2)], {
+      kind: "event.delete",
+      id: "x",
+      base: null,
+    });
+    expect(plan).toEqual({ dropSeqs: [1, 2], replaceSeq: null, op: null });
+  });
+
+  it("lets a delete supersede a queued update", () => {
+    const incoming: NewMgmtOp = { kind: "event.delete", id: "x", base: 5 };
+    expect(planEnqueue([qUpdate(3)], incoming)).toEqual({
+      dropSeqs: [3],
+      replaceSeq: null,
+      op: incoming,
+    });
+  });
+});
+
+describe("materializeEventRow — offline create renders like a server row", () => {
+  it("fills DB defaults, keeps the queued values, stamps the client id", () => {
+    const row = materializeEventRow(
+      { id: "cid", values: { name: "งานใหม่", group_id: "g1", tenant_id: "t1" } },
+      "2026-07-02T00:00:00.000Z"
+    );
+    expect(row.id).toBe("cid");
+    expect(row.name).toBe("งานใหม่");
+    expect(row.group_id).toBe("g1");
+    expect(row.is_template).toBe(false);
+    expect(row.is_practice).toBe(false);
+    expect(row.status).toBe("draft");
+    expect(row.created_at).toBe("2026-07-02T00:00:00.000Z");
+    expect(row.last_run_seconds).toBeNull();
+  });
+
+  it("queued values win over the defaults", () => {
+    const row = materializeEventRow(
+      { id: "cid", values: { status: "confirmed" as never } },
+      "2026-07-02T00:00:00.000Z"
+    );
+    expect(row.status).toBe("confirmed");
+  });
+});
+
+describe("describeOp — Thai labels for chips/conflicts", () => {
+  it("uses the event name when present", () => {
+    expect(
+      describeOp({ kind: "event.create", id: "abcd1234-x", values: { name: "งานปีใหม่" } })
+    ).toBe("สร้าง“งานปีใหม่”");
+    expect(
+      describeOp({ kind: "event.update", id: "abcd1234-x", patch: { name: "งานปีใหม่" }, base: null })
+    ).toBe("แก้ไข“งานปีใหม่”");
+  });
+
+  it("falls back to a short id when the op has no name", () => {
+    expect(describeOp({ kind: "event.delete", id: "abcd1234-rest", base: null })).toBe(
+      "ลบงาน #abcd1234"
+    );
+  });
+});
+
+describe("isQueueableWriteError — network failures queue, real rejections surface", () => {
+  it("anything while navigator says offline is queueable", () => {
+    expect(isQueueableWriteError("row-level security", false)).toBe(true);
+    expect(isQueueableWriteError(null, false)).toBe(true);
+  });
+
+  it("fetch/network transport failures are queueable while 'online'", () => {
+    expect(isQueueableWriteError("TypeError: Failed to fetch", true)).toBe(true);
+    expect(isQueueableWriteError("fetch failed", true)).toBe(true);
+    expect(isQueueableWriteError("NetworkError when attempting to fetch resource", true)).toBe(true);
+    expect(isQueueableWriteError("net::ERR_INTERNET_DISCONNECTED", true)).toBe(true);
+  });
+
+  it("RLS / validation / constraint errors are NOT queueable", () => {
+    expect(
+      isQueueableWriteError('new row violates row-level security policy for table "events"', true)
+    ).toBe(false);
+    expect(isQueueableWriteError("duplicate key value violates unique constraint", true)).toBe(false);
+    expect(isQueueableWriteError(null, true)).toBe(false);
   });
 });
 

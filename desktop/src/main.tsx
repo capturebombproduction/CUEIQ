@@ -4,8 +4,15 @@ import { HashRouter } from "react-router-dom";
 import { Toaster } from "sonner";
 import { createClient } from "@/lib/supabase/client";
 import { configureAudioTransport } from "@/lib/audio-remote";
+import { registerMgmtQueueSink } from "@/lib/mgmt-write";
+import { enqueueMgmtOp } from "~/data/mgmt-outbox";
 import { App } from "~/App";
 import "./index.css";
+
+// Offline MANAGEMENT writes (⭐#1 step 2): point EventForm's write seam at the
+// desktop outbox, so a create/edit that fails on a dead network is queued +
+// synced on reconnect instead of lost. The web never registers a sink → inert there.
+registerMgmtQueueSink(enqueueMgmtOp);
 
 // Reused R2 audio transport (lib/audio-remote) targets a same-origin /api route on
 // the web; the desktop SPA has none, so point it at the web origin and authorize
