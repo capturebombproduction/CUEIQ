@@ -1,7 +1,8 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
+import type { RealtimeChannel } from "@supabase/supabase-js";
 import { Plus, Trash2, ArrowUp, ArrowDown, Download, ImageDown } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { Button } from "@/components/ui/button";
@@ -70,12 +71,43 @@ export function RunOrderBuilder({
   const [exportBusy, setExportBusy] = useState(false);
   const cardRef = useRef<HTMLDivElement>(null);
 
+  // Same broadcast channel the live boards (EventLiveCaller / EventRunStatusCard)
+  // listen on — every successful edit here sends "changed" so an OPEN live board
+  // refetches immediately (staff fixing the order mid-show must not go stale).
+  // The builder only sends; it never refetches itself.
+  const channelRef = useRef<RealtimeChannel | null>(null);
+  const meId = useRef(
+    typeof crypto !== "undefined" && "randomUUID" in crypto
+      ? crypto.randomUUID()
+      : String(Math.random())
+  );
+  useEffect(() => {
+    const ch = supabase.channel(
+      `runorder:${tenantId}:${eventDate ?? "x"}:${encodeURIComponent(eventName)}`,
+      { config: { broadcast: { self: false } } }
+    );
+    ch.subscribe();
+    channelRef.current = ch;
+    return () => {
+      channelRef.current = null;
+      supabase.removeChannel(ch);
+    };
+  }, [supabase, tenantId, eventName, eventDate]);
+  function bcast() {
+    channelRef.current?.send({
+      type: "broadcast",
+      event: "changed",
+      payload: { sender: meId.current },
+    });
+  }
+
   function setLocal(id: string, partial: Partial<RunSequence>) {
     setRows((prev) => prev.map((r) => (r.id === id ? { ...r, ...partial } : r)));
   }
   async function persist(id: string, partial: Partial<RunSequence>) {
     const { error } = await supabase.from("run_sequence").update(partial).eq("id", id);
     if (error) toast.error("บันทึกไม่สำเร็จ", { description: error.message });
+    else bcast();
   }
   function update(id: string, partial: Partial<RunSequence>) {
     setLocal(id, partial);
@@ -103,6 +135,7 @@ export function RunOrderBuilder({
       return;
     }
     setRows((prev) => [...prev, data as RunSequence]);
+    bcast();
   }
 
   async function removeRow(id: string) {
@@ -117,6 +150,8 @@ export function RunOrderBuilder({
     if (error) {
       toast.error("ลบไม่สำเร็จ", { description: error.message });
       setRows(snap);
+    } else {
+      bcast();
     }
   }
 
@@ -142,6 +177,7 @@ export function RunOrderBuilder({
       supabase.from("run_sequence").update({ sort_order: b.sort_order }).eq("id", a.id),
       supabase.from("run_sequence").update({ sort_order: a.sort_order }).eq("id", b.id),
     ]);
+    bcast();
   }
 
   // Seed a band line per stage slot not already on the order, in stage-time order.
@@ -178,6 +214,7 @@ export function RunOrderBuilder({
     }
     setBusy(false);
     setRows((prev) => [...prev, ...created]);
+    if (created.length > 0) bcast();
     toast.success(`เพิ่ม ${created.length} วงจากเวที`);
   }
 

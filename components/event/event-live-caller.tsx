@@ -76,10 +76,19 @@ function normMin(m: number): number {
   return n;
 }
 
+// Same ±12h fold for a clock-of-day difference in SECONDS — a pending 00:30 slot
+// viewed at 23:50 must read "in 40m", never −23h.
+function normSec(s: number): number {
+  let n = s;
+  while (n > 43200) n -= 86400;
+  while (n < -43200) n += 86400;
+  return n;
+}
+
 /** A drift (minutes, late + / early −) as a short Thai phrase. */
 function driftPhrase(min: number): string {
   if (min === 0) return "ตรงเวลา";
-  return min > 0 ? `ช้า +${min} น.` : `เร็ว ${min} น.`;
+  return min > 0 ? `ช้า +${min} น.` : `เร็ว ${-min} น.`;
 }
 
 /** A play-length delta (minutes, over + / under −) vs the planned window. */
@@ -263,13 +272,32 @@ export function EventLiveCaller({
       if (document.visibilityState === "visible") acquire();
     }
     document.addEventListener("visibilitychange", onVisible);
-    return () => document.removeEventListener("visibilitychange", onVisible);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisible);
+      // also release on unmount — under SPA navigation the document survives, so a
+      // sentinel left behind would keep the screen forced-awake all session.
+      wakeLockRef.current?.release().catch(() => {});
+      wakeLockRef.current = null;
+    };
   }, [hasLive]);
 
   // --- mutations --------------------------------------------------------------
+  // One caller write, with an optional optimistic-concurrency precondition: the
+  // update only lands while `expect`'s columns still hold these values (null →
+  // IS NULL). A precondition that no longer holds — another controller pressed the
+  // same button first, or the builder deleted the row — matches 0 rows WITHOUT an
+  // error, so apply() checks the returned rows to catch it.
+  type CallerUpdate = {
+    id: string;
+    partial: Partial<RunSeqLive>;
+    expect?: Partial<RunSeqLive>;
+  };
+
   // Optimistically apply, persist each changed row, then tell other devices.
-  async function apply(updates: { id: string; partial: Partial<RunSeqLive> }[]) {
-    if (!canControl || updates.length === 0) return;
+  // Resolves false when nothing landed cleanly (error OR a precondition lost the
+  // race) — in that case the board is refetched back to server truth.
+  async function apply(updates: CallerUpdate[]): Promise<boolean> {
+    if (!canControl || updates.length === 0) return false;
     setRows((prev) =>
       prev.map((r) => {
         const u = updates.find((x) => x.id === r.id);
@@ -278,18 +306,28 @@ export function EventLiveCaller({
     );
     setBusy(true);
     const results = await Promise.all(
-      updates.map((u) =>
-        supabase.from("run_sequence").update(u.partial).eq("id", u.id)
-      )
+      updates.map((u) => {
+        let q = supabase.from("run_sequence").update(u.partial).eq("id", u.id);
+        for (const [k, v] of Object.entries(u.expect ?? {})) {
+          q = v == null ? q.is(k, null) : q.eq(k, v);
+        }
+        // select the row back: 0 rows = deleted or precondition lost the race
+        return q.select("id");
+      })
     );
     setBusy(false);
     const err = results.find((r) => r.error)?.error;
+    const stale = results.some((r) => !r.error && (r.data?.length ?? 0) === 0);
     if (err) {
       toast.error("บันทึกไม่สำเร็จ", { description: err.message });
       // pull the board back to server truth so the optimistic rows don't linger
       refetchRef.current();
+    } else if (stale) {
+      toast.info("ลำดับถูกเปลี่ยนจากเครื่อง/หน้าอื่นก่อน — อัปเดตบอร์ดให้ตรงแล้ว");
+      refetchRef.current();
     }
     bcast();
+    return !err && !stale;
   }
 
   // Begin the show / start the first pending row (only when nothing is live).
@@ -303,15 +341,17 @@ export function EventLiveCaller({
       const t = new Date();
       const p = parseClockToSeconds(firstPending.planned_start);
       const d = p != null ? normMin(Math.round((secOfDay(t) - p) / 60)) : drift;
-      await apply([
+      const ok = await apply([
         {
           id: firstPending.id,
           partial: { status: "live", actual_start: t.toISOString(), offset_min: d },
+          // another controller (or the builder) got here first → refetch, don't start
+          expect: { status: "pending" },
         },
       ]);
       // Fire-and-forget AFTER the write lands so the route's anti-spoof (it re-checks
       // run_sequence has a live row) passes. Notifies the whole label the show is on.
-      if (firstStart) notify("run_order_live", { eventId });
+      if (ok && firstStart) notify("run_order_live", { eventId });
     } finally {
       inFlightRef.current = false;
     }
@@ -327,8 +367,15 @@ export function EventLiveCaller({
     if (inFlightRef.current) return;
     inFlightRef.current = true;
     const t = new Date();
-    const updates: { id: string; partial: Partial<RunSeqLive> }[] = [
-      { id: liveRow.id, partial: { status: "done", actual_end: t.toISOString() } },
+    // Both writes are compare-and-swaps on status: if two controllers press
+    // "จบ + ต่อไป" near-simultaneously, the loser matches 0 rows and refetches
+    // instead of double-advancing / clobbering the new row's actual_start.
+    const updates: CallerUpdate[] = [
+      {
+        id: liveRow.id,
+        partial: { status: "done", actual_end: t.toISOString() },
+        expect: { status: "live" },
+      },
     ];
     if (nextPending) {
       const p = parseClockToSeconds(nextPending.planned_start);
@@ -339,6 +386,7 @@ export function EventLiveCaller({
       updates.push({
         id: nextPending.id,
         partial: { status: "live", actual_start: t.toISOString(), offset_min: d },
+        expect: { status: "pending" },
       });
     }
     apply(updates).finally(() => {
@@ -351,10 +399,20 @@ export function EventLiveCaller({
   function adjust(deltaMin: number) {
     if (!liveRow) return;
     const cur = liveRow.offset_min ?? drift;
-    apply([{ id: liveRow.id, partial: { offset_min: normMin(cur + deltaMin) } }]);
+    apply([
+      {
+        id: liveRow.id,
+        partial: { offset_min: normMin(cur + deltaMin) },
+        // conditional on the value we read: two staff pressing ± within one
+        // round-trip can't silently collapse into a single lost update.
+        expect: { status: "live", offset_min: liveRow.offset_min },
+      },
+    ]);
   }
 
-  // Absorb being late by compressing the slack still ahead (sum of pending buffers).
+  // Absorb being late by compressing the slack still ahead (pending buffers). The
+  // absorbed slack is CONSUMED — buffer_seconds is decremented on the pending rows
+  // it came from — so pressing again later can only spend what actually remains.
   function takeBuffer() {
     if (!liveRow) return;
     const cur = liveRow.offset_min ?? 0;
@@ -362,17 +420,36 @@ export function EventLiveCaller({
       toast.info("ไม่ได้ช้า — ไม่ต้องดึง buffer");
       return;
     }
-    const bufMin = Math.round(
-      ordered
-        .filter((r) => r.status === "pending")
-        .reduce((s, r) => s + (r.buffer_seconds || 0), 0) / 60
+    const pending = ordered.filter((r) => r.status === "pending");
+    const bufMin = Math.floor(
+      pending.reduce((s, r) => s + (r.buffer_seconds || 0), 0) / 60
     );
     const absorb = Math.min(cur, bufMin);
     if (absorb <= 0) {
       toast.info("ไม่มี buffer เหลือให้ดึง");
       return;
     }
-    apply([{ id: liveRow.id, partial: { offset_min: cur - absorb } }]);
+    const updates: CallerUpdate[] = [
+      {
+        id: liveRow.id,
+        partial: { offset_min: cur - absorb },
+        expect: { status: "live", offset_min: liveRow.offset_min },
+      },
+    ];
+    // drain the absorbed minutes from the pending rows' buffers, front to back
+    let remain = absorb * 60;
+    for (const r of pending) {
+      if (remain <= 0) break;
+      const take = Math.min(r.buffer_seconds || 0, remain);
+      if (take <= 0) continue;
+      updates.push({
+        id: r.id,
+        partial: { buffer_seconds: r.buffer_seconds - take },
+        expect: { status: "pending", buffer_seconds: r.buffer_seconds },
+      });
+      remain -= take;
+    }
+    apply(updates);
     toast.success(`ดึง buffer ${absorb} นาที — ร่นคิวให้ทันขึ้น`);
   }
 
@@ -441,8 +518,10 @@ export function EventLiveCaller({
     livePlannedDur != null ? livePlannedDur - liveElapsed : null;
 
   const nextProjSec = nextPending ? projectedStartSec(nextPending) : null;
+  // Folded like the drift math — a past-midnight slot (00:30 seen at 23:50) must
+  // count down 40 min, not read "ถึงคิวแล้ว" a day early.
   const nextCountdown =
-    nextProjSec != null ? nextProjSec - secOfDay(nowDate) : null;
+    nextProjSec != null ? normSec(nextProjSec - secOfDay(nowDate)) : null;
 
   const driftTone =
     drift === 0 ? "ok" : drift > 0 ? "late" : "early";
@@ -613,7 +692,11 @@ export function EventLiveCaller({
                 <b className="text-foreground tabular-nums">
                   {nextProjSec != null ? formatClockOfDay(nextProjSec) : "—"}
                 </b>
+                {/* Clock-of-day countdown is only meaningful once the show runs —
+                    pre-show it would falsely read "ถึงคิวแล้ว" (same gate as
+                    event-run-status.tsx). */}
                 {mounted &&
+                  started &&
                   nextCountdown != null &&
                   (nextCountdown > 0 ? (
                     <> · อีก {formatCountdown(Math.round(nextCountdown))}</>

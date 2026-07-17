@@ -29,6 +29,15 @@ function normMin(m: number): number {
   return n;
 }
 
+// Same ±12h fold for a clock-of-day difference in SECONDS — a pending 00:30 slot
+// viewed at 23:50 must read "in 40m", never −23h. Mirrors event-live-caller.
+function normSec(s: number): number {
+  let n = s;
+  while (n > 43200) n -= 86400;
+  while (n < -43200) n += 86400;
+  return n;
+}
+
 /** A drift (minutes, late + / early −) as a short Thai phrase. */
 function driftPhrase(min: number): string {
   if (min === 0) return "ตรงเวลา";
@@ -184,7 +193,7 @@ export function EventRunStatusCard({
     }
     // pending — when's our turn?
     const proj = projectedStartSec(selfRow);
-    const countdown = proj != null ? proj - secOfDay(nowDate) : null;
+    const countdown = proj != null ? normSec(proj - secOfDay(nowDate)) : null;
     return (
       <div className="space-y-0.5">
         <p className="text-sm">

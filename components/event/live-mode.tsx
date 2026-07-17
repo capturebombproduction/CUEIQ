@@ -144,6 +144,13 @@ export function LiveMode({
   const [now, setNow] = useState(() => Date.now());
   const [syncReady, setSyncReady] = useState(false);
   const [syncStatus, setSyncStatus] = useState<string>("init"); // raw channel status, for diagnosing sync issues
+  // Gate START SHOW until this device has had a chance to hear about a show already
+  // running elsewhere: starting before the first sync round-trip would stamp a NEWER
+  // controllerSince that beats the real controller's older claim — hijacking/resetting
+  // a live show to item 0 and muting its speaker. Settles when: a state broadcast is
+  // heard · the sync-request reply window passes in silence · the channel fails
+  // (offline shows must still start) · a hard fallback timeout.
+  const [syncSettled, setSyncSettled] = useState(false);
   // Only ONE device drives the show. This device may control until it receives
   // state from another device (then it becomes a read-only viewer); "ขอควบคุม"
   // flips it back and demotes the others.
@@ -188,6 +195,10 @@ export function LiveMode({
   // and which items are busy uploading/downloading (for the UI spinner).
   const cachedPathRef = useRef<Record<string, string | null>>({});
   const [audioBusy, setAudioBusy] = useState<Record<string, "up" | "down">>({});
+  // which download-effect run set an item's busy flag — so a superseded run can
+  // still clear its own flag without clobbering a newer run's active download
+  const downloadRunRef = useRef(0);
+  const busyOwnerRef = useRef<Record<string, number>>({});
   const [playingId, setPlayingId] = useState<string | null>(null);
   const playingIdRef = useRef(playingId); // for the "ended" listener's stale closure
   playingIdRef.current = playingId;
@@ -519,6 +530,7 @@ export function LiveMode({
   // just leaves whatever local copy exists.
   useEffect(() => {
     let cancelled = false;
+    const runId = ++downloadRunRef.current;
     (async () => {
       for (const it of items) {
         const path = it.audio_path;
@@ -529,6 +541,7 @@ export function LiveMode({
         // already holding this exact version locally? skip.
         if (cachedPathRef.current[it.id] === path && audioUrlsRef.current[it.id]) continue;
         setAudioBusy((prev) => ({ ...prev, [it.id]: "down" }));
+        busyOwnerRef.current[it.id] = runId;
         try {
           // Source order: a per-device local override (desktop "ใช้ไฟล์ในเครื่องนี้")
           // wins; else the band-library prefetch cache; else hit the network. This
@@ -548,12 +561,18 @@ export function LiveMode({
         } catch {
           /* keep any existing local copy */
         } finally {
-          if (!cancelled)
+          // Clear even when this run was CANCELLED: the on-air item is skipped by
+          // the re-run (lock above), so its stale flag would otherwise spin forever
+          // and dead-lock the row's file button. Ownership check: never clear a
+          // flag a newer run has since re-set for its own download.
+          if (busyOwnerRef.current[it.id] === runId) {
+            delete busyOwnerRef.current[it.id];
             setAudioBusy((prev) => {
               const n = { ...prev };
               delete n[it.id];
               return n;
             });
+          }
         }
       }
     })();
@@ -723,6 +742,7 @@ export function LiveMode({
     });
     ch.on("broadcast", { event: "state" }, ({ payload }) => {
       if (!payload || payload.sender === meId.current) return;
+      setSyncSettled(true); // heard live show state — the first sync has landed
       const fromController = !!payload.fromController;
       // A viewer's sync-reply (fromController=false) is only useful to a device that
       // hasn't picked up the show yet — never let it overwrite or demote an active
@@ -764,7 +784,11 @@ export function LiveMode({
         // the new controller's audio is the single source. The taker had to turn ITS
         // own sound on to take control, so the show audio moves there cleanly — no
         // stale speaker keeps playing out of step with the new controller's clock.
-        setSoundOutput(false);
+        // ONLY when we actually held a claim (mine != null): a fresh/reloaded device
+        // yields its DEFAULT controller state (mine == null) to the incumbent on its
+        // very first sync — muting it there silenced a reloaded PA/speaker mid-show.
+        // It keeps its saved sound setting and follows the controller as the speaker.
+        if (mine != null) setSoundOutput(false);
       }
       // Correct for clock differences between devices: the sender stamps its own
       // Date.now() as sentAt; we shift its absolute timestamps into OUR clock so
@@ -837,6 +861,9 @@ export function LiveMode({
     });
     // set immediately so SDK can queue messages sent before SUBSCRIBED
     channelRef.current = ch;
+    let settleTimer: ReturnType<typeof setTimeout> | null = null;
+    // hard fallback — never leave START bricked if the channel hangs in "init"
+    const settleFallback = setTimeout(() => setSyncSettled(true), 6000);
     ch.subscribe((status, err) => {
       setSyncStatus(status);
       if (err) console.error("[realtime] channel error:", status, err);
@@ -849,6 +876,15 @@ export function LiveMode({
           event: "sync-request",
           payload: { sender: meId.current },
         });
+        // no reply within the window → no show running elsewhere → START allowed
+        if (settleTimer) clearTimeout(settleTimer);
+        settleTimer = setTimeout(() => setSyncSettled(true), 2000);
+      } else if (
+        status === "CHANNEL_ERROR" ||
+        status === "TIMED_OUT" ||
+        status === "CLOSED"
+      ) {
+        setSyncSettled(true); // can't sync (e.g. offline) — a local show must still start
       }
     });
     // REAL-TIME library audio: a group-scoped channel the library broadcasts on
@@ -863,6 +899,8 @@ export function LiveMode({
     return () => {
       channelRef.current = null;
       setSyncReady(false);
+      if (settleTimer) clearTimeout(settleTimer);
+      clearTimeout(settleFallback);
       supabase.removeChannel(ch);
       supabase.removeChannel(songCh);
     };
@@ -951,7 +989,9 @@ export function LiveMode({
   // Pull the latest setlist from the server — fired when another device edits it
   // ("setlist-changed" broadcast). Remap currentIndex by the live item's id so the
   // running show keeps its place and timers (startedAt/itemStartedAt) are untouched.
+  const refetchSeqRef = useRef(0); // monotonic token — only the latest response applies
   async function refetchItems() {
+    const seq = ++refetchSeqRef.current;
     const supabase = createClient();
     // refresh songs too, so a library file uploaded on another device resolves
     const [itemsRes, songsRes] = await Promise.all([
@@ -962,6 +1002,9 @@ export function LiveMode({
         .order("sort_order", { ascending: true }),
       supabase.from("songs").select("id, audio_path, audio_name").eq("group_id", groupId),
     ]);
+    // a newer refetch was issued while this one was in flight — drop this (older)
+    // snapshot so out-of-order responses can't revert the setlist mid-show
+    if (seq !== refetchSeqRef.current) return;
     if (!itemsRes.data) return;
     if (songsRes.data) {
       const map: SongAudioMap = {};
@@ -1370,6 +1413,7 @@ export function LiveMode({
             setAudioPlaying(true);
           }
         } else if (url) {
+          endedItemRef.current = null;
           // committing a newly-cued track that has audio — play from the offset.
           // Crossfade (opt-in): the previously-sounding track fades out under it.
           if (crossfade && !audio.paused && playingId && playingId !== cur.id) {
@@ -1421,7 +1465,13 @@ export function LiveMode({
   // e.g. after a reload (browsers block autoplay without a user gesture). Offer a tap.
   const soundingId = committedRef.current.id ?? current?.id ?? null;
   const needsAudioResume =
-    state.running && !audioPlaying && !!soundingId && !!audioUrls[soundingId];
+    state.running &&
+    !audioPlaying &&
+    !!soundingId &&
+    !!audioUrls[soundingId] &&
+    // …but NOT when the file simply played to its natural end inside a longer
+    // slot (buffer_after) — that's normal, not an autoplay block (Quick Show 637ca29)
+    endedItemRef.current !== soundingId;
 
   const elapsedItem = state.running && state.itemStartedAt
     ? (now - state.itemStartedAt) / 1000
@@ -1453,6 +1503,7 @@ export function LiveMode({
     const audio = audioRef.current;
     if (!audio) return;
     if (url) {
+      endedItemRef.current = null;
       // already playing this exact item (e.g. started early via negative buffer) — don't restart
       if (playingId === itemId && !audio.paused) {
         setAudioPlaying(true);
@@ -1482,6 +1533,7 @@ export function LiveMode({
     const incoming = audioRef2.current;
     if (!incoming || !audioRef.current) return;
     overlapNextIdRef.current = null; // the secondary element is ours now
+    endedItemRef.current = null;
     incoming.pause();
     incoming.src = url;
     incoming.currentTime = Math.max(0, fromOffset);
@@ -1530,6 +1582,10 @@ export function LiveMode({
 
   // show-level controls
   function start() {
+    // First sync still pending — we don't yet know whether a show is already
+    // running elsewhere, and starting now would hijack/reset it to item 0.
+    // (Guards the Space shortcut; the START button is also disabled until then.)
+    if (!syncSettled) return;
     const ts = Date.now();
     controllerSinceRef.current = ts; // this device began the show → it is the controller as of now
     if (state.mode === "auto") {
@@ -1651,6 +1707,7 @@ export function LiveMode({
       if (it && overlapNextIdRef.current === it.id) {
         const lead = -(it.buffer_before_seconds ?? 0);
         swapAudio();
+        endedItemRef.current = null;
         setPlayingId(it.id);
         setAudioPlaying(true);
         overlapNextIdRef.current = null;
@@ -1712,6 +1769,7 @@ export function LiveMode({
     overlapNextIdRef.current = null;
     autoTriggeredForRef.current = null;
     autoAdvanceForRef.current = null;
+    endedItemRef.current = null;
     setPlayingId(null);
     setAudioPlaying(false);
     setAudioCurrent(0);
@@ -2556,9 +2614,18 @@ export function LiveMode({
             size="xl"
             className="w-full"
             onClick={start}
-            disabled={!isController}
+            disabled={!isController || !syncSettled}
+            title={!syncSettled ? "กำลังซิงค์สถานะโชว์กับเครื่องอื่น…" : undefined}
           >
-            <Play className="h-5 w-5" /> START SHOW
+            {syncSettled ? (
+              <>
+                <Play className="h-5 w-5" /> START SHOW
+              </>
+            ) : (
+              <>
+                <Loader2 className="h-5 w-5 animate-spin" /> กำลังซิงค์สถานะโชว์…
+              </>
+            )}
           </Button>
         ) : (
           <div className="flex items-center gap-1.5">
