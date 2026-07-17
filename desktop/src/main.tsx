@@ -38,6 +38,13 @@ configureAudioTransport({
     : {}),
 });
 
+// A file dropped outside a designated target must NOT navigate the window to that
+// file (Chromium's default — it would unload the running SPA). preventDefault only,
+// no stopPropagation: in-app drag targets (row reorder in Quick Show / setlist /
+// schedule) keep their own handlers and still work.
+window.addEventListener("dragover", (e) => e.preventDefault());
+window.addEventListener("drop", (e) => e.preventDefault());
+
 // HashRouter: works under file:// (Electron) and in the browser dev server alike.
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>

@@ -147,6 +147,8 @@ export function MyShow() {
   const [adding, setAdding] = useState(false);
   const [storageBytes, setStorageBytes] = useState(0);
   const [lastRun, setLastRun] = useState<{ seconds: number; at: number } | null>(null);
+  // songs whose legacy source file is gone (see boot migration) — need a re-pick
+  const [brokenIds, setBrokenIds] = useState<Set<string>>(new Set());
 
   // audio — primary drives the scrubber; secondary carries the crossfade tail
   const audioRef = useRef<HTMLAudioElement | null>(null);
@@ -164,6 +166,9 @@ export function MyShow() {
   const volumesRef = useRef(volumes);
   volumesRef.current = volumes;
   const fadeRef = useRef<number | null>(null);
+  // loop end-fade in progress (id + the volume to restore) — its transient 0
+  // must never be persisted onto the item as the track's preset
+  const loopFadeRef = useRef<{ id: string; prevVol: number } | null>(null);
   const [sinkId, setSinkId] = useState("");
   const sinkLoadedRef = useRef(false);
   const [crossfade, setCrossfade] = useState(false);
@@ -185,12 +190,45 @@ export function MyShow() {
   useEffect(() => {
     let alive = true;
     (async () => {
+      // pin this origin's storage so the browser never evicts the show under quota pressure
+      try {
+        navigator.storage?.persist?.().catch(() => {});
+      } catch {
+        /* ignore */
+      }
       const [list, lr, bytes] = await Promise.all([
         listSoloItems(),
         getSoloLastRun(),
         soloStorageBytes(),
       ]);
+      // Legacy records stored the picked File itself — Chromium keeps that as a
+      // REFERENCE to the on-disk path, so a moved/deleted/re-saved source silently
+      // kills playback later. Copy the ones that still read into self-contained
+      // Blobs now; flag the ones whose source is already gone for a re-pick.
+      const broken = new Set<string>();
+      const migrated: SoloItem[] = [];
+      for (const it of list) {
+        if (it.blob && typeof File !== "undefined" && it.blob instanceof File) {
+          try {
+            const buf = await it.blob.arrayBuffer();
+            it.blob = new Blob([buf], { type: it.blob.type });
+            migrated.push(it);
+          } catch {
+            broken.add(it.id);
+            it.blob = null; // keep the row (title/timing) — the reference is dead
+          }
+        }
+      }
+      // opportunistic — the dead reference stays in IDB, so if the source file
+      // comes back (USB replugged) the next boot migrates it successfully
+      if (migrated.length > 0) putSoloItems(migrated).catch(() => {});
       if (!alive) return;
+      if (broken.size > 0) {
+        toast.error(`ไฟล์เพลง ${broken.size} รายการเปิดไม่ได้ (ไฟล์ต้นทางถูกย้าย/ลบ)`, {
+          description: "กด “เลือกไฟล์ใหม่” ที่รายการสีแดงในรายการโชว์",
+        });
+      }
+      setBrokenIds(broken);
       setItems(list);
       setLastRun(lr);
       setStorageBytes(bytes);
@@ -295,14 +333,16 @@ export function MyShow() {
     if (!loaded) return;
     const id = setTimeout(() => {
       const changed = itemsRef.current.filter(
-        (it) => (volumes[it.id] ?? 100) !== (it.volume ?? 100)
+        (it) =>
+          it.id !== loopFadeRef.current?.id && // mid-loop-end-fade — transient, skip
+          (volumes[it.id] ?? 100) !== (it.volume ?? 100)
       );
       if (changed.length === 0) return;
       const next = itemsRef.current.map((it) =>
         changed.some((c) => c.id === it.id) ? { ...it, volume: volumes[it.id] ?? 100 } : it
       );
       setItems(next);
-      putSoloItems(next.filter((it) => changed.some((c) => c.id === it.id))).catch(() => {});
+      putSoloItems(next.filter((it) => changed.some((c) => c.id === it.id))).catch(persistFailed);
     }, 600);
     return () => clearTimeout(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -635,6 +675,13 @@ export function MyShow() {
         });
         return;
       }
+      // a pre-roll for some OTHER item is still sounding on the secondary
+      // (next slot changed after it triggered) — kill it before starting the target
+      if (overlapNextIdRef.current) {
+        audioRef2.current?.pause();
+        overlapNextIdRef.current = null;
+        overlapTriggeredForRef.current = null;
+      }
       setState({
         ...state,
         currentIndex: index,
@@ -776,6 +823,18 @@ export function MyShow() {
     if (state.mode !== "auto" || !state.running || !state.itemStartedAt) return;
     const cur = items[state.currentIndex];
     const nxt = items[state.currentIndex + 1];
+    // cancel an armed pre-roll whose conditions changed mid-window (slot extended,
+    // next item edited/deleted/reordered) — otherwise the OLD next song keeps
+    // sounding on the secondary at full volume
+    if (overlapNextIdRef.current) {
+      const armedLead = Math.max(0, nxt?.overlapLeadSeconds ?? 0);
+      const armedRem = cur ? blockSeconds(cur) - (now - state.itemStartedAt) / 1000 : 0;
+      if (!nxt || nxt.id !== overlapNextIdRef.current || armedRem > armedLead) {
+        audioRef2.current?.pause();
+        overlapNextIdRef.current = null;
+        overlapTriggeredForRef.current = null; // re-arm if the window comes back
+      }
+    }
     if (!cur || !nxt || nxt.kind !== "song") return;
     const lead = nxt.overlapLeadSeconds ?? 0;
     if (lead <= 0) return;
@@ -798,7 +857,6 @@ export function MyShow() {
   }, [now, state, items, urls]);
 
   // loop items: fade out over the last 3s so they end right on time (Live Mode port)
-  const loopFadeRef = useRef<{ id: string; prevVol: number } | null>(null);
   useEffect(() => {
     const cur = items[state.currentIndex];
     const sounding = !!cur && cur.id === playingId;
@@ -878,8 +936,9 @@ export function MyShow() {
     const n = itemsRef.current.length;
     if (e.code === "Space") {
       e.preventDefault();
-      if (!s.begun) start();
-      else toggleShowRun();
+      if (!s.begun) {
+        if (n > 0) start(); // same guard as the START SHOW button — never begin empty
+      } else toggleShowRun();
     } else if (e.key === "ArrowRight" || e.key === "n" || e.key === "N") {
       if (s.begun && s.mode === "manual" && s.currentIndex < n - 1) {
         e.preventDefault();
@@ -923,6 +982,14 @@ export function MyShow() {
   }
 
   // ---- editing (persist straight to IndexedDB) ---------------------------------
+  // a failed IndexedDB write must be VISIBLE — the edit looks applied on screen
+  // but would silently revert on the next launch (quota/disk-full)
+  function persistFailed(err: unknown) {
+    toast.error("บันทึกลงเครื่องไม่สำเร็จ — การแก้ไขอาจหายเมื่อเปิดโปรแกรมใหม่", {
+      description: err instanceof Error ? err.message : undefined,
+    });
+  }
+
   async function addFiles(files: FileList | null) {
     if (!files || files.length === 0) return;
     setAdding(true);
@@ -933,13 +1000,17 @@ export function MyShow() {
       const added: SoloItem[] = [];
       for (let i = 0; i < files.length; i++) {
         const f = files[i];
-        const dur = await detectDuration(f);
+        // copy the bytes NOW — storing the picked File itself would keep only a
+        // reference to the on-disk path (Chromium), which dies if the source is
+        // moved/deleted/re-saved before the show
+        const blob = new Blob([await f.arrayBuffer()], { type: f.type });
+        const dur = await detectDuration(blob);
         added.push({
           id: newId(),
           kind: "song",
           title: f.name.replace(/\.[a-z0-9]+$/i, ""),
           fileName: f.name,
-          blob: f,
+          blob,
           durationSeconds: dur,
           bufferAfterSeconds: 0,
           overlapLeadSeconds: 0,
@@ -987,7 +1058,7 @@ export function MyShow() {
       volume: 100,
       sortOrder: base,
     };
-    await putSoloItem(it).catch(() => {});
+    await putSoloItem(it).catch(persistFailed);
     setItems((prev) => [...prev, it]);
     setEditing(true);
   }
@@ -997,7 +1068,7 @@ export function MyShow() {
     if (!cur) return;
     const next = { ...cur, ...partial };
     setItems((prev) => prev.map((i) => (i.id === id ? next : i)));
-    await putSoloItem(next).catch(() => {});
+    await putSoloItem(next).catch(persistFailed);
   }
 
   async function removeItem(id: string) {
@@ -1027,7 +1098,7 @@ export function MyShow() {
           newIdx >= 0 ? newIdx : Math.min(prev.currentIndex, Math.max(0, nextList.length - 1)),
       }));
     }
-    await deleteSoloItem(id).catch(() => {});
+    await deleteSoloItem(id).catch(persistFailed);
     soloStorageBytes().then(setStorageBytes).catch(() => {});
   }
 
@@ -1045,7 +1116,7 @@ export function MyShow() {
         setState((p) => ({ ...p, currentIndex: newIdx }));
       }
     }
-    await putSoloItems(renumbered).catch(() => {});
+    await putSoloItems(renumbered).catch(persistFailed);
   }
 
   function replaceFile(itemId: string) {
@@ -1057,14 +1128,30 @@ export function MyShow() {
     const id = replaceTargetRef.current;
     e.target.value = "";
     if (!f || !id) return;
-    const dur = await detectDuration(f);
+    let blob: Blob;
+    try {
+      // copy the bytes (see addFiles) — the stored show must never reference the source path
+      blob = new Blob([await f.arrayBuffer()], { type: f.type });
+    } catch (err) {
+      toast.error("อ่านไฟล์ไม่สำเร็จ", {
+        description: err instanceof Error ? err.message : undefined,
+      });
+      return;
+    }
+    const dur = await detectDuration(blob);
     const old = urls[id];
     if (old && id !== playingId) URL.revokeObjectURL(old);
-    const url = URL.createObjectURL(f);
+    const url = URL.createObjectURL(blob);
     setUrls((prev) => ({ ...prev, [id]: url }));
+    setBrokenIds((prev) => {
+      if (!prev.has(id)) return prev;
+      const n = new Set(prev);
+      n.delete(id);
+      return n;
+    });
     await updateItem(id, {
       kind: "song",
-      blob: f,
+      blob,
       fileName: f.name,
       durationSeconds: dur,
     });
@@ -1606,6 +1693,21 @@ export function MyShow() {
                           </>
                         )}
                       </div>
+
+                      {/* legacy source file gone — the row needs a re-pick to sound again */}
+                      {brokenIds.has(it.id) && (
+                        <div className="flex w-full flex-wrap items-center gap-2 pb-1 pl-8 text-xs">
+                          <span className="font-medium text-destructive">
+                            ไฟล์ต้นทางหาย ต้องเลือกไฟล์ใหม่
+                          </span>
+                          <button
+                            onClick={() => replaceFile(it.id)}
+                            className="flex h-6 shrink-0 items-center gap-1 rounded-md border border-destructive/50 px-2 font-medium text-destructive hover:bg-destructive/10"
+                          >
+                            <FolderOpen className="h-3 w-3" /> เลือกไฟล์ใหม่
+                          </button>
+                        </div>
+                      )}
 
                       {/* inline edit row: title · duration · buffer */}
                       {editing && (

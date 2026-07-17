@@ -10,13 +10,38 @@
 const { app, BrowserWindow, ipcMain, dialog, net, shell } = require("electron");
 const path = require("node:path");
 const fs = require("node:fs");
+const { pathToFileURL } = require("node:url");
+
+// Single instance ONLY: two instances would share the same userData profile, and
+// Chromium's LevelDB (localStorage session + every offline IndexedDB store — mgmt
+// outbox, song cache, Quick Show) is not safe under concurrent access. A second
+// launch (impatient double-double-click at a venue) just focuses the running window.
+if (!app.requestSingleInstanceLock()) {
+  app.quit();
+} else {
+  app.on("second-instance", () => {
+    const win = BrowserWindow.getAllWindows()[0];
+    if (win) {
+      if (win.isMinimized()) win.restore();
+      win.show();
+      win.focus();
+    }
+  });
+}
 
 const DEV_URL = process.env.CUEIQ_ELECTRON_DEV_URL || ""; // e.g. http://localhost:5273
 const SMOKE = process.env.CUEIQ_SMOKE === "1"; // headless launch self-test
 const INDEX_HTML = path.join(__dirname, "..", "dist", "index.html");
 
+/** The audio proxy exists solely to move presigned R2 (https) URLs past browser
+ * CORS — refuse anything else so it can never be steered at file:// or app IPC. */
+function assertHttpsUrl(url) {
+  if (new URL(url).protocol !== "https:") throw new Error("blocked non-https URL");
+}
+
 /** GET a presigned R2 URL's bytes in the main process (no CORS). */
 async function fetchAudioBytes(url) {
+  assertHttpsUrl(url);
   const res = await net.fetch(url);
   if (!res.ok) throw new Error(`download failed (${res.status})`);
   // An ArrayBuffer rides Electron's structured-clone IPC as a transferable (not
@@ -26,6 +51,7 @@ async function fetchAudioBytes(url) {
 
 /** PUT bytes to a presigned R2 URL in the main process (no CORS). */
 async function putAudioBytes(url, bytes, contentType) {
+  assertHttpsUrl(url);
   const res = await net.fetch(url, {
     method: "PUT",
     body: Buffer.from(bytes),
@@ -105,6 +131,15 @@ async function createWindow() {
   win.webContents.setWindowOpenHandler(({ url }) => {
     if (/^https?:\/\//.test(url)) shell.openExternal(url);
     return { action: "deny" };
+  });
+
+  // The window must NEVER navigate away from the SPA (a stray file drop or a
+  // non-_blank link would otherwise replace the app with a bare Chromium page that
+  // still carries the cueiqNative preload bridge). Allow only reloads of the app's
+  // own document; hash routing is in-page and never hits will-navigate.
+  const appUrl = DEV_URL || pathToFileURL(INDEX_HTML).href;
+  win.webContents.on("will-navigate", (event, url) => {
+    if (!url.startsWith(appUrl)) event.preventDefault();
   });
 
   // Live Mode + Quick Show arm a `beforeunload` guard while a show is running. In a
