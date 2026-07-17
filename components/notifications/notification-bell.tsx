@@ -99,6 +99,27 @@ export function NotificationBell({
     })().catch(() => setPushState("unsupported"));
   }, []);
 
+  // On sign-out (any path — the bell lives in the header, so it sees the auth
+  // event) release this device's push subscription: otherwise on a shared device
+  // the previous user's pushes keep popping up for whoever holds the tablet, and
+  // the next user's enable-push hits an RLS conflict on the stale endpoint row.
+  // The DB row can't be deleted here (the session is already gone when the event
+  // fires) — the server prunes it as "gone" on its next send. For an eager row
+  // delete, cleanupPushOnSignOut() (push-cleanup.ts) runs BEFORE auth.signOut().
+  useEffect(() => {
+    const { data } = supabase.auth.onAuthStateChange((event) => {
+      if (event !== "SIGNED_OUT") return;
+      void (async () => {
+        if (!("serviceWorker" in navigator)) return;
+        const reg = await navigator.serviceWorker.getRegistration();
+        const sub = await reg?.pushManager.getSubscription();
+        if (sub) await sub.unsubscribe();
+        setPushState("default");
+      })().catch(() => {});
+    });
+    return () => data.subscription.unsubscribe();
+  }, [supabase]);
+
   // close the panel on an outside click
   useEffect(() => {
     if (!open) return;
@@ -145,23 +166,37 @@ export function NotificationBell({
         return;
       }
       const reg = await navigator.serviceWorker.ready;
-      const sub = await reg.pushManager.subscribe({
-        userVisibleOnly: true,
-        applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC) as BufferSource,
-      });
-      const json = sub.toJSON() as { keys?: { p256dh?: string; auth?: string } };
-      const { error } = await supabase.from("push_subscriptions").upsert(
-        {
-          user_id: userId,
-          tenant_id: tenantId,
-          endpoint: sub.endpoint,
-          p256dh: json.keys?.p256dh ?? "",
-          auth: json.keys?.auth ?? "",
-          user_agent: navigator.userAgent.slice(0, 200),
-        },
-        { onConflict: "endpoint" }
-      );
-      if (error) throw error;
+      const subscribe = () =>
+        reg.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC) as BufferSource,
+        });
+      const save = (sub: PushSubscription) => {
+        const json = sub.toJSON() as { keys?: { p256dh?: string; auth?: string } };
+        return supabase.from("push_subscriptions").upsert(
+          {
+            user_id: userId,
+            tenant_id: tenantId,
+            endpoint: sub.endpoint,
+            p256dh: json.keys?.p256dh ?? "",
+            auth: json.keys?.auth ?? "",
+            user_agent: navigator.userAgent.slice(0, 200),
+          },
+          { onConflict: "endpoint" }
+        );
+      };
+      let sub = await subscribe();
+      let { error } = await save(sub);
+      if (error) {
+        // The endpoint row likely belongs to a PREVIOUS user of this shared device
+        // (RLS blocks the conflict-update). Drop the browser subscription to mint a
+        // fresh endpoint and retry; the orphaned row is pruned server-side on the
+        // next send ("gone").
+        await sub.unsubscribe().catch(() => {});
+        sub = await subscribe();
+        ({ error } = await save(sub));
+        if (error) throw error;
+      }
       setPushState("on");
       toast.success("เปิดแจ้งเตือนเด้งบนอุปกรณ์นี้แล้ว 🔔");
     } catch (e) {

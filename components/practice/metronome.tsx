@@ -135,6 +135,8 @@ export function Metronome({
   const liveNodesRef = useRef<Set<AudioScheduledSourceNode>>(new Set());
   const tapsRef = useRef<number[]>([]);
   const lastPosRef = useRef(position);
+  const songIdRef = useRef(song?.id); // for detect() to spot a song switch mid-analysis
+  songIdRef.current = song?.id;
 
   // --- beat-locked scheduling (from the audio beat tracker) -----------------
   const detectedBeatsRef = useRef<number[] | null>(null); // raw detected beat times (s)
@@ -548,9 +550,12 @@ export function Metronome({
 
   async function detect() {
     if (!onDetectBeats || detecting) return;
+    const forSongId = songIdRef.current; // the analysis belongs to THIS song
     setDetecting(true);
     try {
       const res = await onDetectBeats();
+      if (forSongId !== songIdRef.current) return; // song switched mid-analysis —
+      // these are the OLD song's beats; keep the grid the song?.id effect cleared
       if (res && res.bpm > 0 && res.beats.length > 1) {
         // beat-locked: schedule clicks on the real beat times (no drift, auto-phase)
         detectedBpmRef.current = res.bpm;

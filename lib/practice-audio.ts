@@ -75,6 +75,11 @@ export class PracticeAudioEngine {
   private _ended = false;
   private _kicked = false; // has the iOS silent-buffer unlock run?
   private switching = false; // serialises backend switches across rapid toggles
+  // Bumped by load()/destroy(). Decodes are slow and can't be cancelled, so every
+  // in-flight decode captures this before awaiting and DROPS its result if a new
+  // song took over meanwhile — otherwise a late decode of the previous song would
+  // be cached (and played) as the current one.
+  private loadGen = 0;
 
   // The player assigns these; defaults are no-ops so the engine is safe pre-wiring.
   onTime: (seconds: number) => void = () => {};
@@ -204,20 +209,27 @@ export class PracticeAudioEngine {
 
   /** Decode the current blob (once) and build the shifter armed at startSec. */
   private async prepareStretch(startSec: number): Promise<void> {
-    if (!this.blob) return;
+    const blob = this.blob;
+    if (!blob) return;
+    const gen = this.loadGen;
     const ctx = this.ensureCtx();
     await ctx.resume().catch(() => {});
+    if (gen !== this.loadGen) return; // a new song was loaded meanwhile
     if (!this.buffer) {
       this.onPreparing(true);
       try {
-        const arr = await this.blob.arrayBuffer();
-        this.buffer = await this.decode(ctx, arr);
+        const arr = await blob.arrayBuffer();
+        const decoded = await this.decode(ctx, arr);
+        if (gen !== this.loadGen) return; // stale decode — the new load owns the cache
+        this.buffer = decoded;
       } finally {
-        this.onPreparing(false);
+        // a stale run must not clear the spinner the newer load's prepare owns
+        if (gen === this.loadGen) this.onPreparing(false);
       }
     }
     this._duration = this.buffer.duration;
     await this.ensureShifterCtor();
+    if (gen !== this.loadGen) return;
     this.buildShifter(startSec);
     this.onDuration(this._duration);
     this.onTime(startSec);
@@ -282,6 +294,7 @@ export class PracticeAudioEngine {
   /** Arm a new song. Sets up native streaming immediately; decodes for stretch
    *  only if we're already in a slow tempo (carried over from the last song). */
   async load(blob: Blob): Promise<void> {
+    this.loadGen++; // invalidate any decode still in flight for the previous song
     this.teardownShifter();
     this.buffer = null; // force a fresh decode for the new song
     this.blob = blob;
@@ -313,12 +326,16 @@ export class PracticeAudioEngine {
    *  twice. Heavy for a big WAV, but it's paid only when the user asks. */
   async getBuffer(): Promise<AudioBuffer | null> {
     if (this.buffer) return this.buffer;
-    if (!this.blob) return null;
+    const blob = this.blob;
+    if (!blob) return null;
+    const gen = this.loadGen;
     const ctx = this.ensureCtx();
-    const arr = await this.blob.arrayBuffer();
-    this.buffer = await this.decode(ctx, arr);
-    this._duration = this.buffer.duration;
-    return this.buffer;
+    const arr = await blob.arrayBuffer();
+    const decoded = await this.decode(ctx, arr);
+    if (gen !== this.loadGen) return null; // song changed mid-decode — don't cache it
+    this.buffer = decoded;
+    this._duration = decoded.duration;
+    return decoded;
   }
 
   async play(): Promise<void> {
@@ -397,6 +414,7 @@ export class PracticeAudioEngine {
   }
 
   destroy() {
+    this.loadGen++; // drop any decode still in flight
     this.teardownShifter();
     this.buffer = null;
     this.blob = null;

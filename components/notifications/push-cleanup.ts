@@ -1,0 +1,26 @@
+import { createClient } from "@/lib/supabase/client";
+
+/**
+ * Release this device's Web Push subscription on sign-out. Call BEFORE
+ * auth.signOut() — deleting the push_subscriptions row needs the still-
+ * authenticated session (RLS: user_id = auth.uid()). On a shared device the
+ * endpoint would otherwise stay bound to the previous user: their pushes keep
+ * arriving on the device and the next user's enable-push hits an RLS conflict.
+ *
+ * Best-effort by design: it must never block or fail a sign-out. The bell also
+ * unsubscribes on the SIGNED_OUT auth event as a safety net (browser-side only
+ * — by then the session is gone, so the row is left for server-side pruning).
+ */
+export async function cleanupPushOnSignOut(): Promise<void> {
+  try {
+    if (!("serviceWorker" in navigator) || !("PushManager" in window)) return;
+    const reg = await navigator.serviceWorker.getRegistration();
+    const sub = await reg?.pushManager.getSubscription();
+    if (!sub) return;
+    // row first (needs auth), then the browser subscription itself
+    await createClient().from("push_subscriptions").delete().eq("endpoint", sub.endpoint);
+    await sub.unsubscribe();
+  } catch {
+    /* best-effort — sign-out proceeds regardless */
+  }
+}

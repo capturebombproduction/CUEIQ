@@ -242,6 +242,11 @@ export function PracticePlayer({
     };
   }, [playing]);
 
+  // Newest tap wins: each selectSong takes a token, and after every await a stale
+  // call bails out — a slow download tapped FIRST must never tear down / override
+  // the song the user picked LAST (nor zero its run accounting).
+  const selectTokenRef = useRef(0);
+
   async function selectSong(song: Song) {
     const engine = engineRef.current;
     if (!engine || !song.audio_path) return;
@@ -250,6 +255,7 @@ export function PracticePlayer({
       engine.toggle();
       return;
     }
+    const token = ++selectTokenRef.current;
     flushRun(); // finalize the previous song's practice time
     setLoadingId(song.id);
     try {
@@ -257,8 +263,11 @@ export function PracticePlayer({
       // wins; otherwise cache-first — a prefetched song opens instantly, else
       // download once (and the cache keeps it for next time).
       const local = await getLocalSource(song.id);
+      if (token !== selectTokenRef.current) return; // a newer tap took over
       const blob = local?.blob ?? (await getSongBlob(song.audio_path));
+      if (token !== selectTokenRef.current) return;
       await engine.load(blob); // decode happens here, inside the spinner
+      if (token !== selectTokenRef.current) return;
       setCurrentId(song.id);
       runRef.current.song = song; // start accounting for the new song
       runRef.current.accum = 0;
@@ -269,11 +278,13 @@ export function PracticePlayer({
       setEditMarkers(false);
       await engine.play(); // engine already carries the current speed (tempo)
     } catch (err) {
+      if (token !== selectTokenRef.current) return; // superseded — don't toast
       toast.error("โหลดเพลงไม่สำเร็จ", {
         description: err instanceof Error ? err.message : undefined,
       });
     } finally {
-      setLoadingId(null);
+      // a stale call must not clear the spinner of the tap that superseded it
+      if (token === selectTokenRef.current) setLoadingId(null);
     }
   }
 

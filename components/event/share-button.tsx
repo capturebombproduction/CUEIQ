@@ -31,9 +31,13 @@ export function ShareButton({
   const [busy, setBusy] = useState(false);
   const [copied, setCopied] = useState(false);
 
+  // The public /share page lives on the WEB app. The desktop build runs from
+  // file:// where location.origin is useless ("file://") — CUEIQ_WEB_ORIGIN
+  // (vite-defined in the desktop bundle, undefined in the Next build) points the
+  // link at the canonical web origin so recipients can actually open it.
   const link =
     token && typeof window !== "undefined"
-      ? `${window.location.origin}/share/${token}`
+      ? `${process.env.CUEIQ_WEB_ORIGIN ?? window.location.origin}/share/${token}`
       : "";
 
   async function setShare(enabled: boolean) {
