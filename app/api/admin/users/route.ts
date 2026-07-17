@@ -226,7 +226,13 @@ export async function POST(req: Request) {
         role: g.role,
       }))
     );
-    if (grErr) return NextResponse.json({ error: grErr.message }, { status: 400 });
+    if (grErr) {
+      // roll back the half-created account (mirrors the memErr path) so a retry
+      // is clean — otherwise re-submitting hits "user already registered"
+      await admin.from("tenant_members").delete().eq("tenant_id", tenantId).eq("user_id", newId);
+      await admin.auth.admin.deleteUser(newId).catch(() => {});
+      return NextResponse.json({ error: grErr.message }, { status: 400 });
+    }
   }
 
   return NextResponse.json({
@@ -369,10 +375,15 @@ export async function DELETE(req: Request) {
     );
   }
 
-  await admin.from("group_roles").delete().eq("tenant_id", tenantId).eq("user_id", userId);
-  await admin.from("tenant_members").delete().eq("tenant_id", tenantId).eq("user_id", userId);
+  // Delete the auth account FIRST — if it fails, the membership rows are still
+  // intact so the user stays listed and the delete can simply be retried. (The old
+  // order stripped memberships first; a failed deleteUser then left a live account
+  // that the isTenantMember gate above turned into a permanent 404.)
   const { error } = await admin.auth.admin.deleteUser(userId);
   if (error) return NextResponse.json({ error: error.message }, { status: 400 });
+
+  await admin.from("group_roles").delete().eq("tenant_id", tenantId).eq("user_id", userId);
+  await admin.from("tenant_members").delete().eq("tenant_id", tenantId).eq("user_id", userId);
 
   return NextResponse.json({ ok: true });
 }

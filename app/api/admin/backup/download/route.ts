@@ -1,19 +1,22 @@
 import { NextResponse } from "next/server";
 import { getWorkspace } from "@/lib/queries";
 import { isAdmin } from "@/lib/permissions";
+import { isMasterAdminEmail } from "@/lib/master-admin";
 import { listBackups, presignBackupGet, r2Configured } from "@/lib/r2";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-// Admin-only download of a DB snapshot from R2. The file is the whole label's data,
-// so this gates on the tenant admin role (middleware skips /api, so we re-check
-// here) and signs a SHORT-LIVED GET restricted to the backups/ prefix — it can
-// never sign the audio masters or another object. Defaults to the newest snapshot;
-// an explicit ?key must still be a real backups/ object.
+// Master-Admin-only download of a DB snapshot from R2. The snapshot is the WHOLE
+// database (every tenant's rows, incl. profiles + push-subscription secrets), so a
+// tenant admin role is not enough — only the code-protected Master Admin account
+// may fetch it (middleware skips /api, so we re-check here). Signs a SHORT-LIVED
+// GET restricted to the backups/ prefix — it can never sign the audio masters or
+// another object. Defaults to the newest snapshot; an explicit ?key must still be
+// a real backups/ object.
 export async function GET(req: Request) {
   const ws = await getWorkspace();
-  if (!ws.user || !isAdmin(ws.perms)) {
+  if (!ws.user || !isAdmin(ws.perms) || !isMasterAdminEmail(ws.user.email)) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
   }
   if (!r2Configured()) {

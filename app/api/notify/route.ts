@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
-import { createClient } from "@/lib/supabase/server";
+import { createClient as createServerClient } from "@/lib/supabase/server";
+import { createClient as createTokenClient } from "@supabase/supabase-js";
 import { createAdminClient, hasServiceRole } from "@/lib/supabase/admin";
 import { vapidConfigured, sendPush } from "@/lib/push";
 
@@ -22,19 +23,61 @@ const EVENT_KINDS = new Set<Kind>(["event_submitted", "event_approved", "event_r
 const SONG_KINDS = new Set<Kind>(["song_pending", "song_rejected", "song_cleared"]);
 const RUN_ORDER_KINDS = new Set<Kind>(["run_order_live"]);
 
-const NO_OP = NextResponse.json({ ok: true, sent: 0 });
+// CORS — the WEB app calls this same-origin (these headers are inert there). The
+// DESKTOP app calls it cross-origin with a Bearer token (no cookies), and the
+// Authorization header forces a preflight — mirror /api/audio/presign. Auth is
+// still the real gate (a valid session/token + tenant-membership check below).
+function corsHeaders(req: Request): Record<string, string> {
+  const origin = req.headers.get("origin");
+  return {
+    "Access-Control-Allow-Origin": origin ?? "*",
+    "Access-Control-Allow-Methods": "POST, OPTIONS",
+    "Access-Control-Allow-Headers": "authorization, content-type",
+    "Access-Control-Max-Age": "86400",
+    Vary: "Origin",
+  };
+}
+
+function json(req: Request, body: unknown, status = 200) {
+  return NextResponse.json(body, { status, headers: corsHeaders(req) });
+}
+
+const noOp = (req: Request) => json(req, { ok: true, sent: 0 });
+
+export async function OPTIONS(req: Request) {
+  return new NextResponse(null, { status: 204, headers: corsHeaders(req) });
+}
+
+/** Resolve the caller's Supabase client: a Bearer token (desktop, cross-origin)
+ *  takes precedence; otherwise the cookie session (web, same-origin) — the same
+ *  scheme as /api/audio/presign. */
+async function callerClient(req: Request) {
+  const auth = req.headers.get("authorization") ?? "";
+  const token = auth.toLowerCase().startsWith("bearer ") ? auth.slice(7).trim() : "";
+  if (token) {
+    return createTokenClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!.trim(),
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!.trim(),
+      {
+        global: { headers: { Authorization: `Bearer ${token}` } },
+        auth: { persistSession: false, autoRefreshToken: false },
+      }
+    );
+  }
+  return createServerClient();
+}
 
 export async function POST(req: Request) {
-  // 1) The caller must be a logged-in user (their session, via RLS-bound client).
-  const supabase = await createClient();
+  // 1) The caller must be a logged-in user (cookie session or Bearer token).
+  const supabase = await callerClient(req);
   const {
     data: { user },
   } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  if (!user) return json(req, { error: "unauthorized" }, 401);
 
   // Notifications need the service role to write rows for OTHER users + read their
   // push subscriptions. Absent → silently no-op (the app still works).
-  if (!hasServiceRole()) return NO_OP;
+  if (!hasServiceRole()) return noOp(req);
 
   const body = await req.json().catch(() => null);
   const kind = body?.kind as Kind;
@@ -44,7 +87,7 @@ export async function POST(req: Request) {
     !kind ||
     (!EVENT_KINDS.has(kind) && !SONG_KINDS.has(kind) && !RUN_ORDER_KINDS.has(kind))
   ) {
-    return NextResponse.json({ error: "bad kind" }, { status: 400 });
+    return json(req, { error: "bad kind" }, 400);
   }
 
   const admin = createAdminClient();
@@ -60,17 +103,17 @@ export async function POST(req: Request) {
   const meta: Record<string, unknown> = {};
 
   if (EVENT_KINDS.has(kind)) {
-    if (!eventId) return NextResponse.json({ error: "no eventId" }, { status: 400 });
+    if (!eventId) return json(req, { error: "no eventId" }, 400);
     const { data: ev } = await admin
       .from("events")
       .select("id, name, group_id, tenant_id, status, groups(name)")
       .eq("id", eventId)
       .maybeSingle();
-    if (!ev) return NO_OP;
+    if (!ev) return noOp(req);
     // anti-spoof: the real status must match the claimed kind
     const want =
       kind === "event_submitted" ? "pending_review" : kind === "event_approved" ? "approved" : "rejected";
-    if (ev.status !== want) return NO_OP;
+    if (ev.status !== want) return noOp(req);
     tenantId = ev.tenant_id as string;
     groupId = ev.group_id as string;
     bandName = (ev.groups as { name?: string } | null)?.name ?? "";
@@ -92,16 +135,16 @@ export async function POST(req: Request) {
     }
     messageBody = bandName ? `${name} · ${bandName}` : name;
   } else if (SONG_KINDS.has(kind)) {
-    if (!songId) return NextResponse.json({ error: "no songId" }, { status: 400 });
+    if (!songId) return json(req, { error: "no songId" }, 400);
     const { data: sg } = await admin
       .from("songs")
       .select("id, title, group_id, tenant_id, copyright_status, groups(name)")
       .eq("id", songId)
       .maybeSingle();
-    if (!sg) return NO_OP;
+    if (!sg) return noOp(req);
     const want =
       kind === "song_pending" ? "pending" : kind === "song_rejected" ? "rejected" : "cleared";
-    if (sg.copyright_status !== want) return NO_OP;
+    if (sg.copyright_status !== want) return noOp(req);
     tenantId = sg.tenant_id as string;
     groupId = sg.group_id as string;
     bandName = (sg.groups as { name?: string } | null)?.name ?? "";
@@ -125,13 +168,13 @@ export async function POST(req: Request) {
     // label watches the show, so notify the whole tenant. Anti-spoof: the festival
     // (tenant + name + date, resolved from the event the board was opened for) must
     // actually have a row gone live.
-    if (!eventId) return NextResponse.json({ error: "no eventId" }, { status: 400 });
+    if (!eventId) return json(req, { error: "no eventId" }, 400);
     const { data: ev } = await admin
       .from("events")
       .select("id, name, tenant_id, event_date")
       .eq("id", eventId)
       .maybeSingle();
-    if (!ev) return NO_OP;
+    if (!ev) return noOp(req);
     tenantId = ev.tenant_id as string;
     let liveQ = admin
       .from("run_sequence")
@@ -143,7 +186,7 @@ export async function POST(req: Request) {
       ? liveQ.eq("event_date", ev.event_date as string)
       : liveQ.is("event_date", null);
     const { count: liveCount } = await liveQ;
-    if (!liveCount) return NO_OP; // not actually live → don't notify
+    if (!liveCount) return noOp(req); // not actually live → don't notify
     title = "🔴 งานเริ่มแล้ว (Live)";
     messageBody = `${(ev.name as string) || "งาน"} — เปิดดูคิวงานสดได้เลย`;
     link = `/events/${ev.id}/run-order/live`;
@@ -158,7 +201,7 @@ export async function POST(req: Request) {
     .eq("tenant_id", tenantId)
     .eq("user_id", user.id)
     .maybeSingle();
-  if (!callerMember) return NextResponse.json({ error: "forbidden" }, { status: 403 });
+  if (!callerMember) return json(req, { error: "forbidden" }, 403);
 
   // 4) Resolve recipient user ids.
   let recipientIds: string[] = [];
@@ -185,7 +228,26 @@ export async function POST(req: Request) {
   }
   // de-dupe + never notify the person who triggered it
   recipientIds = Array.from(new Set(recipientIds)).filter((id) => id !== user.id);
-  if (recipientIds.length === 0) return NO_OP;
+  if (recipientIds.length === 0) return noOp(req);
+
+  // 4b) Dedupe against recent identical notifications (mirrors the cron fan()):
+  // the anti-spoof status stays true for a window (a run_sequence is 'live' for the
+  // whole show), so without this ANY member — or a stuck client retry loop — could
+  // re-blast the same push to the whole tenant in a loop. Skip recipients who
+  // already got this exact (type, subject) recently.
+  const dedupeMs = kind === "run_order_live" ? 10 * 60_000 : 5 * 60_000;
+  const dedupeSince = new Date(Date.now() - dedupeMs).toISOString();
+  const subjectCol = SONG_KINDS.has(kind) ? "meta->>song_id" : "meta->>event_id";
+  const subjectId = String(SONG_KINDS.has(kind) ? meta.song_id : meta.event_id);
+  const { data: already } = await admin
+    .from("notifications")
+    .select("user_id")
+    .eq("type", kind)
+    .eq(subjectCol, subjectId)
+    .gt("created_at", dedupeSince);
+  const got = new Set((already ?? []).map((r) => r.user_id as string));
+  recipientIds = recipientIds.filter((id) => !got.has(id));
+  if (recipientIds.length === 0) return noOp(req);
 
   // 5) Insert the in-app rows.
   const rows = recipientIds.map((uid) => ({
@@ -221,5 +283,5 @@ export async function POST(req: Request) {
     if (dead.length) await admin.from("push_subscriptions").delete().in("id", dead);
   }
 
-  return NextResponse.json({ ok: true, recipients: recipientIds.length, sent });
+  return json(req, { ok: true, recipients: recipientIds.length, sent });
 }
