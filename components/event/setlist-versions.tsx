@@ -16,7 +16,9 @@ import {
 } from "@/components/ui/dialog";
 import type { SetlistItem } from "@/lib/types";
 
-// Snapshot of one setlist row (no id/audio — restore re-creates fresh rows).
+// Snapshot of one setlist row (no id/audio_path — restore re-creates fresh rows).
+// song_id IS kept: it's the library link that resolves the row's audio. It stays
+// optional (as on SetlistItem) — snapshots saved before it existed lack the field.
 export type SnapshotItem = Pick<
   SetlistItem,
   | "kind"
@@ -27,6 +29,7 @@ export type SnapshotItem = Pick<
   | "mic_slots"
   | "notes"
   | "sort_order"
+  | "song_id"
 >;
 
 interface Version {
@@ -46,6 +49,7 @@ function toSnapshot(items: SetlistItem[]): SnapshotItem[] {
     mic_slots: it.mic_slots,
     notes: it.notes,
     sort_order: it.sort_order,
+    song_id: it.song_id,
   }));
 }
 

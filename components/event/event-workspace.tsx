@@ -96,9 +96,17 @@ export function EventWorkspace({
   // completeness. Only editors (admin / the band's Ar) can write status (RLS),
   // and only the draft/pending_review window is auto-managed — approved/rejected
   // are left to the explicit approval flow. A ref guards against double-firing
-  // before router.refresh() lands the new status.
+  // before router.refresh() lands the new status (re-armed below once it does).
   const status = event.status as GroupStatus;
   const syncing = useRef(false);
+  // Re-arm the guard when the status prop actually changes: the write's round
+  // trip has landed (via router.refresh) — or someone else moved the event — so
+  // later completeness flips can auto-sync again. Where the prop can't refresh
+  // (desktop: refresh() is a no-op), staying latched is correct — un-latching
+  // against a stale prop would just re-issue the same write in a loop.
+  useEffect(() => {
+    syncing.current = false;
+  }, [status]);
   useEffect(() => {
     if (!editable || event.is_template || syncing.current) return;
     let next: GroupStatus | null = null;
@@ -126,11 +134,18 @@ export function EventWorkspace({
       router.refresh();
     })();
   }, [editable, status, completeness.complete, eventId, router, event.is_template]);
-  // remember the tab in the URL hash so a reload returns here (not back to Summary).
+  // remember the tab in the URL so a reload returns here (not back to Summary).
+  // Web: the route is a real path, so the hash is a free slot (#setlist).
+  // Desktop (HashRouter): the WHOLE route lives in the hash (#/events/<id>) —
+  // writing #setlist there would destroy the route, so the tab rides in the
+  // hash-route's query string (#/events/<id>?tab=setlist) instead.
   // Read it AFTER mount to avoid a hydration mismatch.
   const [view, setView] = useState<string>("summary");
   useEffect(() => {
-    const h = window.location.hash.replace("#", "");
+    const hash = window.location.hash;
+    const h = hash.startsWith("#/")
+      ? new URLSearchParams(hash.split("?")[1] ?? "").get("tab") ?? ""
+      : hash.replace("#", "");
     if (["summary", "setlist", "schedule", "mic", "lineup"].includes(h)) setView(h);
   }, []);
 
@@ -150,7 +165,15 @@ export function EventWorkspace({
     }
     setView(v);
     if (typeof window !== "undefined") {
-      window.history.replaceState(null, "", `#${v}`);
+      const hash = window.location.hash;
+      if (hash.startsWith("#/")) {
+        // HashRouter (desktop): keep the route, swap only the tab param — and
+        // preserve history.state, where react-router keeps its history index.
+        const path = hash.slice(1).split("?")[0];
+        window.history.replaceState(window.history.state, "", `#${path}?tab=${v}`);
+      } else {
+        window.history.replaceState(null, "", `#${v}`);
+      }
     }
   }
 

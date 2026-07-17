@@ -168,11 +168,18 @@ export function SongLibrary({
     const expired = initialSongs.filter(isExpired);
     if (expired.length === 0) return;
     (async () => {
-      // R2 removal is per-file (each path differs); the DB rows delete in one shot.
+      // DB rows delete first (one shot, mirroring onDelete) — if that fails,
+      // leave everything intact and retry on the next open. R2 files only go
+      // after the rows are confirmed gone, so a failed delete never leaves a
+      // surviving row pointing at a missing file.
+      const { error } = await supabase
+        .from("songs")
+        .delete()
+        .in("id", expired.map((s) => s.id));
+      if (error) return;
       for (const s of expired) {
         if (s.audio_path) removeEventAudio(s.audio_path).catch(() => {});
       }
-      await supabase.from("songs").delete().in("id", expired.map((s) => s.id));
       setSongs((prev) => prev.filter((s) => !isExpired(s)));
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -402,10 +409,12 @@ export function SongLibrary({
   // device cache), or null on failure. Existing callers ignore the return.
   async function uploadSongAudio(song: Song, file: File): Promise<string | null> {
     setAudioBusy((b) => ({ ...b, [song.id]: "up" }));
+    const prevPath = song.audio_path ?? null;
+    const path = buildSongAudioPath(song.tenant_id, song.group_id, song.id, file.name);
+    let uploaded = false; // R2 PUT landed — cleanup target if the DB update then fails
     try {
-      const prevPath = song.audio_path ?? null;
-      const path = buildSongAudioPath(song.tenant_id, song.group_id, song.id, file.name);
       await uploadEventAudio(path, file, file.type);
+      uploaded = true;
       const { error } = await supabase
         .from("songs")
         .update({ audio_path: path, audio_name: file.name, audio_expires_at: null })
@@ -423,6 +432,9 @@ export function SongLibrary({
       toast.success("อัปโหลดไฟล์เพลงขึ้นคลังแล้ว 🎵");
       return path;
     } catch (e) {
+      // The PUT succeeded but no row points at the new object — best-effort
+      // delete so the (potentially huge) file doesn't orphan in R2 forever.
+      if (uploaded) removeEventAudio(path).catch(() => {});
       toast.error("อัปโหลดไม่สำเร็จ", {
         description: e instanceof Error ? e.message : String(e),
       });

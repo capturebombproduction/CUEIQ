@@ -440,6 +440,9 @@ export function SetlistBuilder({
   );
   const dragIndex = useRef<number | null>(null);
   const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
+  // add-in-flight: ref blocks re-entry immediately, state disables the buttons
+  const insertingRef = useRef(false);
+  const [inserting, setInserting] = useState(false);
 
   // Live Mode sync: join the show channel so we can (a) tell a running Live Mode to
   // refetch when the setlist changes, and (b) learn which item is on air and lock it.
@@ -487,10 +490,15 @@ export function SetlistBuilder({
     const old = items;
     let inserted: SetlistItem[] = [];
     if (snapshot.length) {
-      const rows = snapshot.map((s) => ({
+      // song_id survives the snapshot (it's what makes the row playable), but a
+      // song deleted SINCE the save would violate the FK on insert (on-delete-
+      // set-null only nulls live rows) — restore those as unlinked instead.
+      const libraryIds = new Set(songs.map((s) => s.id));
+      const rows = snapshot.map(({ song_id, ...s }) => ({
         tenant_id: tenantId,
         event_id: eventId,
         ...s,
+        song_id: song_id && libraryIds.has(song_id) ? song_id : null,
       }));
       const { data, error } = await supabase
         .from("setlist_items")
@@ -499,7 +507,7 @@ export function SetlistBuilder({
       if (error) {
         // Offline restore: mint the snapshot rows locally and queue the whole
         // list — flush lands the restore (or parks it if online changed first).
-        const minted = snapshot.map((s) => mintLocalItem(s.sort_order, { ...s }));
+        const minted = rows.map((r) => mintLocalItem(r.sort_order, { ...r }));
         if (await queueOffline(minted, error.message)) {
           old.forEach((it) => deleteAudio(eventId, it.id).catch(() => {}));
           setItems([...minted].sort((a, b) => a.sort_order - b.sort_order));
@@ -529,10 +537,41 @@ export function SetlistBuilder({
         // The snapshot rows are already in; deleting the old ones failed → roll the
         // insert back so we don't leave BOTH sets (duplicates). Original setlist intact.
         if (inserted.length) {
-          await supabase
+          const { error: rollbackError } = await supabase
             .from("setlist_items")
             .delete()
             .in("id", inserted.map((it) => it.id));
+          if (rollbackError) {
+            // Net died mid-restore: the DB likely holds old + restored rows. Queue
+            // the restored list with base = that combined state, so flush replace-
+            // sets the duplicates away (or parks a conflict if online moved on).
+            const queued = await tryQueueChildList({
+              kind: "setlist.upsert",
+              eventId,
+              tenantId,
+              eventName,
+              rows: inserted,
+              baseRows: [...old, ...inserted],
+              errorMessage: error.message,
+            });
+            if (queued) {
+              toast.success(OFFLINE_QUEUED_MESSAGE, { id: "mgmt-offline-queued" });
+              old.forEach((it) => deleteAudio(eventId, it.id).catch(() => {}));
+              setItems([...inserted].sort((a, b) => a.sort_order - b.sort_order));
+              return;
+            }
+            // Can't queue (web / real rejection): show reality — refetch so the UI
+            // matches the duplicated DB instead of silently hiding the extra rows.
+            const { data: current } = await supabase
+              .from("setlist_items")
+              .select("*")
+              .eq("event_id", eventId)
+              .order("sort_order", { ascending: true });
+            if (current) setItems(current as SetlistItem[]);
+            throw new Error(
+              "ลบเซ็ตลิสต์เดิมไม่สำเร็จ — ตอนนี้อาจมีรายการซ้ำอยู่ กรุณาตรวจสอบและลบรายการที่ซ้ำออก"
+            );
+          }
         }
         throw error;
       }
@@ -659,34 +698,48 @@ export function SetlistBuilder({
     };
   }
 
-  async function insertItem(extra: Partial<SetlistItem> & { kind: SetlistKind }) {
-    const sort = items.length
-      ? Math.max(...items.map((i) => i.sort_order)) + 1
-      : 1;
-    const { data, error } = await supabase
-      .from("setlist_items")
-      .insert({
-        tenant_id: tenantId,
-        event_id: eventId,
-        buffer_before_seconds: 0,
-        buffer_after_seconds: 0,
-        mic_slots: [],
-        sort_order: sort,
-        ...extra,
-      })
-      .select("*")
-      .single();
-    if (error || !data) {
-      const local = mintLocalItem(sort, extra);
-      if (await queueOffline([...items, local], error?.message)) {
-        setItems((prev) => [...prev, local]);
-        return;
+  /** Returns true when a row was actually added (inserted or queued offline). */
+  async function insertItem(
+    extra: Partial<SetlistItem> & { kind: SetlistKind }
+  ): Promise<boolean> {
+    // In-flight guard: a double-click would compute the same max(sort_order)+1
+    // twice → two rows with equal sort_order the arrow buttons can't reorder.
+    if (insertingRef.current) return false;
+    insertingRef.current = true;
+    setInserting(true);
+    try {
+      const sort = items.length
+        ? Math.max(...items.map((i) => i.sort_order)) + 1
+        : 1;
+      const { data, error } = await supabase
+        .from("setlist_items")
+        .insert({
+          tenant_id: tenantId,
+          event_id: eventId,
+          buffer_before_seconds: 0,
+          buffer_after_seconds: 0,
+          mic_slots: [],
+          sort_order: sort,
+          ...extra,
+        })
+        .select("*")
+        .single();
+      if (error || !data) {
+        const local = mintLocalItem(sort, extra);
+        if (await queueOffline([...items, local], error?.message)) {
+          setItems((prev) => [...prev, local]);
+          return true;
+        }
+        toast.error("เพิ่มไม่สำเร็จ", { description: error?.message });
+        return false;
       }
-      toast.error("เพิ่มไม่สำเร็จ", { description: error?.message });
-      return;
+      setItems((prev) => [...prev, data as SetlistItem]);
+      notifyLive();
+      return true;
+    } finally {
+      insertingRef.current = false;
+      setInserting(false);
     }
-    setItems((prev) => [...prev, data as SetlistItem]);
-    notifyLive();
   }
 
   async function addItem(kind: SetlistKind) {
@@ -704,18 +757,18 @@ export function SetlistBuilder({
 
   /** Add a setlist row from a library song — auto-fills title + duration. */
   async function addFromLibrary(song: Song) {
-    await insertItem({
+    const added = await insertItem({
       kind: "song",
       title: song.title,
       duration_seconds: song.duration_seconds,
       song_id: song.id, // link → Live Mode plays the library song's audio
     });
-    toast.success(`เพิ่ม "${song.title}" จากคลังแล้ว`);
+    if (added) toast.success(`เพิ่ม "${song.title}" จากคลังแล้ว`);
   }
 
   /** Clone a row (appended at the end — drag into place). Audio is not copied. */
   async function duplicateItem(it: SetlistItem) {
-    await insertItem({
+    const added = await insertItem({
       kind: it.kind,
       title: it.title,
       duration_seconds: it.duration_seconds,
@@ -724,7 +777,7 @@ export function SetlistBuilder({
       mic_slots: it.mic_slots,
       notes: it.notes,
     });
-    toast.success("ก๊อปรายการแล้ว — ลากไปจัดตำแหน่งได้");
+    if (added) toast.success("ก๊อปรายการแล้ว — ลากไปจัดตำแหน่งได้");
   }
 
   async function removeItem(id: string) {
@@ -756,11 +809,53 @@ export function SetlistBuilder({
     }
   }
 
+  /** Persist a full renumber: optimistic set, write every changed row, roll back on failure. */
+  async function persistOrder(
+    prev: SetlistItem[],
+    renumbered: SetlistItem[],
+    failMsg: string
+  ) {
+    setItems(renumbered);
+    const changed = renumbered.filter(
+      (it) => prev.find((o) => o.id === it.id)?.sort_order !== it.sort_order
+    );
+    const results = await Promise.all(
+      changed.map((it) =>
+        supabase
+          .from("setlist_items")
+          .update({ sort_order: it.sort_order })
+          .eq("id", it.id)
+      )
+    );
+    const failed = results.find((r) => r.error);
+    if (failed?.error) {
+      if (await queueOffline(renumbered, failed.error.message)) return;
+      toast.error(failMsg, { description: failed.error.message });
+      setItems(prev);
+    } else {
+      notifyLive();
+    }
+  }
+
   async function move(index: number, dir: -1 | 1) {
     const target = index + dir;
     if (target < 0 || target >= items.length) return;
     const a = items[index];
     const b = items[target];
+    if (a.sort_order === b.sort_order) {
+      // Duplicate sort_order (e.g. rows added concurrently from two devices):
+      // swapping equal values is a DB no-op that silently reverts on reload —
+      // renumber the whole list with the two rows exchanged instead.
+      const next = [...items];
+      next[index] = b;
+      next[target] = a;
+      await persistOrder(
+        items,
+        next.map((it, i) => ({ ...it, sort_order: i + 1 })),
+        "สลับลำดับไม่สำเร็จ"
+      );
+      return;
+    }
     const next = [...items];
     next[index] = { ...b, sort_order: a.sort_order };
     next[target] = { ...a, sort_order: b.sort_order };
@@ -792,31 +887,14 @@ export function SetlistBuilder({
     dragIndex.current = null;
     setDragOverIndex(null);
     if (from == null || from === target) return;
-    const prev = items;
     const next = [...items];
     const [moved] = next.splice(from, 1);
     next.splice(target, 0, moved);
-    const renumbered = next.map((it, i) => ({ ...it, sort_order: i + 1 }));
-    setItems(renumbered);
-    const changed = renumbered.filter(
-      (it) => prev.find((o) => o.id === it.id)?.sort_order !== it.sort_order
+    await persistOrder(
+      items,
+      next.map((it, i) => ({ ...it, sort_order: i + 1 })),
+      "เรียงลำดับไม่สำเร็จ"
     );
-    const results = await Promise.all(
-      changed.map((it) =>
-        supabase
-          .from("setlist_items")
-          .update({ sort_order: it.sort_order })
-          .eq("id", it.id)
-      )
-    );
-    const failed = results.find((r) => r.error);
-    if (failed?.error) {
-      if (await queueOffline(renumbered, failed.error.message)) return;
-      toast.error("เรียงลำดับไม่สำเร็จ", { description: failed.error.message });
-      setItems(prev);
-    } else {
-      notifyLive();
-    }
   }
 
   return (
@@ -974,6 +1052,7 @@ export function SetlistBuilder({
                       variant="ghost"
                       size="icon"
                       title="ก๊อปรายการนี้"
+                      disabled={inserting}
                       onClick={() => duplicateItem(it)}
                     >
                       <Copy className="h-4 w-4" />
@@ -1133,19 +1212,35 @@ export function SetlistBuilder({
 
       {editable && (
         <div className="flex flex-wrap gap-2">
-          <Button type="button" variant="default" onClick={() => addItem("song")}>
+          <Button
+            type="button"
+            variant="default"
+            disabled={inserting}
+            onClick={() => addItem("song")}
+          >
             <Plus className="h-4 w-4" /> เพลง
           </Button>
           <LibraryPickerDialog songs={songs} onPick={addFromLibrary} />
-          <Button type="button" variant="outline" onClick={() => addItem("mc")}>
+          <Button
+            type="button"
+            variant="outline"
+            disabled={inserting}
+            onClick={() => addItem("mc")}
+          >
             <Plus className="h-4 w-4" /> MC
           </Button>
-          <Button type="button" variant="outline" onClick={() => addItem("se")}>
+          <Button
+            type="button"
+            variant="outline"
+            disabled={inserting}
+            onClick={() => addItem("se")}
+          >
             <Plus className="h-4 w-4" /> SE
           </Button>
           <Button
             type="button"
             variant="outline"
+            disabled={inserting}
             onClick={() => addItem("instrument")}
           >
             <Plus className="h-4 w-4" /> Instrument
@@ -1153,11 +1248,17 @@ export function SetlistBuilder({
           <Button
             type="button"
             variant="outline"
+            disabled={inserting}
             onClick={() => addItem("interlude")}
           >
             <Plus className="h-4 w-4" /> Interlude
           </Button>
-          <Button type="button" variant="outline" onClick={() => addItem("guest")}>
+          <Button
+            type="button"
+            variant="outline"
+            disabled={inserting}
+            onClick={() => addItem("guest")}
+          >
             <Plus className="h-4 w-4" /> Guest
           </Button>
           <span className="mx-1 self-center text-muted-foreground/40">|</span>

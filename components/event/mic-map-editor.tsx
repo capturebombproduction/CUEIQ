@@ -208,6 +208,7 @@ export function MicMapEditor({
       });
       return false;
     }
+    const snapshot = mics;
     const next = mics.map((m) =>
       m.mic_number === oldNum ? { ...m, mic_number: newNum } : m
     );
@@ -221,6 +222,7 @@ export function MicMapEditor({
         if (error) {
           if (await queueOffline(next, error.message)) return;
           toast.error("เปลี่ยนเบอร์ไมค์ไม่สำเร็จ", { description: error.message });
+          setMics(snapshot); // real rejection — re-keys the input back to oldNum
         }
       });
     return true;
