@@ -37,8 +37,19 @@ export function MgmtSyncStatus() {
   useEffect(() => {
     alive.current = true;
     const flushAndRefresh = () => {
-      if (navigator.onLine !== false) flushMgmtOutbox().catch(() => {});
       refresh();
+      if (navigator.onLine !== false) {
+        // Gate the chip while this flush runs (flushMgmtOutbox itself coalesces
+        // concurrent callers into one run, so a click mid-flush is harmless too).
+        setBusy(true);
+        flushMgmtOutbox()
+          .catch(() => {})
+          .finally(() => {
+            if (!alive.current) return;
+            setBusy(false);
+            refresh();
+          });
+      }
     };
     flushAndRefresh(); // boot: drain anything a previous offline session left queued
     window.addEventListener("online", flushAndRefresh);
@@ -51,6 +62,7 @@ export function MgmtSyncStatus() {
   }, [refresh]);
 
   async function syncNow() {
+    if (busy) return; // a flush is already in flight
     setBusy(true);
     const res = await flushMgmtOutbox().catch(() => null);
     setBusy(false);
@@ -64,9 +76,9 @@ export function MgmtSyncStatus() {
 
   async function resolve(key: number, choice: "mine" | "server") {
     setBusy(true);
-    const ok = await resolveMgmtConflict(key, choice);
+    const res = await resolveMgmtConflict(key, choice);
     setBusy(false);
-    if (!ok) toast.error("เขียนทับไม่สำเร็จ — ลองใหม่เมื่อออนไลน์");
+    if (!res.ok) toast.error(res.message ?? "เขียนทับไม่สำเร็จ — ลองใหม่เมื่อออนไลน์");
     refresh();
   }
 

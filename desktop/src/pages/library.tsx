@@ -15,6 +15,7 @@ import { useWorkspace } from "~/data/workspace-context";
 export function Library() {
   const { ws } = useWorkspace();
   const [songs, setSongs] = useState<Song[] | null>(null);
+  const [loadError, setLoadError] = useState(false);
   const bands = ws ? viewableGroups(ws.perms, ws.groups) : [];
   const ids = bands.map((g) => g.id);
   const key = ids.join(",");
@@ -32,8 +33,16 @@ export function Library() {
       .eq("tenant_id", ws.membership.tenant_id)
       .in("group_id", ids)
       .order("created_at", { ascending: false })
-      .then(({ data }) => {
-        if (alive) setSongs((data ?? []) as Song[]);
+      .then(({ data, error }) => {
+        if (!alive) return;
+        // postgrest resolves offline/network failures as { data: null, error } —
+        // a failed read is NOT an empty catalogue, so never render "0 เพลง" for it.
+        if (error) {
+          setLoadError(true);
+          return;
+        }
+        setLoadError(false);
+        setSongs((data ?? []) as Song[]);
       });
     return () => {
       alive = false;
@@ -72,7 +81,14 @@ export function Library() {
         </div>
         <RefreshButton />
       </div>
-      {songs === null ? (
+      {songs === null && loadError ? (
+        <Card>
+          <CardContent className="flex flex-col items-center gap-3 py-16 text-center text-sm text-muted-foreground">
+            <p>โหลดคลังเพลงไม่สำเร็จ — อาจออฟไลน์อยู่หรือเน็ตมีปัญหา ลองใหม่เมื่อเน็ตกลับมา</p>
+            <RefreshButton label="ลองใหม่" />
+          </CardContent>
+        </Card>
+      ) : songs === null ? (
         <p className="py-16 text-center text-sm text-muted-foreground">กำลังโหลดคลังเพลง…</p>
       ) : (
         <SongLibrary

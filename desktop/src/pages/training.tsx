@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { Dumbbell, Play, Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { RefreshButton } from "@/components/refresh-button";
 import { Card, CardContent } from "@/components/ui/card";
 import { CreatePracticeButton } from "@/components/practice/create-practice-button";
 import { DeletePracticeRoomButton } from "@/components/practice/delete-practice-room-button";
@@ -18,6 +19,7 @@ type Room = EventRow & { groups: { name: string; color: string | null } | null }
 export function Training() {
   const { ws } = useWorkspace();
   const [rooms, setRooms] = useState<Room[] | null>(null);
+  const [loadError, setLoadError] = useState(false);
   const ids = ws ? viewableGroups(ws.perms, ws.groups).map((g) => g.id) : [];
   const key = ids.join(",");
 
@@ -35,8 +37,16 @@ export function Training() {
       .in("group_id", ids)
       .eq("is_practice", true)
       .order("created_at", { ascending: false })
-      .then(({ data }) => {
-        if (alive) setRooms((data ?? []) as Room[]);
+      .then(({ data, error }) => {
+        if (!alive) return;
+        // postgrest resolves offline/network failures as { data: null, error } —
+        // don't render "ยังไม่มีห้องซ้อม" for a failed read.
+        if (error) {
+          setLoadError(true);
+          return;
+        }
+        setLoadError(false);
+        setRooms((data ?? []) as Room[]);
       });
     return () => {
       alive = false;
@@ -75,7 +85,14 @@ export function Training() {
         )}
       </div>
 
-      {rooms === null ? (
+      {rooms === null && loadError ? (
+        <Card>
+          <CardContent className="flex flex-col items-center gap-3 py-12 text-center text-sm text-muted-foreground">
+            <p>โหลดห้องซ้อมไม่สำเร็จ — อาจออฟไลน์อยู่หรือเน็ตมีปัญหา ลองใหม่เมื่อเน็ตกลับมา</p>
+            <RefreshButton label="ลองใหม่" />
+          </CardContent>
+        </Card>
+      ) : rooms === null ? (
         <p className="py-12 text-center text-sm text-muted-foreground">กำลังโหลด…</p>
       ) : rooms.length === 0 ? (
         <Card>

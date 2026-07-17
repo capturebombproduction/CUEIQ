@@ -85,43 +85,47 @@ export async function loadWorkspace(): Promise<WorkspaceData> {
 
   const role = memberRow.role as Role;
 
-  const [{ data: tenant }, { data: groups }, { data: groupRoleRows }] =
-    await Promise.all([
-      supabase
-        .from("tenants")
-        .select("*")
-        .eq("id", memberRow.tenant_id)
-        .maybeSingle(),
-      supabase
-        .from("groups")
-        .select("*")
-        .eq("tenant_id", memberRow.tenant_id)
-        .order("created_at", { ascending: true }),
-      supabase
-        .from("group_roles")
-        .select("group_id, role")
-        .eq("user_id", user.id),
-    ]);
+  const [tenantRes, groupsRes, groupRolesRes] = await Promise.all([
+    supabase
+      .from("tenants")
+      .select("*")
+      .eq("id", memberRow.tenant_id)
+      .maybeSingle(),
+    supabase
+      .from("groups")
+      .select("*")
+      .eq("tenant_id", memberRow.tenant_id)
+      .order("created_at", { ascending: true }),
+    supabase
+      .from("group_roles")
+      .select("group_id, role")
+      .eq("user_id", user.id),
+  ]);
+  const tenant = tenantRes.data;
 
-  // membership read succeeded but the parallel reads didn't return a tenant — a
-  // blip mid-batch. Don't clobber a good cache with this half-empty result.
-  if (!tenant) {
+  // membership read succeeded but the parallel batch blipped — either no tenant
+  // came back, or a groups/group_roles read errored (postgrest resolves network
+  // failures as { data: null, error }, so an errored read must not become empty
+  // groups/groupRoles). Don't clobber a good cache with this half-empty result.
+  const blipped = Boolean(tenantRes.error || groupsRes.error || groupRolesRes.error);
+  if (!tenant || blipped) {
     const cached = readCache<WorkspaceData>(WS_CACHE_KEY);
     if (cached && cached.user?.id === user.id && cached.membership) return cached;
   }
 
-  const groupRoles = (groupRoleRows ?? []) as GroupRoleRow[];
+  const groupRoles = (groupRolesRes.data ?? []) as GroupRoleRow[];
 
   const ws: WorkspaceData = {
     user: base,
     membership: { tenant_id: memberRow.tenant_id as string, role },
     tenant: (tenant as Tenant) ?? null,
-    groups: (groups ?? []) as Group[],
+    groups: (groupsRes.data ?? []) as Group[],
     groupRoles,
     perms: makePerms(role, groupRoles),
   };
-  // Cache only a COMPLETE read: a tenant-less result here means the parallel batch
-  // blipped (and there was no cache to fall back on) — don't make it the offline copy.
-  if (ws.tenant) writeCache(WS_CACHE_KEY, ws);
+  // Cache only a COMPLETE read: a tenant-less or errored result here means the
+  // parallel batch blipped (and there was no cache to fall back on) — don't make
+  // it the offline copy.
+  if (ws.tenant && !blipped) writeCache(WS_CACHE_KEY, ws);
   return ws;
 }

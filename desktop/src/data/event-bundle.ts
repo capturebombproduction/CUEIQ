@@ -109,7 +109,7 @@ export async function loadEventBundle(eventId: string): Promise<EventBundle | nu
     );
   }
 
-  const { data: membership } = await supabase
+  const membershipRes = await supabase
     .from("tenant_members")
     .select("role")
     .eq("tenant_id", event.tenant_id)
@@ -117,7 +117,7 @@ export async function loadEventBundle(eventId: string): Promise<EventBundle | nu
     .limit(1)
     .maybeSingle();
 
-  const [schedule, setlist, micMap, members, songs, lineup] = await Promise.all([
+  const childResults = await Promise.all([
     supabase
       .from("schedule_items")
       .select("*")
@@ -149,6 +149,16 @@ export async function loadEventBundle(eventId: string): Promise<EventBundle | nu
       .select("member_id")
       .eq("event_id", eventId),
   ]);
+  const [schedule, setlist, micMap, members, songs, lineup] = childResults;
+
+  // postgrest resolves a network failure as { data: null, error } — it does NOT
+  // throw — so an errored child read must never be coerced to an empty list:
+  // caching that would overwrite the last GOOD offline bundle with an empty
+  // setlist/schedule/mic map. Cache only a COMPLETE read (like workspace.ts);
+  // on any failed read fall back to the cached copy, same as the catch above.
+  if (membershipRes.error || childResults.some((r) => r.error)) {
+    return withPendingOverlay(readCache<EventBundle>(cacheKey), eventId);
+  }
 
   const bundle: EventBundle = {
     event: {
@@ -161,7 +171,7 @@ export async function loadEventBundle(eventId: string): Promise<EventBundle | nu
     members: (members.data ?? []) as Member[],
     songs: (songs.data ?? []) as Song[],
     lineup: ((lineup.data ?? []) as { member_id: string }[]).map((r) => r.member_id),
-    role: (membership?.role as Role) ?? null,
+    role: (membershipRes.data?.role as Role) ?? null,
   };
   writeCache(cacheKey, bundle);
   // Cache the SERVER truth, then overlay pending local edits on top for display.

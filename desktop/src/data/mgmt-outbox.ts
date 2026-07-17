@@ -14,8 +14,11 @@ import {
   CHILD_TABLES,
   CHILD_WRITE_COLUMNS,
   childFlushDecision,
+  eventPatchApplied,
   isChildListOp,
   isQueueableWriteError,
+  isUniqueViolation,
+  nextOpRev,
   planEnqueue,
   shouldApplyOnFlush,
   type ChildListOp,
@@ -36,7 +39,31 @@ interface OpRec {
   /** Owner check on a shared band device: never flush/overlay another account's ops. */
   userId: string | null;
   queuedAt: number;
+  /** Bumped on every coalescing put — the flush deletes a record only at the rev it applied. */
+  rev?: number;
 }
+
+// All queue mutations (enqueue / flush / resolve) run through this promise chain so
+// a flush's read→apply→delete can never interleave with a coalescing enqueue
+// (which puts onto the SAME IndexedDB key the flush is about to delete).
+let outboxLock: Promise<unknown> = Promise.resolve();
+function withOutboxLock<T>(fn: () => Promise<T>): Promise<T> {
+  const run = outboxLock.then(fn, fn);
+  outboxLock = run.then(
+    () => undefined,
+    () => undefined
+  );
+  return run;
+}
+
+/**
+ * updated_at (epoch ms) our own flush last wrote per event id. When a later edit
+ * for the same event is queued after that flush, the online-wins guard would see
+ * "server advanced past base" — but the advance was OUR write, so it must apply,
+ * not park a false conflict. Session-local by design (lost on restart — the
+ * eventPatchApplied idempotence check covers the crash-replay case instead).
+ */
+const selfWriteMs = new Map<string, number>();
 
 export interface ConflictRec extends OpRec {
   parkedAt: number;
@@ -125,32 +152,69 @@ async function listMyOps(): Promise<{ key: number; rec: OpRec }[]> {
 
 /** Queue a management write (coalescing per event — see lib planEnqueue). */
 export async function enqueueMgmtOp(op: NewMgmtOp): Promise<void> {
-  const userId = currentUserId();
-  const mine = await listMyOps();
-  const plan = planEnqueue(
-    mine.map((r) => ({ ...r.rec.op, seq: r.key }) as MgmtOp),
-    op
-  );
-  const db = await openDB();
-  await new Promise<void>((resolve, reject) => {
-    const tx = db.transaction(OPS, "readwrite");
-    const store = tx.objectStore(OPS);
-    for (const seq of plan.dropSeqs) store.delete(seq);
-    if (plan.op) {
-      const rec: OpRec = { op: plan.op, userId, queuedAt: Date.now() };
-      if (plan.replaceSeq != null) store.put(rec, plan.replaceSeq);
-      else store.add(rec);
-    }
-    tx.oncomplete = () => {
-      db.close();
-      resolve();
-    };
-    tx.onerror = () => {
-      db.close();
-      reject(tx.error);
-    };
+  await withOutboxLock(async () => {
+    const userId = currentUserId();
+    const mine = await listMyOps();
+    const plan = planEnqueue(
+      mine.map((r) => ({ ...r.rec.op, seq: r.key }) as MgmtOp),
+      op
+    );
+    const prev = plan.replaceSeq != null ? mine.find((r) => r.key === plan.replaceSeq) : undefined;
+    const db = await openDB();
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction(OPS, "readwrite");
+      const store = tx.objectStore(OPS);
+      for (const seq of plan.dropSeqs) store.delete(seq);
+      if (plan.op) {
+        const rec: OpRec = {
+          op: plan.op,
+          userId,
+          queuedAt: Date.now(),
+          rev: nextOpRev(prev?.rec.rev),
+        };
+        if (plan.replaceSeq != null) store.put(rec, plan.replaceSeq);
+        else store.add(rec);
+      }
+      tx.oncomplete = () => {
+        db.close();
+        resolve();
+      };
+      tx.onerror = () => {
+        db.close();
+        reject(tx.error);
+      };
+    });
   });
   notify();
+}
+
+/**
+ * Post-apply delete for the flush: remove the record at `key` ONLY if it still
+ * holds the rev that was applied. A coalescing put that landed since (another
+ * window/instance sharing this IndexedDB) bumps `rev` — that merged, never-applied
+ * edit must stay queued, not be silently destroyed.
+ */
+function deleteOpIfRevMatches(key: number, rev: number): Promise<void> {
+  return openDB().then(
+    (db) =>
+      new Promise((resolve) => {
+        const tx = db.transaction(OPS, "readwrite");
+        const store = tx.objectStore(OPS);
+        const get = store.get(key);
+        get.onsuccess = () => {
+          const rec = get.result as OpRec | undefined;
+          if (rec && (rec.rev ?? 0) === rev) store.delete(key);
+        };
+        tx.oncomplete = () => {
+          db.close();
+          resolve();
+        };
+        tx.onerror = () => {
+          db.close();
+          resolve();
+        };
+      })
+  );
 }
 
 /** Current user's pending ops, seq order — the loaders' overlay input. */
@@ -255,14 +319,27 @@ async function applyChildListOp(
   }
 
   const rows = op.rows as Record<string, unknown>[];
+  const deleteRemoved = async (): Promise<string | null> => {
+    let del = supabase.from(table).delete().eq("event_id", op.id);
+    if (rows.length) del = del.not("id", "in", `(${rows.map((r) => r.id).join(",")})`);
+    const { error } = await del;
+    return error ? error.message : null;
+  };
   if (rows.length) {
-    const { error } = await supabase.from(table).upsert(rows);
-    if (error) return failOrThrow(error.message, onLine);
+    let up = await supabase.from(table).upsert(rows);
+    if (up.error && isUniqueViolation(up.error.code, up.error.message)) {
+      // one-photo-per-event (mig 0036): an offline delete+re-add mints a fresh row
+      // id, so the server's stale photo row blocks the upsert. Clear the rows the
+      // snapshot no longer contains FIRST, then retry once (the delete below then
+      // re-runs as a no-op).
+      const delMsg = await deleteRemoved();
+      if (delMsg) return failOrThrow(delMsg, onLine);
+      up = await supabase.from(table).upsert(rows);
+    }
+    if (up.error) return failOrThrow(up.error.message, onLine);
   }
-  let del = supabase.from(table).delete().eq("event_id", op.id);
-  if (rows.length) del = del.not("id", "in", `(${rows.map((r) => r.id).join(",")})`);
-  const { error } = await del;
-  if (error) return failOrThrow(error.message, onLine);
+  const delMsg = await deleteRemoved();
+  if (delMsg) return failOrThrow(delMsg, onLine);
   return "applied";
 }
 
@@ -278,16 +355,24 @@ async function applyOp(op: NewMgmtOp): Promise<"applied" | { conflict: string }>
 
   if (op.kind === "event.create") {
     // upsert on the client-minted id → idempotent when a half-flushed queue re-runs.
-    const { error } = await supabase.from("events").upsert({ ...op.values, id: op.id });
-    if (!error) return "applied";
+    const { data, error } = await supabase
+      .from("events")
+      .upsert({ ...op.values, id: op.id })
+      .select("updated_at");
+    if (!error) {
+      const ms = Date.parse((data?.[0]?.updated_at as string) ?? "");
+      if (!Number.isNaN(ms)) selfWriteMs.set(op.id, ms);
+      return "applied";
+    }
     if (isQueueableWriteError(error.message, onLine)) throw new Error(error.message);
     return { conflict: error.message };
   }
 
-  // Online-wins guard: read the server row's updated_at before touching it.
+  // Online-wins guard: read the server row before touching it (the whole row —
+  // the patch-vs-row idempotence check below needs the columns, not just updated_at).
   const { data, error } = await supabase
     .from("events")
-    .select("updated_at")
+    .select("*")
     .eq("id", op.id)
     .maybeSingle();
   if (error) {
@@ -299,31 +384,69 @@ async function applyOp(op: NewMgmtOp): Promise<"applied" | { conflict: string }>
     if (op.kind === "event.delete") return "applied";
     return { conflict: "งานนี้ถูกลบไปแล้วบนออนไลน์" };
   }
-  const parsed = Date.parse(data.updated_at as string);
+  if (
+    op.kind === "event.update" &&
+    eventPatchApplied(op.patch as Record<string, unknown>, data as Record<string, unknown>)
+  ) {
+    // Already on the server (crash between apply and delete, or a re-run) —
+    // must not park itself as a false conflict.
+    return "applied";
+  }
+  const parsed = Date.parse((data as { updated_at: string }).updated_at);
   const serverMs = Number.isNaN(parsed) ? null : parsed;
-  if (!shouldApplyOnFlush(op, serverMs)) {
+  if (!shouldApplyOnFlush(op, serverMs, selfWriteMs.get(op.id) ?? null)) {
     return { conflict: "เวอร์ชันออนไลน์ถูกแก้ไขใหม่กว่าของเครื่องนี้" };
   }
 
-  const res =
-    op.kind === "event.update"
-      ? await supabase.from("events").update(op.patch).eq("id", op.id)
-      : await supabase.from("events").delete().eq("id", op.id);
-  if (!res.error) return "applied";
+  if (op.kind === "event.update") {
+    const res = await supabase
+      .from("events")
+      .update(op.patch)
+      .eq("id", op.id)
+      .select("updated_at");
+    if (res.error) {
+      if (isQueueableWriteError(res.error.message, onLine)) throw new Error(res.error.message);
+      return { conflict: res.error.message };
+    }
+    if (!res.data || res.data.length === 0) {
+      // Deleted between our guard read and the update (0 rows matched, no error).
+      return { conflict: "งานนี้ถูกลบไปแล้วบนออนไลน์" };
+    }
+    const ms = Date.parse(res.data[0].updated_at as string);
+    if (!Number.isNaN(ms)) selfWriteMs.set(op.id, ms);
+    return "applied";
+  }
+  const res = await supabase.from("events").delete().eq("id", op.id);
+  if (!res.error) {
+    selfWriteMs.delete(op.id);
+    return "applied";
+  }
   if (isQueueableWriteError(res.error.message, onLine)) throw new Error(res.error.message);
   return { conflict: res.error.message };
 }
+
+type FlushResult = { flushed: number; parked: number; remaining: number };
+
+let inFlightFlush: Promise<FlushResult> | null = null;
 
 /**
  * Replay the current user's queued ops in seq order. Stops at the first network
  * failure (still offline) and leaves the rest queued; a REJECTED op (RLS, online
  * changed first, row deleted) is parked as a conflict, never dropped.
+ * Re-entrant-safe: boot, the 'online' listener, and the chip click can all fire at
+ * once — they share ONE run (a second concurrent pass would re-apply the same
+ * snapshot and park the user's own just-landed write as a false conflict).
  */
-export async function flushMgmtOutbox(): Promise<{
-  flushed: number;
-  parked: number;
-  remaining: number;
-}> {
+export function flushMgmtOutbox(): Promise<FlushResult> {
+  if (inFlightFlush) return inFlightFlush;
+  const run = withOutboxLock(doFlush).finally(() => {
+    inFlightFlush = null;
+  });
+  inFlightFlush = run;
+  return run;
+}
+
+async function doFlush(): Promise<FlushResult> {
   let mine: { key: number; rec: OpRec }[];
   try {
     mine = await listMyOps();
@@ -345,52 +468,93 @@ export async function flushMgmtOutbox(): Promise<{
     } else {
       flushed++;
     }
-    await deleteFrom(OPS, key);
+    await deleteOpIfRevMatches(key, rec.rev ?? 0);
   }
   if (flushed || parked) notify();
   return { flushed, parked, remaining: mine.length - flushed - parked };
 }
 
+/** Rewrite a parked conflict's reason in place (e.g. "row gone — can't override"). */
+async function setConflictReason(key: number, reason: string): Promise<void> {
+  const db = await openDB();
+  await new Promise<void>((resolve) => {
+    const tx = db.transaction(CONFLICTS, "readwrite");
+    const store = tx.objectStore(CONFLICTS);
+    const get = store.get(key);
+    get.onsuccess = () => {
+      const rec = get.result as ConflictRec | undefined;
+      if (rec) store.put({ ...rec, reason }, key);
+    };
+    tx.oncomplete = () => {
+      db.close();
+      resolve();
+    };
+    tx.onerror = () => {
+      db.close();
+      resolve();
+    };
+  });
+  notify();
+}
+
 /**
  * Resolve a parked conflict. "server" keeps the online version (discard mine);
  * "mine" force-writes the queued value over the server row (the user explicitly
- * chose to override the online-wins default). Returns false when the force-write
- * itself failed (kept parked).
+ * chose to override the online-wins default). `ok: false` = the force-write
+ * failed and the conflict stays parked; `message` (when set) is the specific
+ * Thai reason to surface instead of the generic retry-when-online toast.
  */
-export async function resolveMgmtConflict(
+export function resolveMgmtConflict(
   key: number,
   choice: "mine" | "server"
-): Promise<boolean> {
-  if (choice === "mine") {
-    const all = await listStore<ConflictRec>(CONFLICTS).catch(
-      () => [] as { key: number; rec: ConflictRec }[]
-    );
-    const found = all.find((r) => r.key === key);
-    if (found) {
-      try {
-        const supabase = createClient();
-        const op = found.rec.op;
-        if (isChildListOp(op)) {
-          const onLine = typeof navigator === "undefined" || navigator.onLine !== false;
-          const res = await applyChildListOp(op, onLine, true);
-          if (res !== "applied") return false;
-        } else {
-          const { error } =
-            op.kind === "event.create"
-              ? await supabase.from("events").upsert({ ...op.values, id: op.id })
-              : op.kind === "event.update"
-                ? await supabase.from("events").update(op.patch).eq("id", op.id)
+): Promise<{ ok: boolean; message?: string }> {
+  return withOutboxLock(async () => {
+    if (choice === "mine") {
+      const all = await listStore<ConflictRec>(CONFLICTS).catch(
+        () => [] as { key: number; rec: ConflictRec }[]
+      );
+      const found = all.find((r) => r.key === key);
+      if (found) {
+        try {
+          const supabase = createClient();
+          const op = found.rec.op;
+          if (isChildListOp(op)) {
+            const onLine = typeof navigator === "undefined" || navigator.onLine !== false;
+            const res = await applyChildListOp(op, onLine, true);
+            if (res !== "applied") return { ok: false };
+          } else if (op.kind === "event.update") {
+            const { data, error } = await supabase
+              .from("events")
+              .update(op.patch)
+              .eq("id", op.id)
+              .select("id");
+            if (error) return { ok: false };
+            if (!data || data.length === 0) {
+              // PostgREST reports NO error on a 0-row update — without this check
+              // the user's "keep mine" would silently write nothing. The event was
+              // deleted online; the patch alone can't recreate it, so keep the
+              // conflict parked with an honest reason (ใช้ของออนไลน์ still works).
+              const reason =
+                "งานนี้ถูกลบไปแล้วบนออนไลน์ — เขียนทับไม่ได้ กด 'ใช้ของออนไลน์' เพื่อทิ้งรายการนี้";
+              await setConflictReason(key, reason);
+              return { ok: false, message: reason };
+            }
+          } else {
+            const { error } =
+              op.kind === "event.create"
+                ? await supabase.from("events").upsert({ ...op.values, id: op.id })
                 : await supabase.from("events").delete().eq("id", op.id);
-          if (error) return false;
+            if (error) return { ok: false };
+          }
+        } catch {
+          return { ok: false };
         }
-      } catch {
-        return false;
       }
     }
-  }
-  await deleteFrom(CONFLICTS, key);
-  notify();
-  return true;
+    await deleteFrom(CONFLICTS, key);
+    notify();
+    return { ok: true };
+  });
 }
 
 /** Wipe everything (sign-out on a shared device — ops must not leak across users). */

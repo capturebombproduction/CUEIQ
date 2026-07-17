@@ -8,10 +8,13 @@ import {
   applyPendingChildren,
   childFlushDecision,
   describeOp,
+  eventPatchApplied,
   fingerprintChildRows,
   isQueueableWriteError,
+  isUniqueViolation,
   materializeEventRow,
   newEventId,
+  nextOpRev,
   planEnqueue,
   sanitizeChildRows,
   shouldApplyOnFlush,
@@ -101,6 +104,72 @@ describe("shouldApplyOnFlush — the online-wins reconciliation guard", () => {
     const del = (base: number | null): EventScopedOp => ({ kind: "event.delete", id: "a", base });
     expect(shouldApplyOnFlush(del(1000), 900)).toBe(true);
     expect(shouldApplyOnFlush(del(1000), 1500)).toBe(false);
+  });
+
+  it("applies when the server's advance is OUR OWN flush's write (no false conflict)", () => {
+    expect(shouldApplyOnFlush(update(1000), 1500, 1500)).toBe(true);
+    // A stranger's write at a different timestamp still parks.
+    expect(shouldApplyOnFlush(update(1000), 1600, 1500)).toBe(false);
+    // Unknown own-write timestamp keeps the strict guard.
+    expect(shouldApplyOnFlush(update(1000), 1500, null)).toBe(false);
+    // Delete after our own flushed update must also pass.
+    const del: EventScopedOp = { kind: "event.delete", id: "a", base: 1000 };
+    expect(shouldApplyOnFlush(del, 1500, 1500)).toBe(true);
+  });
+});
+
+describe("eventPatchApplied — idempotent event.update replay", () => {
+  it("true when the server row already carries the exact patch", () => {
+    expect(eventPatchApplied({ name: "A", venue: "V" }, { name: "A", venue: "V", other: 1 })).toBe(
+      true
+    );
+  });
+
+  it("false when any patched value differs or the row is missing", () => {
+    expect(eventPatchApplied({ name: "A" }, { name: "B" })).toBe(false);
+    expect(eventPatchApplied({ name: "A" }, null)).toBe(false);
+    expect(eventPatchApplied({ name: "A" }, undefined)).toBe(false);
+  });
+
+  it("normalizes undefined→null and editor HH:MM vs server HH:MM:SS", () => {
+    expect(eventPatchApplied({ notes: undefined }, { notes: null })).toBe(true);
+    expect(eventPatchApplied({ show_start_time: "14:30" }, { show_start_time: "14:30:00" })).toBe(
+      true
+    );
+    expect(eventPatchApplied({ show_start_time: "14:30" }, { show_start_time: "15:00:00" })).toBe(
+      false
+    );
+  });
+
+  it("compares nested values canonically (jsonb key reorder is still equal)", () => {
+    expect(eventPatchApplied({ meta: { a: 1, b: 2 } }, { meta: { b: 2, a: 1 } })).toBe(true);
+  });
+
+  it("an empty patch is trivially applied", () => {
+    expect(eventPatchApplied({}, { name: "X" })).toBe(true);
+  });
+});
+
+describe("isUniqueViolation — 23505 detection for the snapshot replay retry", () => {
+  it("matches the Postgres code and the message text", () => {
+    expect(isUniqueViolation("23505", null)).toBe(true);
+    expect(
+      isUniqueViolation(null, 'duplicate key value violates unique constraint "one_photo"')
+    ).toBe(true);
+  });
+
+  it("does not match other failures", () => {
+    expect(isUniqueViolation("42501", "permission denied")).toBe(false);
+    expect(isUniqueViolation(null, "Failed to fetch")).toBe(false);
+    expect(isUniqueViolation(null, null)).toBe(false);
+  });
+});
+
+describe("nextOpRev — queue-record rev bookkeeping (conditional flush delete)", () => {
+  it("starts at 1 for a fresh record and bumps an existing rev", () => {
+    expect(nextOpRev(undefined)).toBe(1);
+    expect(nextOpRev(null)).toBe(1);
+    expect(nextOpRev(3)).toBe(4);
   });
 });
 

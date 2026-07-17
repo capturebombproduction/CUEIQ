@@ -135,10 +135,60 @@ export function applyPendingChildren<
  * server timestamp falls through to apply (best-effort — we only BLOCK when we can
  * prove the server moved ahead). Returns false → park the op as a conflict.
  */
-export function shouldApplyOnFlush(op: EventScopedOp, serverUpdatedAtMs: number | null): boolean {
+export function shouldApplyOnFlush(
+  op: EventScopedOp,
+  serverUpdatedAtMs: number | null,
+  /** updated_at (ms) our OWN flush last wrote to this row — see selfWriteMs in the desktop wiring. */
+  lastOwnWriteMs: number | null = null
+): boolean {
   if (op.kind === "event.create") return true;
   if (op.base == null || serverUpdatedAtMs == null) return true;
-  return serverUpdatedAtMs <= op.base;
+  if (serverUpdatedAtMs <= op.base) return true;
+  // The server only advanced because our own flush just landed an EARLIER op for
+  // this row (same session, older base) — a later edit must not park as a false
+  // conflict against our own write.
+  return lastOwnWriteMs != null && serverUpdatedAtMs === lastOwnWriteMs;
+}
+
+/**
+ * Does the server row already contain exactly this patch? Used to make an
+ * event.update replay idempotent: a crash between apply and delete (or a second
+ * instance re-running the same op) must see "already applied", not a false
+ * conflict. Values are normalized like sanitizeChildRows (undefined → null,
+ * editor "HH:MM" → server "HH:MM:SS") and compared canonically (jsonb-safe).
+ */
+export function eventPatchApplied(
+  patch: Record<string, unknown>,
+  serverRow: Record<string, unknown> | null | undefined
+): boolean {
+  if (!serverRow) return false;
+  const norm = (v: unknown): string => {
+    if (v === undefined) v = null;
+    if (typeof v === "string" && /^\d{2}:\d{2}$/.test(v)) v = `${v}:00`;
+    return stableStringify(v);
+  };
+  return Object.keys(patch).every((k) => norm(patch[k]) === norm(serverRow[k]));
+}
+
+/**
+ * Postgres unique violation (23505) — e.g. migration 0036's one-photo-per-event
+ * partial index colliding with a schedule snapshot's upsert-before-delete replay.
+ */
+export function isUniqueViolation(
+  code: string | null | undefined,
+  message: string | null | undefined
+): boolean {
+  if (code === "23505") return true;
+  return !!message && /duplicate key value violates unique/i.test(message);
+}
+
+/**
+ * Rev bookkeeping for queue records: bumped on every coalescing put, so a flush
+ * can delete a record ONLY when it still holds the op that was applied (a merged
+ * newer edit stays queued instead of being silently destroyed).
+ */
+export function nextOpRev(prev: number | null | undefined): number {
+  return (typeof prev === "number" && Number.isFinite(prev) ? prev : 0) + 1;
 }
 
 // ---------------------------------------------------------------------------

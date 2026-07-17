@@ -12,6 +12,7 @@ import { useWorkspace } from "~/data/workspace-context";
 export function Artists() {
   const { ws } = useWorkspace();
   const [members, setMembers] = useState<Member[] | null>(null);
+  const [loadError, setLoadError] = useState(false);
   const bands = ws ? viewableGroups(ws.perms, ws.groups) : [];
   const ids = bands.map((g) => g.id);
   const key = ids.join(",");
@@ -30,8 +31,16 @@ export function Artists() {
       .in("group_id", ids)
       .order("group_id", { ascending: true })
       .order("sort_order", { ascending: true })
-      .then(({ data }) => {
-        if (alive) setMembers((data ?? []) as Member[]);
+      .then(({ data, error }) => {
+        if (!alive) return;
+        // postgrest resolves offline/network failures as { data: null, error } —
+        // don't render an empty roster for a failed read.
+        if (error) {
+          setLoadError(true);
+          return;
+        }
+        setLoadError(false);
+        setMembers((data ?? []) as Member[]);
       });
     return () => {
       alive = false;
@@ -60,7 +69,14 @@ export function Artists() {
         </div>
         <RefreshButton />
       </div>
-      {members === null ? (
+      {members === null && loadError ? (
+        <Card>
+          <CardContent className="flex flex-col items-center gap-3 py-16 text-center text-sm text-muted-foreground">
+            <p>โหลดข้อมูลวงไม่สำเร็จ — อาจออฟไลน์อยู่หรือเน็ตมีปัญหา ลองใหม่เมื่อเน็ตกลับมา</p>
+            <RefreshButton label="ลองใหม่" />
+          </CardContent>
+        </Card>
+      ) : members === null ? (
         <p className="py-16 text-center text-sm text-muted-foreground">กำลังโหลด…</p>
       ) : (
         <GroupManager
