@@ -4,7 +4,7 @@
 import { useEffect, useState } from "react";
 import { Link, Navigate, useParams } from "react-router-dom";
 import { ArrowLeft } from "lucide-react";
-import { canEditGroup, editableGroups } from "@/lib/permissions";
+import { canApprove, canEditGroup, editableGroups } from "@/lib/permissions";
 import { EventForm } from "@/components/event/event-form";
 import { Button } from "@/components/ui/button";
 import { loadEventBundle, type EventBundle } from "~/data/event-bundle";
@@ -55,6 +55,7 @@ export function EditEventPage() {
         tenantId={bundle.event.tenant_id}
         userId={ws.user?.id}
         groups={editableGroups(ws.perms, ws.groups)}
+        canApprove={canApprove(ws.perms)}
       />
     </div>
   );

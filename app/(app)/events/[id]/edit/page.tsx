@@ -2,7 +2,7 @@ import { notFound, redirect } from "next/navigation";
 import Link from "next/link";
 import { ArrowLeft } from "lucide-react";
 import { getEventBundle, getWorkspace } from "@/lib/queries";
-import { canEditGroup, editableGroups } from "@/lib/permissions";
+import { canApprove, canEditGroup, editableGroups } from "@/lib/permissions";
 import { EventForm } from "@/components/event/event-form";
 import { Button } from "@/components/ui/button";
 
@@ -37,6 +37,7 @@ export default async function EditEventPage({
         tenantId={bundle.event.tenant_id}
         userId={ws.user?.id}
         groups={editableGroups(ws.perms, ws.groups)}
+        canApprove={canApprove(ws.perms)}
       />
     </div>
   );

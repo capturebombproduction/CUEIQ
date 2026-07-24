@@ -4,7 +4,7 @@
 // desktop shims, so the form Just Works.
 import { Link, Navigate } from "react-router-dom";
 import { ArrowLeft } from "lucide-react";
-import { canCreateAnyEvent, editableGroups } from "@/lib/permissions";
+import { canApprove, canCreateAnyEvent, editableGroups } from "@/lib/permissions";
 import { EventForm } from "@/components/event/event-form";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -44,6 +44,7 @@ export function NewEventPage() {
           userId={ws.user.id}
           groups={groups}
           defaultGroupId={groups[0]?.id}
+          canApprove={canApprove(ws.perms)}
         />
       )}
     </div>

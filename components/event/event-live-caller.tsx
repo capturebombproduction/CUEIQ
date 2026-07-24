@@ -206,7 +206,25 @@ export function EventLiveCaller({
   }
 
   // --- realtime: refetch when another device changes the order ----------------
+  // Ordering guard (same idea as the setlist refetch in live-mode.tsx): a broadcast
+  // can fire a refetch at any moment — including one already reading the board when
+  // the operator presses "จบ + ต่อไป". Without this, that older snapshot resolves
+  // AFTER our write and reverts the board to the pre-advance state, mid-show, on the
+  // one screen that is authoritative. `refetchSeq` drops superseded snapshots,
+  // `writesInFlight` defers a refetch issued while our own write is un-acked, and
+  // `missedRefetch` makes apply() re-pull whatever we skipped.
+  const refetchSeqRef = useRef(0);
+  const writesInFlightRef = useRef(0);
+  const missedRefetchRef = useRef(false);
+
   async function refetch() {
+    if (writesInFlightRef.current > 0) {
+      // anything we read now can be pre-write — apply() re-pulls once it commits
+      missedRefetchRef.current = true;
+      return;
+    }
+    const seq = ++refetchSeqRef.current;
+    missedRefetchRef.current = false;
     let q = supabase
       .from("run_sequence")
       .select("*")
@@ -215,6 +233,12 @@ export function EventLiveCaller({
       .order("sort_order", { ascending: true });
     q = eventDate ? q.eq("event_date", eventDate) : q.is("event_date", null);
     const { data } = await q;
+    // a newer refetch — or a local write — was issued while this was in flight:
+    // drop this older snapshot and let apply()'s tail pull a fresh one
+    if (seq !== refetchSeqRef.current) {
+      missedRefetchRef.current = true;
+      return;
+    }
     if (data) setRows(data as RunSeqLive[]);
   }
   const refetchRef = useRef(refetch);
@@ -298,6 +322,9 @@ export function EventLiveCaller({
   // race) — in that case the board is refetched back to server truth.
   async function apply(updates: CallerUpdate[]): Promise<boolean> {
     if (!canControl || updates.length === 0) return false;
+    // invalidate any snapshot already in flight — it predates this write
+    refetchSeqRef.current++;
+    writesInFlightRef.current++;
     setRows((prev) =>
       prev.map((r) => {
         const u = updates.find((x) => x.id === r.id);
@@ -314,20 +341,57 @@ export function EventLiveCaller({
         // select the row back: 0 rows = deleted or precondition lost the race
         return q.select("id");
       })
-    );
-    setBusy(false);
+    ).finally(() => {
+      // clear the write gate even if the round-trip threw, or refetch stays deferred
+      writesInFlightRef.current--;
+      setBusy(false);
+    });
     const err = results.find((r) => r.error)?.error;
-    const stale = results.some((r) => !r.error && (r.data?.length ?? 0) === 0);
+    const losers = updates.filter(
+      (_, i) => !results[i].error && (results[i].data?.length ?? 0) === 0
+    );
     if (err) {
       toast.error("บันทึกไม่สำเร็จ", { description: err.message });
       // pull the board back to server truth so the optimistic rows don't linger
       refetchRef.current();
-    } else if (stale) {
-      toast.info("ลำดับถูกเปลี่ยนจากเครื่อง/หน้าอื่นก่อน — อัปเดตบอร์ดให้ตรงแล้ว");
+    } else if (losers.length > 0) {
+      const denied = await writeWasDenied(losers);
+      if (denied) {
+        toast.error("ไม่มีสิทธิ์คุมคิว — ให้แอดมินตรวจสิทธิ์อีกครั้ง");
+      } else {
+        toast.info("ลำดับถูกเปลี่ยนจากเครื่อง/หน้าอื่นก่อน — อัปเดตบอร์ดให้ตรงแล้ว");
+      }
+      refetchRef.current();
+    } else if (missedRefetchRef.current) {
+      // a broadcast landed while we were writing — pull it now that we're settled
       refetchRef.current();
     }
     bcast();
-    return !err && !stale;
+    return !err && losers.length === 0;
+  }
+
+  // A 0-row update means one of two very different things: another controller got
+  // there first (the row moved on), or the write was DENIED — run_sequence's UPDATE
+  // policy is `can_approve(tenant_id)`, so a demoted account still showing the
+  // control bar (e.g. the desktop caller deriving canControl from its cached perms)
+  // has every press silently filtered out, no error. SELECT is allowed for any
+  // tenant member, so re-read the rows: if they still hold exactly what we expected,
+  // nobody raced us — we simply weren't allowed to write.
+  async function writeWasDenied(losers: CallerUpdate[]): Promise<boolean> {
+    const { data, error } = await supabase
+      .from("run_sequence")
+      .select("*")
+      .in(
+        "id",
+        losers.map((u) => u.id)
+      );
+    if (error || !data || data.length !== losers.length) return false;
+    const rowsById = new Map((data as RunSeqLive[]).map((r) => [r.id, r]));
+    return losers.every((u) => {
+      const row = rowsById.get(u.id) as unknown as Record<string, unknown> | undefined;
+      if (!row) return false;
+      return Object.entries(u.expect ?? {}).every(([k, v]) => row[k] === v);
+    });
   }
 
   // Begin the show / start the first pending row (only when nothing is live).
@@ -410,10 +474,34 @@ export function EventLiveCaller({
     ]);
   }
 
+  // What ดึง buffer has CONSUMED on this device: row id → the buffer_seconds it held
+  // BEFORE we drained it. run_sequence has nowhere to record this server-side and the
+  // app has no undo, so the ledger lives in localStorage (keyed to this festival, so
+  // it survives a mid-show reload) and รีเซ็ต hands the slack back — otherwise a dry
+  // run before doors permanently eats the real show's planned buffer.
+  const bufferLedgerKey = `cueiq-runorder-buffer:${tenantId}:${eventDate ?? "x"}:${eventName}`;
+  function readBufferLedger(): Record<string, number> {
+    try {
+      const parsed = JSON.parse(localStorage.getItem(bufferLedgerKey) || "null");
+      return parsed && typeof parsed === "object" ? parsed : {};
+    } catch {
+      return {};
+    }
+  }
+  function writeBufferLedger(next: Record<string, number> | null) {
+    try {
+      if (next && Object.keys(next).length > 0)
+        localStorage.setItem(bufferLedgerKey, JSON.stringify(next));
+      else localStorage.removeItem(bufferLedgerKey);
+    } catch {
+      // private mode / quota — the ledger is best-effort, never block the show
+    }
+  }
+
   // Absorb being late by compressing the slack still ahead (pending buffers). The
   // absorbed slack is CONSUMED — buffer_seconds is decremented on the pending rows
   // it came from — so pressing again later can only spend what actually remains.
-  function takeBuffer() {
+  async function takeBuffer() {
     if (!liveRow) return;
     const cur = liveRow.offset_min ?? 0;
     if (cur <= 0) {
@@ -429,38 +517,57 @@ export function EventLiveCaller({
       toast.info("ไม่มี buffer เหลือให้ดึง");
       return;
     }
-    const updates: CallerUpdate[] = [
+    // The drift write goes FIRST and ALONE: these are independent row writes with no
+    // transaction and no rollback, so if the live row's CAS loses the race (another
+    // controller nudged ± a moment ago) the buffers must NOT be drained — that would
+    // burn the plan's slack for nothing while the drift stays where it was.
+    const shifted = await apply([
       {
         id: liveRow.id,
         partial: { offset_min: cur - absorb },
         expect: { status: "live", offset_min: liveRow.offset_min },
       },
-    ];
+    ]);
+    if (!shifted) return; // apply() already reported it + pulled the board back
     // drain the absorbed minutes from the pending rows' buffers, front to back
+    const drains: CallerUpdate[] = [];
+    const ledger = readBufferLedger();
     let remain = absorb * 60;
     for (const r of pending) {
       if (remain <= 0) break;
       const take = Math.min(r.buffer_seconds || 0, remain);
       if (take <= 0) continue;
-      updates.push({
+      drains.push({
         id: r.id,
         partial: { buffer_seconds: r.buffer_seconds - take },
         expect: { status: "pending", buffer_seconds: r.buffer_seconds },
       });
+      // remember the ORIGINAL (first drain wins) so รีเซ็ต can hand it back
+      if (ledger[r.id] == null) ledger[r.id] = r.buffer_seconds;
       remain -= take;
     }
-    apply(updates);
+    if (drains.length > 0) {
+      writeBufferLedger(ledger); // record before writing: a half-landed drain is still restorable
+      if (!(await apply(drains))) return;
+    }
     toast.success(`ดึง buffer ${absorb} นาที — ร่นคิวให้ทันขึ้น`);
   }
 
   async function resetAll() {
+    // put back whatever ดึง buffer consumed on this device, alongside the live state
+    const ledger = readBufferLedger();
+    const restores = ordered.filter(
+      (r) => ledger[r.id] != null && ledger[r.id] !== r.buffer_seconds
+    );
     const ok = await confirm({
       title: "รีเซ็ตการคุมคิว?",
-      description: "ล้างเวลาจริง/สถานะทั้งหมด กลับไปเริ่มใหม่ตั้งแต่ต้น",
+      description: restores.length
+        ? "ล้างเวลาจริง/สถานะทั้งหมด กลับไปเริ่มใหม่ตั้งแต่ต้น · คืน buffer ที่ดึงไปจากเครื่องนี้ด้วย"
+        : "ล้างเวลาจริง/สถานะทั้งหมด กลับไปเริ่มใหม่ตั้งแต่ต้น",
       confirmText: "รีเซ็ต",
     });
     if (!ok) return;
-    apply(
+    const done = await apply(
       ordered.map((r) => ({
         id: r.id,
         partial: {
@@ -468,9 +575,13 @@ export function EventLiveCaller({
           actual_start: null,
           actual_end: null,
           offset_min: null,
+          ...(ledger[r.id] != null && ledger[r.id] !== r.buffer_seconds
+            ? { buffer_seconds: ledger[r.id] }
+            : {}),
         },
       }))
     );
+    if (done) writeBufferLedger(null);
   }
 
   // Save the run-time report (planned vs actual, late/early, over/under per slot) as

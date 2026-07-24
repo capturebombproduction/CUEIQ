@@ -35,6 +35,16 @@ import { VENUE_PRESETS, findVenuePreset, mapsSearchUrl } from "@/lib/venues";
 const EVENT_TYPE_KEYS = Object.keys(EVENT_TYPES) as EventType[];
 const STATUS_KEYS = Object.keys(STATUS_META) as GroupStatus[];
 
+/** The DB guards (0037) speak English — say it in Thai for the band. */
+function friendlyError(message?: string): string | undefined {
+  if (!message) return message;
+  if (message.includes("only an approver may approve an event"))
+    return "อนุมัติงานได้เฉพาะแอดมิน/ทีมค่าย — ส่วนที่แก้อื่น ๆ ยังไม่ถูกบันทึก";
+  if (message.includes("label_staff may only change event status"))
+    return "ทีมค่ายเปลี่ยนได้เฉพาะสถานะงาน";
+  return message;
+}
+
 export function EventForm({
   mode,
   tenantId,
@@ -42,6 +52,7 @@ export function EventForm({
   groups,
   defaultGroupId,
   event,
+  canApprove = false,
 }: {
   mode: "create" | "edit";
   tenantId: string;
@@ -49,6 +60,8 @@ export function EventForm({
   groups: Group[];
   defaultGroupId?: string;
   event?: EventRow;
+  /** Approver (แอดมิน/ทีมค่าย) — only they may set สถานะ = อนุมัติแล้ว (mig 0037). */
+  canApprove?: boolean;
 }) {
   const router = useRouter();
   const [name, setName] = useState(event?.name ?? "");
@@ -89,6 +102,17 @@ export function EventForm({
       return;
     }
     setLoading(true);
+    // สถานะ is sent CONDITIONALLY (mig 0037): the DB refuses a non-approver moving
+    // an event INTO 'approved'. An unchanged status is left out of the patch
+    // entirely, so an ordinary edit can never trip the guard on a stale page-load
+    // snapshot (staff rejected the show while this form was open). 'approved' from
+    // a non-approver is dropped too — the Select already blocks it, this is the belt.
+    const statusPatch: { status?: GroupStatus } =
+      mode === "edit" && status === event?.status
+        ? {}
+        : canApprove || status !== "approved"
+          ? { status }
+          : {};
     const payload = {
       tenant_id: tenantId,
       group_id: groupId,
@@ -98,7 +122,7 @@ export function EventForm({
       event_type: eventType,
       show_start_time: showStart || null,
       hard_out_time: hardOut || null,
-      status,
+      ...statusPatch,
       notes: notes.trim() || null,
       map_url: mapUrl.trim() || null,
       costume_theme: costumeTheme.trim() || null,
@@ -112,7 +136,7 @@ export function EventForm({
       const res = await saveEventWrite({ mode: "create", payload, createdBy: userId });
       setLoading(false);
       if (!res.ok) {
-        toast.error("สร้างงานไม่สำเร็จ", { description: res.message });
+        toast.error("สร้างงานไม่สำเร็จ", { description: friendlyError(res.message) });
         return;
       }
       if (res.queued) toast.success("ออฟไลน์อยู่ — สร้างงานไว้ในเครื่องแล้ว จะซิงค์ให้เมื่อเน็ตกลับ");
@@ -128,7 +152,7 @@ export function EventForm({
       });
       setLoading(false);
       if (!res.ok) {
-        toast.error("บันทึกไม่สำเร็จ", { description: res.message });
+        toast.error("บันทึกไม่สำเร็จ", { description: friendlyError(res.message) });
         return;
       }
       if (res.queued) toast.success("ออฟไลน์อยู่ — บันทึกไว้ในเครื่องแล้ว จะซิงค์ให้เมื่อเน็ตกลับ");
@@ -249,12 +273,24 @@ export function EventForm({
                 </SelectTrigger>
                 <SelectContent>
                   {STATUS_KEYS.map((k) => (
-                    <SelectItem key={k} value={k}>
+                    <SelectItem
+                      key={k}
+                      value={k}
+                      // อนุมัติแล้ว = ผู้อนุมัติเท่านั้น (mig 0037). Kept visible (never
+                      // filtered out) so an already-approved event still shows its
+                      // own status in the trigger.
+                      disabled={k === "approved" && !canApprove}
+                    >
                       {STATUS_META[k].emoji} {STATUS_META[k].label}
                     </SelectItem>
                   ))}
                 </SelectContent>
               </Select>
+              {!canApprove && (
+                <p className="text-xs text-muted-foreground">
+                  การอนุมัติทำโดยแอดมิน/ทีมค่ายจากหน้า Overview
+                </p>
+              )}
             </div>
           </div>
 

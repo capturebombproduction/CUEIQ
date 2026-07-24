@@ -168,6 +168,9 @@ export function LiveMode({
   // claim wins (ties broken by sender id) so exactly one stays in control instead of
   // both demoting each other into a silent, uncontrolled show.
   const controllerSinceRef = useRef<number | null>(null);
+  // when THIS page instance opened — a control claim older than this was made before
+  // we (re)loaded, i.e. we're re-joining an existing arrangement, not being taken over.
+  const mountedAtRef = useRef<number>(Date.now());
   const meId = useRef<string>(
     typeof crypto !== "undefined" && "randomUUID" in crypto
       ? crypto.randomUUID()
@@ -293,6 +296,11 @@ export function LiveMode({
   // timestamps are absolute, so the clock resumes as if nothing happened; a live
   // controller on another device still overrides this via the realtime sync.
   const liveRestoredRef = useRef(false);
+  // true only when a running show was actually resumed from THIS device's snapshot —
+  // i.e. this device was already part of the run before it reloaded. Used by the sync
+  // handler to decide whether stepping down should silence it (see "เครื่องเสียง
+  // คุมคนเดียว"); a `begun` adopted from someone else's broadcast must not count.
+  const resumedRunRef = useRef(false);
   useEffect(() => {
     try {
       const raw = localStorage.getItem(`cueiq:live:${eventId}`);
@@ -303,6 +311,7 @@ export function LiveMode({
           Date.now() - snap.savedAt < 6 * 60 * 60 * 1000; // within 6h
         if (snap?.state?.begun && fresh) {
           committedRef.current = snap.committed ?? { id: null, anchor: null };
+          resumedRunRef.current = true;
           setState(snap.state as LiveState);
           toast.message("กู้คืนสถานะโชว์ที่ค้างไว้", {
             description: "เวลาเดินต่อจากเดิม — กดรีเซ็ตถ้าจะเริ่มใหม่",
@@ -491,8 +500,12 @@ export function LiveMode({
   // cleanup object URLs on unmount
   const audioUrlsRef = useRef(audioUrls);
   audioUrlsRef.current = audioUrls;
+  // set by that cleanup: a download still in flight must not mint an object URL
+  // AFTER the revoke-all pass, or its (up to ~80MB) blob is pinned for good.
+  const unmountedRef = useRef(false);
   useEffect(() => {
     return () => {
+      unmountedRef.current = true;
       Object.values(audioUrlsRef.current).forEach((u) =>
         URL.revokeObjectURL(u)
       );
@@ -524,10 +537,21 @@ export function LiveMode({
     };
   }, [eventId]);
 
+  // What the download effect actually depends on: which item wants which file.
+  // refetchItems() mints a BRAND-NEW items array on every refetch (tab focus,
+  // "setlist-changed", library broadcast), so keying the effect on `items` restarted
+  // — and abandoned — an in-flight download of an 80MB master every time the operator
+  // switched apps. Keyed on this signature, a refetch that changed no audio leaves
+  // the running download alone.
+  const audioSig = useMemo(
+    () => items.map((it) => `${it.id}:${it.audio_path ?? ""}`).join("|"),
+    [items]
+  );
+
   // Download any online audio this device doesn't already hold (or holds a stale
-  // version of). Runs whenever the setlist changes — so a file uploaded on another
-  // device appears here after the "setlist-changed" refetch. Best-effort: a failure
-  // just leaves whatever local copy exists.
+  // version of). Runs whenever the setlist's audio changes — so a file uploaded on
+  // another device appears here after the "setlist-changed" refetch. Best-effort: a
+  // failure just leaves whatever local copy exists.
   useEffect(() => {
     let cancelled = false;
     const runId = ++downloadRunRef.current;
@@ -550,14 +574,24 @@ export function LiveMode({
           const local = await getLocalSource(it.song_id);
           const blob =
             local?.blob ?? (await getCachedSongBlob(path)) ?? (await downloadEventAudio(path));
-          if (cancelled) return;
-          const url = URL.createObjectURL(blob);
-          if (audioUrlsRef.current[it.id]) URL.revokeObjectURL(audioUrlsRef.current[it.id]);
+          // The bytes are HERE. Even if this run was superseded meanwhile, KEEP them:
+          // dropping them un-cached meant re-downloading the whole master from zero on
+          // venue wifi. Only discard when the item now wants a DIFFERENT file (a
+          // mid-show replace), where what we just fetched is genuinely stale.
+          const wanted = itemsRef.current.find((x) => x.id === it.id)?.audio_path;
+          if (cancelled && wanted !== path) return;
           const name = it.audio_name ?? "เพลง";
-          setAudioUrls((prev) => ({ ...prev, [it.id]: url }));
-          setAudioNames((prev) => ({ ...prev, [it.id]: name }));
           cachedPathRef.current[it.id] = path;
           saveAudio(eventId, it.id, blob, name, path).catch(() => {});
+          // Left Live Mode while this was transferring: the bytes are safely cached
+          // for next time, but an object URL minted now would outlive the unmount
+          // revoke-all above and never be freed.
+          if (unmountedRef.current) return;
+          const url = URL.createObjectURL(blob);
+          if (audioUrlsRef.current[it.id]) URL.revokeObjectURL(audioUrlsRef.current[it.id]);
+          setAudioUrls((prev) => ({ ...prev, [it.id]: url }));
+          setAudioNames((prev) => ({ ...prev, [it.id]: name }));
+          if (cancelled) return; // committed — but let the newer run drive the rest
         } catch {
           /* keep any existing local copy */
         } finally {
@@ -579,7 +613,10 @@ export function LiveMode({
     return () => {
       cancelled = true;
     };
-  }, [items, eventId]);
+    // `items` is read inside but deliberately NOT a dep — see audioSig above (a
+    // refetch that changed no audio must not restart an in-flight download).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [audioSig, eventId]);
 
   // Wake Lock — keep screen on while running
   const wakeLockRef = useRef<WakeLockSentinel | null>(null);
@@ -749,6 +786,11 @@ export function LiveMode({
       // session. This is what keeps the controller in control after a reconnect:
       // its own sync-request gets viewer replies, which we now ignore.
       if (!fromController && stateRef.current.begun) return;
+      // Correct for clock differences between devices: the sender stamps its own
+      // Date.now() as sentAt; we shift its absolute timestamps into OUR clock so
+      // both screens count down in step even if their system clocks disagree.
+      const skew =
+        typeof payload.sentAt === "number" ? Date.now() - payload.sentAt : 0;
       // An ACTIVE controller is driving → step down to a read-only viewer so we can't
       // fight it. (We do NOT pause audio: a speaker-wired device keeps playing and
       // follows the new controller's commands — see the viewer audio-sync effect.)
@@ -784,17 +826,20 @@ export function LiveMode({
         // the new controller's audio is the single source. The taker had to turn ITS
         // own sound on to take control, so the show audio moves there cleanly — no
         // stale speaker keeps playing out of step with the new controller's clock.
-        // ONLY when we actually held a claim (mine != null): a fresh/reloaded device
-        // yields its DEFAULT controller state (mine == null) to the incumbent on its
-        // very first sync — muting it there silenced a reloaded PA/speaker mid-show.
-        // It keeps its saved sound setting and follows the controller as the speaker.
-        if (mine != null) setSoundOutput(false);
+        // The ONE exception is a device that RESUMED this show from its OWN local
+        // snapshot (cueiq:live) and never claimed control itself, yielding to a claim
+        // that is OLDER than this page's own life: that's a reloaded PA/speaker
+        // handing its default controller flag back to the incumbent — muting it there
+        // is what silenced a reloaded speaker mid-show. The snapshot ref (not
+        // state.begun) is the discriminator on purpose: `begun` can be adopted from
+        // ANOTHER device's broadcast (a viewer's sync-reply lands first), which would
+        // let a phone that merely joined mid-show keep its sound on = two sound hosts.
+        // Everyone else mutes: a device that was not already running this show, and
+        // any device that lost a FRESH take-control.
+        const resumedThisShow = mine == null && resumedRunRef.current;
+        const freshClaim = theirs != null && theirs + skew > mountedAtRef.current;
+        if (!resumedThisShow || freshClaim) setSoundOutput(false);
       }
-      // Correct for clock differences between devices: the sender stamps its own
-      // Date.now() as sentAt; we shift its absolute timestamps into OUR clock so
-      // both screens count down in step even if their system clocks disagree.
-      const skew =
-        typeof payload.sentAt === "number" ? Date.now() - payload.sentAt : 0;
       setState({
         running: payload.running,
         begun: payload.begun ?? payload.startedAt != null,
@@ -884,7 +929,12 @@ export function LiveMode({
         status === "TIMED_OUT" ||
         status === "CLOSED"
       ) {
-        setSyncSettled(true); // can't sync (e.g. offline) — a local show must still start
+        // Can't sync (e.g. offline) — a local show must still start. But supabase-js
+        // reports these for a TRANSIENT join failure it then retries out of, and
+        // settling instantly re-opened the hijack window on a device that IS online.
+        // Give the retry a moment: a SUBSCRIBED landing first clears this timer.
+        if (settleTimer) clearTimeout(settleTimer);
+        settleTimer = setTimeout(() => setSyncSettled(true), 3000);
       }
     });
     // REAL-TIME library audio: a group-scoped channel the library broadcasts on

@@ -155,7 +155,8 @@ export function shouldApplyOnFlush(
  * event.update replay idempotent: a crash between apply and delete (or a second
  * instance re-running the same op) must see "already applied", not a false
  * conflict. Values are normalized like sanitizeChildRows (undefined → null,
- * editor "HH:MM" → server "HH:MM:SS") and compared canonically (jsonb-safe).
+ * editor "HH:MM" → server "HH:MM:SS", timestamptz → the instant it names) and
+ * compared canonically (jsonb-safe).
  */
 export function eventPatchApplied(
   patch: Record<string, unknown>,
@@ -164,10 +165,31 @@ export function eventPatchApplied(
   if (!serverRow) return false;
   const norm = (v: unknown): string => {
     if (v === undefined) v = null;
-    if (typeof v === "string" && /^\d{2}:\d{2}$/.test(v)) v = `${v}:00`;
+    if (typeof v === "string") {
+      if (/^\d{2}:\d{2}$/.test(v)) v = `${v}:00`;
+      else if (ISO_DATETIME.test(v)) {
+        // timestamptz (events.deadline): the form sends "…T16:59:00.000Z", the
+        // server renders "…T16:59:00+00:00" — same instant, different text.
+        const ms = parseInstantMs(v);
+        if (ms != null) v = `@${ms}`;
+      }
+    }
     return stableStringify(v);
   };
   return Object.keys(patch).every((k) => norm(patch[k]) === norm(serverRow[k]));
+}
+
+/** Date-TIME strings only — a bare "YYYY-MM-DD" (event_date) is already canonical. */
+const ISO_DATETIME = /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}/;
+
+/** Epoch ms of an ISO/Postgres timestamp, or null when it can't be parsed. */
+function parseInstantMs(v: string): number | null {
+  let ms = Date.parse(v);
+  if (Number.isNaN(ms)) {
+    // Postgres' own text rendering ("2026-07-24 16:59:00+00") isn't always accepted.
+    ms = Date.parse(v.replace(" ", "T").replace(/([+-]\d{2})$/, "$1:00"));
+  }
+  return Number.isNaN(ms) ? null : ms;
 }
 
 /**
@@ -180,6 +202,17 @@ export function isUniqueViolation(
 ): boolean {
   if (code === "23505") return true;
   return !!message && /duplicate key value violates unique/i.test(message);
+}
+
+/**
+ * Migration 0037's approval guard rejecting a write ("only an approver may approve
+ * an event"). A queued event.update carries the WHOLE EventForm payload, so an
+ * offline edit that never touched the status can be refused just because the
+ * server's status moved while this device was offline — the caller retries
+ * without `status` and surfaces a Thai reason instead of the raw exception.
+ */
+export function isApprovalGuardError(message: string | null | undefined): boolean {
+  return !!message && /only an approver may approve/i.test(message);
 }
 
 /**

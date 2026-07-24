@@ -2,7 +2,7 @@ import { redirect } from "next/navigation";
 import Link from "next/link";
 import { ArrowLeft } from "lucide-react";
 import { getWorkspace } from "@/lib/queries";
-import { canCreateAnyEvent, editableGroups } from "@/lib/permissions";
+import { canApprove, canCreateAnyEvent, editableGroups } from "@/lib/permissions";
 import { EventForm } from "@/components/event/event-form";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -41,6 +41,7 @@ export default async function NewEventPage() {
           userId={ws.user.id}
           groups={groups}
           defaultGroupId={groups[0]?.id}
+          canApprove={canApprove(ws.perms)}
         />
       )}
     </div>

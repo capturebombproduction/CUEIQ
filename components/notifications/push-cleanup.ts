@@ -18,8 +18,17 @@ export async function cleanupPushOnSignOut(): Promise<void> {
     const sub = await reg?.pushManager.getSubscription();
     if (!sub) return;
     // row first (needs auth), then the browser subscription itself
-    await createClient().from("push_subscriptions").delete().eq("endpoint", sub.endpoint);
-    await sub.unsubscribe();
+    const { error } = await createClient()
+      .from("push_subscriptions")
+      .delete()
+      .eq("endpoint", sub.endpoint);
+    // Only release the browser subscription if the row actually went away. If the
+    // delete failed (dead network at the venue, RLS), unsubscribing would kill push
+    // on this device while the row lives on — the bell still shows "เปิดแล้ว" and
+    // reminders silently stop, and the sign-out itself may not even go through.
+    // Leaving both in place keeps them consistent; the bell's SIGNED_OUT listener
+    // still unsubscribes once the sign-out really completes.
+    if (!error) await sub.unsubscribe();
   } catch {
     /* best-effort — sign-out proceeds regardless */
   }

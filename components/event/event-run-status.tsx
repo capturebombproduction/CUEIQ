@@ -134,6 +134,20 @@ export function EventRunStatusCard({
     const p = parseClockToSeconds(r.planned_start);
     return p == null ? null : p + drift * 60;
   }
+  // ...and the same projection as an ABSOLUTE instant, anchored to the event date.
+  // The countdown must not be a clock-of-day subtraction: on a long festival day a
+  // band's own slot can legitimately be >12h ahead, and folding that (normSec) flips
+  // the sign into "ถึงคิวแล้ว" thirteen hours early. A row whose planned clock falls
+  // before the first row's belongs to the next calendar day (a past-midnight slot).
+  function projectedStartMs(r: RunSeqLive): number | null {
+    const p = parseClockToSeconds(r.planned_start);
+    if (p == null || !eventDate) return null;
+    const base = Date.parse(`${eventDate}T00:00:00`); // local midnight of the event day
+    if (Number.isNaN(base)) return null;
+    const first = parseClockToSeconds(ordered[0]?.planned_start ?? null);
+    const nextDay = first != null && p < first ? 86400 : 0;
+    return base + (p + nextDay + drift * 60) * 1000;
+  }
   // A row's own start late(+)/early(−) log vs its plan. TZ-dependent → gate by mounted.
   function startLateMin(r: RunSeqLive): number | null {
     const p = parseClockToSeconds(r.planned_start);
@@ -193,7 +207,15 @@ export function EventRunStatusCard({
     }
     // pending — when's our turn?
     const proj = projectedStartSec(selfRow);
-    const countdown = proj != null ? normSec(proj - secOfDay(nowDate)) : null;
+    const projMs = projectedStartMs(selfRow);
+    // real elapsed time when we can anchor to the event date; otherwise (no date on
+    // the festival) fall back to the folded clock-of-day difference
+    const countdown =
+      projMs != null
+        ? (projMs - now) / 1000
+        : proj != null
+          ? normSec(proj - secOfDay(nowDate))
+          : null;
     return (
       <div className="space-y-0.5">
         <p className="text-sm">
@@ -205,10 +227,11 @@ export function EventRunStatusCard({
             </>
           )}
         </p>
-        {/* The countdown compares clock-of-day only, so it's meaningful once the
-            show is actually running — before that (a band peeking days ahead) it
-            would falsely read "ถึงคิวแล้ว" after 15:45 on any day. Show it only when
-            the show has started; otherwise the planned start above is enough. */}
+        {/* Without an event date to anchor to, the countdown is a clock-of-day
+            difference — meaningful only once the show is actually running; before
+            that (a band peeking days ahead) it would falsely read "ถึงคิวแล้ว" after
+            15:45 on any day. Show it only when the show has started; otherwise the
+            planned start above is enough. */}
         {mounted && started && countdown != null && (
           <p
             className={cn(

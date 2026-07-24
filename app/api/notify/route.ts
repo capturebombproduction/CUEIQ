@@ -192,6 +192,11 @@ export async function POST(req: Request) {
     link = `/events/${ev.id}/run-order/live`;
     recipientRule = "all_tenant";
     meta.event_id = ev.id;
+    // The board is festival-wide (one run_sequence per tenant + name + date) but is
+    // reachable from ANY member event's page, so remember the FESTIVAL identity and
+    // dedupe on that below — keying on the entry-point event id would let a restart
+    // from another band's page re-blast the whole label.
+    meta.festival = `${tenantId}|${(ev.name as string) ?? ""}|${(ev.event_date as string) ?? ""}`;
   }
 
   // 3) The caller must belong to the subject's tenant (blocks cross-tenant spam).
@@ -233,20 +238,38 @@ export async function POST(req: Request) {
   // 4b) Dedupe against recent identical notifications (mirrors the cron fan()):
   // the anti-spoof status stays true for a window (a run_sequence is 'live' for the
   // whole show), so without this ANY member — or a stuck client retry loop — could
-  // re-blast the same push to the whole tenant in a loop. Skip recipients who
-  // already got this exact (type, subject) recently.
+  // re-blast the same push to the whole tenant in a loop. But real state transitions
+  // legitimately repeat inside that window (reject → fix → auto-resubmit), and there
+  // is no history to fall back on, so the guard must never swallow the DURABLE bell
+  // row: only someone who STILL has that exact item unread is skipped outright (it
+  // is already sitting in their bell); everyone else gets the row and only the
+  // redundant PUSH is held back.
   const dedupeMs = kind === "run_order_live" ? 10 * 60_000 : 5 * 60_000;
   const dedupeSince = new Date(Date.now() - dedupeMs).toISOString();
-  const subjectCol = SONG_KINDS.has(kind) ? "meta->>song_id" : "meta->>event_id";
-  const subjectId = String(SONG_KINDS.has(kind) ? meta.song_id : meta.event_id);
+  const subjectCol = SONG_KINDS.has(kind)
+    ? "meta->>song_id"
+    : kind === "run_order_live"
+      ? "meta->>festival"
+      : "meta->>event_id";
+  const subjectId = String(
+    SONG_KINDS.has(kind)
+      ? meta.song_id
+      : kind === "run_order_live"
+        ? meta.festival
+        : meta.event_id
+  );
   const { data: already } = await admin
     .from("notifications")
-    .select("user_id")
+    .select("user_id, read_at")
     .eq("type", kind)
     .eq(subjectCol, subjectId)
     .gt("created_at", dedupeSince);
-  const got = new Set((already ?? []).map((r) => r.user_id as string));
-  recipientIds = recipientIds.filter((id) => !got.has(id));
+  const recent = already ?? [];
+  const stillUnread = new Set(
+    recent.filter((r) => !r.read_at).map((r) => r.user_id as string)
+  );
+  const pushedRecently = new Set(recent.map((r) => r.user_id as string));
+  recipientIds = recipientIds.filter((id) => !stillUnread.has(id));
   if (recipientIds.length === 0) return noOp(req);
 
   // 5) Insert the in-app rows.
@@ -261,13 +284,15 @@ export async function POST(req: Request) {
   }));
   await admin.from("notifications").insert(rows);
 
-  // 6) Web Push (best-effort; prune dead subscriptions).
+  // 6) Web Push (best-effort; prune dead subscriptions) — only to recipients who
+  // did NOT already get a push for this exact (type, subject) inside the window.
+  const pushIds = recipientIds.filter((id) => !pushedRecently.has(id));
   let sent = 0;
-  if (vapidConfigured()) {
+  if (vapidConfigured() && pushIds.length) {
     const { data: subs } = await admin
       .from("push_subscriptions")
       .select("id, user_id, endpoint, p256dh, auth")
-      .in("user_id", recipientIds);
+      .in("user_id", pushIds);
     const payload = { title, body: messageBody, link };
     const dead: string[] = [];
     await Promise.all(

@@ -12,14 +12,20 @@
 --       pending_review resubmit, and non-status edits of an already-approved
 --       event (new.status not distinct from old) all keep working, so the
 --       desktop outbox flush (full-payload PATCH with the user's token) is safe.
+--       That right is judged on old.tenant_id, and the editor path now also
+--       refuses a tenant_id change: tenant_id is writable by an editor, so
+--       keying on new.tenant_id would let ONE update move the row into a tenant
+--       where the caller happens to be an approver and self-approve it there.
 --   (2) new insert guard — the same hole at creation: a non-approver could
 --       insert an event born 'approved'. Force it to 'draft' (like
 --       force_song_pending_on_insert). SKIPPED when auth.uid() is null so
 --       service_role / direct-connection seeding keeps inserting any status.
 --
 -- ⚠️ events has updated_at + a touch_updated_at BEFORE trigger, so the approver-only
--- branch MUST stay a column-denylist (copied from 0034 unchanged — no events columns
--- were added since). When a future migration adds a column to events, add it here too.
+-- branch MUST stay a column-denylist. The 0034 list is carried over PLUS id,
+-- created_by and created_at, which it has been missing since 0018 (a label_staff
+-- could rewrite who created a show); status + updated_at stay the only allowed
+-- deltas. When a future migration adds a column to events, add it here too.
 -- Additive + idempotent. Run with: npm run migrate supabase/migrations/0037_event_approval_guard.sql
 
 -- ---------------------------------------------------------------------
@@ -31,9 +37,12 @@ set search_path = public as $$
 begin
   if public.can_edit_group(new.group_id) then
     -- full editor (admin / Ar): anything EXCEPT approving — that needs an approver
+    if new.tenant_id is distinct from old.tenant_id then
+      raise exception 'an event may not change tenant';
+    end if;
     if new.status is distinct from old.status
        and new.status = 'approved'
-       and not public.can_approve(new.tenant_id)
+       and not public.can_approve(old.tenant_id)   -- the tenant the row IS in
     then
       raise exception 'only an approver may approve an event';
     end if;
@@ -59,6 +68,9 @@ begin
        or new.is_practice      is distinct from old.is_practice   -- 0022 (added 0034)
        or new.group_id         is distinct from old.group_id
        or new.tenant_id        is distinct from old.tenant_id
+       or new.id               is distinct from old.id          -- 0001 (missed by 0018)
+       or new.created_by       is distinct from old.created_by  -- 0001 (missed by 0018)
+       or new.created_at       is distinct from old.created_at  -- 0001 (missed by 0018)
     then
       raise exception 'label_staff may only change event status';
     end if;

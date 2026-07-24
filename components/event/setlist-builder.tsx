@@ -344,9 +344,11 @@ function MicSlotsDialog({
 function LibraryPickerDialog({
   songs,
   onPick,
+  disabled,
 }: {
   songs: Song[];
   onPick: (song: Song) => void;
+  disabled?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState("");
@@ -357,7 +359,7 @@ function LibraryPickerDialog({
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild>
-        <Button type="button" variant="outline">
+        <Button type="button" variant="outline" disabled={disabled}>
           <ListMusic className="h-4 w-4" /> จากคลัง
         </Button>
       </DialogTrigger>
@@ -387,8 +389,11 @@ function LibraryPickerDialog({
                   <button
                     key={s.id}
                     type="button"
-                    className="flex w-full items-center justify-between gap-3 rounded-md border px-3 py-2 text-left text-sm transition-colors hover:bg-muted"
+                    disabled={disabled}
+                    className="flex w-full items-center justify-between gap-3 rounded-md border px-3 py-2 text-left text-sm transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
                     onClick={() => {
+                      // An add is still round-tripping — the pick would be dropped.
+                      if (disabled) return;
                       onPick(s);
                       setQ("");
                       setOpen(false);
@@ -704,7 +709,14 @@ export function SetlistBuilder({
   ): Promise<boolean> {
     // In-flight guard: a double-click would compute the same max(sort_order)+1
     // twice → two rows with equal sort_order the arrow buttons can't reorder.
-    if (insertingRef.current) return false;
+    // The buttons are disabled while busy, but state lags the ref by a render —
+    // never drop the click silently, tell the user to try again.
+    if (insertingRef.current) {
+      toast.info("กำลังเพิ่มรายการก่อนหน้า — รอสักครู่แล้วกดใหม่", {
+        id: "setlist-inserting",
+      });
+      return false;
+    }
     insertingRef.current = true;
     setInserting(true);
     try {
@@ -1220,7 +1232,11 @@ export function SetlistBuilder({
           >
             <Plus className="h-4 w-4" /> เพลง
           </Button>
-          <LibraryPickerDialog songs={songs} onPick={addFromLibrary} />
+          <LibraryPickerDialog
+            songs={songs}
+            onPick={addFromLibrary}
+            disabled={inserting}
+          />
           <Button
             type="button"
             variant="outline"

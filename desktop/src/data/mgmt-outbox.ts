@@ -15,6 +15,7 @@ import {
   CHILD_WRITE_COLUMNS,
   childFlushDecision,
   eventPatchApplied,
+  isApprovalGuardError,
   isChildListOp,
   isQueueableWriteError,
   isUniqueViolation,
@@ -47,6 +48,8 @@ interface OpRec {
 // a flush's read→apply→delete can never interleave with a coalescing enqueue
 // (which puts onto the SAME IndexedDB key the flush is about to delete).
 let outboxLock: Promise<unknown> = Promise.resolve();
+/** Bumped by clearMgmtOutbox (sign-out) — a flush in flight checks it and stops. */
+let outboxGeneration = 0;
 function withOutboxLock<T>(fn: () => Promise<T>): Promise<T> {
   const run = outboxLock.then(fn, fn);
   outboxLock = run.then(
@@ -258,6 +261,13 @@ async function parkConflict(rec: OpRec, reason: string): Promise<void> {
   });
 }
 
+/** Thai reason for a unique-index collision the replay itself can't resolve. */
+const DUPLICATE_ROW_REASON =
+  "มีรายการซ้ำที่ระบบไม่อนุญาต (เช่น รอบถ่ายรูปซ้ำในงานเดียว) — แก้รายการนี้บนออนไลน์แล้วลองใหม่";
+
+/** Thai reason for migration 0037's approval guard refusing the queued status. */
+const APPROVAL_REASON = "สถานะ “อนุมัติแล้ว” ต้องให้สตาฟที่มีสิทธิ์เป็นคนอนุมัติ";
+
 /** Classify one failed write during a flush: still-offline throws, rejection parks. */
 function failOrThrow(message: string, onLine: boolean): { conflict: string } {
   if (isQueueableWriteError(message, onLine)) throw new Error(message);
@@ -335,8 +345,25 @@ async function applyChildListOp(
       const delMsg = await deleteRemoved();
       if (delMsg) return failOrThrow(delMsg, onLine);
       up = await supabase.from(table).upsert(rows);
+      if (up.error && isUniqueViolation(up.error.code, up.error.message)) {
+        // Still colliding → the two rows sit INSIDE this snapshot (one row gives up
+        // kind='photo' while another takes it), so no upsert order clears the index.
+        // Replace the whole set instead: drop the event's rows, insert mine.
+        const wipe = await supabase.from(table).delete().eq("event_id", op.id);
+        if (wipe.error) return failOrThrow(wipe.error.message, onLine);
+        up = await supabase.from(table).insert(rows);
+      }
+      if (up.error) {
+        // This recovery path already deleted rows, so the "upsert first, delete
+        // after" crash-safety of the happy path no longer holds — put the snapshot
+        // back (best-effort) before parking, or the server keeps a half-emptied list.
+        await supabase.from(table).upsert(rows);
+        const dup = isUniqueViolation(up.error.code, up.error.message);
+        return failOrThrow(dup ? DUPLICATE_ROW_REASON : up.error.message, onLine);
+      }
+    } else if (up.error) {
+      return failOrThrow(up.error.message, onLine);
     }
-    if (up.error) return failOrThrow(up.error.message, onLine);
   }
   const delMsg = await deleteRemoved();
   if (delMsg) return failOrThrow(delMsg, onLine);
@@ -406,6 +433,9 @@ async function applyOp(op: NewMgmtOp): Promise<"applied" | { conflict: string }>
       .select("updated_at");
     if (res.error) {
       if (isQueueableWriteError(res.error.message, onLine)) throw new Error(res.error.message);
+      // 0037: the queued patch tried to set 'approved' without the right — park it
+      // in Thai, not with the raw Postgres exception the ชนกัน panel would show.
+      if (isApprovalGuardError(res.error.message)) return { conflict: APPROVAL_REASON };
       return { conflict: res.error.message };
     }
     if (!res.data || res.data.length === 0) {
@@ -447,6 +477,7 @@ export function flushMgmtOutbox(): Promise<FlushResult> {
 }
 
 async function doFlush(): Promise<FlushResult> {
+  const gen = outboxGeneration;
   let mine: { key: number; rec: OpRec }[];
   try {
     mine = await listMyOps();
@@ -456,12 +487,14 @@ async function doFlush(): Promise<FlushResult> {
   let flushed = 0;
   let parked = 0;
   for (const { key, rec } of mine) {
+    if (gen !== outboxGeneration) break; // signed out mid-replay — the wipe wins
     let outcome: "applied" | { conflict: string };
     try {
       outcome = await applyOp(rec.op);
     } catch {
       break; // network still down — try again on the next reconnect
     }
+    if (gen !== outboxGeneration) break; // wiped while this op was in flight
     if (outcome !== "applied") {
       await parkConflict(rec, outcome.conflict);
       parked++;
@@ -521,14 +554,40 @@ export function resolveMgmtConflict(
           if (isChildListOp(op)) {
             const onLine = typeof navigator === "undefined" || navigator.onLine !== false;
             const res = await applyChildListOp(op, onLine, true);
-            if (res !== "applied") return { ok: false };
+            if (res !== "applied") {
+              // The force-write hit a real rejection (e.g. a duplicate row the
+              // snapshot can't resolve) — keep it parked with THAT reason, so the
+              // user isn't told to "try again when online" for something retrying
+              // will never fix.
+              await setConflictReason(key, res.conflict);
+              return { ok: false, message: res.conflict };
+            }
           } else if (op.kind === "event.update") {
-            const { data, error } = await supabase
+            let { data, error } = await supabase
               .from("events")
               .update(op.patch)
               .eq("id", op.id)
               .select("id");
-            if (error) return { ok: false };
+            if (error && isApprovalGuardError(error.message) && "status" in op.patch) {
+              // 0037: the queued patch is the whole EventForm payload, so it carries
+              // the status the row had when the edit was made. If the server has
+              // since moved off it, force-writing the patch whole is refused forever
+              // — retry without the status so the user's own edits still land.
+              const rest = { ...(op.patch as Record<string, unknown>) };
+              delete rest.status;
+              ({ data, error } = await supabase
+                .from("events")
+                .update(rest)
+                .eq("id", op.id)
+                .select("id"));
+            }
+            if (error) {
+              if (isApprovalGuardError(error.message)) {
+                await setConflictReason(key, APPROVAL_REASON);
+                return { ok: false, message: APPROVAL_REASON };
+              }
+              return { ok: false };
+            }
             if (!data || data.length === 0) {
               // PostgREST reports NO error on a 0-row update — without this check
               // the user's "keep mine" would silently write nothing. The event was
@@ -559,23 +618,29 @@ export function resolveMgmtConflict(
 
 /** Wipe everything (sign-out on a shared device — ops must not leak across users). */
 export async function clearMgmtOutbox(): Promise<void> {
-  try {
-    const db = await openDB();
-    await new Promise<void>((resolve) => {
-      const tx = db.transaction([OPS, CONFLICTS], "readwrite");
-      tx.objectStore(OPS).clear();
-      tx.objectStore(CONFLICTS).clear();
-      tx.oncomplete = () => {
-        db.close();
-        resolve();
-      };
-      tx.onerror = () => {
-        db.close();
-        resolve();
-      };
-    });
-  } catch {
-    /* best-effort */
-  }
+  // Bumped BEFORE taking the lock so a flush already mid-replay sees it and stops:
+  // otherwise its remaining ops fail against the revoked session and park fresh
+  // conflicts into the store we're about to empty.
+  outboxGeneration++;
+  await withOutboxLock(async () => {
+    try {
+      const db = await openDB();
+      await new Promise<void>((resolve) => {
+        const tx = db.transaction([OPS, CONFLICTS], "readwrite");
+        tx.objectStore(OPS).clear();
+        tx.objectStore(CONFLICTS).clear();
+        tx.oncomplete = () => {
+          db.close();
+          resolve();
+        };
+        tx.onerror = () => {
+          db.close();
+          resolve();
+        };
+      });
+    } catch {
+      /* best-effort */
+    }
+  });
   notify();
 }

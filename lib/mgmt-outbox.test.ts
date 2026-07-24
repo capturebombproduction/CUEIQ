@@ -10,6 +10,7 @@ import {
   describeOp,
   eventPatchApplied,
   fingerprintChildRows,
+  isApprovalGuardError,
   isQueueableWriteError,
   isUniqueViolation,
   materializeEventRow,
@@ -145,6 +146,44 @@ describe("eventPatchApplied — idempotent event.update replay", () => {
     expect(eventPatchApplied({ meta: { a: 1, b: 2 } }, { meta: { b: 2, a: 1 } })).toBe(true);
   });
 
+  it("treats a timestamptz as the instant it names, not its text form", () => {
+    // EventForm sends toISOString(); PostgREST renders "+00:00" (and Postgres "+00").
+    expect(
+      eventPatchApplied(
+        { deadline: "2026-07-24T16:59:00.000Z" },
+        { deadline: "2026-07-24T16:59:00+00:00" }
+      )
+    ).toBe(true);
+    expect(
+      eventPatchApplied(
+        { deadline: "2026-07-24T16:59:00.000Z" },
+        { deadline: "2026-07-24 16:59:00+00" }
+      )
+    ).toBe(true);
+    // Same wall-clock text, different offset = a different instant → not applied.
+    expect(
+      eventPatchApplied(
+        { deadline: "2026-07-24T16:59:00.000Z" },
+        { deadline: "2026-07-24T16:59:00+07:00" }
+      )
+    ).toBe(false);
+    expect(
+      eventPatchApplied(
+        { deadline: "2026-07-24T16:59:00.000Z" },
+        { deadline: "2026-07-25T16:59:00+00:00" }
+      )
+    ).toBe(false);
+    // A bare date column stays an exact string compare.
+    expect(eventPatchApplied({ event_date: "2026-07-24" }, { event_date: "2026-07-24" })).toBe(true);
+    expect(eventPatchApplied({ event_date: "2026-07-24" }, { event_date: "2026-07-25" })).toBe(
+      false
+    );
+    // Unparseable text falls back to the raw string.
+    expect(eventPatchApplied({ deadline: "2026-13-99T99:99" }, { deadline: "2026-13-99T99:99" })).toBe(
+      true
+    );
+  });
+
   it("an empty patch is trivially applied", () => {
     expect(eventPatchApplied({}, { name: "X" })).toBe(true);
   });
@@ -162,6 +201,15 @@ describe("isUniqueViolation — 23505 detection for the snapshot replay retry", 
     expect(isUniqueViolation("42501", "permission denied")).toBe(false);
     expect(isUniqueViolation(null, "Failed to fetch")).toBe(false);
     expect(isUniqueViolation(null, null)).toBe(false);
+  });
+});
+
+describe("isApprovalGuardError — migration 0037's approver-only status guard", () => {
+  it("matches the guard's exception and nothing else", () => {
+    expect(isApprovalGuardError("only an approver may approve an event")).toBe(true);
+    expect(isApprovalGuardError("label_staff may only change event status")).toBe(false);
+    expect(isApprovalGuardError("Failed to fetch")).toBe(false);
+    expect(isApprovalGuardError(null)).toBe(false);
   });
 });
 

@@ -134,6 +134,30 @@ function newId(): string {
     : `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
+/**
+ * Store the boot-migrated (now self-contained) songs ONE AT A TIME: a whole-show
+ * transaction is all-or-nothing, so a single oversized song filling the disk would
+ * throw away every conversion that did succeed. A failure must also be VISIBLE —
+ * silently swallowed, the operator would believe the audio is now copied into the
+ * machine (and may delete the sources) while IDB still holds the fragile on-disk
+ * references. Detached from boot on purpose — the show must open immediately.
+ */
+async function persistMigrated(list: SoloItem[]) {
+  let failed = 0;
+  for (const it of list) {
+    try {
+      await putSoloItem(it);
+    } catch {
+      failed += 1;
+    }
+  }
+  if (failed > 0) {
+    toast.error(`คัดลอกไฟล์เข้าเครื่องไม่สำเร็จ ${failed} เพลง (พื้นที่เครื่องอาจเต็ม)`, {
+      description: "อย่าลบไฟล์ต้นทาง — โชว์ยังอ้างอิงไฟล์เดิมอยู่",
+    });
+  }
+}
+
 export function MyShow() {
   const [items, setItems] = useState<SoloItem[]>([]);
   const itemsRef = useRef(items);
@@ -214,14 +238,19 @@ export function MyShow() {
             it.blob = new Blob([buf], { type: it.blob.type });
             migrated.push(it);
           } catch {
+            // KEEP the File on the item — do NOT blank it. The row goes red off
+            // brokenIds and never gets an object URL, so nothing tries to play it,
+            // while a later write (reorder / edit / volume) can only put the SAME
+            // reference back. Nulling it here would let any such write destroy a
+            // reference that a replugged USB / restored path would revive.
             broken.add(it.id);
-            it.blob = null; // keep the row (title/timing) — the reference is dead
           }
         }
       }
-      // opportunistic — the dead reference stays in IDB, so if the source file
-      // comes back (USB replugged) the next boot migrates it successfully
-      if (migrated.length > 0) putSoloItems(migrated).catch(() => {});
+      // opportunistic + per-item + observed (see persistMigrated) — the dead
+      // references stay in IDB, so if a source file comes back (USB replugged)
+      // the next boot migrates it successfully
+      if (migrated.length > 0) void persistMigrated(migrated);
       if (!alive) return;
       if (broken.size > 0) {
         toast.error(`ไฟล์เพลง ${broken.size} รายการเปิดไม่ได้ (ไฟล์ต้นทางถูกย้าย/ลบ)`, {
@@ -235,7 +264,8 @@ export function MyShow() {
       const u: Record<string, string> = {};
       const v: Record<string, number> = {};
       for (const it of list) {
-        if (it.blob) u[it.id] = URL.createObjectURL(it.blob);
+        // broken = the File is still on the item but unreadable — no URL, no playback
+        if (it.blob && !broken.has(it.id)) u[it.id] = URL.createObjectURL(it.blob);
         v[it.id] = it.volume ?? 100;
       }
       setUrls(u);

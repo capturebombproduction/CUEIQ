@@ -432,12 +432,16 @@ export function SongLibrary({
       toast.success("อัปโหลดไฟล์เพลงขึ้นคลังแล้ว 🎵");
       return path;
     } catch (e) {
-      // The PUT succeeded but no row points at the new object — best-effort
-      // delete so the (potentially huge) file doesn't orphan in R2 forever.
-      if (uploaded) removeEventAudio(path).catch(() => {});
       toast.error("อัปโหลดไม่สำเร็จ", {
         description: e instanceof Error ? e.message : String(e),
       });
+      // The PUT landed but the update threw. A thrown update does NOT prove the
+      // server rejected it — a dropped response after PostgREST committed looks
+      // identical here. So delete the fresh object only when we can PROVE no row
+      // points at it: re-read the row, and if that read fails (or we're offline,
+      // or RLS hides it) leave the file alone. An orphan on R2 costs nothing;
+      // deleting the file a live song points at costs the show.
+      if (uploaded) await cleanupUnreferencedUpload(song.id, path);
       return null;
     } finally {
       setAudioBusy((b) => {
@@ -445,6 +449,25 @@ export function SongLibrary({
         delete n[song.id];
         return n;
       });
+    }
+  }
+
+  // Best-effort orphan cleanup after a failed upload. Deletes `path` ONLY when
+  // the row provably does not reference it. Any doubt (read failed, offline,
+  // row missing) → keep the file.
+  async function cleanupUnreferencedUpload(songId: string, path: string) {
+    if (typeof navigator !== "undefined" && navigator.onLine === false) return;
+    try {
+      const { data, error } = await supabase
+        .from("songs")
+        .select("audio_path")
+        .eq("id", songId)
+        .maybeSingle();
+      if (error || !data) return;
+      if (data.audio_path === path) return; // the update DID commit — keep it
+      await removeEventAudio(path);
+    } catch {
+      // leave the object; a later replace/removal sweeps it
     }
   }
 

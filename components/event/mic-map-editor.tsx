@@ -208,7 +208,11 @@ export function MicMapEditor({
       });
       return false;
     }
-    const snapshot = mics;
+    // rows this call moves — reverting by id keeps concurrent edits to OTHER
+    // mics (which wrote fine) alive if this write later fails.
+    const movedIds = new Set(
+      mics.filter((m) => m.mic_number === oldNum).map((m) => m.id)
+    );
     const next = mics.map((m) =>
       m.mic_number === oldNum ? { ...m, mic_number: newNum } : m
     );
@@ -222,7 +226,12 @@ export function MicMapEditor({
         if (error) {
           if (await queueOffline(next, error.message)) return;
           toast.error("เปลี่ยนเบอร์ไมค์ไม่สำเร็จ", { description: error.message });
-          setMics(snapshot); // real rejection — re-keys the input back to oldNum
+          // real rejection — put only these rows back on oldNum (re-keys the input)
+          setMics((prev) =>
+            prev.map((m) =>
+              movedIds.has(m.id) ? { ...m, mic_number: oldNum } : m
+            )
+          );
         }
       });
     return true;
