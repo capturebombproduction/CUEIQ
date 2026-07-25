@@ -405,14 +405,24 @@ export function PracticeJournal({
       {outstandingHomework.length > 0 && (
         <div className="rounded-xl border border-amber-500/40 bg-amber-500/5 p-4">
           <p className="mb-2 text-sm font-semibold">📌 การบ้านค้าง</p>
+          {/* RLS lets only the AUTHOR or a band editor tick a log (mig 0024), and that
+              is deliberate — the Ar ticks the band's homework off. So a member who can
+              tick nothing here gets the list plus one line saying who does it, rather
+              than a row of checkboxes that always bounce back. */}
+          {!canManage && !outstandingHomework.some((l) => l.author_id === currentUserId) && (
+            <p className="mb-2 text-xs text-muted-foreground">
+              ทำเสร็จแล้วบอก Ar ให้ติ๊กให้นะ — ติ๊กเองไม่ได้
+            </p>
+          )}
           <div className="space-y-1.5">
             {outstandingHomework.map((l) => (
               <label key={l.id} className="flex items-start gap-2 text-sm">
                 <input
                   type="checkbox"
                   checked={l.done}
+                  disabled={!canManage && l.author_id !== currentUserId}
                   onChange={() => toggleDone(l)}
-                  className="mt-0.5 h-4 w-4 accent-[var(--primary)]"
+                  className="mt-0.5 h-4 w-4 accent-[var(--primary)] disabled:cursor-not-allowed disabled:opacity-50"
                 />
                 <span className="flex-1">
                   {l.body}
