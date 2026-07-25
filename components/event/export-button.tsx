@@ -43,12 +43,24 @@ export function ExportButton({ eventId }: { eventId: string }) {
       toast.error("ดึงข้อมูลไม่สำเร็จ", { description: evRes.error?.message });
       return;
     }
+    // This workbook gets printed and handed to venue staff, so a list read that
+    // failed (flaky venue data) must NOT fall back to [] — that would ship a Run
+    // Sheet with headers and zero rows while we toast success. Fail the whole
+    // export instead. An empty-but-successful read (or rows hidden by RLS) still
+    // exports as before.
+    const readErr = schRes.error ?? setRes.error ?? micRes.error;
+    if (readErr || !schRes.data || !setRes.data || !micRes.data) {
+      toast.error("ดึงข้อมูลไม่ครบ — ไม่ได้สร้างไฟล์", {
+        description: readErr?.message ?? "เน็ตอาจไม่เสถียร ลองใหม่อีกครั้ง",
+      });
+      return;
+    }
     try {
       const data: ExportData = {
         event: evRes.data as ExportData["event"],
-        schedule: (schRes.data ?? []) as ScheduleItem[],
-        setlist: (setRes.data ?? []) as SetlistItem[],
-        micMap: (micRes.data ?? []) as MicAssignment[],
+        schedule: schRes.data as ScheduleItem[],
+        setlist: setRes.data as SetlistItem[],
+        micMap: micRes.data as MicAssignment[],
       };
       // Lazy-load SheetJS only when the user actually exports.
       const { downloadRunSheet } = await import("@/lib/export-excel");

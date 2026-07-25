@@ -106,18 +106,196 @@ export function buildSongAudioPath(
   return `${tenantId}/${groupId}/songs/${songId}-${token()}.${extOf(fileName)}`;
 }
 
-async function presign(key: string, op: "get" | "put"): Promise<string> {
-  const res = await fetch(`${endpointBase}${PRESIGN_ENDPOINT}`, {
-    method: "POST",
-    headers: await endpointHeaders(),
-    body: JSON.stringify({ key, op }),
+// ---------------------------------------------------------------------------
+// Timeouts + cancellation. Venue Wi-Fi doesn't only drop packets, it BLACK-HOLES
+// connections: a fetch with no signal then hangs forever, and withRetry used to
+// happily sleep and restart a whole 88 MB download even after the operator had
+// pressed "หยุด". That froze "เตรียมเพลง" at 0/N with a dead stop button — on the
+// very flow whose job is to guarantee the show can run offline. Every hop below
+// is now bounded, and a caller's cancel signal aborts the transfer IN FLIGHT
+// instead of only being noticed between files.
+// ---------------------------------------------------------------------------
+
+/** A presign POST is a few hundred bytes — past this the network is black-holed. */
+const PRESIGN_TIMEOUT_MS = 20_000;
+/**
+ * Byte transfers are bounded on NO PROGRESS, not on a flat deadline: a 27–88 MB
+ * master over venue Wi-Fi may legitimately take many minutes, but it should never
+ * go this long without a single chunk arriving.
+ */
+const STALL_TIMEOUT_MS = 45_000;
+/**
+ * Absolute cap for the one hop whose progress we can't watch: under Electron the
+ * bytes come back from the main process as ONE Blob over IPC (no stream, and
+ * window.cueiqNative.fetchAudio takes no AbortSignal). Deliberately generous — it
+ * exists to break a hang, not to police a slow link. That transfer may still run
+ * to completion in the main process afterwards; we just stop blocking on it.
+ *
+ * A flat cap is the least-bad shape here (the browser path gets a no-progress rule
+ * for free from its chunk tap; this one has no progress signal at all), and it is
+ * exactly WHY hitting it is terminal — never retried. The main process keeps
+ * pulling the bytes after we stop waiting, so a retry would put a SECOND full copy
+ * of the same 27–88 MB master on the same link: the two halve each other's
+ * bandwidth, both blow the cap, and a file that would have finished ends up
+ * failing. One slow file now fails ONCE instead of stacking copies of itself.
+ * The price: a link slower than roughly 100 kB/s loses that file instead of
+ * eventually finishing it — the operator still has the on-device cache,
+ * "ใช้ไฟล์ในเครื่องนี้", and pressing "เตรียมเพลง" again. Doing better needs a
+ * progress + cancel channel on the IPC itself (desktop/electron/main.cjs).
+ */
+const NATIVE_TRANSFER_TIMEOUT_MS = 15 * 60_000;
+
+/**
+ * A failure that must NOT be retried, tagged so withRetry can tell it apart from
+ * an ordinary transient one. Two things raise it: the operator's "หยุด", and a hop
+ * we ABANDONED on its deadline while it keeps running underneath us (see
+ * NATIVE_TRANSFER_TIMEOUT_MS) — napping 700 ms and starting that one over is what
+ * turns one slow file into three concurrent copies of itself.
+ */
+type TerminalError = Error & { cueiqTerminal: true };
+function terminalError(message: string): TerminalError {
+  return Object.assign(new Error(message), { cueiqTerminal: true as const });
+}
+function isTerminalError(e: unknown): boolean {
+  return e instanceof Error && (e as Partial<TerminalError>).cueiqTerminal === true;
+}
+
+/**
+ * An AbortSignal bounded by a timer AND by the caller's own signal, plus the
+ * cleanup that must run in a `finally` (a live timer/listener keeps the whole
+ * transfer's closure alive). `ping()` restarts the countdown — that is what turns
+ * the flat timeout into a no-progress one. Hand-wired because AbortSignal.any /
+ * AbortSignal.timeout aren't safe to assume across every browser + Electron
+ * Chromium this ships to.
+ */
+function boundedSignal(ms: number, outer?: AbortSignal) {
+  const ac = new AbortController();
+  const abort = () => ac.abort();
+  let timer: ReturnType<typeof setTimeout> | null = setTimeout(abort, ms);
+  outer?.addEventListener("abort", abort);
+  if (outer?.aborted) abort();
+  return {
+    signal: ac.signal,
+    ping() {
+      if (!timer) return;
+      clearTimeout(timer);
+      timer = setTimeout(abort, ms);
+    },
+    done() {
+      if (timer) clearTimeout(timer);
+      timer = null;
+      outer?.removeEventListener("abort", abort);
+    },
+  };
+}
+
+/**
+ * Stop WAITING on a promise we can't actually cancel — the Electron main-process
+ * byte transfer, or the token refresh hiding inside endpointHeaders() — once the
+ * caller aborts or the cap elapses. The work may still finish out of band; the
+ * point is only that the UI is never held hostage by it.
+ *
+ * Giving up on the deadline is TERMINAL by default, because the abandoned hop is
+ * normally still running and a retry would race a second copy of it. Pass
+ * `retryableTimeout` for a hop where that isn't true and another attempt can
+ * genuinely succeed.
+ */
+function raceAbort<T>(
+  p: Promise<T>,
+  ms: number,
+  outer?: AbortSignal,
+  opts: { timeoutMessage?: string; retryableTimeout?: boolean } = {}
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const finish = () => {
+      settled = true;
+      clearTimeout(timer);
+      outer?.removeEventListener("abort", onAbort);
+    };
+    const onAbort = () => {
+      if (settled) return;
+      finish();
+      // "หยุด" is final by definition — never nap and start the master over.
+      reject(terminalError("ยกเลิกการโหลดไฟล์เสียง"));
+    };
+    const timer = setTimeout(() => {
+      if (settled) return;
+      finish();
+      const msg = opts.timeoutMessage ?? "หมดเวลาโหลดไฟล์เสียง";
+      reject(opts.retryableTimeout ? new Error(msg) : terminalError(msg));
+    }, ms);
+    // attached even after we've given up, so a late rejection is never "unhandled"
+    p.then(
+      (v) => {
+        if (settled) return;
+        finish();
+        resolve(v);
+      },
+      (e) => {
+        if (settled) return;
+        finish();
+        reject(e);
+      }
+    );
+    if (outer?.aborted) onAbort();
+    else outer?.addEventListener("abort", onAbort);
   });
-  if (!res.ok) {
-    throw new Error(`ขอลิงก์ ${op} ไม่สำเร็จ (${res.status})`);
+}
+
+/** Backoff nap that wakes early (and lets the retry loop bail) when cancelled. */
+function nap(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise<void>((resolve) => {
+    const wake = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", wake);
+      resolve();
+    };
+    const timer = setTimeout(wake, ms);
+    if (signal?.aborted) wake();
+    else signal?.addEventListener("abort", wake);
+  });
+}
+
+async function presign(
+  key: string,
+  op: "get" | "put",
+  signal?: AbortSignal
+): Promise<string> {
+  // The AUTH hop is bounded too — it is a NETWORK hop, not local work. Reading the
+  // token only stays local while it is still valid: on desktop endpointHeaders()
+  // goes through Supabase getSession(), and an expired token makes that fire a
+  // refresh POST with no timeout of its own, which on a black-holed venue AP never
+  // settles. Awaiting it unbounded hung the whole presign before any signal had a
+  // listener — dead "หยุด", เตรียมเพลง stuck at 0/N, every later row silent at
+  // showtime. Timing out here stays RETRYABLE (unlike the byte transfer): a refresh
+  // that is merely slow usually lands during the backoff, and the next attempt then
+  // reads the fresh token straight out of the session store.
+  const headers = await raceAbort(endpointHeaders(), PRESIGN_TIMEOUT_MS, signal, {
+    timeoutMessage: "หมดเวลายืนยันสิทธิ์ (เครือข่ายไม่ตอบสนอง)",
+    retryableTimeout: true,
+  });
+  // Cancelled while the token was resolving (headers won that race by a hair) →
+  // don't fire a POST nobody is waiting for.
+  if (signal?.aborted) throw terminalError("ยกเลิกการโหลดไฟล์เสียง");
+  // Only NOW start the request's own countdown, so auth time isn't charged to it.
+  const t = boundedSignal(PRESIGN_TIMEOUT_MS, signal);
+  try {
+    const res = await fetch(`${endpointBase}${PRESIGN_ENDPOINT}`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ key, op }),
+      signal: t.signal,
+    });
+    if (!res.ok) {
+      throw new Error(`ขอลิงก์ ${op} ไม่สำเร็จ (${res.status})`);
+    }
+    const data = (await res.json()) as { url?: string };
+    if (!data.url) throw new Error("presign: missing url");
+    return data.url;
+  } finally {
+    t.done();
   }
-  const data = (await res.json()) as { url?: string };
-  if (!data.url) throw new Error("presign: missing url");
-  return data.url;
 }
 
 /**
@@ -125,11 +303,16 @@ async function presign(key: string, op: "get" | "put"): Promise<string> {
  * and the WAVs are big, so a single transient failure shouldn't doom a file.
  * Each attempt re-presigns (a fresh 15-min URL) so an expired/edge-cached URL
  * isn't reused. On persistent failure it throws the last error, same as before.
+ * A CANCELLED transfer is never retried: "หยุด" has to actually stop the bytes,
+ * not nap 700 ms and start the whole master over. Same for any other terminal
+ * failure (a hop we abandoned on its deadline but that is still running) — see
+ * terminalError.
  */
 async function withRetry<T>(
   fn: () => Promise<T>,
   attempts = 3,
-  delayMs = 700
+  delayMs = 700,
+  signal?: AbortSignal
 ): Promise<T> {
   let lastErr: unknown;
   for (let i = 0; i < attempts; i++) {
@@ -137,8 +320,10 @@ async function withRetry<T>(
       return await fn();
     } catch (e) {
       lastErr = e;
+      if (signal?.aborted || isTerminalError(e)) throw e;
       if (i < attempts - 1) {
-        await new Promise((r) => setTimeout(r, delayMs * (i + 1)));
+        await nap(delayMs * (i + 1), signal);
+        if (signal?.aborted) throw e;
       }
     }
   }
@@ -169,15 +354,69 @@ export async function uploadEventAudio(
   });
 }
 
-export async function downloadEventAudio(path: string): Promise<Blob> {
-  return withRetry(async () => {
-    const url = await presign(path, "get");
-    // Electron: GET the bytes via the main process (no browser CORS).
-    if (fetchBlobImpl) return fetchBlobImpl(url);
-    const res = await fetch(url);
-    if (!res.ok) throw new Error(`ดาวน์โหลดไฟล์เสียงไม่สำเร็จ (${res.status})`);
-    return res.blob();
-  });
+export async function downloadEventAudio(
+  path: string,
+  opts: { signal?: AbortSignal } = {}
+): Promise<Blob> {
+  const { signal } = opts;
+  return withRetry(
+    async () => {
+      const url = await presign(path, "get", signal);
+      // Electron: GET the bytes via the main process (no browser CORS). That hop
+      // takes no AbortSignal, so it's raced rather than aborted — and because it
+      // keeps running after we give up, hitting the cap is terminal (no retry, or
+      // we'd stack a second copy of the same master on the same link). See the cap.
+      if (fetchBlobImpl) {
+        return raceAbort(fetchBlobImpl(url), NATIVE_TRANSFER_TIMEOUT_MS, signal);
+      }
+      const t = boundedSignal(STALL_TIMEOUT_MS, signal);
+      // A FROZEN page runs no JS, so the chunk tap below can't ping while the
+      // operator is off in another app (backgrounded phone tab, laptop asleep).
+      // The stall clock would bank that whole pause and fire the instant they
+      // come back — before a single chunk is processed — killing a perfectly
+      // healthy 88 MB master and making withRetry restart it from byte zero on
+      // venue Wi-Fi (the very app-switch pathology live-mode's audioSig guard was
+      // written to eliminate). Coming back into view is not a stall: restart the
+      // countdown instead of judging the freeze.
+      const hasDoc = typeof document !== "undefined";
+      const onVisible = () => {
+        if (document.visibilityState === "visible") t.ping();
+      };
+      if (hasDoc) document.addEventListener("visibilitychange", onVisible);
+      try {
+        const res = await fetch(url, { signal: t.signal });
+        if (!res.ok) throw new Error(`ดาวน์โหลดไฟล์เสียงไม่สำเร็จ (${res.status})`);
+        // No stream to watch → plain whole-body read, bounded only by the flat
+        // STALL window above (it can't be reset without chunk events).
+        if (!res.body || typeof TransformStream === "undefined") return await res.blob();
+        // Tap the body so the timeout becomes a NO-PROGRESS one: every chunk
+        // restarts the clock, so a legitimately slow 88 MB master survives while a
+        // stalled connection still gives up. The buffering stays inside Response
+        // .blob() (as with res.blob() before) — chunks are never piled up in JS
+        // heap — and Content-Type is carried over so playback still gets a typed
+        // Blob.
+        const type = res.headers.get("content-type");
+        const tapped = res.body.pipeThrough(
+          new TransformStream({
+            transform(chunk, controller) {
+              t.ping();
+              controller.enqueue(chunk);
+            },
+          })
+        );
+        return await new Response(
+          tapped,
+          type ? { headers: { "content-type": type } } : undefined
+        ).blob();
+      } finally {
+        if (hasDoc) document.removeEventListener("visibilitychange", onVisible);
+        t.done();
+      }
+    },
+    3,
+    700,
+    signal
+  );
 }
 
 export async function removeEventAudio(path: string): Promise<void> {

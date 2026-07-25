@@ -4,6 +4,7 @@
 import { useEffect, useState } from "react";
 import { LayoutGrid } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
+import { RefreshButton } from "@/components/refresh-button";
 import { createClient } from "@/lib/supabase/client";
 import {
   canApprove,
@@ -47,6 +48,7 @@ type Assembled = {
 export function Overview() {
   const { ws } = useWorkspace();
   const [data, setData] = useState<Assembled | null>(null);
+  const [loadError, setLoadError] = useState(false);
   const viewable = ws ? ws.groups.filter((g) => canViewGroup(ws.perms, g.id)) : [];
   const ids = viewable.map((g) => g.id);
   const key = ids.join(",");
@@ -77,6 +79,15 @@ export function Overview() {
         sb.from("run_sequence").select("event_name, event_date").eq("tenant_id", tid),
         sb.from("mic_assignments").select("event_id").eq("tenant_id", tid),
       ]);
+
+      // postgrest resolves offline/network failures as { data: null, error } (RLS
+      // never errors, it filters) — a failed read is NOT an empty festival board, so
+      // never render "0 งาน" for one. Any failed part is fatal here: the board mixes
+      // all eight reads, and a half-loaded running order is worse than none.
+      if ([evRes, schedRes, memRes, slRes, songRes, staffRes, roRes, micRes].some((r) => r.error)) {
+        if (alive) setLoadError(true);
+        return;
+      }
 
       const eventRows = (evRes.data ?? []) as EventRow[];
       const sched = (schedRes.data ?? []) as SchedRow[];
@@ -199,8 +210,11 @@ export function Overview() {
           .map((m) => ({ id: m.id, label: m.nickname || m.name, mic_number: m.mic_number })),
       }));
 
-      if (alive) setData({ events, bands, staff, runOrderFestivals });
-    })().catch(() => alive && setData({ events: [], bands: [], staff: [], runOrderFestivals: [] }));
+      if (alive) {
+        setLoadError(false);
+        setData({ events, bands, staff, runOrderFestivals });
+      }
+    })().catch(() => alive && setLoadError(true));
     return () => {
       alive = false;
     };
@@ -238,7 +252,14 @@ export function Overview() {
         </p>
       </div>
 
-      {data === null ? (
+      {data === null && loadError ? (
+        <Card>
+          <CardContent className="flex flex-col items-center gap-3 py-16 text-center text-sm text-muted-foreground">
+            <p>โหลด Overview ไม่สำเร็จ — อาจออฟไลน์อยู่หรือเน็ตมีปัญหา ลองใหม่เมื่อเน็ตกลับมา</p>
+            <RefreshButton label="ลองใหม่" />
+          </CardContent>
+        </Card>
+      ) : data === null ? (
         <p className="py-16 text-center text-sm text-muted-foreground">กำลังโหลด…</p>
       ) : data.bands.length === 0 ? (
         <p className="rounded-lg border border-dashed py-16 text-center text-muted-foreground">

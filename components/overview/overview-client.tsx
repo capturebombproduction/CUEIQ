@@ -20,6 +20,8 @@ import {
   Loader2,
   Radio,
   ListOrdered,
+  ChevronDown,
+  ChevronUp,
 } from "lucide-react";
 import { EventStatusActions } from "@/components/overview/event-status-actions";
 import { PhotoTimeCell } from "@/components/overview/photo-time-cell";
@@ -411,8 +413,10 @@ function ActIdentity({
   );
 }
 
-// A minimal "act → time" table (the Photo and Booth tables). Sorted by its own
-// activity time by the caller; lists only the acts that have that time.
+// A minimal "act → time" table (the Photo and Booth tables). The caller picks and
+// sorts the rows; `count` is the number of acts that actually HAVE that time — the
+// ถ่ายรูป table appends a labelled "ยังไม่กำหนดเวลา" section whose blank rows are
+// deliberately NOT counted (see photoTableRows).
 function MiniTimeTable({
   title,
   count,
@@ -425,7 +429,11 @@ function MiniTimeTable({
   return (
     <div className="overflow-hidden rounded-lg border">
       <div className="border-b bg-muted/40 px-3 py-1.5 text-xs font-semibold uppercase text-muted-foreground">
-        {title} · {count}
+        {/* "· 0" would read as a data claim ("0 acts have a photo call") on a
+            stage-only day where this block exists ONLY to offer the to-do section —
+            an earlier session removed exactly that "ถ่ายรูป · 0 —" line. */}
+        {title}
+        {count > 0 ? ` · ${count}` : ""}
       </div>
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
@@ -440,7 +448,9 @@ function MiniTimeTable({
 // บูธ (Booth) — each sorted by ITS OWN time so a band's photo/booth slot reads in
 // that activity's order, not pulled out of place by its stage time (พี่: เวลาถ่ายรูป
 // ไม่เรียงตามสเตจ → วงโดด). Stage is the main table (every act + deadline + status);
-// Photo & Booth are minimal (act + time) and list only acts that have that time.
+// Photo & Booth are minimal (act + time) and list only acts that have that time —
+// ถ่ายรูป then appends a collapsible to-do section for the acts a viewer may still
+// FILL IN (see photoTableRows below).
 // Replaces the old single 3-time table/cards — works the same at every view mode.
 function ActivityTables({
   events,
@@ -459,10 +469,50 @@ function ActivityTables({
     () => [...events].sort((a, b) => stageMinutes(a) - stageMinutes(b)),
     [events]
   );
-  const photoRows = useMemo(
-    () => events.filter(hasPhoto).sort((a, b) => photoMinutes(a) - photoMinutes(b)),
-    [events]
-  );
+  // While a photo editor holds focus, its row is PINNED to the section + sort key it
+  // had when focus arrived. PhotoTimeCell commits on blur, and tabbing start→end blurs
+  // the START field while focus is still inside the cell — so without this the time
+  // that just landed would re-sort the row (or lift it out of the to-do section) from
+  // under the staffer mid-entry: React moves a keyed <tr> with insertBefore, which
+  // drops focus to <body> and eats the end time being typed. The pin lifts the moment
+  // focus really leaves the cell, and the row takes its true place then.
+  const [pinned, setPinned] = useState<{
+    id: string;
+    timed: boolean; // had a photo time when focus arrived…
+    at: number; // …and sorted at this minute
+  } | null>(null);
+  // A pinned act can disappear under us (a data refresh while its editor is focused).
+  // React fires no blur on unmount, so drop the pin here — otherwise it would freeze
+  // that act's position if the same row comes back.
+  useEffect(() => {
+    if (pinned && !events.some((ev) => ev.id === pinned.id)) setPinned(null);
+  }, [events, pinned]);
+  // ถ่ายรูป comes in two parts. The TABLE lists only acts that actually have a photo
+  // time, always in time order — so it matches the บันทึกเป็นรูป export exactly and the
+  // staffer proofreads on screen what the crew is handed as a JPG (พี่: เวลาไม่เรียง →
+  // วงโดด). The acts with NO time yet are the to-do section beneath it, and only for a
+  // viewer allowed to set one: label staff are read-only on the event page (and blocked
+  // from non-status writes by mig 0037), so without a row here they could never create a
+  // band's FIRST photo time — the exact job this inline editor exists for. Keeping them
+  // out of the table keeps its headline count honest ("ถ่ายรูป · 12" means 12 acts have
+  // a call time, not 12 blank inputs on a stage-only day like WARUDO) and keeps them out
+  // of the export image, which filters on hasPhoto only.
+  const { photoRows, photoTodoRows } = useMemo(() => {
+    const timed = (ev: OverviewEvent) =>
+      pinned && pinned.id === ev.id ? pinned.timed : hasPhoto(ev);
+    const at = (ev: OverviewEvent) =>
+      pinned && pinned.id === ev.id ? pinned.at : photoMinutes(ev);
+    return {
+      photoRows: events.filter((ev) => timed(ev)).sort((a, b) => at(a) - at(b)),
+      // Untimed acts keep the bucket's own (stage-time) order — there is no photo
+      // time to sort them by yet.
+      photoTodoRows: events.filter((ev) => ev.canEditPhoto && !timed(ev)),
+    };
+  }, [events, pinned]);
+  // The to-do section opens by default on a day that already uses photo calls, and
+  // starts COLLAPSED on a stage-only day, where a wall of blank inputs is pure noise —
+  // its one header line keeps it discoverable for the staffer who does need to fill in.
+  const [showPhotoTodo, setShowPhotoTodo] = useState(() => photoRows.length > 0);
   const boothRows = useMemo(
     () => events.filter(hasBooth).sort((a, b) => boothMinutes(a) - boothMinutes(b)),
     [events]
@@ -477,6 +527,77 @@ function ActivityTables({
     if (mixDates) parts.push(fmtDate(ev.event_date));
     return parts.join(" · ");
   };
+
+  // Pin/unpin the row a photo editor is being used in (see `pinned` above).
+  const pinPhotoRow = (ev: OverviewEvent) =>
+    setPinned((p) =>
+      // Focus moving WITHIN the same cell (start → end) must keep the ORIGINAL
+      // snapshot — re-reading it here would adopt the time just saved and move the
+      // row anyway, which is the whole thing the pin exists to prevent.
+      p && p.id === ev.id
+        ? p
+        : { id: ev.id, timed: hasPhoto(ev), at: photoMinutes(ev) }
+    );
+  const unpinPhotoRow = (e: React.FocusEvent<HTMLTableCellElement>) => {
+    // relatedTarget = where focus is heading; null (clicked dead space) or anything
+    // outside this cell means the staffer is done with the row.
+    if (!e.currentTarget.contains(e.relatedTarget)) setPinned(null);
+  };
+
+  // One ถ่ายรูป row — used by BOTH the timed table and the to-do section, which share
+  // a single <tbody> (one keyed list) on purpose: when a row gains a time React then
+  // MOVES the existing <tr> instead of unmounting it. A remount would throw away
+  // PhotoTimeCell's live state mid-entry — the end time typed but not yet flushed, and
+  // the write it defers while the start write is still in flight — i.e. a save that
+  // silently never happens.
+  const renderPhotoRow = (ev: OverviewEvent) => (
+    <tr key={ev.id} className="border-b last:border-0">
+      <td className="px-3 py-2">
+        <ActIdentity
+          ev={ev}
+          bandPrimary={showBandColumn}
+          secondary={secondaryOf(ev)}
+          canOpenDetail={canOpenDetail}
+          isLabelWide={isLabelWide}
+        />
+      </td>
+      <td
+        className="whitespace-nowrap px-3 py-2 text-right tabular-nums text-muted-foreground"
+        onFocus={ev.canEditPhoto ? () => pinPhotoRow(ev) : undefined}
+        onBlur={ev.canEditPhoto ? unpinPhotoRow : undefined}
+      >
+        <PhotoCell ev={ev} />
+      </td>
+    </tr>
+  );
+  const photoTableRows = [
+    ...photoRows.map((ev) => renderPhotoRow(ev)),
+    ...(photoTodoRows.length > 0
+      ? [
+          <tr key="__photo-todo" className="border-b last:border-0">
+            <td colSpan={2} className="p-0">
+              <button
+                type="button"
+                onClick={() => setShowPhotoTodo((v) => !v)}
+                aria-expanded={showPhotoTodo}
+                className="flex w-full items-center gap-1.5 bg-muted/20 px-3 py-1.5 text-left text-xs font-semibold text-muted-foreground hover:bg-muted/40"
+              >
+                {showPhotoTodo ? (
+                  <ChevronUp className="h-3.5 w-3.5 shrink-0" />
+                ) : (
+                  <ChevronDown className="h-3.5 w-3.5 shrink-0" />
+                )}
+                ยังไม่กำหนดเวลาถ่ายรูป · {photoTodoRows.length}
+                {!showPhotoTodo && (
+                  <span className="font-normal">— กดเพื่อกำหนดเวลา</span>
+                )}
+              </button>
+            </td>
+          </tr>,
+        ]
+      : []),
+    ...(showPhotoTodo ? photoTodoRows.map((ev) => renderPhotoRow(ev)) : []),
+  ];
 
   return (
     <div className="space-y-4">
@@ -521,27 +642,14 @@ function ActivityTables({
       </div>
 
       {/* Photo + Booth — minimal, each in its own time order; side-by-side on wide
-          screens (like the organiser's Portrait/Stage sheets), hidden when empty. */}
-      {(photoRows.length > 0 || boothRows.length > 0) && (
+          screens (like the organiser's Portrait/Stage sheets), hidden when empty.
+          ถ่ายรูป also shows up when it has no times but the viewer may add some —
+          that block is then just its one collapsed to-do line. */}
+      {(photoTableRows.length > 0 || boothRows.length > 0) && (
         <div className="grid gap-4 md:grid-cols-2">
-          {photoRows.length > 0 && (
+          {photoTableRows.length > 0 && (
             <MiniTimeTable title="ถ่ายรูป" count={photoRows.length}>
-              {photoRows.map((ev) => (
-                <tr key={ev.id} className="border-b last:border-0">
-                  <td className="px-3 py-2">
-                    <ActIdentity
-                      ev={ev}
-                      bandPrimary={showBandColumn}
-                      secondary={secondaryOf(ev)}
-                      canOpenDetail={canOpenDetail}
-                      isLabelWide={isLabelWide}
-                    />
-                  </td>
-                  <td className="whitespace-nowrap px-3 py-2 text-right tabular-nums text-muted-foreground">
-                    <PhotoCell ev={ev} />
-                  </td>
-                </tr>
-              ))}
+              {photoTableRows}
             </MiniTimeTable>
           )}
           {boothRows.length > 0 && (

@@ -36,6 +36,19 @@ export default defineConfig({
       process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? "sb_publishable_x7v5zxGEJFfx6L5Yd2fYzg_xwynxSrW"
     ),
     "process.env.NODE_ENV": JSON.stringify(process.env.NODE_ENV ?? "production"),
+    // Reused web modules read these two as well (lib/app-version → feedback +
+    // client-error capture, components/notifications/notification-bell via
+    // site-header). Define them so pulling one into a desktop route substitutes a
+    // real value instead of leaving a bare `process`, which the Electron renderer
+    // doesn't have — that would throw at module eval and white-screen the app.
+    "process.env.NEXT_PUBLIC_COMMIT": JSON.stringify(
+      process.env.NEXT_PUBLIC_COMMIT ?? "desktop"
+    ),
+    // Web Push needs a service worker, which file:// can't register — an empty key
+    // just makes the bell report "unsupported". Overridable from the env anyway.
+    "process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY": JSON.stringify(
+      process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY ?? ""
+    ),
     // The web origin that hosts the /api/audio/presign route. The desktop app has
     // no API routes of its own, so it calls the web app's route cross-origin (with
     // a Bearer token) to mint R2 presigned URLs. See src/main.tsx.

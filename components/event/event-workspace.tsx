@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
@@ -101,9 +101,10 @@ export function EventWorkspace({
   const syncing = useRef(false);
   // Re-arm the guard when the status prop actually changes: the write's round
   // trip has landed (via router.refresh) — or someone else moved the event — so
-  // later completeness flips can auto-sync again. Where the prop can't refresh
-  // (desktop: refresh() is a no-op), staying latched is correct — un-latching
-  // against a stale prop would just re-issue the same write in a loop.
+  // later completeness flips can auto-sync again. When the refresh brings back
+  // the SAME status (e.g. a desktop reload served from the offline cache),
+  // staying latched is correct — un-latching against a stale prop would just
+  // re-issue the same write in a loop.
   useEffect(() => {
     syncing.current = false;
   }, [status]);
@@ -149,13 +150,78 @@ export function EventWorkspace({
     if (["summary", "setlist", "schedule", "mic", "lineup"].includes(h)) setView(h);
   }, []);
 
+  // Tabs opened at least once. Radix unmounts an inactive tab's content, which
+  // threw the editor's local state away: coming back re-seeded it from the
+  // PAGE-LOAD props, so auto-saved edits vanished from the UI, a stale onBlur
+  // wrote the OLD value back over the DB, and an insert took sort_order from the
+  // stale list (duplicate sort_order → Live Mode plays a song twice). Once
+  // opened, an editor stays MOUNTED (just hidden) so its state survives a tab
+  // round-trip. Tracked per tab — not forceMount on all — so each editor's chunk
+  // is still fetched lazily the first time its tab is shown.
+  const [opened, setOpened] = useState<Set<string>>(() => new Set());
+  useEffect(() => {
+    setOpened((prev) => (prev.has(view) ? prev : new Set(prev).add(view)));
+  }, [view]);
+  // Radix's forceMount only takes `true`; undefined = its default (unmount).
+  const keepMounted = (tab: string) => (opened.has(tab) ? true : undefined);
+
+  // Staying mounted forever, though, removes the ONLY re-seed path: an editor
+  // reads these props at MOUNT, so a hidden panel drifts behind the DB as soon as
+  // someone ELSE edits the event — Summary refreshes and shows their new setlist
+  // row while the hidden Setlist panel still holds the old list, and back on that
+  // tab "+ เพลง" takes max(sort_order)+1 from the stale list (colliding with their
+  // row → Live Mode's order ≠ the printed run sheet) and a blur on a row they
+  // renamed writes the old title back over theirs.
+  // So re-key (= remount → re-seed) a panel when the server data it seeded from
+  // ACTUALLY changed, and only while it is HIDDEN: a hidden panel holds no focus
+  // and every edit auto-saves, so there is nothing of the user's to lose there.
+  // The ACTIVE tab is never re-keyed, and an unchanged refresh never re-keys —
+  // so a refresh that raced a just-saved write can't drop the newer local state,
+  // and SetlistBuilder's live channel isn't torn down on every render.
+  const seeds = useMemo(
+    () => ({
+      setlist: JSON.stringify(setlist),
+      schedule: JSON.stringify(schedule),
+      mic: JSON.stringify(micMap),
+      // lineup becomes a Set in the editor — order carries no meaning and the
+      // query doesn't pin one, so a reshuffle of the same ids isn't a change.
+      lineup: JSON.stringify([...lineup].sort()),
+    }),
+    [setlist, schedule, micMap, lineup]
+  );
+  // What each panel is (or, if not mounted yet, will be) seeded with — a ref: it
+  // only ever feeds the comparison below, it must not itself trigger a render.
+  const seededWith = useRef<Record<string, string>>({});
+  const [seedRev, setSeedRev] = useState<Record<string, number>>({});
+  useEffect(() => {
+    const stale: string[] = [];
+    for (const [tab, fingerprint] of Object.entries(seeds)) {
+      if (tab === view) continue; // active tab: the user's state wins, never remount
+      const before = seededWith.current[tab];
+      seededWith.current[tab] = fingerprint;
+      // An unopened tab isn't mounted — it seeds from whatever props are current
+      // when it first opens, so tracking the fingerprint is all it needs.
+      if (opened.has(tab) && before !== undefined && before !== fingerprint) {
+        stale.push(tab);
+      }
+    }
+    if (!stale.length) return;
+    setSeedRev((prev) => {
+      const next = { ...prev };
+      for (const tab of stale) next[tab] = (prev[tab] ?? 0) + 1;
+      return next;
+    });
+  }, [seeds, view, opened]);
+  const seedKey = (tab: string) => seedRev[tab] ?? 0;
+
   function changeView(v: string) {
     // Entering Summary (which renders the export JPG / printable run-sheet) from
     // an editor tab: pull fresh server data first, so the summary and its image
     // reflect edits that auto-saved in the editor but otherwise live only in that
     // editor's local state until a refresh — the same stale-props class as the
     // overview photo-time export. Online only (offline we keep what we have
-    // rather than hang on a refetch; it's also a no-op in the desktop shim).
+    // rather than hang on a refetch; on desktop the shim's refresh() re-loads
+    // the event bundle in place).
     if (
       v === "summary" &&
       view !== "summary" &&
@@ -233,8 +299,16 @@ export function EventWorkspace({
           />
         </TabsContent>
 
-        <TabsContent value="setlist">
+        {/* forceMount keeps an already-opened editor alive across tab switches;
+            Radix only sets `hidden` on content it would have unmounted, so a
+            force-mounted panel has to be hidden here. */}
+        <TabsContent
+          value="setlist"
+          forceMount={keepMounted("setlist")}
+          hidden={view !== "setlist"}
+        >
           <SetlistBuilder
+            key={seedKey("setlist")}
             eventId={eventId}
             tenantId={tenantId}
             editable={editable}
@@ -247,8 +321,13 @@ export function EventWorkspace({
           />
         </TabsContent>
 
-        <TabsContent value="schedule">
+        <TabsContent
+          value="schedule"
+          forceMount={keepMounted("schedule")}
+          hidden={view !== "schedule"}
+        >
           <ScheduleEditor
+            key={seedKey("schedule")}
             eventId={eventId}
             tenantId={tenantId}
             editable={editable}
@@ -257,8 +336,13 @@ export function EventWorkspace({
           />
         </TabsContent>
 
-        <TabsContent value="lineup">
+        <TabsContent
+          value="lineup"
+          forceMount={keepMounted("lineup")}
+          hidden={view !== "lineup"}
+        >
           <LineupEditor
+            key={seedKey("lineup")}
             eventId={eventId}
             tenantId={tenantId}
             editable={editable}
@@ -269,8 +353,13 @@ export function EventWorkspace({
         </TabsContent>
 
         {modules.micMap && (
-          <TabsContent value="mic">
+          <TabsContent
+            value="mic"
+            forceMount={keepMounted("mic")}
+            hidden={view !== "mic"}
+          >
             <MicMapEditor
+              key={seedKey("mic")}
               eventId={eventId}
               tenantId={tenantId}
               editable={editable}

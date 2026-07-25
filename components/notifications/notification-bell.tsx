@@ -20,7 +20,20 @@ interface NotifRow {
 
 type PushState = "unsupported" | "default" | "on" | "denied";
 
-const VAPID_PUBLIC = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY;
+// Read through a try/catch: the bundler inlines this literal (web = the build env,
+// desktop = vite `define`), but a build that misses it leaves a bare `process` —
+// which doesn't exist in the Electron renderer (contextIsolation on, node
+// integration off), so importing this bell there would throw at module eval and
+// white-screen the app instead of just leaving push "unsupported".
+function vapidPublicKey(): string | undefined {
+  try {
+    return process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY;
+  } catch {
+    return undefined;
+  }
+}
+
+const VAPID_PUBLIC = vapidPublicKey();
 
 function relTime(iso: string): string {
   const diff = Date.now() - new Date(iso).getTime();

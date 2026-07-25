@@ -9,6 +9,7 @@
 // Desktop-only: the web build never imports this file (web stays online-mgmt).
 // All decision logic is pure + unit-tested in lib/mgmt-outbox.ts; this file is the
 // thin I/O around it.
+import { toast } from "sonner";
 import { createClient } from "@/lib/supabase/client";
 import {
   CHILD_TABLES,
@@ -85,6 +86,42 @@ function currentUserId(): string | null {
   return getStoredSessionUser()?.id ?? null;
 }
 
+/**
+ * Will the next PostgREST request really go out as THIS user — or as anon?
+ *
+ * supabase-js degrades silently instead of failing: SupabaseClient._getAccessToken
+ * falls back to the ANON key whenever getSession() hands back null, and auth-js
+ * caches a failed refresh for a minute (REFRESH_FAILURE_COOLDOWN_MS, kept warm by
+ * the 30s auto-refresh ticker) — exactly the window the 'online' listener fires a
+ * flush in right after a venue reconnect. An anon request is NOT an error: RLS
+ * simply returns an empty result, so every verdict this file draws from a read
+ * ("the row is gone online", "the online list changed", even "already applied")
+ * would be a lie that parks or destroys the venue's offline work. So we ask the
+ * same question _getAccessToken asks, right before trusting any such verdict.
+ */
+async function hasLiveSession(): Promise<boolean> {
+  try {
+    const { data } = await createClient().auth.getSession();
+    return !!data.session?.access_token;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Same check for the flush path, as a throw: the loop already treats a throw as
+ * "not now — leave the whole queue alone and retry on the next reconnect", which
+ * is exactly right here. A queued op is always recoverable; a parked-or-deleted
+ * one may not be.
+ */
+async function requireLiveSession(): Promise<void> {
+  if (!(await hasLiveSession())) throw new Error("mgmt-outbox: no live session");
+}
+
+/** Thai reason for a resolve we couldn't even attempt as the signed-in user. */
+const NO_SESSION_REASON =
+  "ยังยืนยันบัญชีกับเซิร์ฟเวอร์ไม่ได้ — ยังไม่ได้เขียนทับ ลองใหม่อีกครั้งในสักครู่";
+
 function openDB(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     if (typeof indexedDB === "undefined") {
@@ -102,6 +139,17 @@ function openDB(): Promise<IDBDatabase> {
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
   });
+}
+
+/**
+ * IndexedDB fires ONLY 'abort' when a transaction fails to commit (quota — the
+ * cached show audio shares this origin's budget); the request-level 'error' never
+ * arrives. A promise that settles on 'error' alone would then hang forever, and
+ * every one of these runs inside the outbox lock — a hang there wedges enqueue and
+ * flush for the rest of the session. So every readwrite tx below settles on both.
+ */
+function settleOnAbort(tx: IDBTransaction): void {
+  tx.onabort = tx.onerror;
 }
 
 function listStore<T>(store: string): Promise<{ key: number; rec: T }[]> {
@@ -143,6 +191,7 @@ function deleteFrom(store: string, key: number): Promise<void> {
           db.close();
           resolve();
         };
+        settleOnAbort(tx);
       })
   );
 }
@@ -186,6 +235,7 @@ export async function enqueueMgmtOp(op: NewMgmtOp): Promise<void> {
         db.close();
         reject(tx.error);
       };
+      settleOnAbort(tx);
     });
   });
   notify();
@@ -216,6 +266,7 @@ function deleteOpIfRevMatches(key: number, rev: number): Promise<void> {
           db.close();
           resolve();
         };
+        settleOnAbort(tx);
       })
   );
 }
@@ -245,20 +296,32 @@ export async function listMgmtConflicts(): Promise<{ key: number; rec: ConflictR
   }
 }
 
-async function parkConflict(rec: OpRec, reason: string): Promise<void> {
-  const db = await openDB();
-  await new Promise<void>((resolve) => {
-    const tx = db.transaction(CONFLICTS, "readwrite");
-    tx.objectStore(CONFLICTS).add({ ...rec, parkedAt: Date.now(), reason } satisfies ConflictRec);
-    tx.oncomplete = () => {
-      db.close();
-      resolve();
-    };
-    tx.onerror = () => {
-      db.close();
-      resolve();
-    };
-  });
+/**
+ * Move a rejected op into the conflicts store. Returns TRUE only when the row is
+ * PROVEN persisted (tx.oncomplete — IndexedDB rolls the whole transaction back on
+ * error/abort, so nothing else counts): the caller deletes the queued op right
+ * after, and a swallowed quota failure here would destroy the venue's offline edit
+ * with no error and no conflict panel. This product has no undo.
+ */
+async function parkConflict(rec: OpRec, reason: string): Promise<boolean> {
+  try {
+    const db = await openDB();
+    return await new Promise<boolean>((resolve) => {
+      const tx = db.transaction(CONFLICTS, "readwrite");
+      tx.objectStore(CONFLICTS).add({ ...rec, parkedAt: Date.now(), reason } satisfies ConflictRec);
+      tx.oncomplete = () => {
+        db.close();
+        resolve(true);
+      };
+      tx.onerror = () => {
+        db.close();
+        resolve(false);
+      };
+      settleOnAbort(tx);
+    });
+  } catch {
+    return false; // couldn't even open the DB — the op must stay queued
+  }
 }
 
 /** Thai reason for a unique-index collision the replay itself can't resolve. */
@@ -298,6 +361,11 @@ async function applyChildListOp(
       op.kind === "lineup.upsert" ? "member_id" : CHILD_WRITE_COLUMNS[op.kind].join(",");
     const { data, error } = await supabase.from(table).select(sel).eq("event_id", op.id);
     if (error) return failOrThrow(error.message, onLine);
+    // An anon read comes back EMPTY with no error (RLS) — which fingerprints as
+    // "the online list changed" (park a false conflict) or, for a snapshot that
+    // clears the list, as "already applied" (drop the op). Both would throw away
+    // real venue work, so only interpret rows we can prove carried our JWT.
+    await requireLiveSession();
     const serverRows = isLineup
       ? ((data ?? []) as unknown as { member_id: string }[]).map((r) => r.member_id)
       : ((data ?? []) as unknown[]);
@@ -372,11 +440,17 @@ async function applyChildListOp(
 
 /**
  * Apply one op online. Returns "applied", or a conflict reason to park it.
- * Throws only on a NETWORK failure (still offline) — the flush loop stops there.
+ * Throws when the attempt must be RETRIED rather than judged: a NETWORK failure
+ * (still offline), or a session we can't prove is live (see hasLiveSession) — the
+ * flush loop stops there and leaves the queue untouched.
  */
 async function applyOp(op: NewMgmtOp): Promise<"applied" | { conflict: string }> {
   const supabase = createClient();
   const onLine = typeof navigator === "undefined" || navigator.onLine !== false;
+  // Never replay as anon (see hasLiveSession): with no token every read below is
+  // an empty RLS result and every delete a silent 0-row no-op, so the op would be
+  // parked or deleted on a verdict the server never actually gave.
+  await requireLiveSession();
 
   if (isChildListOp(op)) return applyChildListOp(op, onLine, false);
 
@@ -408,6 +482,10 @@ async function applyOp(op: NewMgmtOp): Promise<"applied" | { conflict: string }>
   }
   if (!data) {
     // Row gone: a delete already holds (idempotent); an edit has nothing to land on.
+    // An anon read is empty too, and both verdicts here are terminal (the delete
+    // never reaches the server; the edit is parked as "deleted online"), so prove
+    // the read was ours before believing the row is really gone.
+    await requireLiveSession();
     if (op.kind === "event.delete") return "applied";
     return { conflict: "งานนี้ถูกลบไปแล้วบนออนไลน์" };
   }
@@ -439,7 +517,10 @@ async function applyOp(op: NewMgmtOp): Promise<"applied" | { conflict: string }>
       return { conflict: res.error.message };
     }
     if (!res.data || res.data.length === 0) {
-      // Deleted between our guard read and the update (0 rows matched, no error).
+      // Deleted between our guard read and the update (0 rows matched, no error) —
+      // but an anon UPDATE matches 0 rows just as quietly, and the session can die
+      // between the guard read and this write, so re-prove it before parking.
+      await requireLiveSession();
       return { conflict: "งานนี้ถูกลบไปแล้วบนออนไลน์" };
     }
     const ms = Date.parse(res.data[0].updated_at as string);
@@ -492,11 +573,22 @@ async function doFlush(): Promise<FlushResult> {
     try {
       outcome = await applyOp(rec.op);
     } catch {
-      break; // network still down — try again on the next reconnect
+      break; // network down / session not provably ours — retry on the next reconnect
     }
     if (gen !== outboxGeneration) break; // wiped while this op was in flight
     if (outcome !== "applied") {
-      await parkConflict(rec, outcome.conflict);
+      if (!(await parkConflict(rec, outcome.conflict))) {
+        // The conflict row did NOT persist (IndexedDB quota — the cached show
+        // audio shares this budget — or an aborted tx). Deleting the op now would
+        // destroy this venue's offline edit with no error and no conflict panel,
+        // so keep it queued instead (the next flush re-derives the same verdict)
+        // and say so out loud — it counts as remaining, not parked.
+        toast.error(
+          "บันทึกรายการที่ชนกันไม่สำเร็จ (พื้นที่เก็บข้อมูลในเครื่องมีปัญหา) — รายการยังอยู่ในคิว ไม่ได้หายไป",
+          { id: "mgmt-park-failed" }
+        );
+        continue;
+      }
       parked++;
     } else {
       flushed++;
@@ -526,6 +618,7 @@ async function setConflictReason(key: number, reason: string): Promise<void> {
       db.close();
       resolve();
     };
+    settleOnAbort(tx);
   });
   notify();
 }
@@ -551,6 +644,12 @@ export function resolveMgmtConflict(
         try {
           const supabase = createClient();
           const op = found.rec.op;
+          // "ใช้ของฉัน" only means anything as a REAL write: an anon request (see
+          // hasLiveSession) is either refused outright or matches 0 rows in
+          // silence, and the 0-row check below would then rewrite this conflict
+          // into "กด 'ใช้ของออนไลน์'" — telling the user to throw away work that
+          // can still land. Bail out first; the conflict stays parked, unchanged.
+          if (!(await hasLiveSession())) return { ok: false, message: NO_SESSION_REASON };
           if (isChildListOp(op)) {
             const onLine = typeof navigator === "undefined" || navigator.onLine !== false;
             const res = await applyChildListOp(op, onLine, true);
@@ -593,6 +692,10 @@ export function resolveMgmtConflict(
               // the user's "keep mine" would silently write nothing. The event was
               // deleted online; the patch alone can't recreate it, so keep the
               // conflict parked with an honest reason (ใช้ของออนไลน์ still works).
+              // Unless the session died between the check above and this write, in
+              // which case 0 rows means "sent as anon", not "deleted online" — say
+              // retry, never "discard your work".
+              if (!(await hasLiveSession())) return { ok: false, message: NO_SESSION_REASON };
               const reason =
                 "งานนี้ถูกลบไปแล้วบนออนไลน์ — เขียนทับไม่ได้ กด 'ใช้ของออนไลน์' เพื่อทิ้งรายการนี้";
               await setConflictReason(key, reason);
@@ -637,6 +740,7 @@ export async function clearMgmtOutbox(): Promise<void> {
           db.close();
           resolve();
         };
+        settleOnAbort(tx);
       });
     } catch {
       /* best-effort */

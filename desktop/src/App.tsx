@@ -1,7 +1,9 @@
 import { useEffect, useState } from "react";
-import { Routes, Route, Navigate, useLocation } from "react-router-dom";
+import { Routes, Route, Navigate, useLocation, Link } from "react-router-dom";
+import { Play } from "lucide-react";
 import type { Session } from "@supabase/supabase-js";
 import { createClient } from "@/lib/supabase/client";
+import { RefreshButton } from "@/components/refresh-button";
 import { Login } from "~/pages/Login";
 import { Dashboard } from "~/pages/dashboard";
 import { EventPage } from "~/pages/event";
@@ -35,6 +37,13 @@ type AuthState = {
   offlineAuthed: boolean;
 };
 
+/** How long boot may wait for the session before falling through to the offline
+ *  path. A venue network that is JOINED but black-holed (navigator.onLine true,
+ *  TCP connects, nothing ever answers) leaves the token-refresh POST hanging with
+ *  no timeout of its own — unbounded, that pins the app on the boot screen with no
+ *  routes mounted, not even Quick Show. */
+const BOOT_SESSION_TIMEOUT_MS = 5000;
+
 /** Watches the Supabase auth session (same backend as the web app) and gates routes. */
 function useAuth(): AuthState {
   const [state, setState] = useState<AuthState>({
@@ -44,16 +53,27 @@ function useAuth(): AuthState {
   });
   useEffect(() => {
     const supabase = createClient();
-    const next = (session: Session | null) =>
+    let resolved = false;
+    const next = (session: Session | null) => {
+      resolved = true;
       setState({
         loading: false,
         session,
         offlineAuthed: !session && getStoredSessionUser() != null,
       });
+    };
     supabase.auth
       .getSession()
       .then(({ data }) => next(data.session))
       .catch(() => next(null));
+    // Dead-network boot guard: if getSession() never settles, take the SAME path an
+    // expired-but-unrefreshable session already takes — offline identity when one is
+    // stored, otherwise the login screen. It grants nothing extra (RLS + the stored
+    // session are still the only keys); it only stops the wait. A late getSession() /
+    // onAuthStateChange result still calls next() and upgrades the state afterwards.
+    const bootTimer = window.setTimeout(() => {
+      if (!resolved) next(null);
+    }, BOOT_SESSION_TIMEOUT_MS);
     const { data: sub } = supabase.auth.onAuthStateChange((event, session) => {
       // Shared band device: wipe the offline management cache the moment a user
       // signs out, so the NEXT account on this machine can never boot offline
@@ -68,7 +88,10 @@ function useAuth(): AuthState {
       }
       next(session);
     });
-    return () => sub.subscription.unsubscribe();
+    return () => {
+      window.clearTimeout(bootTimer);
+      sub.subscription.unsubscribe();
+    };
   }, []);
   return state;
 }
@@ -79,21 +102,54 @@ function Protected({ authed, children }: { authed: boolean; children: React.Reac
   return <>{children}</>;
 }
 
+/** Boot screen while the session resolves. It ALWAYS offers a way out: even with the
+ *  timeout above, a venue network can make this stretch, and the operator must still
+ *  be able to retry or reach Quick Show — the runner that needs neither. */
+function BootScreen() {
+  return (
+    <div className="grid min-h-screen place-items-center bg-muted/30 p-4">
+      <div className="w-full max-w-sm space-y-6">
+        <div className="text-center">
+          <h1 className="text-3xl font-bold tracking-tight text-primary">CueIQ</h1>
+          <p className="mt-1 text-sm text-muted-foreground">กำลังโหลด…</p>
+        </div>
+        <div className="flex justify-center">
+          <RefreshButton label="ลองใหม่" />
+        </div>
+        {/* Same Quick Show entry as the login screen (see ~/pages/Login). */}
+        <Link
+          to="/my-show"
+          className="group flex items-center gap-3 rounded-xl border-2 border-primary/40 bg-primary/5 px-4 py-3 shadow-sm transition-colors hover:border-primary/70 hover:bg-primary/10"
+        >
+          <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-primary/15 text-primary transition-colors group-hover:bg-primary/25">
+            <Play className="h-5 w-5" />
+          </span>
+          <span className="min-w-0">
+            <span className="block text-sm font-bold text-primary">Quick Show</span>
+            <span className="block text-xs text-muted-foreground">
+              โหมดโชว์เดี่ยว — เปิดเพลง+จับเวลาจากเครื่องนี้ ไม่ต้องเข้าสู่ระบบ
+            </span>
+          </span>
+        </Link>
+      </div>
+    </div>
+  );
+}
+
 export function App() {
   const { loading, session, offlineAuthed } = useAuth();
   const authed = !!session || offlineAuthed;
 
-  if (loading) {
-    return (
-      <div className="grid min-h-screen place-items-center bg-muted/30 text-muted-foreground">
-        กำลังโหลด…
-      </div>
-    );
-  }
-
+  // While loading, the routes stay MOUNTED and only the gated branches show the boot
+  // screen (they used to be replaced wholesale by a spinner, which made /my-show
+  // unreachable exactly when it is needed most). Quick Show hangs off its own route,
+  // so it renders straight away and is never remounted when loading flips.
   return (
     <Routes>
-      <Route path="/login" element={authed ? <Navigate to="/" replace /> : <Login />} />
+      <Route
+        path="/login"
+        element={loading ? <BootScreen /> : authed ? <Navigate to="/" replace /> : <Login />}
+      />
       {/* QUICK SHOW (โหมดโชว์เดี่ยว, formerly "My Show") — deliberately OUTSIDE the
           auth gate: fully local standalone show runner (no login, no cloud), usable
           on a brand-new machine. Grew out of the emergency player; /emergency and
@@ -105,11 +161,15 @@ export function App() {
       {/* Authenticated app — workspace loaded once, shared with the shell + pages. */}
       <Route
         element={
-          <Protected authed={authed}>
-            <WorkspaceProvider>
-              <Shell />
-            </WorkspaceProvider>
-          </Protected>
+          loading ? (
+            <BootScreen />
+          ) : (
+            <Protected authed={authed}>
+              <WorkspaceProvider>
+                <Shell />
+              </WorkspaceProvider>
+            </Protected>
+          )
         }
       >
         <Route path="/" element={<Navigate to="/dashboard" replace />} />

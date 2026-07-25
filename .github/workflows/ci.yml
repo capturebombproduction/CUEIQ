@@ -1,7 +1,8 @@
-# Runs the web app's fast, deterministic quality gates on every push/PR to dev or
-# main, so a regression is caught in CI instead of on prod. Deliberately does NOT
-# run `next build` here — Vercel already builds on the main deploy, and a CI build
-# would need the Supabase env — these three gates are secret-free and quick.
+# Runs both surfaces' fast, deterministic quality gates on every push/PR to dev or
+# main, so a regression is caught in CI instead of on prod (web) or at a venue
+# (desktop). Deliberately does NOT run `next build` here — Vercel already builds on
+# the main deploy, and a CI build would need the Supabase env — every gate below is
+# secret-free and quick.
 name: CI
 
 on:
@@ -32,3 +33,40 @@ jobs:
 
       - name: Lint
         run: npm run lint
+
+  # The desktop (Electron) renderer reuses components/ + lib/, but `desktop` is
+  # EXCLUDED from the root tsconfig and desktop-build.yml only packages installers
+  # on demand — so without this job a desktop-only break reaches the show laptop
+  # unseen. Secret-free too: desktop/vite.config.ts bakes in the public defaults.
+  desktop:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            desktop/package-lock.json
+
+      # Root deps too: the renderer imports the shared components/lib from the repo
+      # root via the "@" alias, so their packages must resolve from /node_modules.
+      - name: Install root deps
+        run: npm ci
+
+      - name: Install desktop deps
+        run: npm ci
+        working-directory: desktop
+
+      - name: Typecheck desktop
+        run: npm run typecheck
+        working-directory: desktop
+
+      # `vite build` only — packaging installers stays in desktop-build.yml. The
+      # bundle is what catches an import the desktop can't resolve (a Next-only
+      # module, a missing alias/shim), which tsc alone doesn't see.
+      - name: Build desktop renderer
+        run: npm run build
+        working-directory: desktop

@@ -76,6 +76,7 @@ export function PracticeJournal({
   const [runs, setRuns] = useState<PracticeRun[]>([]);
   const [attendance, setAttendance] = useState<PracticeAttendance[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
 
   // compose form
   const [category, setCategory] = useState<PracticeCategory>("note");
@@ -113,6 +114,15 @@ export function PracticeJournal({
         .eq("event_id", eventId)
         .eq("log_date", today),
     ]);
+    // postgrest resolves a failed read as { data: null, error } — rendering that as
+    // an empty journal + empty attendance strip is indistinguishable from a fresh
+    // room, and leaves nothing to retry. Say it failed instead.
+    if (lRes.error || rRes.error || aRes.error) {
+      setLoadError(true);
+      setLoading(false);
+      return;
+    }
+    setLoadError(false);
     setLogs((lRes.data ?? []) as PracticeLog[]);
     setRuns((rRes.data ?? []) as PracticeRun[]);
     setAttendance((aRes.data ?? []) as PracticeAttendance[]);
@@ -158,13 +168,27 @@ export function PracticeJournal({
     const next = !log.done;
     setLogs((prev) => prev.map((l) => (l.id === log.id ? { ...l, done: next } : l)));
     const supabase = createClient();
-    const { error } = await supabase
+    // Ask for the row back: RLS lets only the AUTHOR or a band editor tick a log,
+    // and a row the policy doesn't match comes back as 0 rows with error null — the
+    // optimistic tick would otherwise lie to the very member the homework is for.
+    const { data, error } = await supabase
       .from("practice_logs")
       .update({ done: next, updated_at: new Date().toISOString() })
-      .eq("id", log.id);
-    if (error) {
+      .eq("id", log.id)
+      .select("id");
+    if (error || !data || data.length === 0) {
       setLogs((prev) => prev.map((l) => (l.id === log.id ? { ...l, done: !next } : l)));
-      toast.error("อัปเดตไม่สำเร็จ");
+      // 0 rows has THREE causes, not one: no permission, the row was deleted, or the
+      // request went out UNSIGNED (supabase-js silently falls back to the anon key
+      // for ~a minute after a failed token refresh — exactly the window a venue
+      // reconnect lands in, see NO_ROW_HINT in components/event/run-order-builder.tsx).
+      // Naming only the permission cause tells a member their own homework is not
+      // theirs to tick, which is both wrong and discouraging.
+      toast.error(
+        error
+          ? "อัปเดตไม่สำเร็จ"
+          : "ติ๊กไม่สำเร็จ — อาจไม่มีสิทธิ์ รายการถูกลบไปแล้ว หรือยังยืนยันบัญชีไม่ได้ ลองใหม่อีกครั้ง"
+      );
     }
   }
 
@@ -174,13 +198,25 @@ export function PracticeJournal({
       description: "บันทึกการซ้อมรายการนี้จะถูกลบถาวร",
     });
     if (!ok) return;
+    const snapshot = logs;
     setLogs((prev) => prev.filter((l) => l.id !== id));
     const supabase = createClient();
-    await supabase.from("practice_logs").delete().eq("id", id);
+    // same reason as toggleDone: a delete the policy doesn't match is 0 rows, not an
+    // error — don't leave the entry gone on screen but alive on the server
+    const { data, error } = await supabase
+      .from("practice_logs")
+      .delete()
+      .eq("id", id)
+      .select("id");
+    if (error || !data || data.length === 0) {
+      setLogs(snapshot); // put it back
+      toast.error(error ? "ลบไม่สำเร็จ" : "ลบบันทึกนี้ไม่ได้ — ไม่มีสิทธิ์ลบ");
+    }
   }
 
   async function setPresent(memberId: string, present: boolean) {
     if (!canManage) return;
+    const snapshot = attendance;
     // optimistic
     setAttendance((prev) => {
       const existing = prev.find((a) => a.member_id === memberId);
@@ -200,7 +236,7 @@ export function PracticeJournal({
       ];
     });
     const supabase = createClient();
-    await supabase.from("practice_attendance").upsert(
+    const { error } = await supabase.from("practice_attendance").upsert(
       {
         tenant_id: tenantId,
         group_id: groupId,
@@ -211,6 +247,12 @@ export function PracticeJournal({
       },
       { onConflict: "event_id,log_date,member_id" }
     );
+    // never leave a tick on screen that never reached the server — an Ar would
+    // believe they took attendance
+    if (error) {
+      setAttendance(snapshot);
+      toast.error("เช็คชื่อไม่สำเร็จ", { description: error.message });
+    }
   }
 
   // --- derived views ---
@@ -244,6 +286,24 @@ export function PracticeJournal({
     return (
       <div className="flex justify-center py-12 text-muted-foreground">
         <Loader2 className="h-5 w-5 animate-spin" />
+      </div>
+    );
+  }
+
+  if (loadError) {
+    return (
+      <div className="flex flex-col items-center gap-3 rounded-lg border border-dashed py-10 text-center text-sm text-muted-foreground">
+        <p>โหลดสมุดซ้อมไม่สำเร็จ — อาจออฟไลน์อยู่หรือเน็ตมีปัญหา</p>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => {
+            setLoading(true);
+            load();
+          }}
+        >
+          ลองใหม่
+        </Button>
       </div>
     );
   }

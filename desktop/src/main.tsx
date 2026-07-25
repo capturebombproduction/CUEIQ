@@ -45,12 +45,71 @@ configureAudioTransport({
 window.addEventListener("dragover", (e) => e.preventDefault());
 window.addEventListener("drop", (e) => e.preventDefault());
 
+/**
+ * Last-resort fallback: without a boundary, ANY render throw unmounts the whole tree
+ * and leaves a white window — mid-show, with nothing to click and no console in the
+ * packaged app. Kept deliberately dumb (plain markup, no app components: whatever
+ * threw may well live in them) and always offering both escapes: reload, or the
+ * fully-local Quick Show runner. Navigating a crashed tree can't work from here, so
+ * Quick Show sets the hash and reloads into it.
+ */
+class AppErrorBoundary extends React.Component<
+  { children: React.ReactNode },
+  { error: Error | null }
+> {
+  state: { error: Error | null } = { error: null };
+
+  static getDerivedStateFromError(error: Error) {
+    return { error };
+  }
+
+  render() {
+    const { error } = this.state;
+    if (!error) return this.props.children;
+    return (
+      <div className="grid min-h-screen place-items-center bg-muted/30 p-4">
+        <div className="w-full max-w-md space-y-4 text-center">
+          <h1 className="text-xl font-bold text-destructive">แอปทำงานผิดพลาด</h1>
+          <p className="text-sm text-muted-foreground">
+            กด “โหลดใหม่” เพื่อเริ่มหน้าจอใหม่ ถ้ายังไม่หาย เปิด Quick Show
+            เพื่อคุมโชว์ต่อจากไฟล์ในเครื่องนี้ (ไม่ต้องใช้เน็ต)
+          </p>
+          <pre className="max-h-40 overflow-auto rounded-md border bg-background p-3 text-left text-xs text-muted-foreground">
+            {String(error.message || error)}
+          </pre>
+          <div className="flex items-center justify-center gap-2">
+            <button
+              type="button"
+              onClick={() => window.location.reload()}
+              className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90"
+            >
+              โหลดใหม่
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                window.location.hash = "#/my-show";
+                window.location.reload();
+              }}
+              className="inline-flex h-10 items-center justify-center gap-2 rounded-md border border-input bg-background px-4 py-2 text-sm font-medium transition-colors hover:bg-accent hover:text-accent-foreground"
+            >
+              Quick Show
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+}
+
 // HashRouter: works under file:// (Electron) and in the browser dev server alike.
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
-    <HashRouter>
-      <App />
-      <Toaster richColors position="top-center" />
-    </HashRouter>
+    <AppErrorBoundary>
+      <HashRouter>
+        <App />
+        <Toaster richColors position="top-center" />
+      </HashRouter>
+    </AppErrorBoundary>
   </React.StrictMode>
 );

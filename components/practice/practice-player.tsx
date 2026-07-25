@@ -61,10 +61,10 @@ function mmss(sec: number) {
 
 /**
  * Practice Mode player — Slices 1 + 2 (+ auto-log from Slice 3). The room has a
- * curated PRACTICE LIST (a subset of the band's library) that ANY band member can
- * manage — they practice on their own / at home; play a listed song slowed down
- * (1.0 / 0.75 / 0.5, pitch preserved) + scrubber; jump
- * between section markers (per-song, reusable; Ar manages); loop a section with
+ * curated PRACTICE LIST (a subset of the band's library) that any member OF THAT
+ * BAND can manage — they practice on their own / at home; play a listed song slowed
+ * down (1.0 / 0.75 / 0.5, pitch preserved) + scrubber; jump
+ * between section markers (per-song, reusable; band-writable); loop a section with
  * Mark In→Mark Out; run a break timer. Songs played long enough are auto-logged to
  * practice_runs so the journal can show "what we practiced today". Single device,
  * online: audio streams from R2 on demand. For a timed run-through use Live Mode.
@@ -75,8 +75,10 @@ export function PracticePlayer({
   songs,
   items,
   setItems,
-  markersBySong,
+  markers,
+  setMarkers,
   canManage,
+  canCurate,
   onRunLogged,
 }: {
   eventId: string;
@@ -88,9 +90,13 @@ export function PracticePlayer({
   // would reject re-adding them). Owning it above the Tabs fixes that.
   items: PracticeSong[];
   setItems: Dispatch<SetStateAction<PracticeSong[]>>;
-  markersBySong: Record<string, SongMarker[]>;
+  // Section markers live in the parent for the SAME reason — a marker added, then
+  // hidden by a tab switch, used to vanish (and re-marking inserted a duplicate row).
+  markers: Record<string, SongMarker[]>;
+  setMarkers: Dispatch<SetStateAction<Record<string, SongMarker[]>>>;
   canManage: boolean; // Ar/admin — gates only the metronome's "save BPM to song"
-  // (the list + section markers are member-writable; BPM lives on the guarded songs table)
+  // (BPM lives on the guarded songs table)
+  canCurate: boolean; // may edit THIS band's practice list + section markers
   onRunLogged?: () => void;
 }) {
   const confirm = useConfirm();
@@ -128,7 +134,6 @@ export function PracticePlayer({
   // true while the engine decodes a song for the first slow-down (stretch backend)
   const [preparing, setPreparing] = useState(false);
 
-  const [markers, setMarkers] = useState<Record<string, SongMarker[]>>(markersBySong);
   const [editMarkers, setEditMarkers] = useState(false);
   const [customLabel, setCustomLabel] = useState("");
 
@@ -208,6 +213,14 @@ export function PracticePlayer({
       }
     };
     engine.onPreparing = (p) => setPreparing(p);
+    // The engine couldn't decode this song for slow-down and dropped back to 1×
+    // native playback — follow it with the speed buttons so the UI isn't lying.
+    engine.onStretchFailed = () => {
+      setSpeed(1);
+      toast.error("ปรับความเร็วไม่ได้กับเพลงนี้", {
+        description: "ไฟล์นี้ถอดรหัสไม่ได้ — เล่นที่ความเร็วปกติแทน",
+      });
+    };
     return () => {
       flushRun(); // log whatever was playing when we leave
       engine.destroy();
@@ -307,6 +320,19 @@ export function PracticePlayer({
     if (!engine.playing) void engine.play();
   }
 
+  // Re-read a song's marks from the server after every mutation, so the list on
+  // screen is the server's rows and not a local guess — another device (or an
+  // earlier visit to this room) may hold marks this session never saw.
+  async function refreshMarkers(songId: string) {
+    const { data, error } = await createClient()
+      .from("song_markers")
+      .select("*")
+      .eq("song_id", songId)
+      .order("position_seconds", { ascending: true });
+    if (error || !data) return; // a failed read must not blank the marks we have
+    setMarkers((prev) => ({ ...prev, [songId]: data as SongMarker[] }));
+  }
+
   async function addMarker(label: string) {
     const engine = engineRef.current;
     if (!current || !engine) return;
@@ -332,44 +358,54 @@ export function PracticePlayer({
     setMarkers((prev) => ({ ...prev, [current.id]: [...(prev[current.id] ?? []), m] }));
     setCustomLabel("");
     toast.success(`มาร์ค “${label}” ที่ ${mmss(pos)}`);
+    await refreshMarkers(current.id);
   }
 
   async function deleteMarker(id: string) {
     if (!current) return;
+    const songId = current.id;
+    const snapshot = markers[songId] ?? [];
     setMarkers((prev) => ({
       ...prev,
-      [current.id]: (prev[current.id] ?? []).filter((m) => m.id !== id),
+      [songId]: (prev[songId] ?? []).filter((m) => m.id !== id),
     }));
-    const supabase = createClient();
-    await supabase.from("song_markers").delete().eq("id", id);
+    const { error } = await createClient().from("song_markers").delete().eq("id", id);
+    if (error) {
+      toast.error("ลบท่อนไม่สำเร็จ", { description: error.message });
+      setMarkers((prev) => ({ ...prev, [songId]: snapshot })); // revert
+      return;
+    }
+    await refreshMarkers(songId);
   }
 
   // wipe every mark on the current song at once (optimistic, reverts on error)
   async function clearMarkers() {
     if (!current) return;
-    const list = markers[current.id] ?? [];
+    const songId = current.id;
+    const list = markers[songId] ?? [];
     if (list.length === 0) return;
     const ok = await confirm({
       title: "ล้างท่อนทั้งหมด?",
-      description: `จะลบจุดท่อนทั้ง ${list.length} จุดของเพลงนี้`,
+      description: "จะลบจุดท่อนทั้งหมดของเพลงนี้",
       confirmText: "ล้างทั้งหมด",
     });
     if (!ok) return;
-    setMarkers((prev) => ({ ...prev, [current.id]: [] }));
+    setMarkers((prev) => ({ ...prev, [songId]: [] }));
     setEditMarkers(false);
+    // Delete by SONG, not by the ids we happen to be holding: the in-memory list
+    // can be behind the server, and an id-list delete would report success while
+    // leaving those rows behind (they'd reappear on the next load).
     const { error } = await createClient()
       .from("song_markers")
       .delete()
-      .in(
-        "id",
-        list.map((m) => m.id)
-      );
+      .eq("song_id", songId);
     if (error) {
       toast.error("ล้างท่อนไม่สำเร็จ", { description: error.message });
-      setMarkers((prev) => ({ ...prev, [current.id]: list })); // revert
-    } else {
-      toast.success("ล้างท่อนทั้งหมดแล้ว");
+      setMarkers((prev) => ({ ...prev, [songId]: list })); // revert
+      return;
     }
+    toast.success("ล้างท่อนทั้งหมดแล้ว");
+    await refreshMarkers(songId);
   }
 
   function setA() {
@@ -396,8 +432,9 @@ export function PracticePlayer({
     setLoopOn(false);
   }
 
-  // --- practice list: any band member adds a library song / takes one out (RLS =
-  // can_view_group, so members curate their own practice list — see practice_songs) ---
+  // --- practice list: any member OF THIS BAND adds a library song / takes one out
+  // (practice is a band activity — see practice_songs). A label-wide read-only
+  // observer may watch the room but not curate it: canCurate gates the controls. ---
   async function addSong(song: Song) {
     const sort = items.length ? Math.max(...items.map((i) => i.sort_order)) + 1 : 1;
     const supabase = createClient();
@@ -577,7 +614,7 @@ export function PracticePlayer({
                 <span className="flex items-center gap-1 text-xs font-medium text-muted-foreground">
                   <MapPin className="h-3.5 w-3.5" /> ท่อนเพลง
                 </span>
-                {curMarkers.length > 0 && (
+                {canCurate && curMarkers.length > 0 && (
                   <div className="flex items-center gap-3">
                     {editMarkers && (
                       <button
@@ -599,7 +636,7 @@ export function PracticePlayer({
 
               {curMarkers.length === 0 ? (
                 <p className="text-xs text-muted-foreground">
-                  ยังไม่มีท่อน — เพิ่มจากปุ่มด้านล่าง
+                  {canCurate ? "ยังไม่มีท่อน — เพิ่มจากปุ่มด้านล่าง" : "ยังไม่มีท่อน"}
                 </p>
               ) : (
                 <div className="flex flex-wrap gap-1.5">
@@ -617,7 +654,7 @@ export function PracticePlayer({
                           {mmss(m.position_seconds)}
                         </span>
                       </button>
-                      {editMarkers && (
+                      {canCurate && editMarkers && (
                         <button
                           onClick={() => deleteMarker(m.id)}
                           className="border-l px-1.5 py-1 text-destructive hover:bg-destructive/10"
@@ -631,7 +668,8 @@ export function PracticePlayer({
                 </div>
               )}
 
-              <div className="mt-2.5 space-y-2">
+              {canCurate && (
+                <div className="mt-2.5 space-y-2">
                   <div className="flex flex-wrap gap-1.5">
                     {MARKER_PRESETS.map((p) => (
                       <button
@@ -664,6 +702,7 @@ export function PracticePlayer({
                     </Button>
                   </div>
                 </div>
+              )}
             </div>
           </>
         ) : (
@@ -686,18 +725,22 @@ export function PracticePlayer({
               </span>
             )}
           </span>
-          <AddPracticeSongDialog
-            library={library}
-            listedIds={listedIds}
-            onAdd={addSong}
-          />
+          {canCurate && (
+            <AddPracticeSongDialog
+              library={library}
+              listedIds={listedIds}
+              onAdd={addSong}
+            />
+          )}
         </div>
 
         {practiceSongs.length === 0 ? (
           <div className="rounded-lg border border-dashed py-10 text-center text-sm text-muted-foreground">
             ยังไม่มีเพลงในลิสต์ซ้อม
             <br />
-            กด “เพิ่มเพลง” เพื่อเลือกเพลงจากคลังมาซ้อม
+            {canCurate
+              ? "กด “เพิ่มเพลง” เพื่อเลือกเพลงจากคลังมาซ้อม"
+              : "วงนี้ยังไม่ได้เลือกเพลงมาซ้อม"}
           </div>
         ) : (
           <>
@@ -752,13 +795,15 @@ export function PracticePlayer({
                         </span>
                       </span>
                     </button>
-                    <button
-                      onClick={() => removeSong(item.id)}
-                      title="เอาออกจากลิสต์ซ้อม"
-                      className="shrink-0 rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
-                    >
-                      <X className="h-4 w-4" />
-                    </button>
+                    {canCurate && (
+                      <button
+                        onClick={() => removeSong(item.id)}
+                        title="เอาออกจากลิสต์ซ้อม"
+                        className="shrink-0 rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
+                      >
+                        <X className="h-4 w-4" />
+                      </button>
+                    )}
                   </div>
                 );
               })}

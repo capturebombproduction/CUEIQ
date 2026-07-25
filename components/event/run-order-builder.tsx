@@ -45,6 +45,15 @@ const KINDS: { value: string; label: string }[] = [
 const hhmm = (t: string | null) => (t ? t.slice(0, 5) : "");
 const selCls = "rounded-md border bg-background px-2 py-1.5 text-sm";
 
+// Shown when a write came back clean but touched 0 rows — see the .select("id") note
+// on persist(). There's no error text to quote, and 0 rows has three very different
+// causes (no permission / row gone / the request went out unsigned, see
+// hasLiveSession), so name all three and promise only what we actually do next: ask
+// the server again. Never claim the screen was refreshed — runRollback() deliberately
+// keeps the current rows when the answer can't be trusted.
+const NO_ROW_HINT =
+  "ไม่มีสิทธิ์แก้ลำดับ แถวถูกลบไปแล้ว หรือยังยืนยันบัญชีไม่ได้ — กำลังตรวจกับเซิร์ฟเวอร์อีกครั้ง";
+
 /**
  * Builds the festival-wide running order (run_sequence rows) the staff will run live
  * in Phase 2. Autosaves each field like the setlist/staff-contacts editors; reorder
@@ -104,31 +113,198 @@ export function RunOrderBuilder({
   function setLocal(id: string, partial: Partial<RunSequence>) {
     setRows((prev) => prev.map((r) => (r.id === id ? { ...r, ...partial } : r)));
   }
-  async function persist(id: string, partial: Partial<RunSequence>) {
-    const { error } = await supabase.from("run_sequence").update(partial).eq("id", id);
-    if (error) toast.error("บันทึกไม่สำเร็จ", { description: error.message });
-    else bcast();
+
+  // --- write / rollback ordering ----------------------------------------------
+  // A rollback REPLACES every row, so it needs the same ordering discipline as the
+  // live board's refetch() (components/event/event-live-caller.tsx): `writesInFlight`
+  // defers it while one of our own writes is still un-acked — a read taken now can
+  // predate that write and would undo it — and `rollbackSeq` drops a snapshot a newer
+  // write (or a newer rollback) has already superseded. The pending record survives
+  // both, so whichever write settles last re-runs the rollback.
+  const rollbackSeqRef = useRef(0);
+  const writesInFlightRef = useRef(0);
+  // `fallback` = the rows as they were BEFORE the failed edit, restored only when the
+  // server can't be reached at all. Nulled as soon as a LATER write goes out: from
+  // then on the snapshot predates something we asked the DB to keep, so only server
+  // truth may replace the rows.
+  const pendingRollbackRef = useRef<{ fallback: RunSequence[] | null } | null>(null);
+  // The title box types into local state and only saves on blur, so swapping in server
+  // rows mid-typing would silently throw away what's on the keyboard. Remember the row
+  // being typed in and keep its local title whenever the rows are replaced.
+  const typingIdRef = useRef<string | null>(null);
+
+  /** Run one write inside the gate above — via finally, so a throw can't wedge it. */
+  async function guarded<T>(run: () => PromiseLike<T>): Promise<T> {
+    writesInFlightRef.current++;
+    rollbackSeqRef.current++; // any rollback read in flight predates this write…
+    const pending = pendingRollbackRef.current;
+    if (pending) pending.fallback = null; // …and so does the snapshot it still holds
+    try {
+      return await run();
+    } finally {
+      writesInFlightRef.current--;
+      // run whatever rollback was deferred while this write was in flight
+      if (writesInFlightRef.current === 0 && pendingRollbackRef.current) void runRollback();
+    }
+  }
+
+  // Ask the same question supabase-js asks before it signs a request: is there a
+  // usable access token? A FAILED token refresh is silent — the client falls back to
+  // the ANON key (auth-js caches the failure for ~a minute, exactly the window a venue
+  // reconnect lands in) and RLS then answers a SELECT with [] instead of an error.
+  // Same guard as hasLiveSession() in desktop/src/data/mgmt-outbox.ts; that module is
+  // desktop-only, so the check is repeated here against the shared client. Only called
+  // after a read that already came back cleanly, so getSession()'s offline
+  // refresh-hang (see desktop/src/data/stored-session.ts) can't stall a rollback.
+  async function hasLiveSession(): Promise<boolean> {
+    try {
+      const { data } = await supabase.auth.getSession();
+      return !!data.session?.access_token;
+    } catch {
+      return false;
+    }
+  }
+
+  /** Swap in a whole set of rows, keeping the title that is being typed right now. */
+  function applyRows(next: RunSequence[]) {
+    const typingId = typingIdRef.current;
+    if (!typingId) {
+      setRows(next);
+      return;
+    }
+    setRows((prev) => {
+      const typing = prev.find((r) => r.id === typingId);
+      return typing
+        ? next.map((r) => (r.id === typing.id ? { ...r, title: typing.title } : r))
+        : next;
+    });
+  }
+
+  // Pull the order back to server truth after a write that didn't land. Every edit
+  // here is optimistic and the live คุมคิว board reads the DB, so a builder still
+  // showing a change the DB never got makes the show-caller announce the wrong act —
+  // and a reload silently reverts what the staff believe they saved. Mirrors apply()'s
+  // rollback in components/event/event-live-caller.tsx.
+  async function scheduleRollback(fallback: RunSequence[]) {
+    pendingRollbackRef.current = {
+      // A snapshot is only a safe restore point while nothing else is un-acked:
+      // another write in flight may still land, and this snapshot predates it.
+      fallback: writesInFlightRef.current === 0 ? fallback : null,
+    };
+    if (writesInFlightRef.current > 0) return; // guarded()'s tail runs it
+    await runRollback();
+  }
+
+  async function runRollback() {
+    const pending = pendingRollbackRef.current;
+    if (!pending || writesInFlightRef.current > 0) return;
+    const seq = ++rollbackSeqRef.current;
+    const readOrder = () => {
+      const q = supabase
+        .from("run_sequence")
+        .select("*")
+        .eq("tenant_id", tenantId)
+        .eq("event_name", eventName)
+        .order("sort_order", { ascending: true });
+      return eventDate ? q.eq("event_date", eventDate) : q.is("event_date", null);
+    };
+    const { data, error } = await readOrder();
+    // Superseded while the read was in flight — this snapshot predates that write, so
+    // drop it; `pending` stays queued and guarded()'s tail re-reads once it settles.
+    if (seq !== rollbackSeqRef.current || writesInFlightRef.current > 0) return;
+    if (!error && data && data.length > 0) {
+      pendingRollbackRef.current = null;
+      applyRows(data as RunSequence[]);
+      return;
+    }
+    if (!error && data) {
+      // An EMPTY read is NOT proof the order is gone: under the anon fallback above,
+      // RLS answers [] for every row. Wiping on that empties the whole festival order
+      // — and the next “นำเข้าจากเวทีวง”, which reads linked_event_id off these very
+      // rows, would then insert every act a second time and broadcast the duplicate to
+      // the live board. The SELECT policy is is_tenant_member (mig 0033), so WITH a
+      // live session [] really does mean someone else cleared the order; without one,
+      // believe nothing.
+      const live = await hasLiveSession();
+      if (seq !== rollbackSeqRef.current || writesInFlightRef.current > 0) return;
+      if (live) {
+        // hasLiveSession() answers "is there a usable token NOW", not "was THAT read
+        // signed" — and getSession() can mint one itself, so the read above may still
+        // have gone out anon inside the cached-refresh cooldown and come back [] from
+        // RLS. Ask once more now that a token provably exists: only an empty answer
+        // from a read we know was signed is allowed to wipe the order.
+        const second = await readOrder();
+        if (seq !== rollbackSeqRef.current || writesInFlightRef.current > 0) return;
+        if (!second.error && second.data && second.data.length > 0) {
+          pendingRollbackRef.current = null;
+          applyRows(second.data as RunSequence[]);
+          return;
+        }
+        if (!second.error && second.data) {
+          pendingRollbackRef.current = null;
+          applyRows([]);
+          return;
+        }
+      }
+    }
+    // Server unreachable (the classic venue Wi-Fi drop) or an answer we can't trust:
+    // put the pre-edit rows back so the screen stops showing a change the DB never
+    // took. No snapshot left to trust → leave the rows alone rather than guess.
+    pendingRollbackRef.current = null;
+    if (pending.fallback) applyRows(pending.fallback);
+  }
+
+  // `snap` = the rows as they were BEFORE the optimistic edit. The title field types
+  // straight into local state and only persists on blur, so it has no pre-edit
+  // snapshot to offer — there the re-read is the only truth we can restore, and the
+  // current rows are passed just so an offline rollback is a no-op instead of a wipe.
+  async function persist(
+    id: string,
+    partial: Partial<RunSequence>,
+    snap: RunSequence[] = rows
+  ) {
+    // Select the row back: an UPDATE that RLS FILTERS OUT returns 204 with no error
+    // and 0 rows, so the error check alone would take the success path. run_sequence's
+    // update policy is can_approve(tenant_id) (mig 0033) and the desktop builder gates
+    // on cached perms, so a demoted account still sees the full builder and has every
+    // write silently dropped. 0 rows also means another device deleted the row. Same
+    // guard as apply()'s `losers` in components/event/event-live-caller.tsx.
+    const { data, error } = await guarded(() =>
+      supabase.from("run_sequence").update(partial).eq("id", id).select("id")
+    );
+    if (error || (data?.length ?? 0) === 0) {
+      toast.error("บันทึกไม่สำเร็จ", { description: error?.message ?? NO_ROW_HINT });
+      await scheduleRollback(snap); // never broadcast an edit the DB doesn't have
+      return;
+    }
+    bcast();
   }
   function update(id: string, partial: Partial<RunSequence>) {
+    const snap = rows;
     setLocal(id, partial);
-    persist(id, partial);
+    persist(id, partial, snap);
   }
 
   async function addRow() {
     setBusy(true);
     const sort = rows.length ? Math.max(...rows.map((r) => r.sort_order)) + 1 : 1;
-    const { data, error } = await supabase
-      .from("run_sequence")
-      .insert({
-        tenant_id: tenantId,
-        event_name: eventName,
-        event_date: eventDate,
-        sort_order: sort,
-        title: "",
-        kind: "other",
-      })
-      .select("*")
-      .single();
+    // Through the gate like every other write: a rollback read issued BEFORE this
+    // insert would otherwise land after it and drop the new row off the screen while
+    // it sits in the DB — and “นำเข้าจากเวทีวง” would then re-add its band.
+    const { data, error } = await guarded(() =>
+      supabase
+        .from("run_sequence")
+        .insert({
+          tenant_id: tenantId,
+          event_name: eventName,
+          event_date: eventDate,
+          sort_order: sort,
+          title: "",
+          kind: "other",
+        })
+        .select("*")
+        .single()
+    );
     setBusy(false);
     if (error || !data) {
       toast.error("เพิ่มไม่สำเร็จ", { description: error?.message });
@@ -146,10 +322,15 @@ export function RunOrderBuilder({
     if (!ok) return;
     const snap = rows;
     setRows((prev) => prev.filter((r) => r.id !== id));
-    const { error } = await supabase.from("run_sequence").delete().eq("id", id);
-    if (error) {
-      toast.error("ลบไม่สำเร็จ", { description: error.message });
-      setRows(snap);
+    // Same 0-row hole as persist(): the delete policy is can_approve(tenant_id) too.
+    // Roll back from the SERVER (not straight to `snap`) so a row someone else already
+    // deleted stays gone instead of reappearing, while a denied delete comes back.
+    const { data, error } = await guarded(() =>
+      supabase.from("run_sequence").delete().eq("id", id).select("id")
+    );
+    if (error || (data?.length ?? 0) === 0) {
+      toast.error("ลบไม่สำเร็จ", { description: error?.message ?? NO_ROW_HINT });
+      await scheduleRollback(snap);
     } else {
       bcast();
     }
@@ -164,6 +345,7 @@ export function RunOrderBuilder({
     if (j < 0 || j >= sorted.length) return;
     const a = sorted[idx];
     const b = sorted[j];
+    const snap = rows;
     setRows((prev) =>
       prev.map((r) =>
         r.id === a.id
@@ -173,10 +355,36 @@ export function RunOrderBuilder({
             : r
       )
     );
-    await Promise.all([
-      supabase.from("run_sequence").update({ sort_order: b.sort_order }).eq("id", a.id),
-      supabase.from("run_sequence").update({ sort_order: a.sort_order }).eq("id", b.id),
-    ]);
+    const results = await guarded(() =>
+      Promise.all([
+        supabase
+          .from("run_sequence")
+          .update({ sort_order: b.sort_order })
+          .eq("id", a.id)
+          .select("id"),
+        supabase
+          .from("run_sequence")
+          .update({ sort_order: a.sort_order })
+          .eq("id", b.id)
+          .select("id"),
+      ])
+    );
+    const err = results.find((r) => r.error)?.error;
+    // …and the same 0-row check as persist(): a swap RLS filtered out reports no error.
+    const noRow = results.some((r) => !r.error && (r.data?.length ?? 0) === 0);
+    if (err || noRow) {
+      // Half a swap may have landed — the two updates are separate statements with no
+      // transaction — so the re-read (not the snapshot) decides what this screen shows.
+      // Still BROADCAST when either statement touched a row: the DB really did move and
+      // the live คุมคิว board must re-read, or it announces from an order that no longer
+      // exists. A broadcast only asks receivers to re-read, so a spare one is free while
+      // a missing one is not (same discipline as apply() in event-live-caller.tsx).
+      const anyLanded = results.some((r) => !r.error && (r.data?.length ?? 0) > 0);
+      toast.error("สลับลำดับไม่สำเร็จ", { description: err?.message ?? NO_ROW_HINT });
+      if (anyLanded) bcast();
+      await scheduleRollback(snap);
+      return;
+    }
     bcast();
   }
 
@@ -193,29 +401,51 @@ export function RunOrderBuilder({
     setBusy(true);
     let sort = rows.length ? Math.max(...rows.map((r) => r.sort_order)) : 0;
     const created: RunSequence[] = [];
-    for (const b of todo) {
-      sort += 1;
-      const { data } = await supabase
-        .from("run_sequence")
-        .insert({
-          tenant_id: tenantId,
-          event_name: eventName,
-          event_date: eventDate,
-          sort_order: sort,
-          title: b.group_name,
-          kind: "band",
-          planned_start: b.stage_start,
-          planned_end: b.stage_end,
-          linked_event_id: b.id,
-        })
-        .select("*")
-        .single();
-      if (data) created.push(data as RunSequence);
-    }
+    let failed: string | undefined;
+    // One gate around the WHOLE loop: a rollback landing between two inserts would
+    // replace the rows with a snapshot that predates the ones already created, and the
+    // next import — which reads linked_event_id off the rows on screen — would add
+    // those bands all over again. Deferred until the import finishes instead.
+    await guarded(async () => {
+      for (const b of todo) {
+        sort += 1;
+        const { data, error } = await supabase
+          .from("run_sequence")
+          .insert({
+            tenant_id: tenantId,
+            event_name: eventName,
+            event_date: eventDate,
+            sort_order: sort,
+            title: b.group_name,
+            kind: "band",
+            planned_start: b.stage_start,
+            planned_end: b.stage_end,
+            linked_event_id: b.id,
+          })
+          .select("*")
+          .single();
+        if (error || !data) {
+          // Stop at the first failure: pushing on would scatter half the line-up over
+          // the order and leave holes in the sort numbers. The rows that DID land stay
+          // (they're real), and the toast says the import is incomplete.
+          failed = error?.message ?? "เพิ่มแถวไม่สำเร็จ";
+          break;
+        }
+        created.push(data as RunSequence);
+      }
+      // inside the gate: the rows the inserts really created must be on screen before
+      // any deferred rollback is allowed to re-read and replace them
+      setRows((prev) => [...prev, ...created]);
+    });
     setBusy(false);
-    setRows((prev) => [...prev, ...created]);
     if (created.length > 0) bcast();
-    toast.success(`เพิ่ม ${created.length} วงจากเวที`);
+    if (failed) {
+      toast.error(`นำเข้าวงไม่ครบ — เพิ่มได้ ${created.length}/${todo.length} วง`, {
+        description: failed,
+      });
+    } else {
+      toast.success(`เพิ่ม ${created.length} วงจากเวที`);
+    }
   }
 
   // Save the whole running order as a clean light-theme JPG to share with the band
@@ -321,8 +551,19 @@ export function RunOrderBuilder({
                   value={r.title}
                   placeholder="ชื่อลำดับ (เช่น Opening / Show Match)"
                   className="min-w-[160px] flex-1"
+                  // The only field that saves on blur instead of on change — so mark it
+                  // while it has focus and applyRows() won't swap the half-typed name
+                  // out from under the staffer (see typingIdRef).
+                  onFocus={() => {
+                    typingIdRef.current = r.id;
+                  }}
                   onChange={(e) => setLocal(r.id, { title: e.target.value })}
-                  onBlur={(e) => persist(r.id, { title: e.target.value })}
+                  onBlur={(e) => {
+                    // cleared BEFORE the write, so its own rollback is free to put the
+                    // server's title back on this row
+                    typingIdRef.current = null;
+                    persist(r.id, { title: e.target.value });
+                  }}
                 />
                 <select
                   value={r.linked_event_id ?? ""}

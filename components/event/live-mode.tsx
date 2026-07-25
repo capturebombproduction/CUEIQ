@@ -209,6 +209,13 @@ export function LiveMode({
   // (the show item can outlast the file via buffer_after). Cleared on the next command.
   const endedItemRef = useRef<string | null>(null);
   const [audioPlaying, setAudioPlaying] = useState(false);
+  // A REAL media failure on THIS device (a dangling cached blob, an evicted file, a
+  // codec this device can't decode) — as opposed to the benign autoplay block, which
+  // the "แตะเพื่อเล่นเสียงต่อ" banner already handles. Kept on screen because the
+  // alternative is pure silence with the countdown still running and nothing saying
+  // why. Purely informational: it never touches the show clock or the advance logic.
+  const [audioFault, setAudioFault] = useState<{ id: string; title: string } | null>(null);
+  const audioFaultRef = useRef<string | null>(null); // itemId already reported (dedupe)
   const [audioCurrent, setAudioCurrent] = useState(0);
   const [audioDuration, setAudioDuration] = useState(0);
   const [volumes, setVolumes] = useState<Record<string, number>>({}); // itemId → 0–100 (default 100), set per track
@@ -285,7 +292,15 @@ export function LiveMode({
     if (!volumesLoadedRef.current) return; // don't overwrite before the restore runs
     const id = setTimeout(() => {
       try {
-        localStorage.setItem(`cueiq:vol:${eventId}`, JSON.stringify(volumes));
+        // A loop item's end-fade (loopFadeRef, declared with its effect further down)
+        // is TRANSIENT: it dips that track to 0 so the BGM lands on time and restores
+        // once the show moves off it. When it never moves off (last item, or the
+        // operator leaves it running) the restore never fires, and persisting that 0
+        // would re-open the event with the row muted. Save the operator's INTENDED
+        // level for a track that's mid-fade — the audible fade itself is untouched.
+        const lf = loopFadeRef.current;
+        const preset = lf ? { ...volumes, [lf.id]: lf.prevVol } : volumes;
+        localStorage.setItem(`cueiq:vol:${eventId}`, JSON.stringify(preset));
       } catch {}
     }, 400);
     return () => clearTimeout(id);
@@ -354,6 +369,43 @@ export function LiveMode({
     };
   }, []);
 
+  // Tell the operator WHICH track died and that this device is now silent. Reported
+  // once per track (the media "error" event and the play() rejection normally both
+  // fire for the same file); cleared when the show moves on to another track.
+  function reportAudioFault(itemId: string | null) {
+    if (!itemId || audioFaultRef.current === itemId) return;
+    audioFaultRef.current = itemId;
+    const title = itemsRef.current.find((it) => it.id === itemId)?.title || "รายการนี้";
+    setAudioFault({ id: itemId, title });
+    toast.error(`เล่นไฟล์เสียงไม่สำเร็จ: ${title}`, {
+      description: "เครื่องนี้จะไม่มีเสียงในรายการนี้ (โชว์ยังเดินต่อ) — ลองโหลดไฟล์เพลงใหม่",
+    });
+  }
+  const reportAudioFaultRef = useRef(reportAudioFault);
+  reportAudioFaultRef.current = reportAudioFault;
+
+  // A play() rejection is not always a failure: NotAllowedError = the autoplay policy
+  // (the "แตะเพื่อเล่นเสียงต่อ" banner is the affordance for that, so it stays silent
+  // here) and AbortError = our own pause / src-swap interrupting a pending play, which
+  // happens on every track change and overlap. Anything else is a real media failure.
+  function onPlayRejected(itemId: string | null, err: unknown) {
+    const name = (err as { name?: string } | null)?.name;
+    if (name === "NotAllowedError" || name === "AbortError") return;
+    reportAudioFault(itemId);
+  }
+  // ref for the effects with a curated dep list (they must not re-run per render)
+  const onPlayRejectedRef = useRef(onPlayRejected);
+  onPlayRejectedRef.current = onPlayRejected;
+
+  // the fault describes ONE track — drop it once the show is sounding another one,
+  // so a stale banner doesn't sit over the rest of the run
+  useEffect(() => {
+    if (audioFaultRef.current && audioFaultRef.current !== playingId) {
+      audioFaultRef.current = null;
+      setAudioFault(null);
+    }
+  }, [playingId]);
+
   // two audio elements — create once. UI-updating listeners only act for whichever
   // element is currently the primary (audioRef.current).
   useEffect(() => {
@@ -366,6 +418,13 @@ export function LiveMode({
           setPlayingId(null);
           setAudioPlaying(false);
         }
+      });
+      a.addEventListener("error", () => {
+        // The loaded file can't be played at all (dangling blob, undecodable bytes,
+        // missing codec). Only the element that's meant to be SOUNDING counts — an
+        // idle one being reloaded or cleared (src="" on unmount) isn't a fault.
+        if (a !== audioRef.current || !playingIdRef.current) return;
+        reportAudioFaultRef.current(playingIdRef.current);
       });
       a.addEventListener("timeupdate", () => {
         if (a !== audioRef.current) return;
@@ -525,7 +584,19 @@ export function LiveMode({
         for (const s of saved) {
           urls[s.itemId] = URL.createObjectURL(s.blob);
           names[s.itemId] = s.name;
-          cachedPathRef.current[s.itemId] = s.path; // remember which online version we hold
+          // Records written BEFORE the copy-on-pick fix below hold the picked File
+          // itself = a mere REFERENCE to the on-disk path (Chromium). A moved /
+          // deleted / re-exported source (or an unplugged USB stick) still mints an
+          // object URL here yet plays nothing at showtime — the same trap Quick Show
+          // migrates on boot (desktop/src/pages/my-show.tsx). When we know the online
+          // version, leave cachedPathRef UNSET so the download effect below counts it
+          // as missing and re-pulls real bytes, overwriting the dangling record. The
+          // URL above still stands, so a source that IS still there keeps playing
+          // until that lands. A path-less record is local-only legacy — that
+          // reference is the only copy that exists, so it's kept as before.
+          const dangling =
+            s.path != null && typeof File !== "undefined" && s.blob instanceof File;
+          if (!dangling) cachedPathRef.current[s.itemId] = s.path; // which online version we hold
         }
         // a file the user loaded during this async read wins over the restored one
         setAudioUrls((prev) => ({ ...urls, ...prev }));
@@ -720,7 +791,7 @@ export function LiveMode({
         sec.src = url;
         sec.currentTime = 0;
         sec.volume = Math.min(1, Math.max(0, (volumesRef.current[nxt.id] ?? 100) / 100));
-        sec.play().catch(() => {});
+        sec.play().catch((err) => onPlayRejectedRef.current(nxt.id, err));
         overlapNextIdRef.current = nxt.id; // promoted to primary on advance
       }
     }
@@ -756,11 +827,11 @@ export function LiveMode({
         audio.currentTime = Math.max(0, pos);
         audio.playbackRate = 1;
         setPlayingId(cmd.id);
-        audio.play().catch(() => {});
+        audio.play().catch((err) => onPlayRejected(cmd.id, err));
         if (!audioPlaying) setAudioPlaying(true);
       } else {
         // same track already loaded — follow PLAY only; NEVER touch the position.
-        if (audio.paused) audio.play().catch(() => {});
+        if (audio.paused) audio.play().catch((err) => onPlayRejected(cmd.id, err));
         if (!audioPlaying) setAudioPlaying(true);
       }
     } else {
@@ -1040,8 +1111,32 @@ export function LiveMode({
   // ("setlist-changed" broadcast). Remap currentIndex by the live item's id so the
   // running show keeps its place and timers (startedAt/itemStartedAt) are untouched.
   const refetchSeqRef = useRef(0); // monotonic token — only the latest response applies
-  async function refetchItems() {
+  // A live reorder (moveItem / reorderTo) is OPTIMISTIC: setItems lands before its
+  // UPDATEs are acked, so a refetch fired inside that window (tab focus /
+  // "setlist-changed" / library broadcast) can read PRE-write sort_orders and revert
+  // the controller's list while the DB — and every other device — already holds the
+  // new order; NEXT would then broadcast an index resolving to a different song on
+  // the viewers. Same guard as the run-order caller (event-live-caller.tsx):
+  // `writesInFlight` defers a refetch ISSUED inside that window and `missedRefetch`
+  // makes the write's tail replay it. `writeEpoch` covers the other half — a refetch
+  // that was ALREADY reading when the write started. The tail can only replay what it
+  // can SEE in missedRefetch, and such a snapshot lands after that check has run, so
+  // it re-pulls ITSELF (below) instead of parking a flag nobody reads again: dropping
+  // it silently would leave a library upload / a delete made on another device
+  // invisible here — the song plays silence, or NEXT resolves to a different row.
+  const writesInFlightRef = useRef(0);
+  const missedRefetchRef = useRef(false);
+  const writeEpochRef = useRef(0); // bumped by each local reorder (moveItem / reorderTo)
+  // `depth` only bounds the self-replay below; every other caller omits it.
+  async function refetchItems(depth = 0): Promise<void> {
+    if (writesInFlightRef.current > 0) {
+      // anything we read now can be pre-write — the write's tail re-pulls it
+      missedRefetchRef.current = true;
+      return;
+    }
     const seq = ++refetchSeqRef.current;
+    const epoch = writeEpochRef.current;
+    missedRefetchRef.current = false;
     const supabase = createClient();
     // refresh songs too, so a library file uploaded on another device resolves
     const [itemsRes, songsRes] = await Promise.all([
@@ -1053,8 +1148,25 @@ export function LiveMode({
       supabase.from("songs").select("id, audio_path, audio_name").eq("group_id", groupId),
     ]);
     // a newer refetch was issued while this one was in flight — drop this (older)
-    // snapshot so out-of-order responses can't revert the setlist mid-show
+    // snapshot so out-of-order responses can't revert the setlist mid-show. The newer
+    // one is still reading and applies (or replays) in our place.
     if (seq !== refetchSeqRef.current) return;
+    // A local reorder started inside our round trip: these rows predate it, so applying
+    // them would revert the controller's list to the pre-write sort_orders — exactly
+    // what the write gate exists to stop. Re-read instead of dropping.
+    if (writeEpochRef.current !== epoch) {
+      // still writing → its tail re-pulls once the UPDATEs ack
+      if (writesInFlightRef.current > 0) {
+        missedRefetchRef.current = true;
+        return;
+      }
+      // settled, and its tail ran that check before we landed → nobody else will.
+      // Bounded: only ANOTHER write landing inside the replay's own round trip can
+      // repeat this, and past the cap we park the flag rather than nest for ever.
+      if (depth < 3) return refetchRef.current(depth + 1);
+      missedRefetchRef.current = true;
+      return;
+    }
     if (!itemsRes.data) return;
     if (songsRes.data) {
       const map: SongAudioMap = {};
@@ -1176,6 +1288,10 @@ export function LiveMode({
             : it
       )
       .sort((x, y) => x.sort_order - y.sort_order);
+    // gate concurrent refetches until these UPDATEs land, and invalidate any snapshot
+    // already in flight — it predates this write, so it re-reads itself (refetchItems)
+    writeEpochRef.current++;
+    writesInFlightRef.current++;
     setItems(reordered);
     if (curId) {
       const newIdx = reordered.findIndex((it) => it.id === curId);
@@ -1187,8 +1303,13 @@ export function LiveMode({
     await Promise.all([
       supabase.from("setlist_items").update({ sort_order: b.sort_order }).eq("id", a.id),
       supabase.from("setlist_items").update({ sort_order: a.sort_order }).eq("id", b.id),
-    ]);
+    ]).finally(() => {
+      // clear the gate even if the round-trip threw, or refetches stay deferred
+      writesInFlightRef.current--;
+    });
     bcastSetlistChanged();
+    // a refetch landed while we were writing — pull it now that we're settled
+    if (missedRefetchRef.current) refetchRef.current();
   }
 
   // "จบโชว์" — freeze the accumulated clock + SAVE it as the last-show record (kept
@@ -1247,6 +1368,9 @@ export function LiveMode({
     arr.splice(to, 0, moved);
     const renumbered = arr.map((it, i) => ({ ...it, sort_order: i + 1 }));
     const curId = orig[stateRef.current.currentIndex]?.id;
+    // same in-flight-write gate as moveItem (see refetchItems)
+    writeEpochRef.current++;
+    writesInFlightRef.current++;
     setItems(renumbered);
     if (curId) {
       const newIdx = renumbered.findIndex((it) => it.id === curId);
@@ -1261,8 +1385,13 @@ export function LiveMode({
         .map((it) =>
           supabase.from("setlist_items").update({ sort_order: it.sort_order }).eq("id", it.id)
         )
-    );
+    ).finally(() => {
+      // clear the gate even if the round-trip threw, or refetches stay deferred
+      writesInFlightRef.current--;
+    });
     bcastSetlistChanged();
+    // a refetch landed while we were writing — pull it now that we're settled
+    if (missedRefetchRef.current) refetchRef.current();
   }
 
   // Pick a file in Live Mode = the QUICK/ad-hoc path (you forgot to prep in the
@@ -1287,6 +1416,19 @@ export function LiveMode({
     setAudioNames((prev) => ({ ...prev, [itemId]: file.name }));
 
     setAudioBusy((prev) => ({ ...prev, [itemId]: "up" }));
+    // Copy the bytes ONCE for the on-device cache: storing the picked File itself
+    // keeps only a REFERENCE to the on-disk path (Chromium), so a source that gets
+    // moved / deleted / re-exported — or a USB stick that gets unplugged — leaves a
+    // dangling blob that still mints an object URL and still counts as ready in
+    // show-readiness-check.tsx, then plays pure silence at showtime. Same fix as
+    // Quick Show (desktop/src/pages/my-show.tsx). Best-effort: if the read fails
+    // there's simply no offline copy — playback + the upload below use the File.
+    let cached: Blob | null = null;
+    try {
+      cached = new Blob([await file.arrayBuffer()], { type: file.type });
+    } catch {
+      /* unreadable source — the upload below will surface the real problem */
+    }
     try {
       const supabase = createClient();
       const legacyPath = item.song_id ? null : item.audio_path ?? null; // pre-library file to clean up
@@ -1326,13 +1468,13 @@ export function LiveMode({
             : it
         )
       );
-      saveAudio(eventId, itemId, file, file.name, path).catch(() => {});
+      if (cached) saveAudio(eventId, itemId, cached, file.name, path).catch(() => {});
       if (legacyPath) removeEventAudio(legacyPath).catch(() => {});
       bcastSetlistChanged();
       toast.success("อัปขึ้นคลังเป็นเพลงชั่วคราว (3 วัน) — เก็บถาวรได้ในคลังเพลง");
     } catch (err) {
       // online upload failed — still keep a local-only copy so THIS device can play
-      saveAudio(eventId, itemId, file, file.name).catch(() => {});
+      if (cached) saveAudio(eventId, itemId, cached, file.name).catch(() => {});
       toast.error("อัปโหลดออนไลน์ไม่สำเร็จ — ไฟล์ยังเล่นได้เฉพาะเครื่องนี้", {
         description: err instanceof Error ? err.message : undefined,
       });
@@ -1459,7 +1601,7 @@ export function LiveMode({
         if (playingId === cur.id) {
           // resuming the same (paused) track — continue from where it stopped
           if (url) {
-            audio.play().catch(() => {});
+            audio.play().catch((err) => onPlayRejected(cur.id, err));
             setAudioPlaying(true);
           }
         } else if (url) {
@@ -1472,7 +1614,7 @@ export function LiveMode({
             audio.src = url;
             audio.currentTime = Math.max(0, offset);
             setPlayingId(cur.id);
-            audio.play().catch(() => {});
+            audio.play().catch((err) => onPlayRejected(cur.id, err));
             setAudioPlaying(true);
           }
         } else {
@@ -1562,7 +1704,7 @@ export function LiveMode({
       audio.pause();
       audio.src = url;
       audio.currentTime = 0;
-      audio.play().catch(() => {});
+      audio.play().catch((err) => onPlayRejected(itemId, err));
       setPlayingId(itemId);
       setAudioPlaying(true);
     } else {
@@ -1588,7 +1730,7 @@ export function LiveMode({
     incoming.src = url;
     incoming.currentTime = Math.max(0, fromOffset);
     incoming.volume = Math.min(1, Math.max(0, (volumesRef.current[itemId] ?? 100) / 100));
-    incoming.play().catch(() => {});
+    incoming.play().catch((err) => onPlayRejected(itemId, err));
     swapAudio(); // incoming → primary (scrubber/volume follow it); outgoing → secondary
     setPlayingId(itemId);
     setAudioPlaying(true);
@@ -1627,7 +1769,7 @@ export function LiveMode({
     audio
       .play()
       .then(() => setAudioPlaying(true))
-      .catch(() => {});
+      .catch((err) => onPlayRejected(sid, err));
   }
 
   // show-level controls
@@ -1707,7 +1849,7 @@ export function LiveMode({
           audio.currentTime = Math.max(0, offset);
         }
         // if it's already the live playing track, leave its position untouched
-        audio.play().catch(() => {});
+        audio.play().catch((err) => onPlayRejected(cur.id, err));
         setAudioPlaying(true);
       }
     } else {
@@ -2156,6 +2298,30 @@ export function LiveMode({
         >
           <Volume2 className="h-5 w-5" /> แตะเพื่อเล่นเสียงต่อ (ตำแหน่งปัจจุบัน)
         </button>
+      )}
+
+      {/* A real playback failure on this device — the countdown keeps running, so
+          say WHY the PA is silent instead of leaving the operator guessing. */}
+      {audioFault && (
+        <div className="flex items-center justify-between gap-2 rounded-xl border border-rose-400 bg-rose-500/10 px-4 py-2 text-sm font-medium text-rose-800 dark:text-rose-300">
+          <span className="flex min-w-0 items-center gap-1.5">
+            <VolumeX className="h-4 w-4 shrink-0" />
+            <span className="min-w-0">
+              เล่นไฟล์เสียงไม่สำเร็จ: “{audioFault.title}” — เครื่องนี้ไม่มีเสียง (โชว์ยังเดินต่อ) · ลองโหลดไฟล์เพลงใหม่
+            </span>
+          </span>
+          <button
+            type="button"
+            onClick={() => {
+              audioFaultRef.current = null;
+              setAudioFault(null);
+            }}
+            title="ปิดข้อความนี้"
+            className="shrink-0 rounded-md px-2 py-0.5 text-xs underline-offset-2 hover:underline"
+          >
+            ปิด
+          </button>
+        </div>
       )}
 
       {/* Realtime dropped mid-show — make it obvious; the local show keeps running */}

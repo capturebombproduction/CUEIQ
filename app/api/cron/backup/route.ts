@@ -32,6 +32,46 @@ const TABLES = [
   "songs", "staff_contacts", "tenant_members", "tenants",
 ] as const;
 
+// PostgREST caps a plain select at max-rows (1000 on Supabase) and truncates
+// SILENTLY — once a table passes that, the snapshot would still report ok:true with
+// a healthy-looking count while the rest of the rows are simply missing. So read
+// every table in pages instead. PAGE_SIZE matches the cap (one round-trip per 1000
+// rows); MAX_PAGES only exists so a misbehaving server can never spin forever — it
+// throws, i.e. a truncated table is reported as an error, never written silently.
+const PAGE_SIZE = 1000;
+const MAX_PAGES = 200;
+
+// Stable sort key so OFFSET paging can't skip or repeat rows. Every table has a
+// uuid `id` except show_authority, whose PK is (event_id, kind).
+const ORDER_BY: Partial<Record<(typeof TABLES)[number], string[]>> = {
+  show_authority: ["event_id", "kind"],
+};
+
+/**
+ * Read a whole table, page by page. Ends ONLY on an empty page (not merely a short
+ * one) so a server-side row cap smaller than PAGE_SIZE still pages on instead of
+ * stopping early, and throws rather than returning a partial table — the caller
+ * turns that into a real per-table error in the snapshot.
+ */
+async function selectAll(
+  admin: ReturnType<typeof createAdminClient>,
+  table: (typeof TABLES)[number]
+): Promise<unknown[]> {
+  const rows: unknown[] = [];
+  for (let page = 0; page < MAX_PAGES; page++) {
+    let q = admin.from(table).select("*").range(rows.length, rows.length + PAGE_SIZE - 1);
+    for (const col of ORDER_BY[table] ?? ["id"]) q = q.order(col, { ascending: true });
+    const { data, error } = await q;
+    if (error) throw new Error(error.message);
+    const batch = data ?? [];
+    rows.push(...batch);
+    if (batch.length === 0) return rows;
+  }
+  throw new Error(
+    `${table}: over ${MAX_PAGES * PAGE_SIZE} rows — refusing to write a truncated snapshot`
+  );
+}
+
 function authorized(req: Request): boolean {
   const secret = process.env.CRON_SECRET?.trim();
   if (!secret) return false;
@@ -48,17 +88,20 @@ export async function GET(req: Request) {
   const counts: Record<string, number> = {};
   const errors: Record<string, string> = {};
 
-  // One region-local round-trip per table, in parallel — tiny dataset (~few hundred
-  // rows total), well within the function's time budget now that it runs in sin1.
+  // Tables in parallel, pages within a table in sequence — region-local round-trips
+  // on a tiny dataset (~few hundred rows total, so most tables are 2 calls), well
+  // within the function's time budget now that it runs in sin1. The whole snapshot is
+  // held in memory and stringified, so this stays comfortable up to roughly 100k rows
+  // (~50 MB of JSON); past that it needs streaming/NDJSON rather than a bigger page.
   await Promise.all(
     TABLES.map(async (t) => {
-      const { data: rows, error } = await admin.from(t).select("*");
-      if (error) {
-        errors[t] = error.message;
-        return;
+      try {
+        const rows = await selectAll(admin, t);
+        data[t] = rows;
+        counts[t] = rows.length;
+      } catch (e) {
+        errors[t] = e instanceof Error ? e.message : String(e);
       }
-      data[t] = rows ?? [];
-      counts[t] = (rows ?? []).length;
     })
   );
 

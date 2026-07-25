@@ -2,7 +2,7 @@
 // Reuses EventWorkspace verbatim (Summary tab + the code-split editors), driven
 // by a client-fetched bundle. Heavier peripherals (export / approval / device
 // prep / festival run-order) are deferred to a later milestone.
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { ArrowLeft, CalendarDays, MapPin, Music2, Pencil, AlarmClock } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -14,6 +14,7 @@ import { EVENT_TYPES, type EventType, type GroupStatus } from "@/lib/types";
 import { shortClock, deadlineInfo } from "@/lib/time";
 import { cn } from "@/lib/utils";
 import { loadEventBundle, type EventBundle } from "~/data/event-bundle";
+import { onRouterRefresh } from "~/shims/next-navigation";
 import { useWorkspace } from "~/data/workspace-context";
 
 const DEADLINE_BADGE: Record<string, string> = {
@@ -47,6 +48,44 @@ export function EventPage() {
       .catch(() => alive && setState({ loading: false, bundle: null }));
     return () => {
       alive = false;
+    };
+  }, [id]);
+
+  // router.refresh() from the reused components (the auto draft↔pending write,
+  // and switching to the Summary tab) has to re-read the bundle here — there is
+  // no server render to bust. Re-loads IN PLACE: no loading flash, and a reload
+  // that fails or comes back empty (offline, or nothing cached yet) keeps what
+  // is already on screen instead of blanking to "ไม่พบงานนี้".
+  const reloading = useRef(false);
+  const reloadQueued = useRef(false);
+  useEffect(() => {
+    if (!id) return;
+    let alive = true;
+    const reload = () => {
+      // refresh() can fire on every trip to Summary, so run one load at a time —
+      // but never DROP one: the last refresh is the one whose data gets printed
+      // / exported. Queue it and re-run once the in-flight load settles.
+      if (reloading.current) {
+        reloadQueued.current = true;
+        return;
+      }
+      reloading.current = true;
+      reloadQueued.current = false;
+      loadEventBundle(id)
+        .then((bundle) => {
+          if (alive && bundle) setState({ loading: false, bundle });
+        })
+        .catch(() => {})
+        .finally(() => {
+          reloading.current = false;
+          if (alive && reloadQueued.current) reload();
+        });
+    };
+    const off = onRouterRefresh(reload);
+    return () => {
+      alive = false;
+      reloadQueued.current = false;
+      off();
     };
   }, [id]);
 

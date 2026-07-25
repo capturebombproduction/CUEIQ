@@ -6,6 +6,7 @@ import { Link, Outlet } from "react-router-dom";
 import { Play } from "lucide-react";
 import { Brand } from "@/components/brand";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { MainNav } from "@/components/main-nav";
 import { AccentPicker } from "@/components/accent-picker";
 import { ThemeToggle } from "@/components/theme-toggle";
@@ -27,15 +28,52 @@ function roleLabel(role: Role | null | undefined, perms?: Perms): string | null 
   return role ? ROLE_SHORT[role] : null;
 }
 
+/** Escape hatch shown while the workspace is loading and when it failed to load.
+ *  Same reasoning as App.tsx's BootScreen: a venue network that is joined but
+ *  black-holed makes this screen stretch, and a failed load used to render the
+ *  bare "กำลังโหลด…" FOREVER (`loading || !ws`) with no retry and no way to reach
+ *  Quick Show — the one runner that needs neither network nor login. */
+function ShellFallback({ failed, onRetry }: { failed: boolean; onRetry: () => void }) {
+  return (
+    <div className="grid min-h-screen place-items-center bg-muted/30 p-4">
+      <div className="w-full max-w-sm space-y-6">
+        <div className="text-center">
+          <h1 className="text-3xl font-bold tracking-tight text-primary">CueIQ</h1>
+          <p className="mt-1 text-sm text-muted-foreground">
+            {failed ? "โหลดข้อมูลไม่สำเร็จ — อาจออฟไลน์อยู่หรือเน็ตมีปัญหา" : "กำลังโหลด…"}
+          </p>
+        </div>
+        <div className="flex justify-center gap-2">
+          <Button variant="outline" size="sm" onClick={onRetry}>
+            ลองใหม่
+          </Button>
+          {failed && <SignOutButton />}
+        </div>
+        {/* Same Quick Show entry as the login + boot screens (see ~/pages/Login). */}
+        <Link
+          to="/my-show"
+          className="group flex items-center gap-3 rounded-xl border-2 border-primary/40 bg-primary/5 px-4 py-3 shadow-sm transition-colors hover:border-primary/70 hover:bg-primary/10"
+        >
+          <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-primary/15 text-primary transition-colors group-hover:bg-primary/25">
+            <Play className="h-5 w-5" />
+          </span>
+          <span className="min-w-0">
+            <span className="block text-sm font-bold text-primary">Quick Show</span>
+            <span className="block text-xs text-muted-foreground">
+              โหมดโชว์เดี่ยว — เปิดเพลง+จับเวลาจากเครื่องนี้ ไม่ต้องเข้าสู่ระบบ
+            </span>
+          </span>
+        </Link>
+      </div>
+    </div>
+  );
+}
+
 export function Shell() {
-  const { loading, ws } = useWorkspace();
+  const { loading, ws, reload } = useWorkspace();
 
   if (loading || !ws) {
-    return (
-      <div className="grid min-h-screen place-items-center bg-muted/30 text-muted-foreground">
-        กำลังโหลด…
-      </div>
-    );
+    return <ShellFallback failed={!loading} onRetry={reload} />;
   }
 
   const name = ws.user?.name ?? null;

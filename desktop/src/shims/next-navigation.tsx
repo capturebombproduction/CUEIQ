@@ -7,6 +7,28 @@ import {
   useSearchParams as rrUseSearchParams,
 } from "react-router-dom";
 
+// There is no SSR cache to bust in a SPA, but the reused web components call
+// router.refresh() to mean "re-read the data" (after a write, and when the event
+// workspace switches to its Summary tab). Leaving it a no-op made those surfaces
+// — Summary, the completeness card, Print, the run-sheet image — render page-load
+// data forever. So refresh() now fans out to whatever page is currently showing
+// data; a page with no subscriber behaves exactly like the old stub.
+const refreshListeners = new Set<() => void>();
+
+/** Run `fn` whenever a component calls router.refresh(). Returns unsubscribe. */
+export function onRouterRefresh(fn: () => void): () => void {
+  refreshListeners.add(fn);
+  return () => {
+    refreshListeners.delete(fn);
+  };
+}
+
+function emitRefresh() {
+  // Iterate a copy — a listener that unsubscribes itself mid-loop must not make
+  // the remaining listeners be skipped.
+  for (const fn of [...refreshListeners]) fn();
+}
+
 export function useRouter() {
   const navigate = useNavigate();
   return {
@@ -14,8 +36,7 @@ export function useRouter() {
     replace: (href: string) => navigate(href, { replace: true }),
     back: () => navigate(-1),
     forward: () => navigate(1),
-    // No SSR cache to bust in a SPA — data re-loads via effects on navigation.
-    refresh: () => {},
+    refresh: emitRefresh,
     prefetch: () => {},
   };
 }

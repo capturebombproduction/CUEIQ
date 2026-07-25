@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { Plus, Pencil, Trash2, Loader2, UserPlus, ShieldCheck, Lock, KeyRound, Copy } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -168,6 +168,13 @@ export function UserManager({
       setUsers(json.users as ManagedUser[]);
     }
   }
+
+  // The server-rendered list reads public.profiles, whose `email` any member can
+  // rewrite themselves (RLS profiles_update_own) — a spoofed address would render
+  // that row as the Master Admin here and hide the very buttons that revoke it. Re-read
+  // once from the API, which resolves the authoritative email from auth.users.
+  // Best-effort: if it fails the server-rendered list simply stays.
+  useEffect(() => { refresh().catch(() => {}); }, []);
 
   function buildPayload() {
     const tenantRole: Role = form.level === "band" ? "member" : form.level;

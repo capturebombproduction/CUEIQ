@@ -22,10 +22,13 @@ type ResolvableItem = {
 
 /**
  * Flatten a setlist into the list of audio files this event actually plays.
- * An item's audio is its own legacy per-item file (`audio_path`) if present,
- * otherwise the file on its linked library song. Items with no audio are
- * dropped. Mirrors live-mode's `resolveItemAudio` so the cache keys/paths a
- * prefetch writes line up exactly with what Live Mode later reads.
+ * A library-linked item (song_id) plays its SONG's file; only an UNLINKED legacy
+ * item uses its own `audio_path`. Items with no audio are dropped. The order here
+ * mirrors live-mode's `resolveItemAudio` exactly — including the song winning over
+ * a per-item path the row still carries — so the cache keys/paths a prefetch
+ * writes line up with what Live Mode later reads. Preferring the item's own path
+ * would target an R2 key Live Mode never asks for: a permanent red "ยังไม่พร้อม"
+ * and a เตรียม that 404s forever.
  */
 export function resolveAudioTargets(
   items: ResolvableItem[],
@@ -34,9 +37,9 @@ export function resolveAudioTargets(
   const out: PrefetchTarget[] = [];
   for (const it of items) {
     const sa = it.song_id ? songAudio[it.song_id] : undefined;
-    const path = it.audio_path ?? sa?.path ?? null;
+    const path = (it.song_id ? sa?.path : it.audio_path) ?? null;
     if (!path) continue;
-    const name = it.audio_name ?? sa?.name ?? "เพลง";
+    const name = (it.song_id ? sa?.name : it.audio_name) ?? "เพลง";
     out.push({ itemId: it.id, path, name });
   }
   return out;

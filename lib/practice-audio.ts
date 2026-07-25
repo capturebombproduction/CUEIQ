@@ -52,6 +52,11 @@ async function loadShifterCtor(): Promise<PitchShifterCtor> {
 
 type Backend = "native" | "stretch";
 
+// What one prepare-for-stretch attempt ended up doing. "stale" means the attempt
+// lost its claim on the transport while it was decoding — a newer song loaded, or
+// the engine was destroyed — and the caller must then do NOTHING at all.
+type PrepareOutcome = "ready" | "fallback" | "stale";
+
 export class PracticeAudioEngine {
   // shared state (kept consistent across both backends)
   private _tempo = 1; // 1 = native, <1 = stretch
@@ -80,6 +85,11 @@ export class PracticeAudioEngine {
   // song took over meanwhile — otherwise a late decode of the previous song would
   // be cached (and played) as the current one.
   private loadGen = 0;
+  // Set by destroy(), which is terminal — the player drops the engine and builds a
+  // new one. Closing the AudioContext REJECTS whatever decode was still running, so
+  // the fallback path has to tell "this file won't decode" (act on it) apart from
+  // "the engine is gone" (stay a no-op instead of resurrecting element/context).
+  private _destroyed = false;
 
   // The player assigns these; defaults are no-ops so the engine is safe pre-wiring.
   onTime: (seconds: number) => void = () => {};
@@ -87,6 +97,8 @@ export class PracticeAudioEngine {
   onPlayingChange: (playing: boolean) => void = () => {};
   onEnded: () => void = () => {};
   onPreparing: (preparing: boolean) => void = () => {}; // decoding for slow-down
+  /** Slow-down couldn't be prepared (decode failed) — we fell back to 1× native. */
+  onStretchFailed: (err: unknown) => void = () => {};
 
   get currentTime() {
     return this._time;
@@ -235,6 +247,58 @@ export class PracticeAudioEngine {
     this.onTime(startSec);
   }
 
+  /**
+   * prepareStretch(), but it must NEVER strand the transport when it throws.
+   * decodeAudioData rejects on some masters (a big file, or a format Web Audio
+   * won't decode even though the <audio> element streams it fine) — and by then
+   * the caller has already pointed `active` at "stretch" with no shifter to drive,
+   * which left BOTH play and pause inert while the button still said "Pause".
+   * So fall back to plain 1× native playback (which does work for that file) and
+   * tell the player, instead of dying silently. Returns "fallback" if it fell back,
+   * "stale" if the failure no longer concerns the song (or engine) on screen.
+   */
+  private async prepareStretchOrFallback(startSec: number): Promise<PrepareOutcome> {
+    const gen = this.loadGen; // same claim prepareStretch takes — see loadGen
+    try {
+      await this.prepareStretch(startSec);
+      return "ready";
+    } catch (err) {
+      // A decode that fails LATE must not touch state it no longer owns: by then the
+      // user may have tapped another song (load() bumped loadGen, and THAT prepare
+      // owns _tempo / active / the shifter) or left the room (destroy() closed the
+      // context — which is what rejected this decode in the first place). Falling
+      // back here would tear down the new song's shifter, snap the speed buttons
+      // back to 1×, and toast about a song that isn't even on screen anymore.
+      if (gen !== this.loadGen || this._destroyed) return "stale";
+      this._tempo = 1; // slow-down is unusable for this song — don't pretend otherwise
+      this.teardownShifter();
+      // keep any buffer that DID decode (the throw can come from the lazy
+      // SoundTouchJS import too) — only the stretch playback path is off
+      try {
+        await this.doSwitch("native");
+      } catch {
+        /* best-effort — onStretchFailed below is what the user acts on */
+      }
+      // doSwitch's native branch ends in `await a.play()`, so we resume on a LATER
+      // task — the user can have tapped another song or left the room in between.
+      // Re-take the same claim before reporting anything, or the toast lands on a
+      // page this engine no longer owns (the exact symptom the guard above removes).
+      if (gen !== this.loadGen || this._destroyed) return "stale";
+      // Re-report the length ourselves: on the load() path `active` was already
+      // "stretch" when the element's loadedmetadata fired, so that listener DROPPED
+      // it and nothing ever reached the player — the scrubber would keep the
+      // PREVIOUS song's max/total. (If metadata hasn't arrived yet there's nothing
+      // to re-report; the listener now fires with active === "native" and covers it.)
+      const d = this.audio?.duration;
+      if (d && isFinite(d)) {
+        this._duration = d;
+        this.onDuration(d);
+      }
+      this.onStretchFailed(err);
+      return "fallback";
+    }
+  }
+
   // Load SoundTouchJS (once) so the synchronous buildShifter can construct it.
   private async ensureShifterCtor(): Promise<void> {
     if (!this.shifterCtor) this.shifterCtor = await loadShifterCtor();
@@ -311,7 +375,8 @@ export class PracticeAudioEngine {
 
     if (this._tempo < 1) {
       this.active = "stretch";
-      await this.prepareStretch(0);
+      // a song we can't decode still loads — it just plays at 1× (see the fallback)
+      await this.prepareStretchOrFallback(0);
       this.onPlayingChange(false);
     } else {
       this.active = "native";
@@ -346,7 +411,19 @@ export class PracticeAudioEngine {
     }
     // stretch
     if (!this.blob) return;
-    if (!this.buffer) await this.prepareStretch(this._time);
+    if (!this.buffer) {
+      const outcome = await this.prepareStretchOrFallback(this._time);
+      // The fallback already flipped `active` to "native" (synchronously, inside
+      // doSwitch), so this one re-entry takes the native branch above and stops —
+      // the play the user asked for still happens, just at 1×.
+      if (outcome === "fallback") {
+        await this.play();
+        return;
+      }
+      // "stale": a newer load (or destroy) took over mid-decode and drives its own
+      // playback — re-entering here would start a second one on top of it.
+      if (outcome === "stale") return;
+    }
     const ctx = this.ensureCtx();
     if (ctx.state === "suspended") await ctx.resume().catch(() => {});
     if (this._ended || this._time >= this._duration - 0.05) this.seek(0);
@@ -414,6 +491,7 @@ export class PracticeAudioEngine {
   }
 
   destroy() {
+    this._destroyed = true; // whatever the teardown below rejects must no-op from here
     this.loadGen++; // drop any decode still in flight
     this.teardownShifter();
     this.buffer = null;
@@ -478,7 +556,10 @@ export class PracticeAudioEngine {
       // native → stretch
       if (this.audio && !this.audio.paused) this.audio.pause();
       this.active = "stretch";
-      await this.prepareStretch(at);
+      // the fallback already put us back on native at 1× (resuming if we were
+      // playing) and told the player — nothing left to switch here; and a "stale"
+      // prepare means a newer load owns `active` now, so we mustn't touch it either
+      if ((await this.prepareStretchOrFallback(at)) !== "ready") return;
       if (this.shifter) this.shifter.tempo = this._tempo;
       if (wasPlaying) await this.play();
       else this.onPlayingChange(false);

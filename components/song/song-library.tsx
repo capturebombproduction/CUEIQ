@@ -74,6 +74,16 @@ import { useConfirm } from "@/components/ui/confirm-dialog";
 const NONE = "__none__";
 const COPYRIGHT_KEYS = Object.keys(COPYRIGHT_META) as CopyrightStatus[];
 
+/** The songs guard (0018/0034) speaks English — say it in Thai, and say what to do. */
+function friendlyError(message?: string): string | undefined {
+  if (!message) return message;
+  if (message.includes("only an approver may change copyright_status"))
+    return "สถานะลิขสิทธิ์ของเพลงนี้ถูกเปลี่ยนจากหน้าอื่นแล้ว — โหลดหน้านี้ใหม่แล้วลองอีกครั้ง (เปลี่ยนสถานะได้เฉพาะทีมค่าย/แอดมิน)";
+  if (message.includes("only an editor may change song details"))
+    return "แก้ข้อมูลเพลงได้เฉพาะแอดมิน/Ar ของวงนี้";
+  return message;
+}
+
 interface FormState {
   id: string | null;
   group_id: string;
@@ -279,6 +289,19 @@ export function SongLibrary({
       return;
     }
     setSaving(true);
+    // ลิขสิทธิ์ is sent CONDITIONALLY (guard 0034): the DB refuses a non-approver
+    // changing copyright_status, and it compares against the CURRENT row — so a value
+    // that only LOOKS changed because an approver triaged the song from another screen
+    // while this dialog was open would make a plain title/duration edit fail with an
+    // approver-only error, and every retry fail the same way. Unchanged → left out of
+    // the patch entirely; a non-approver never sends it at all (the Select is already
+    // disabled, this is the belt). A NEW song always carries it — the insert trigger
+    // forces 'pending' for a non-approver anyway.
+    const current = form.id ? songs.find((s) => s.id === form.id) : undefined;
+    const copyrightPatch: { copyright_status?: CopyrightStatus } =
+      !form.id || (approver && form.copyright_status !== current?.copyright_status)
+        ? { copyright_status: form.copyright_status }
+        : {};
     const payload = {
       tenant_id: tenantId,
       group_id: form.group_id,
@@ -289,7 +312,7 @@ export function SongLibrary({
         : 0,
       language: form.language === NONE ? null : form.language,
       category: form.category.trim() || null,
-      copyright_status: form.copyright_status,
+      ...copyrightPatch,
       notes: form.notes.trim() || null,
     };
 
@@ -303,7 +326,7 @@ export function SongLibrary({
         .single();
       if (error || !data) {
         setSaving(false);
-        toast.error("บันทึกไม่สำเร็จ", { description: error?.message });
+        toast.error("บันทึกไม่สำเร็จ", { description: friendlyError(error?.message) });
         return;
       }
       saved = data as Song;
@@ -316,7 +339,7 @@ export function SongLibrary({
         .single();
       if (error || !data) {
         setSaving(false);
-        toast.error("เพิ่มเพลงไม่สำเร็จ", { description: error?.message });
+        toast.error("เพิ่มเพลงไม่สำเร็จ", { description: friendlyError(error?.message) });
         return;
       }
       saved = data as Song;

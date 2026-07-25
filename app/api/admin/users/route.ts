@@ -81,17 +81,66 @@ async function tenantGroupIdSet(
   return new Set((data ?? []).map((g) => g.id as string));
 }
 
-/** Look up a user's (synthetic) email — used for Master Admin protection. */
+/**
+ * Look up a user's (synthetic) email — used for Master Admin protection.
+ *
+ * Read it from auth.users, NEVER from public.profiles: RLS (profiles_update_own)
+ * lets any member rewrite their OWN profile row from the browser, so keying the
+ * guard on profiles.email would let a member type the master admin's address into
+ * it and make their own account unrevocable (delete + password reset would both
+ * answer "Master Admin ถูกป้องกันไว้"). auth.users is service-role-only, so it is
+ * the one identity a member cannot forge.
+ *
+ * `ok: false` = the lookup itself failed; callers must fail CLOSED rather than
+ * read that as "not the master admin". A 404 (no such auth user — e.g. an orphaned
+ * tenant_members row) resolves to a null email so that row can still be cleaned up.
+ */
 async function targetEmail(
   admin: ReturnType<typeof createAdminClient>,
   userId: string
-): Promise<string | null> {
-  const { data } = await admin
-    .from("profiles")
-    .select("email")
-    .eq("id", userId)
-    .maybeSingle();
-  return (data?.email as string | null) ?? null;
+): Promise<{ ok: true; email: string | null } | { ok: false }> {
+  const { data, error } = await admin.auth.admin.getUserById(userId);
+  if (error) {
+    if (error.status === 404) return { ok: true, email: null };
+    return { ok: false };
+  }
+  return { ok: true, email: data.user?.email ?? null };
+}
+
+/** Shared answer when targetEmail() can't resolve the target (fail closed). */
+function lookupFailed() {
+  return NextResponse.json(
+    { error: "ตรวจสอบบัญชีปลายทางไม่สำเร็จ ลองใหม่อีกครั้ง" },
+    { status: 503 }
+  );
+}
+
+/**
+ * Authoritative emails for every auth account, keyed by user id — so the admin
+ * console shows the same identity the mutations are gated on. If it rendered
+ * profiles.email, a member who spoofed theirs would appear AS the Master Admin
+ * and the console would hide the very buttons that revoke them.
+ *
+ * Returns null when the listing fails; the caller then falls back to profiles.email
+ * so a transient auth outage degrades to the old display instead of a blank list
+ * (the mutations stay protected independently).
+ */
+async function authEmailById(
+  admin: ReturnType<typeof createAdminClient>
+): Promise<Map<string, string | null> | null> {
+  const perPage = 200;
+  const maxPages = 200; // bounded so the loop can never spin (200 × 200 = 40k accounts)
+  const map = new Map<string, string | null>();
+  // Stop on the first EMPTY page — a merely short one can just mean the server
+  // clamped perPage, and breaking there would silently drop the rest.
+  for (let page = 1; page <= maxPages; page++) {
+    const { data, error } = await admin.auth.admin.listUsers({ page, perPage });
+    if (error) return null;
+    const users = data.users ?? [];
+    for (const u of users) map.set(u.id, u.email ?? null);
+    if (users.length === 0) break;
+  }
+  return map;
 }
 
 /**
@@ -124,9 +173,10 @@ export async function GET() {
   const admin = createAdminClient();
   const { tenantId } = gate;
 
-  const [membersRes, rolesRes] = await Promise.all([
+  const [membersRes, rolesRes, emailById] = await Promise.all([
     admin.from("tenant_members").select("user_id, role").eq("tenant_id", tenantId),
     admin.from("group_roles").select("user_id, group_id, role").eq("tenant_id", tenantId),
+    authEmailById(admin),
   ]);
 
   const members = membersRes.data ?? [];
@@ -141,19 +191,24 @@ export async function GET() {
     (profiles ?? []).map((p) => [p.id as string, p])
   );
 
-  const users = members.map((m) => {
-    const uid = m.user_id as string;
-    const prof = profById.get(uid);
-    return {
-      user_id: uid,
-      email: prof?.email ?? null,
-      full_name: prof?.full_name ?? null,
-      tenantRole: m.role as Role,
-      groupRoles: groupRoles
-        .filter((r) => r.user_id === uid)
-        .map((r) => ({ group_id: r.group_id as string, role: r.role as GroupRole })),
-    };
-  });
+  const users = members
+    .map((m) => {
+      const uid = m.user_id as string;
+      const prof = profById.get(uid);
+      return {
+        user_id: uid,
+        // authoritative auth email — profiles.email is member-writable (see targetEmail)
+        email: emailById ? emailById.get(uid) ?? null : prof?.email ?? null,
+        full_name: prof?.full_name ?? null,
+        tenantRole: m.role as Role,
+        groupRoles: groupRoles
+          .filter((r) => r.user_id === uid)
+          .map((r) => ({ group_id: r.group_id as string, role: r.role as GroupRole })),
+      };
+    })
+    // same order as the server-rendered list (app/(app)/admin/page.tsx) so a
+    // refresh doesn't reshuffle the console
+    .sort((a, b) => (a.email ?? "").localeCompare(b.email ?? ""));
 
   return NextResponse.json({ users });
 }
@@ -293,11 +348,15 @@ export async function PATCH(req: Request) {
 
   // Master Admin can only be modified by itself — block other admins (covers both
   // the role change and the password reset).
-  if (userId !== gate.callerId && isMasterAdminEmail(await targetEmail(admin, userId))) {
-    return NextResponse.json(
-      { error: "บัญชี Master Admin ถูกป้องกันไว้ คนอื่นแก้ไขไม่ได้" },
-      { status: 403 }
-    );
+  if (userId !== gate.callerId) {
+    const target = await targetEmail(admin, userId);
+    if (!target.ok) return lookupFailed();
+    if (isMasterAdminEmail(target.email)) {
+      return NextResponse.json(
+        { error: "บัญชี Master Admin ถูกป้องกันไว้ คนอื่นแก้ไขไม่ได้" },
+        { status: 403 }
+      );
+    }
   }
 
   // password reset — service-role sets it directly (synthetic @cueiq.local accounts
@@ -368,7 +427,9 @@ export async function DELETE(req: Request) {
   }
 
   // Master Admin is protected — no one (not even other admins) can delete it.
-  if (isMasterAdminEmail(await targetEmail(admin, userId))) {
+  const target = await targetEmail(admin, userId);
+  if (!target.ok) return lookupFailed();
+  if (isMasterAdminEmail(target.email)) {
     return NextResponse.json(
       { error: "บัญชี Master Admin ถูกป้องกันไว้ ลบไม่ได้" },
       { status: 403 }

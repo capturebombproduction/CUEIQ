@@ -100,7 +100,9 @@ export function ShowReadinessCheck({
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
   const [pinBusy, setPinBusy] = useState(false);
-  const cancelRef = useRef(false);
+  // "หยุด" aborts the transfer in flight (not just between files) — on a
+  // black-holed venue network the current download would otherwise never settle.
+  const abortRef = useRef<AbortController | null>(null);
   // Desktop-only extras (the standalone show machine): which output the show
   // audio is pinned to, and whether this event's data is cached for an offline
   // cold boot. Both stay null on the web build → the rows never render there.
@@ -174,16 +176,30 @@ export function ShowReadinessCheck({
   }, [refresh]);
 
   const prepare = useCallback(async () => {
+    const ac = new AbortController();
+    abortRef.current = ac;
     setBusy(true);
-    cancelRef.current = false;
-    await prefetchEventAudio(eventId, targets, {
-      onProgress: (p) => setProgress({ done: p.done, total: p.total }),
-      isCancelled: () => cancelRef.current,
-    });
-    setProgress(null);
-    setBusy(false);
-    refresh();
+    try {
+      await prefetchEventAudio(eventId, targets, {
+        onProgress: (p) => setProgress({ done: p.done, total: p.total }),
+        isCancelled: () => ac.signal.aborted,
+        signal: ac.signal,
+      });
+    } finally {
+      // Leave the busy state however the prepare ended (cancel, timeout, throw):
+      // a spinner that never clears dead-locks "เตรียม" — and with it the only way
+      // to get the show's audio onto this device — for the rest of the session.
+      abortRef.current = null;
+      setProgress(null);
+      setBusy(false);
+      refresh();
+    }
   }, [eventId, targets, refresh]);
+
+  // Left the Show Runner while เตรียมเพลง was still running: nothing is watching
+  // the progress any more, so stop the transfer instead of leaving its fetch,
+  // stall timer and retry backoff alive behind the unmounted screen.
+  useEffect(() => () => abortRef.current?.abort(), []);
 
   const pin = useCallback(async () => {
     setPinBusy(true);
@@ -284,7 +300,7 @@ export function ShowReadinessCheck({
                     <Button
                       size="sm"
                       variant="ghost"
-                      onClick={() => (cancelRef.current = true)}
+                      onClick={() => abortRef.current?.abort()}
                     >
                       หยุด
                     </Button>

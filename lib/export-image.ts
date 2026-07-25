@@ -58,6 +58,13 @@ export async function captureElementToImage(
       cacheBust: true,
       quality: 0.92,
     });
+    // A node that isn't laid out (0×0 — e.g. captured while its container is
+    // hidden) makes an empty canvas, and toDataURL() hands back "data:," without
+    // throwing. Saving that would give the crew a 0-byte .jpg under a success
+    // toast, so surface it as a failure the caller already reports.
+    if (!dataUrl.startsWith("data:image/")) {
+      throw new Error("รูปที่ได้ว่างเปล่า ลองใหม่อีกครั้ง");
+    }
 
     // Web Share API — saves directly to gallery on iOS/Android.
     if (navigator.share && navigator.canShare) {

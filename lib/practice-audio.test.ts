@@ -8,8 +8,11 @@ import { PracticeAudioEngine } from "./practice-audio";
 
 type FakeBuffer = { name: string; duration: number };
 
-// per-ArrayBuffer decode promises the tests resolve by hand
-const decodeMap = new Map<ArrayBuffer, Promise<FakeBuffer>>();
+// per-ArrayBuffer decodes the tests settle by hand; `started` fires when the
+// engine actually calls decodeAudioData, so a test can line a race up against the
+// decode being genuinely in flight
+type PlannedDecode = { decode: Promise<FakeBuffer>; started: () => void };
+const decodeMap = new Map<ArrayBuffer, PlannedDecode>();
 
 class FakeAudioContext {
   state = "running";
@@ -20,7 +23,10 @@ class FakeAudioContext {
     return { gain: { value: 1 }, connect: () => {}, disconnect: () => {} };
   }
   decodeAudioData(arr: ArrayBuffer) {
-    return decodeMap.get(arr) ?? Promise.reject(new Error("no decode planned for this blob"));
+    const planned = decodeMap.get(arr);
+    if (!planned) return Promise.reject(new Error("no decode planned for this blob"));
+    planned.started();
+    return planned.decode;
   }
 }
 
@@ -37,14 +43,27 @@ class FakeAudio {
   play = () => Promise.resolve();
 }
 
-/** A fake song: a blob whose decode resolves only when the test says so. */
+/** A fake song: a blob whose decode settles only when the test says so. */
 function makeSong(name: string) {
   const arr = new ArrayBuffer(8);
   let resolveDecode!: (b: FakeBuffer) => void;
-  decodeMap.set(arr, new Promise<FakeBuffer>((r) => (resolveDecode = r)));
+  let rejectDecode!: (e: unknown) => void;
+  let notifyStarted!: () => void;
+  const decodeStarted = new Promise<void>((r) => (notifyStarted = r));
+  decodeMap.set(arr, {
+    decode: new Promise<FakeBuffer>((res, rej) => {
+      resolveDecode = res;
+      rejectDecode = rej;
+    }),
+    started: notifyStarted,
+  });
   return {
     blob: { arrayBuffer: () => Promise.resolve(arr) } as unknown as Blob,
+    decodeStarted, // await this before racing, or the engine hasn't decoded yet
     finishDecode: () => resolveDecode({ name, duration: 123 }),
+    // decodeAudioData rejects on masters Web Audio can't handle — and also when
+    // destroy() closes the context out from under an in-flight decode
+    failDecode: () => rejectDecode(new Error(`cannot decode ${name}`)),
   };
 }
 
@@ -97,5 +116,55 @@ describe("PracticeAudioEngine decode-generation guard", () => {
     engine.destroy();
     a.finishDecode();
     expect(await p).toBeNull();
+  });
+});
+
+// The slow-down decode can also FAIL. When it fails for the song on screen we must
+// drop back to 1× native and say so; when it fails late — after the user moved on,
+// or left the room — that same handling would hijack a song (or a page) it no
+// longer owns, so it has to stay a no-op.
+describe("PracticeAudioEngine stretch-decode failure", () => {
+  it("falls back to 1× and tells the player when the CURRENT song can't decode", async () => {
+    const engine = new PracticeAudioEngine();
+    const failed = vi.fn();
+    engine.onStretchFailed = failed;
+    engine.setTempo(0.75); // the user is practising slowed down
+    const a = makeSong("A");
+    const loading = engine.load(a.blob);
+    await a.decodeStarted;
+    a.failDecode();
+    await loading;
+    expect(failed).toHaveBeenCalledTimes(1);
+    expect(engine.tempo).toBe(1); // speed buttons must follow the real backend
+  });
+
+  it("a stale decode failure doesn't hijack the song that took over", async () => {
+    const engine = new PracticeAudioEngine();
+    const failed = vi.fn();
+    engine.onStretchFailed = failed;
+    engine.setTempo(0.75);
+    const a = makeSong("A");
+    const b = makeSong("B");
+    const loadingA = engine.load(a.blob);
+    await a.decodeStarted; // A's decode really is in flight…
+    void engine.load(b.blob); // …user taps song B a second later
+    a.failDecode(); // A rejects late, while B is on screen
+    await loadingA;
+    expect(failed).not.toHaveBeenCalled(); // no red toast over song B
+    expect(engine.tempo).toBe(0.75); // and B's speed is left alone
+  });
+
+  it("a decode that fails after destroy() touches nothing", async () => {
+    const engine = new PracticeAudioEngine();
+    const failed = vi.fn();
+    engine.onStretchFailed = failed;
+    engine.setTempo(0.5);
+    const a = makeSong("A");
+    const loading = engine.load(a.blob);
+    await a.decodeStarted;
+    engine.destroy(); // user leaves the practice room mid-decode
+    a.failDecode(); // closing the context is what rejects it
+    await loading;
+    expect(failed).not.toHaveBeenCalled(); // no toast on whatever page they're on now
   });
 });

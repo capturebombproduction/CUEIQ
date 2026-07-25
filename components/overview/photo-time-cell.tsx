@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { createClient } from "@/lib/supabase/client";
@@ -42,11 +42,26 @@ export function PhotoTimeCell({
   const [committedStart, setCommittedStart] = useState(start);
   const [committedEnd, setCommittedEnd] = useState(end);
   const [busy, setBusy] = useState(false);
+  // The inputs stay ENABLED while a write is in flight — disabling them swallowed the
+  // click/tab from start straight into end (focus landed nowhere and the typed value
+  // was lost). So the two fields can commit while the first write is still running,
+  // and two racing UPDATEs on the same row would land out of order (the older payload
+  // last → the end time wiped) or, on an event with no photo row yet, insert twice.
+  // Instead the second commit is DEFERRED here and replayed by the effect below once
+  // the first settles, with whatever is on screen — and whatever itemId was just
+  // saved — by then.
+  const inFlightRef = useRef(false);
+  const [replay, setReplay] = useState(false);
 
   async function commit() {
+    if (inFlightRef.current) {
+      setReplay(true);
+      return;
+    }
     if (start === committedStart && end === committedEnd) return;
     const nextStart = start || null;
     const nextEnd = end || null;
+    inFlightRef.current = true;
     setBusy(true);
     const supabase = createClient();
     try {
@@ -102,12 +117,26 @@ export function PhotoTimeCell({
       toast.error("บันทึกเวลาถ่ายรูปไม่สำเร็จ", {
         description: (e as Error).message,
       });
-      setStart(committedStart); // revert the fields to the last saved values
-      setEnd(committedEnd);
+      // Revert to the last saved values — but only the field still showing what we
+      // tried to write: the inputs are live during the write, so the staffer may
+      // already have typed the next value and it must not be wiped from under them
+      // (the deferred replay above then saves it).
+      setStart((v) => (v === start ? committedStart : v));
+      setEnd((v) => (v === end ? committedEnd : v));
     } finally {
+      inFlightRef.current = false;
       setBusy(false);
     }
   }
+
+  // Run a commit that arrived mid-write, now that the first one has settled and the
+  // committed values / itemId this render closes over are up to date.
+  useEffect(() => {
+    if (!replay || busy) return;
+    setReplay(false);
+    commit();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [replay, busy]);
 
   return (
     <span className="inline-flex items-center gap-1">
@@ -116,7 +145,6 @@ export function PhotoTimeCell({
         value={start}
         onChange={(e) => setStart(e.target.value)}
         onBlur={commit}
-        disabled={busy}
         aria-label="เวลาเริ่มถ่ายรูป"
         className="w-[4.25rem] rounded border bg-background px-1 py-0.5 text-sm tabular-nums"
       />
@@ -126,7 +154,6 @@ export function PhotoTimeCell({
         value={end}
         onChange={(e) => setEnd(e.target.value)}
         onBlur={commit}
-        disabled={busy}
         aria-label="เวลาจบถ่ายรูป"
         className="w-[4.25rem] rounded border bg-background px-1 py-0.5 text-sm tabular-nums"
       />

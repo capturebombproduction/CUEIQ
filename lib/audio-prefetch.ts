@@ -10,15 +10,15 @@
 // and a cached item no longer in the setlist is dropped.
 
 import { downloadEventAudio } from "./audio-remote";
-import { saveAudio, deleteAudio, listCachedItemPaths } from "./audio-store";
+import { saveAudio, deleteAudio, listCachedEntries, type CachedEntry } from "./audio-store";
 import type { PrefetchTarget } from "./audio-targets";
 
 export type { PrefetchTarget } from "./audio-targets";
 
 export interface Readiness {
   total: number; // targets that have audio
-  ready: number; // cached AND matching the current version
-  stale: number; // cached but an older version (needs refresh)
+  ready: number; // cached AND matching the current version AND holding real bytes
+  stale: number; // cached but an older version, or bytes we can't trust (needs refresh)
   missing: number; // not cached at all
 }
 
@@ -27,9 +27,9 @@ export async function getReadiness(
   eventId: string,
   targets: PrefetchTarget[]
 ): Promise<Readiness> {
-  let cached: Record<string, string | null> = {};
+  let cached: Record<string, CachedEntry> = {};
   try {
-    cached = await listCachedItemPaths(eventId);
+    cached = await listCachedEntries(eventId);
   } catch {
     /* IndexedDB unavailable → treat as nothing cached */
   }
@@ -37,8 +37,13 @@ export async function getReadiness(
   let stale = 0;
   let missing = 0;
   for (const t of targets) {
-    if (!(t.itemId in cached)) missing++;
-    else if (cached[t.itemId] === t.path) ready++;
+    const entry = cached[t.itemId];
+    if (!entry) missing++;
+    // A suspect record (a picked File = a mere reference to a file on this machine,
+    // see CachedEntry.suspect) is NOT พร้อม even when its path matches: the green
+    // 8/8 would hide a track that goes silent on stage. Counting it stale is what
+    // puts the "เตรียม" button back, so real bytes land while there's still a network.
+    else if (entry.path === t.path && !entry.suspect) ready++;
     else stale++;
   }
   return { total: targets.length, ready, stale, missing };
@@ -63,7 +68,10 @@ export interface PrefetchResult {
  * Download every missing/outdated file into the on-device cache and drop any
  * cache entry no longer in the setlist. Idempotent: if everything is already the
  * current version this does no network work. `onProgress` fires around each
- * download; `isCancelled` lets the caller abort between files.
+ * download; `isCancelled` lets the caller abort between files, and `signal`
+ * additionally aborts the transfer IN FLIGHT — without it a black-holed venue
+ * network leaves the current file hanging forever and the between-files check
+ * never gets its turn.
  */
 export async function prefetchEventAudio(
   eventId: string,
@@ -71,9 +79,10 @@ export async function prefetchEventAudio(
   opts: {
     onProgress?: (p: PrefetchProgress) => void;
     isCancelled?: () => boolean;
+    signal?: AbortSignal;
   } = {}
 ): Promise<PrefetchResult> {
-  const { onProgress, isCancelled } = opts;
+  const { onProgress, isCancelled, signal } = opts;
 
   // Safety: never run the orphan-cleanup with an empty target list — that would
   // wipe the event's whole cache. Empty here means "nothing to do" (callers that
@@ -82,32 +91,46 @@ export async function prefetchEventAudio(
     return { totalTargets: 0, fetched: 0, skipped: 0, failed: 0, removedStale: 0 };
   }
 
-  let cached: Record<string, string | null> = {};
+  let cached: Record<string, CachedEntry> = {};
   try {
-    cached = await listCachedItemPaths(eventId);
+    cached = await listCachedEntries(eventId);
   } catch {
     cached = {};
   }
 
   // 1) Drop cached files that are no longer in this event's setlist
-  //    (item removed, or its song unlinked) so the device doesn't keep junk.
+  //    (item removed, or its song unlinked) so the device doesn't keep junk —
+  //    but NEVER one we couldn't get back. A null cached path means LOCAL-ONLY
+  //    bytes: a file picked off this machine's disk whose R2 upload failed, kept
+  //    by live-mode's "ไฟล์ยังเล่นได้เฉพาะเครื่องนี้" fallback. There is no online
+  //    copy to re-download, so deleting it here would leave that row silent after
+  //    the next restart — and nothing on screen would say so, because the current
+  //    session keeps playing off its live object URL. Local-only leftovers are
+  //    cleared deliberately from "พื้นที่ในเครื่อง", never by เตรียมเพลง. That holds
+  //    even when such a record looks suspect: a dangling reference is still the only
+  //    trace of that file, and there is nothing here to replace it with.
   const wanted = new Set(targets.map((t) => t.itemId));
   let removedStale = 0;
-  for (const itemId of Object.keys(cached)) {
-    if (!wanted.has(itemId)) {
-      try {
-        await deleteAudio(eventId, itemId);
-        removedStale++;
-      } catch {
-        /* ignore */
-      }
+  for (const [itemId, entry] of Object.entries(cached)) {
+    if (wanted.has(itemId) || entry.path == null) continue;
+    try {
+      await deleteAudio(eventId, itemId);
+      removedStale++;
+    } catch {
+      /* ignore */
     }
   }
 
   // 2) Anything whose cached version differs from the current path needs a
-  //    (re)download. saveAudio writes the same key, so the newer file replaces
-  //    the stale blob — old version gone, latest wins.
-  const need = targets.filter((t) => cached[t.itemId] !== t.path);
+  //    (re)download — and so does a SUSPECT record, i.e. one holding the picked
+  //    File instead of a copy of the bytes (see CachedEntry.suspect): its path may
+  //    match perfectly while the file it points at is long gone. Re-pull real bytes
+  //    now, while the venue still has a network. saveAudio writes the same key, so
+  //    the newer file replaces the stale blob — old version gone, latest wins.
+  const need = targets.filter((t) => {
+    const entry = cached[t.itemId];
+    return !entry || entry.path !== t.path || entry.suspect;
+  });
   const skipped = targets.length - need.length;
   const total = need.length;
 
@@ -119,11 +142,14 @@ export async function prefetchEventAudio(
     if (isCancelled?.()) break;
     onProgress?.({ total, done: fetched, failed, currentName: t.name });
     try {
-      const blob = await downloadEventAudio(t.path);
+      const blob = await downloadEventAudio(t.path, { signal });
       if (isCancelled?.()) break;
       await saveAudio(eventId, t.itemId, blob, t.name, t.path);
       fetched++;
     } catch {
+      // A cancel aborts the in-flight download: that's the operator stopping, not
+      // a failed file, and there's nothing left to try — leave without counting it.
+      if (isCancelled?.() || signal?.aborted) break;
       failed++;
     }
     onProgress?.({ total, done: fetched, failed, currentName: t.name });

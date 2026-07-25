@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { toast } from "sonner";
 import { Plus, Trash2, Users } from "lucide-react";
 import { BulkAddMembers } from "@/components/group/bulk-add-members";
@@ -31,6 +31,10 @@ export function GroupManager({
   const [members, setMembers] = useState<Member[]>(initialMembers);
   const [newGroup, setNewGroup] = useState("");
   const [busy, setBusy] = useState(false);
+  // Band name as the field had it when editing STARTED, per band. The input is
+  // controlled by local state, so once the user clears it there is nothing left to
+  // fall back to on blur — this is what an emptied name gets restored to.
+  const nameAtFocus = useRef<Record<string, string>>({});
 
   // Create/delete a band + its settings (name/color/skin) = admin only.
   // Editing a band's roster (members) = admin OR that band's Artist Manager.
@@ -109,15 +113,51 @@ export function GroupManager({
     const snapM = members;
     setGroups((prev) => prev.filter((x) => x.id !== g.id));
     setMembers((prev) => prev.filter((m) => m.group_id !== g.id));
+
+    // Reclaim the R2 objects BEFORE the row is deleted, never after: /api/audio/presign
+    // authorizes a delete with can_edit_group() on the key's group segment, and that
+    // predicate reads the groups row — once the row is gone every delete 403s and the
+    // masters (27–88 MB each) stay in the bucket forever, still counted by the Admin
+    // storage gauge and unreachable (that route is the only delete path). Deleting a
+    // key R2 no longer has is a no-op success, so an already-cleared file can't fail.
+    const keys = [...r2Keys];
+    let failed = 0;
+    if (keys.length) {
+      // Cap the wait: on venue Wi-Fi a stalled presign fetch must not hold the row
+      // delete hostage (the row delete used to run first, so it always went through).
+      // Anything still in flight when we give up counts as left behind — it will 403
+      // the moment the row is gone anyway.
+      const settled = await Promise.race([
+        Promise.allSettled(keys.map((key) => removeEventAudio(key))),
+        new Promise<null>((res) => setTimeout(() => res(null), 20_000)),
+      ]);
+      failed = settled
+        ? settled.filter((r) => r.status === "rejected").length
+        : keys.length;
+    }
+
     const { error } = await supabase.from("groups").delete().eq("id", g.id);
     if (error) {
-      toast.error("ลบไม่สำเร็จ", { description: error.message });
+      // Deleting the audio first means a failed row delete leaves the band alive with
+      // its files already gone — say so, or the missing audio looks like a bug later.
+      const gone = keys.length - failed;
+      toast.error("ลบไม่สำเร็จ", {
+        description: gone
+          ? `${error.message} — แต่ไฟล์เสียงของวงถูกลบไปแล้ว ${gone} ไฟล์ ต้องอัปโหลดใหม่`
+          : error.message,
+      });
       setGroups(snapG);
       setMembers(snapM);
       return;
     }
-    // DB cascade done → reclaim the R2 objects (best-effort, after the row is gone).
-    r2Keys.forEach((key) => removeEventAudio(key).catch(() => {}));
+    // The delete was type-confirmed and part of the audio is already gone, so a failed
+    // cleanup must NOT block it — but don't swallow it either: whatever was left behind
+    // keeps eating quota and can no longer be removed from inside the app.
+    if (failed) {
+      toast.warning(`ลบวงแล้ว แต่ลบไฟล์เสียงไม่สำเร็จ ${failed} ไฟล์`, {
+        description: "ไฟล์ยังค้างกินพื้นที่อยู่บน R2 — ต้องลบจากคอนโซล Cloudflare เอง",
+      });
+    }
   }
 
   // ---- member operations ---------------------------------------------------
@@ -239,9 +279,23 @@ export function GroupManager({
                   value={g.name}
                   disabled={!admin}
                   onChange={(e) => setGroupLocal(g.id, { name: e.target.value })}
-                  onBlur={(e) =>
-                    persistGroup(g.id, { name: e.target.value.trim() || g.name })
-                  }
+                  onFocus={() => {
+                    nameAtFocus.current[g.id] = g.name;
+                  }}
+                  onBlur={(e) => {
+                    const name = e.target.value.trim();
+                    // `g.name` is ALREADY the edited (emptied) value by the time blur
+                    // fires, so the old `|| g.name` fallback was '' || '' — clearing the
+                    // field saved an empty name and the band went blank everywhere
+                    // (Overview, export, event list, band dropdowns) with no way to tell
+                    // which row is which. Put the name back instead of persisting it.
+                    if (!name) {
+                      setGroupLocal(g.id, { name: nameAtFocus.current[g.id] ?? g.name });
+                      toast.error("ชื่อวงว่างไม่ได้ — คืนชื่อเดิมให้แล้ว");
+                      return;
+                    }
+                    persistGroup(g.id, { name });
+                  }}
                   className="h-9 max-w-xs flex-1 text-base font-semibold"
                 />
                 <Badge variant="secondary">{gm.length} คน</Badge>

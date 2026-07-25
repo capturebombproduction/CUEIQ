@@ -9,9 +9,11 @@ import { Button } from "@/components/ui/button";
 import { useConfirm } from "@/components/ui/confirm-dialog";
 
 /**
- * Delete a practice room (a confirm step — there is no undo). Room-scoped rows
+ * Delete a practice room (type-to-confirm — there is no undo). Room-scoped rows
  * (its practice list / notes / attendance) cascade away with it; library songs +
  * their audio are NOT touched. RLS limits this to the band's editor (admin or Ar).
+ * The guard matches DeleteEventButton: this wipes the band's whole training history
+ * for the room, and on a phone the trash icon sits right next to "เข้าซ้อม".
  */
 export function DeletePracticeRoomButton({
   roomId,
@@ -29,8 +31,9 @@ export function DeletePracticeRoomButton({
     const ok = await confirm({
       title: "ลบห้องซ้อมนี้?",
       description:
-        `จะลบ “${roomName}” อย่างถาวร — รวมลิสต์เพลงซ้อม / บันทึกการซ้อมในห้องนี้ (กู้คืนไม่ได้)\nไฟล์เพลงในคลังไม่ถูกลบ`,
+        `⚠️ จะลบ “${roomName}” อย่างถาวร — รวมลิสต์เพลงซ้อม / บันทึกการซ้อม / การบ้านที่ยังค้าง / เช็คชื่อ / ประวัติการซ้อมทั้งหมดของห้องนี้ (กู้คืนไม่ได้)\nไฟล์เพลงในคลังไม่ถูกลบ`,
       confirmText: "ลบห้องซ้อม",
+      requireTyped: roomName,
     });
     if (!ok) return;
     setBusy(true);

@@ -66,29 +66,55 @@ export async function deleteAudio(eventId: string, itemId: string): Promise<void
   });
 }
 
+/** What this device holds for one cached item — WITHOUT loading the bytes. */
+export interface CachedEntry {
+  /** Storage object path these bytes came from; null = local-only, no known online version. */
+  path: string | null;
+  /**
+   * The stored value can't be trusted to still contain playable bytes, so callers
+   * must treat it as NOT cached. True when the record holds the picked File itself
+   * instead of a copy: Chromium persists a File in IndexedDB as a REFERENCE to the
+   * original on disk, so a moved / re-exported / unplugged-USB source leaves a
+   * record that still lists and still mints an object URL but plays NOTHING at
+   * showtime. Every record written before the copy-on-pick fix (live-mode.tsx) is
+   * like that. Empty/blob-less records are flagged the same way — equally silent.
+   */
+  suspect: boolean;
+}
+
+/** Metadata-only "these bytes may not really be here" test — never reads the blob,
+ *  so the readiness check stays cheap enough to run on every page load. */
+function isSuspectBlob(blob: Blob | undefined): boolean {
+  if (!blob || typeof blob.size !== "number") return true; // record written without bytes
+  if (blob.size === 0) return true; // nothing to play
+  return typeof File !== "undefined" && blob instanceof File; // on-disk reference, may dangle
+}
+
 /**
- * Map of itemId → cached object path for one event, WITHOUT loading the blobs.
- * Used to compare what the device holds against the event's current files
- * (readiness + version checks) cheaply. Missing key = not cached; null value =
- * a legacy local-only file with no known online version.
+ * Map of itemId → what the device holds for one event, WITHOUT loading the blobs.
+ * Used to compare the cache against the event's current files (readiness + version
+ * checks) cheaply. Missing key = not cached.
  */
-export async function listCachedItemPaths(
+export async function listCachedEntries(
   eventId: string
-): Promise<Record<string, string | null>> {
+): Promise<Record<string, CachedEntry>> {
   const db = await openDB();
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE, "readonly");
     const store = tx.objectStore(STORE);
     const prefix = `${eventId}${SEP}`;
-    const out: Record<string, string | null> = {};
+    const out: Record<string, CachedEntry> = {};
     const req = store.openCursor();
     req.onsuccess = () => {
       const cursor = req.result;
       if (cursor) {
         const k = String(cursor.key);
         if (k.startsWith(prefix)) {
-          const val = cursor.value as { path?: string | null };
-          out[k.slice(prefix.length)] = val.path ?? null;
+          const val = cursor.value as { blob?: Blob; path?: string | null };
+          out[k.slice(prefix.length)] = {
+            path: val.path ?? null,
+            suspect: isSuspectBlob(val.blob),
+          };
         }
         cursor.continue();
       } else {
