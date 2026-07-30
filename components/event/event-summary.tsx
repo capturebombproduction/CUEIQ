@@ -106,6 +106,27 @@ function Appt({
   );
 }
 
+// Every appointment of one kind, as its own line. Only the FIRST line carries the
+// label — the rest align underneath it, so two stage slots read as one block
+// instead of repeating "Stage" down the sheet.
+function ApptList({
+  label,
+  items,
+  timeOf,
+}: {
+  label: string;
+  items: ScheduleItem[];
+  timeOf: (s: ScheduleItem) => string | null;
+}) {
+  return (
+    <>
+      {items.map((s, i) => (
+        <Appt key={s.id} label={i === 0 ? label : ""} time={timeOf(s)} item={s} />
+      ))}
+    </>
+  );
+}
+
 function Section({
   title,
   children,
@@ -158,7 +179,17 @@ export function EventSummary({
   const hasClock = showStartSec != null;
   const timing = computeSetlistTimes(setlist, showStartSec ?? 0, hardOutSec);
 
-  const sched = (kind: ScheduleKind) => schedule.find((s) => s.kind === kind);
+  // EVERY row of a kind, earliest first — a band can have two stage slots, three
+  // booth shifts and two costume changes in one day, and this sheet is what they
+  // run the day off. Picking one row per kind (what this did) silently dropped the
+  // rest: an event with a 14:00 and a 17:40 stage printed only the 14:00.
+  // Rows with no start time sort last (they carry a label/notes but no clock).
+  const schedAll = (kind: ScheduleKind) =>
+    schedule
+      .filter((s) => s.kind === kind)
+      .sort((a, b) =>
+        (a.start_time ?? "￿").localeCompare(b.start_time ?? "￿")
+      );
   const range = (s?: ScheduleItem) =>
     s && (s.start_time || s.end_time)
       ? `${shortClock(s.start_time) || "—"}${
@@ -173,7 +204,9 @@ export function EventSummary({
         }`
       : null;
 
-  const booth = sched("booth");
+  const booth = schedAll("booth");
+  const stageRows = schedAll("stage");
+  const stageCovered = stageRows.some((s) => range(s) === showWindow);
   const mapQuery = event.venue || event.name;
 
   async function exportJpg() {
@@ -326,43 +359,31 @@ export function EventSummary({
 
         {/* Appointments */}
         <Section title="Call Time">
-          <Appt
-            label="On Location"
-            time={shortClock(sched("on_location")?.start_time)}
-            item={sched("on_location")}
-          />
-          <Appt
+          <ApptList label="On Location" items={schedAll("on_location")} timeOf={range} />
+          <ApptList
             label="Dressing Room"
-            time={shortClock(sched("dressing_room")?.start_time)}
-            item={sched("dressing_room")}
+            items={schedAll("dressing_room")}
+            timeOf={range}
           />
-          <Appt
-            label="Sound Check"
-            time={shortClock(sched("sound_check")?.start_time)}
-            item={sched("sound_check")}
-          />
-          <Appt
-            label="Photo Session"
-            time={shortClock(sched("photo")?.start_time)}
-            item={sched("photo")}
-          />
-          <Appt
-            label="Costume"
-            time={shortClock(sched("costume")?.start_time)}
-            item={sched("costume")}
-          />
+          <ApptList label="Sound Check" items={schedAll("sound_check")} timeOf={range} />
+          <ApptList label="Photo Session" items={schedAll("photo")} timeOf={range} />
+          <ApptList label="Costume" items={schedAll("costume")} timeOf={range} />
           <Line label="Costume Theme" value={event.costume_theme} />
         </Section>
 
         {/* Stage & Booth */}
         <Section title="Showtime">
-          <Appt
-            label="Standby Time"
-            time={shortClock(sched("stb")?.start_time)}
-            item={sched("stb")}
-          />
-          <Line label="Stage" value={showWindow} />
-          <Appt label="Booth" time={range(booth)} item={booth} />
+          <ApptList label="Standby Time" items={schedAll("stb")} timeOf={range} />
+          <ApptList label="Stage" items={stageRows} timeOf={range} />
+          {/* event.show_start_time/hard_out_time is a separate field — it drives the
+              setlist timing below. Usually a stage row mirrors it, so print it only
+              when the schedule does NOT already cover that window (otherwise the
+              same slot appears twice), and keep carrying the label when there are
+              no stage rows at all — the original behaviour. */}
+          {showWindow && !stageCovered && (
+            <Line label={stageRows.length ? "" : "Stage"} value={showWindow} />
+          )}
+          <ApptList label="Booth" items={booth} timeOf={range} />
         </Section>
 
         {/* Setlist — detailed table */}

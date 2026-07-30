@@ -159,10 +159,15 @@ export function Overview() {
         });
 
       const groupById = new Map(viewable.map((g) => [g.id, g]));
-      const rangeOf = (eventId: string, kind: string) => {
-        const it = sched.find((s) => s.event_id === eventId && s.kind === kind);
-        return it ? { start: it.start_time, end: it.end_time } : null;
-      };
+      // ALL slots of a kind, earliest first — a band can play twice and work several
+      // booth shifts in one day, and the first-row-only read hid the rest. Mirrors
+      // app/(app)/overview/page.tsx; [0] stays the sort/filter key.
+      const rangesOf = (eventId: string, kind: string) =>
+        sched
+          .filter((s) => s.event_id === eventId && s.kind === kind)
+          .sort((a, b) => (a.start_time ?? "￿").localeCompare(b.start_time ?? "￿"))
+          .map((it) => ({ start: it.start_time, end: it.end_time }));
+      const rangeOf = (eventId: string, kind: string) => rangesOf(eventId, kind)[0] ?? null;
       const photoOf = (eventId: string) =>
         sched.find((s) => s.event_id === eventId && s.kind === "photo") ?? null;
       const maxSortOf = (eventId: string) =>
@@ -185,6 +190,8 @@ export function Overview() {
           deadline: e.deadline,
           stage: rangeOf(e.id, "stage"),
           booth: rangeOf(e.id, "booth"),
+          stageMore: rangesOf(e.id, "stage").slice(1),
+          boothMore: rangesOf(e.id, "booth").slice(1),
           photo: photoRow?.start_time ?? null,
           photoEnd: photoRow?.end_time ?? null,
           tenant_id: e.tenant_id,

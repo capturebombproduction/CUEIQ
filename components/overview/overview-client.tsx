@@ -45,8 +45,14 @@ export interface OverviewEvent {
   event_date: string | null;
   status: GroupStatus;
   deadline: string | null;
-  stage: TimeRange;
-  booth: TimeRange;
+  stage: TimeRange; // EARLIEST stage slot — everything sorts and filters on this
+  booth: TimeRange; // earliest booth shift, same rule
+  // A band can play twice and work three booth shifts in one day. These carry the
+  // 2nd..Nth slots so the board shows the whole day instead of silently printing
+  // only the first one; the row itself stays one-per-event (its identity, sort key
+  // and the photo editor all key on that).
+  stageMore?: TimeRange[];
+  boothMore?: TimeRange[];
   photo: string | null; // start (inline-editable via PhotoTimeCell)
   photoEnd: string | null; // end of the photo window
   // inline-action support
@@ -102,6 +108,18 @@ function fmtRange(r: TimeRange): string {
   if (!r || (!r.start && !r.end)) return "—";
   const start = shortClock(r.start) || "—";
   return r.end ? `${start}–${shortClock(r.end)}` : start;
+}
+
+/** The first slot plus any repeats, each on its own line (see stageMore/boothMore). */
+function fmtSlots(first: TimeRange, more?: TimeRange[]): ReactNode {
+  if (!more || more.length === 0) return fmtRange(first);
+  return (
+    <>
+      {[first, ...more].map((r, i) => (
+        <div key={i}>{fmtRange(r)}</div>
+      ))}
+    </>
+  );
 }
 
 // ISO date with weekday for the date picker / export subtitle: "2026-06-21 · Sat".
@@ -626,7 +644,7 @@ function ActivityTables({
                     />
                   </td>
                   <td className="whitespace-nowrap px-3 py-2 tabular-nums text-muted-foreground">
-                    {fmtRange(ev.stage)}
+                    {fmtSlots(ev.stage, ev.stageMore)}
                   </td>
                   <td className="px-3 py-2">
                     <div className="flex items-center justify-end gap-2">
@@ -666,7 +684,7 @@ function ActivityTables({
                     />
                   </td>
                   <td className="whitespace-nowrap px-3 py-2 text-right tabular-nums text-muted-foreground">
-                    {fmtRange(ev.booth)}
+                    {fmtSlots(ev.booth, ev.boothMore)}
                   </td>
                 </tr>
               ))}
@@ -766,7 +784,9 @@ function ExportActivityCol({
   rows: OverviewEvent[];
   showBandColumn: boolean;
   secondary: (ev: OverviewEvent) => string;
-  timeOf: (ev: OverviewEvent) => string;
+  // ReactNode, not string: a band with more than one stage/booth slot renders each
+  // on its own line inside the cell (see fmtSlots).
+  timeOf: (ev: OverviewEvent) => ReactNode;
 }) {
   return (
     <div className="space-y-1">
@@ -891,7 +911,7 @@ function ExportSchedule({
         rows={stageRows}
         showBandColumn={showBandColumn}
         secondary={secondary}
-        timeOf={(ev) => fmtRange(ev.stage)}
+        timeOf={(ev) => fmtSlots(ev.stage, ev.stageMore)}
       />
       {/* Photo + Booth side by side; each hidden when empty so a stage-only show
           (e.g. WARUDO has no photo) doesn't print an empty "ถ่ายรูป · 0 —" table.
@@ -913,7 +933,7 @@ function ExportSchedule({
               rows={boothRows}
               showBandColumn={showBandColumn}
               secondary={secondary}
-              timeOf={(ev) => fmtRange(ev.booth)}
+              timeOf={(ev) => fmtSlots(ev.booth, ev.boothMore)}
             />
           )}
         </div>
