@@ -1,7 +1,16 @@
-import { CalendarDays, MapPin, Music2, Clock, Users, Shirt } from "lucide-react";
+import {
+  CalendarDays,
+  MapPin,
+  Music2,
+  Clock,
+  Users,
+  Shirt,
+  ExternalLink,
+} from "lucide-react";
 import { PrintButton } from "@/components/print-button";
 import { BandSkin } from "@/components/band-skin";
 import { createClient } from "@/lib/supabase/server";
+import { cn } from "@/lib/utils";
 import {
   computeSetlistTimes,
   formatDuration,
@@ -32,6 +41,7 @@ interface SharedBundle {
     hard_out_time: string | null;
     status: string;
     notes: string | null;
+    map_url: string | null;
     costume_theme: string | null;
   };
   group: { id: string; name: string; color: string | null; skin: string | null } | null;
@@ -60,6 +70,11 @@ interface SharedBundle {
     nickname: string | null;
     mic_number: number | null;
   }[];
+  /** member ids performing at THIS event (event_members). OPTIONAL on purpose:
+   *  a link opened before 0039_share_lineup.sql is applied gets a payload with
+   *  no such key — that reads as "ยังไม่ได้เลือก" and every member shows, i.e.
+   *  exactly today's behaviour. Same for an empty array (0006's own rule). */
+  lineup?: string[];
 }
 
 function fmtDate(date: string | null): string {
@@ -103,6 +118,12 @@ export default async function SharePage({ params }: { params: Promise<{ token: s
   }
 
   const { event, group, schedule, setlist, members } = bundle;
+  // Array.isArray, not `?? []` — the key is absent until 0039 is applied.
+  const lineup = Array.isArray(bundle.lineup) ? bundle.lineup : [];
+  // The map link is free text an editor pasted, and this page is PUBLIC +
+  // unauthenticated — only ever hand an anonymous visitor an http(s) link.
+  const mapUrl =
+    event.map_url && /^https?:\/\//i.test(event.map_url) ? event.map_url : null;
   const startSec = parseClockToSeconds(event.show_start_time);
   const hardOutSec = parseClockToSeconds(event.hard_out_time);
   const hasClock = startSec != null;
@@ -138,10 +159,21 @@ export default async function SharePage({ params }: { params: Promise<{ token: s
               <span className="tabular-nums">· Hard out {shortClock(event.hard_out_time)}</span>
             )}
           </p>
-          {event.venue && (
-            <p className="flex items-center gap-2">
+          {(event.venue || mapUrl) && (
+            <p className="flex flex-wrap items-center gap-2">
               <MapPin className="h-4 w-4 shrink-0" />
-              <span>{event.venue}</span>
+              {event.venue && <span>{event.venue}</span>}
+              {/* the pinned map — already in the payload, just never shown */}
+              {mapUrl && (
+                <a
+                  href={mapUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex items-center gap-1 font-medium text-primary underline"
+                >
+                  แผนที่ <ExternalLink className="h-3 w-3 shrink-0" />
+                </a>
+              )}
             </p>
           )}
           {event.costume_theme && (
@@ -269,18 +301,34 @@ export default async function SharePage({ params }: { params: Promise<{ token: s
           <h2 className="flex items-center gap-2 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
             <Users className="h-4 w-4" /> สมาชิก
           </h2>
+          {/* A show where 5 of 8 members perform must not read like everyone is
+              on — the venue lays out mic stands from this sheet. Same treatment
+              as the in-app summary: the ones not on this show are struck out.
+              An empty lineup means it was never chosen, so everyone shows —
+              which is also what an old payload (pre-0039) falls back to. */}
+          {lineup.length > 0 && (
+            <p className="text-xs text-muted-foreground">
+              มางานนี้ {lineup.length}/{members.length} คน
+            </p>
+          )}
           <div className="flex flex-wrap gap-2">
-            {members.map((m) => (
-              <span
-                key={m.id}
-                className="rounded-full border px-2.5 py-1 text-sm"
-              >
-                {m.mic_number != null && (
-                  <span className="mr-1 tabular-nums font-semibold">{m.mic_number}</span>
-                )}
-                {m.nickname || m.name}
-              </span>
-            ))}
+            {members.map((m) => {
+              const present = lineup.length === 0 || lineup.includes(m.id);
+              return (
+                <span
+                  key={m.id}
+                  className={cn(
+                    "rounded-full border px-2.5 py-1 text-sm",
+                    !present && "opacity-40 line-through"
+                  )}
+                >
+                  {m.mic_number != null && (
+                    <span className="mr-1 tabular-nums font-semibold">{m.mic_number}</span>
+                  )}
+                  {m.nickname || m.name}
+                </span>
+              );
+            })}
           </div>
         </section>
       )}

@@ -17,7 +17,9 @@ export function ExportButton({ eventId }: { eventId: string }) {
     const [evRes, schRes, setRes, micRes] = await Promise.all([
       supabase
         .from("events")
-        .select("name, event_date, venue, show_start_time, hard_out_time")
+        .select(
+          "name, event_date, venue, show_start_time, hard_out_time, notes, costume_theme"
+        )
         .eq("id", eventId)
         .single(),
       supabase

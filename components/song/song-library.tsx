@@ -225,8 +225,10 @@ export function SongLibrary({
       if (groupFilter !== "all" && s.group_id !== groupFilter) return false;
       if (copyFilter !== "all" && s.copyright_status !== copyFilter) return false;
       if (
+        // โน้ต is in the haystack because it's now shown on the row: an Ar who
+        // typed "คีย์ต่ำลง 2" there must be able to find that song by it.
         needle &&
-        ![s.title, s.category, s.file_name]
+        ![s.title, s.category, s.file_name, s.notes]
           .filter(Boolean)
           .some((x) => (x as string).toLowerCase().includes(needle))
       )
@@ -881,7 +883,7 @@ export function SongLibrary({
           <Input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="ค้นหาเพลง / หมวดหมู่…"
+            placeholder="ค้นหาเพลง / หมวดหมู่ / โน้ต…"
             className="pl-9"
           />
         </div>
@@ -967,6 +969,18 @@ export function SongLibrary({
                   <TableRow key={song.id}>
                     <TableCell>
                       <div className="font-medium">{song.title}</div>
+                      {/* โน้ตของเพลง — until now it was write-only (visible only by
+                          reopening the edit dialog). Clamped so a long note can't
+                          blow the row height up; the full text stays reachable via
+                          the tooltip, and the mobile card prints it whole. */}
+                      {song.notes && (
+                        <div
+                          className="line-clamp-2 whitespace-pre-wrap break-words text-xs text-muted-foreground"
+                          title={song.notes}
+                        >
+                          {song.notes}
+                        </div>
+                      )}
                       {song.file_name && (
                         <div className="flex items-center gap-1 text-xs text-muted-foreground">
                           <FileAudio className="h-3 w-3" />
@@ -1022,6 +1036,13 @@ export function SongLibrary({
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
                     <div className="font-medium leading-tight">{song.title}</div>
+                    {/* Full text, no clamp: a card grows, and a phone has no
+                        hover to reveal a tooltip with the rest. */}
+                    {song.notes && (
+                      <div className="mt-0.5 whitespace-pre-wrap break-words text-xs text-muted-foreground">
+                        {song.notes}
+                      </div>
+                    )}
                     {song.file_name && (
                       <div className="mt-0.5 flex items-center gap-1 text-xs text-muted-foreground">
                         <FileAudio className="h-3 w-3 shrink-0" />

@@ -12,6 +12,7 @@ import {
   formatClockOfDay,
   formatCountdown,
   parseClockToSeconds,
+  shortClock,
 } from "@/lib/time";
 import type { RunSeqLive } from "@/components/event/event-live-caller";
 
@@ -126,8 +127,20 @@ export function EventRunStatusCard({
   const started = ordered.some((r) => r.status !== "pending");
   const allDone = started && !liveRow;
 
-  // This band's own slot in the festival order (the row linked to this event).
-  const selfRow = ordered.find((r) => r.linked_event_id === selfEventId) ?? null;
+  // This band's own slot(s) in the festival order — EVERY row linked to this event.
+  // run_sequence has no unique index on linked_event_id, and a band booked for two
+  // sets legitimately has two linked rows. Taking just the first one flipped the
+  // page to "คิวคุณเล่นจบแล้ว" the moment staff closed slot 1 and hid the 17:40 set
+  // entirely — the members read that as "we're done" and leave the venue.
+  const selfRows = ordered.filter((r) => r.linked_event_id === selfEventId);
+  // The slot that matters right now: the one on stage, else the next one still to
+  // play, else (nothing left) the last one played.
+  const selfRow =
+    selfRows.find((r) => r.status === "live") ??
+    selfRows.find((r) => r.status === "pending") ??
+    selfRows[selfRows.length - 1] ??
+    null;
+  const selfIdx = selfRow ? selfRows.indexOf(selfRow) : -1;
 
   // Project a pending row's start onto the clock given the current drift.
   function projectedStartSec(r: RunSeqLive): number | null {
@@ -274,8 +287,27 @@ export function EventRunStatusCard({
         </Badge>
       </div>
 
-      {/* This band's own slot — the headline for a band watching its own page */}
-      <div className="mt-3">
+      {/* This band's own slot — the headline for a band watching its own page.
+          With more than one linked slot, name which one is showing and list them
+          all (planned clock + จบแล้ว) so a finished first set never reads as
+          "the band is done". A single slot renders exactly as before. */}
+      <div className="mt-3 space-y-1">
+        {selfRows.length > 1 && (
+          <p className="text-xs text-muted-foreground">
+            คิวที่ {selfIdx + 1} จาก {selfRows.length} ของวงนี้ ·{" "}
+            {selfRows.map((r, i) => (
+              <span key={r.id}>
+                {i > 0 && " · "}
+                <span
+                  className={cn(i === selfIdx && "font-semibold text-foreground")}
+                >
+                  {shortClock(r.planned_start) || "—"}
+                </span>
+                {r.status === "done" ? " (จบแล้ว)" : ""}
+              </span>
+            ))}
+          </p>
+        )}
         <SelfStatus />
       </div>
 

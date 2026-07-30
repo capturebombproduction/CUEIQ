@@ -24,10 +24,13 @@ export type RunSequence = {
   linked_event_id: string | null;
 };
 
+// ONE ENTRY PER STAGE SLOT. `id` is the band's EVENT id (what linked_event_id points
+// at) and is therefore NOT unique here: a band booked twice on one festival day
+// appears twice, once per slot — mig 0036 caps only 'photo' at one row per event.
 export type RunBandEvent = {
   id: string;
   group_name: string;
-  stage_start: string | null; // "HH:MM:SS"
+  stage_start: string | null; // "HH:MM:SS" — THIS slot's window
   stage_end: string | null;
 };
 
@@ -389,13 +392,87 @@ export function RunOrderBuilder({
   }
 
   // Seed a band line per stage slot not already on the order, in stage-time order.
+  // bandEvents holds one entry PER SLOT, so a band with an afternoon AND an evening
+  // slot gets BOTH lines — de-duping on linked_event_id alone (what this did) gave it
+  // one, and the missing slot was simply never called on the day.
   async function importBands() {
-    const linked = new Set(rows.map((r) => r.linked_event_id).filter(Boolean));
-    const todo = bandEvents
-      .filter((b) => b.stage_start && !linked.has(b.id))
+    const slots = bandEvents
+      .filter((b) => b.stage_start)
       .sort((x, y) => (x.stage_start! < y.stage_start! ? -1 : 1));
+    const perBand = new Map<string, RunBandEvent[]>(); // this band's slots, in play order
+    for (const b of slots) {
+      const list = perBand.get(b.id);
+      if (list) list.push(b);
+      else perBand.set(b.id, [b]);
+    }
+    const linesBy = new Map<string, RunSequence[]>(); // …and the lines it already has
+    for (const r of rows) {
+      if (!r.linked_event_id) continue;
+      const list = linesBy.get(r.linked_event_id);
+      if (list) list.push(r);
+      else linesBy.set(r.linked_event_id, [r]);
+    }
+    const toMin = (t: string | null) => {
+      if (!t) return null;
+      const [h, m] = t.split(":");
+      const v = Number(h) * 60 + Number(m);
+      return Number.isFinite(v) ? v : null;
+    };
+    // PAIR every existing line to the slot it stands for, then import only the slots
+    // nobody claimed. Merely COUNTING the lines would say how many slots are missing
+    // but not WHICH: a band whose 13:00 line a staffer had nudged to 13:10 would get
+    // 13:00 re-added — double-booking the afternoon on the live board — and the 18:00
+    // that really is missing suppressed by the count.
+    //  1. an exact (band, HH:MM) match claims its own slot — the reliable case.
+    //     planned_start comes back "HH:MM:SS" from the DB but the time input writes
+    //     "HH:MM" into local state, so both sides compare on hhmm();
+    //  2. each remaining line then claims its NEAREST unclaimed slot, because a
+    //     hand-moved time still stands for that slot. A line with no time at all
+    //     claims the first unclaimed one — that's the old behaviour for a band
+    //     linked to a timeless row, kept.
+    const claimed = new Map<string, boolean[]>();
+    for (const [bandId, bandSlots] of perBand) {
+      const marks = bandSlots.map(() => false);
+      claimed.set(bandId, marks);
+      const leftover: RunSequence[] = [];
+      for (const r of linesBy.get(bandId) ?? []) {
+        const exact = bandSlots.findIndex(
+          (s, k) => !marks[k] && hhmm(s.stage_start) === hhmm(r.planned_start)
+        );
+        if (exact >= 0) marks[exact] = true;
+        else leftover.push(r);
+      }
+      for (const r of leftover) {
+        const at = toMin(r.planned_start);
+        let best = -1;
+        let bestGap = Infinity;
+        for (let k = 0; k < bandSlots.length; k++) {
+          if (marks[k]) continue;
+          // no time on the line → gap 0 everywhere, so the FIRST unclaimed slot wins
+          const gap = at === null ? 0 : Math.abs((toMin(bandSlots[k].stage_start) ?? at) - at);
+          if (gap < bestGap) {
+            bestGap = gap;
+            best = k;
+          }
+        }
+        // best stays -1 when the band already has more lines than slots — that extra
+        // line claims nothing, and no slot is left for it to wrongly cover.
+        if (best >= 0) marks[best] = true;
+      }
+    }
+
+    const seen = new Map<string, number>();
+    const todo: { band: RunBandEvent; round: number | null }[] = [];
+    for (const b of slots) {
+      const round = (seen.get(b.id) ?? 0) + 1; // slot no. within this band, 1-based
+      seen.set(b.id, round);
+      if (claimed.get(b.id)?.[round - 1]) continue; // a line already stands for it
+      // Only a band that really plays more than once gets the round marker, so a
+      // one-slot band's line reads exactly as it always did.
+      todo.push({ band: b, round: (perBand.get(b.id)?.length ?? 0) > 1 ? round : null });
+    }
     if (todo.length === 0) {
-      toast.info("วงทุกวงถูกเพิ่มแล้ว (หรือยังไม่มีเวลาเวที)");
+      toast.info("ทุกรอบเวทีถูกเพิ่มแล้ว (หรือยังไม่มีเวลาเวที)");
       return;
     }
     setBusy(true);
@@ -404,10 +481,10 @@ export function RunOrderBuilder({
     let failed: string | undefined;
     // One gate around the WHOLE loop: a rollback landing between two inserts would
     // replace the rows with a snapshot that predates the ones already created, and the
-    // next import — which reads linked_event_id off the rows on screen — would add
-    // those bands all over again. Deferred until the import finishes instead.
+    // next import — which reads linked_event_id + planned_start off the rows on screen
+    // — would add those slots all over again. Deferred until the import finishes.
     await guarded(async () => {
-      for (const b of todo) {
+      for (const { band: b, round } of todo) {
         sort += 1;
         const { data, error } = await supabase
           .from("run_sequence")
@@ -416,7 +493,9 @@ export function RunOrderBuilder({
             event_name: eventName,
             event_date: eventDate,
             sort_order: sort,
-            title: b.group_name,
+            // "SEISHIN (รอบ 2)" — the slot's own time sits next to it everywhere the
+            // title is shown, so two lines for the same band can't be mixed up.
+            title: round ? `${b.group_name} (รอบ ${round})` : b.group_name,
             kind: "band",
             planned_start: b.stage_start,
             planned_end: b.stage_end,
@@ -440,11 +519,12 @@ export function RunOrderBuilder({
     setBusy(false);
     if (created.length > 0) bcast();
     if (failed) {
-      toast.error(`นำเข้าวงไม่ครบ — เพิ่มได้ ${created.length}/${todo.length} วง`, {
+      // Counted in slots, not bands — one band can contribute more than one line.
+      toast.error(`นำเข้าไม่ครบ — เพิ่มได้ ${created.length}/${todo.length} รอบ`, {
         description: failed,
       });
     } else {
-      toast.success(`เพิ่ม ${created.length} วงจากเวที`);
+      toast.success(`เพิ่ม ${created.length} รอบเวที`);
     }
   }
 
@@ -473,6 +553,27 @@ export function RunOrderBuilder({
   }
 
   const ordered = [...rows].sort((a, b) => a.sort_order - b.sort_order);
+
+  // The link dropdown picks an EVENT, but bandEvents now holds one entry per stage
+  // slot — rendering it straight would give a twice-booked band two options with the
+  // SAME value, and a <select> then shows the first matching option's label whichever
+  // one was picked. So: one option per event, with the slot times in the label when
+  // there's more than one (that's what tells the staffer this band plays twice).
+  const bandOptions: { id: string; label: string }[] = [];
+  const optStarts = new Map<string, string[]>();
+  for (const b of bandEvents) {
+    const starts = optStarts.get(b.id);
+    if (starts) {
+      if (b.stage_start) starts.push(hhmm(b.stage_start));
+    } else {
+      optStarts.set(b.id, b.stage_start ? [hhmm(b.stage_start)] : []);
+      bandOptions.push({ id: b.id, label: b.group_name });
+    }
+  }
+  for (const o of bandOptions) {
+    const starts = optStarts.get(o.id) ?? [];
+    if (starts.length > 1) o.label = `${o.label} · ${starts.join(", ")}`;
+  }
 
   return (
     <div className="space-y-3">
@@ -572,9 +673,9 @@ export function RunOrderBuilder({
                   title="ผูกกับวง (ดึงเวลา/เปิด setlist)"
                 >
                   <option value="">— ไม่ผูกวง —</option>
-                  {bandEvents.map((b) => (
+                  {bandOptions.map((b) => (
                     <option key={b.id} value={b.id}>
-                      {b.group_name}
+                      {b.label}
                     </option>
                   ))}
                 </select>

@@ -18,7 +18,13 @@ import {
 export interface ExportData {
   event: Pick<
     EventRow,
-    "name" | "event_date" | "venue" | "show_start_time" | "hard_out_time"
+    | "name"
+    | "event_date"
+    | "venue"
+    | "show_start_time"
+    | "hard_out_time"
+    | "notes"
+    | "costume_theme"
   >;
   schedule: ScheduleItem[];
   setlist: SetlistItem[];
@@ -42,6 +48,14 @@ export function buildRunSheetWorkbook(data: ExportData): XLSX.WorkBook {
   const hasClock = showStartSec != null;
   const timing = computeSetlistTimes(setlist, showStartSec ?? 0, hardOutSec);
 
+  // A multi-line โน้ต becomes one sheet row per line, label on the first only
+  // (same shape as the summary's ApptList) — SheetJS community can't set
+  // wrap-text, so a single cell would squash the whole note onto one line.
+  const noteLines = (event.notes ?? "")
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean);
+
   // ---- Run Sheet ----
   const runHeader: (string | number)[][] = [
     ["CueIQ — Run Sheet"],
@@ -59,6 +73,14 @@ export function buildRunSheetWorkbook(data: ExportData): XLSX.WorkBook {
       "จบโดยประมาณ",
       hasClock ? formatClockOfDay(timing.endSec) : "",
     ],
+    // ธีมชุด + โน้ต are typed on the event form and until now reached only the
+    // on-screen summary and the share page — this workbook is what venue staff
+    // actually hold, so it has to carry them too. Rows are dropped when empty,
+    // like the summary's <Line/>, so a bare event keeps the same tight header.
+    ...(event.costume_theme?.trim()
+      ? [["ธีมชุด", event.costume_theme.trim()]]
+      : []),
+    ...noteLines.map((l, i) => [i === 0 ? "โน้ต" : "", l]),
     [],
   ];
 

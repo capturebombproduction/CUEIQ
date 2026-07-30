@@ -29,6 +29,16 @@ export function writeCache<T>(key: string, data: T): void {
   }
 }
 
+/** Is `key` cached? Presence probe only — no JSON.parse, so the dashboard can ask
+ *  it once per upcoming event without deserializing every bundle it holds. */
+export function hasCache(key: string): boolean {
+  try {
+    return window.localStorage.getItem(PREFIX + key) != null;
+  } catch {
+    return false;
+  }
+}
+
 /** Cache keys (sans prefix) that start with `keyPrefix` — e.g. every "event:" bundle. */
 export function readCacheKeys(keyPrefix: string): string[] {
   try {

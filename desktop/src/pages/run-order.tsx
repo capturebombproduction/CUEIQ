@@ -53,6 +53,8 @@ export function RunOrderPage() {
       fq = ev.event_date ? fq.eq("event_date", ev.event_date) : fq.is("event_date", null);
       const { data: festEvents } = await fq;
       const ids = (festEvents ?? []).map((e) => e.id);
+      // Ordered by start_time so a band's slots arrive in the order it actually plays —
+      // the builder seeds the running order straight off this list.
       const { data: stages } = ids.length
         ? await sb
             .from("schedule_items")
@@ -60,16 +62,33 @@ export function RunOrderPage() {
             .eq("tenant_id", tid)
             .eq("kind", "stage")
             .in("event_id", ids)
+            .order("start_time", { ascending: true })
         : { data: [] as { event_id: string; start_time: string | null; end_time: string | null }[] };
-      const stageBy = new Map(
-        (stages ?? []).map((s) => [s.event_id as string, s as { start_time: string | null; end_time: string | null }])
-      );
-      const bandEvents: RunBandEvent[] = (festEvents ?? []).map((e) => ({
-        id: e.id as string,
-        group_name: groupName.get(e.group_id as string) ?? "—",
-        stage_start: stageBy.get(e.id as string)?.start_time ?? null,
-        stage_end: stageBy.get(e.id as string)?.end_time ?? null,
-      }));
+      // A band can hold SEVERAL stage slots on one festival day — mig 0036 caps only
+      // 'photo' at one row per event. A Map keyed by event_id kept whichever row the
+      // query returned last, so a band booked twice reached the running order once
+      // (often at the wrong time) and the live caller never announced the other slot.
+      // Key a LIST instead (same assembly as the web page).
+      const stagesBy = new Map<string, { start_time: string | null; end_time: string | null }[]>();
+      for (const s of stages ?? []) {
+        const slot = s as { start_time: string | null; end_time: string | null };
+        const list = stagesBy.get(s.event_id as string);
+        if (list) list.push(slot);
+        else stagesBy.set(s.event_id as string, [slot]);
+      }
+      // One entry PER STAGE SLOT, all carrying the band's event id (= linked_event_id).
+      // An event with no stage row still gets one slot-less entry so the builder's link
+      // dropdown can still reach it.
+      const bandEvents: RunBandEvent[] = (festEvents ?? []).flatMap((e) => {
+        const base = {
+          id: e.id as string,
+          group_name: groupName.get(e.group_id as string) ?? "—",
+        };
+        const slots = stagesBy.get(e.id as string);
+        return slots?.length
+          ? slots.map((s) => ({ ...base, stage_start: s.start_time, stage_end: s.end_time }))
+          : [{ ...base, stage_start: null, stage_end: null }];
+      });
       let rq = sb
         .from("run_sequence")
         .select("*")

@@ -6,7 +6,7 @@
 // songs borrowed from a cached sibling bundle of the same band when available).
 import { createClient } from "@/lib/supabase/client";
 import { applyPendingChildren, materializeEventRow } from "@/lib/mgmt-outbox";
-import { isOffline, readCache, readCacheKeys, writeCache } from "~/data/cache";
+import { hasCache, isOffline, readCache, readCacheKeys, writeCache } from "~/data/cache";
 import { pendingMgmtOps } from "~/data/mgmt-outbox";
 import type { WorkspaceData } from "~/data/workspace";
 import type {
@@ -30,6 +30,9 @@ export interface EventBundle {
   lineup: string[]; // member_ids performing at this event (empty = not chosen yet)
   role: Role | null;
 }
+
+/** Read-cache key for one event's bundle — shared by the loader and the probes below. */
+const bundleKey = (eventId: string) => `event:${eventId}`;
 
 /** First cached bundle belonging to `groupId` — a source of members/songs offline. */
 function findCachedSibling(groupId: string | undefined): EventBundle | null {
@@ -79,7 +82,7 @@ async function withPendingOverlay(
 
 export async function loadEventBundle(eventId: string): Promise<EventBundle | null> {
   const supabase = createClient();
-  const cacheKey = `event:${eventId}`;
+  const cacheKey = bundleKey(eventId);
 
   // Offline: the network reads below would all fail, so serve the last good
   // bundle for this event from cache (null if it was never opened online).
@@ -176,4 +179,38 @@ export async function loadEventBundle(eventId: string): Promise<EventBundle | nu
   writeCache(cacheKey, bundle);
   // Cache the SERVER truth, then overlay pending local edits on top for display.
   return withPendingOverlay(bundle, eventId);
+}
+
+/** Does THIS device hold `eventId`'s bundle, i.e. can the show be OPENED with no net? */
+export function isEventBundleCached(eventId: string): boolean {
+  return hasCache(bundleKey(eventId));
+}
+
+/**
+ * Pull one event's bundle down and leave it in the read-cache. Offline readiness is
+ * DATA + BYTES: a device with every audio file but no cached bundle still opens the
+ * show as "ไม่พบงานนี้ หรือไม่มีสิทธิ์เข้าถึง" at the venue — the audio on disk is
+ * unreachable — so the dashboard's bulk prepare warms this alongside the files.
+ * Never throws: one unreachable event must not abort the rest of a prepare run.
+ */
+export async function warmEventBundle(eventId: string): Promise<boolean> {
+  try {
+    await loadEventBundle(eventId);
+  } catch {
+    /* best-effort, same contract as the read-cache itself */
+  }
+  return isEventBundleCached(eventId);
+}
+
+// Bridge to the SHARED dashboard (components/event/events-list.tsx). That component
+// is compiled into the WEB build too, where the "~" alias doesn't resolve, so it
+// cannot import this module — hand it the two functions on `window` instead. This
+// file is statically imported by the desktop App, so the bridge exists before any
+// route renders; nothing publishes it in a browser, where the dashboard reads
+// `undefined` and keeps its byte-only behaviour.
+if (typeof window !== "undefined") {
+  (window as unknown as { cueiqEventCache?: unknown }).cueiqEventCache = {
+    isCached: isEventBundleCached,
+    warm: warmEventBundle,
+  };
 }

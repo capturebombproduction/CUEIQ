@@ -83,9 +83,26 @@ function countdownLabel(n: number): string {
   return `อีก ${n} วัน`;
 }
 
-function OfflineReadyBadge({ r }: { r: { ready: number; total: number } }) {
-  if (r.total === 0) return null;
-  const done = r.ready >= r.total;
+/** Per-device offline readiness for one event: audio bytes + whether this event's
+ *  management bundle (คิวโชว์ / ตาราง / ไมค์ / ไลน์อัพ) is cached on the device. */
+type EventReadiness = {
+  ready: number;
+  total: number;
+  /** desktop: the bundle is in the read-cache → the show can be OPENED with no net. */
+  data: boolean;
+};
+
+function OfflineReadyBadge({ r }: { r: EventReadiness }) {
+  // Nothing to play AND the data already on the device (also every non-desktop
+  // caller, where `data` is always true) → stay silent, exactly as before. A day
+  // with no audio at all — บูธ/ทอล์ก, or files not uploaded yet — must still say
+  // when its ตาราง/ไมค์/ไลน์อัพ isn't on the device.
+  if (r.total === 0 && r.data) return null;
+  const bytesDone = r.ready >= r.total;
+  // พร้อมออฟไลน์ = ข้อมูล + ไฟล์. A device holding every file but no cached bundle
+  // opens tonight's show as "ไม่พบงานนี้" at the venue — the audio sitting on disk is
+  // unreachable — so that state must NOT read green.
+  const done = bytesDone && r.data;
   return (
     <span
       className={cn(
@@ -96,13 +113,19 @@ function OfflineReadyBadge({ r }: { r: { ready: number; total: number } }) {
       )}
       title={
         done
-          ? "ไฟล์เพลงของงานนี้อยู่ในเครื่องนี้ครบแล้ว เล่นได้แม้เน็ตหลุด"
-          : "เครื่องนี้ยังโหลดเพลงไม่ครบ — เปิดงานแล้วกด ‘เตรียมเครื่องนี้’"
+          ? "ข้อมูลงานและไฟล์เพลงอยู่ในเครื่องนี้ครบแล้ว เปิดและเล่นได้แม้เน็ตหลุด"
+          : bytesDone
+            ? `${r.total > 0 ? "ไฟล์เพลงครบแล้ว แต่" : ""}ยังไม่ได้เก็บข้อมูลงาน (คิวโชว์/ตาราง/ไมค์) ลงเครื่อง — กด ‘เตรียมทุกงานที่จะถึง’ หรือเปิดงานนี้ตอนออนไลน์ 1 ครั้ง`
+            : "เครื่องนี้ยังโหลดเพลงไม่ครบ — เปิดงานแล้วกด ‘เตรียมเครื่องนี้’"
       }
     >
       {done ? (
         <>
           <CheckCircle2 className="h-3.5 w-3.5" /> พร้อมออฟไลน์
+        </>
+      ) : bytesDone ? (
+        <>
+          <HardDriveDownload className="h-3.5 w-3.5" /> ยังไม่มีข้อมูลงาน
         </>
       ) : (
         <>
@@ -121,7 +144,7 @@ function EventCard({
 }: {
   ev: EventWithGroup;
   editable: boolean;
-  readiness?: { ready: number; total: number };
+  readiness?: EventReadiness;
   onDeleted?: (id: string) => void;
 }) {
   return (
@@ -196,6 +219,22 @@ function EventCard({
   );
 }
 
+/**
+ * The desktop read-cache, reached through the bridge desktop/src/data/event-bundle.ts
+ * publishes on `window`. This component is compiled into the WEB build too, where
+ * "~/data/*" doesn't resolve, so it can't import that module — same reason
+ * show-readiness-check.tsx pokes at the cache from shared code. Undefined in a
+ * browser → every offline-data check below falls back to today's byte-only answer.
+ */
+type EventCacheBridge = {
+  isCached: (eventId: string) => boolean;
+  warm: (eventId: string) => Promise<boolean>;
+};
+const eventCache = (): EventCacheBridge | undefined =>
+  typeof window === "undefined"
+    ? undefined
+    : (window as unknown as { cueiqEventCache?: EventCacheBridge }).cueiqEventCache;
+
 export function EventsList({
   events,
   editableGroupIds,
@@ -268,11 +307,10 @@ export function EventsList({
   }, [items]);
 
   // Per-device offline-readiness badge on each upcoming card: does THIS device
-  // already hold the event's audio? Two batched queries (items + songs) cover all
-  // upcoming events, then readiness is compared against the IndexedDB cache.
-  const [readiness, setReadiness] = useState<
-    Record<string, { ready: number; total: number }>
-  >({});
+  // already hold the event's audio AND its management bundle? Two batched queries
+  // (items + songs) cover all upcoming events, then readiness is compared against
+  // the IndexedDB audio cache and the desktop read-cache.
+  const [readiness, setReadiness] = useState<Record<string, EventReadiness>>({});
   const [targetsByEvent, setTargetsByEvent] = useState<
     Record<string, PrefetchTarget[]>
   >({});
@@ -312,15 +350,30 @@ export function EventsList({
       for (const it of itemsRes.data ?? []) {
         (byEvent[it.event_id] ??= []).push(it);
       }
-      const out: Record<string, { ready: number; total: number }> = {};
+      // Bytes are only half of it — without the event's bundle on disk the show
+      // can't even be opened offline. No bridge (web / older shell) → assume the
+      // data side is fine, so the badge behaves exactly as it did before.
+      const cache = eventCache();
+      const out: Record<string, EventReadiness> = {};
       const outTargets: Record<string, PrefetchTarget[]> = {};
       await Promise.all(
         wanted.map(async (e) => {
           const targets = resolveAudioTargets(byEvent[e.id] ?? [], songAudio);
-          if (targets.length === 0) return;
+          // An event with NO audio — a booth/talk day, or a setlist typed before the
+          // files are uploaded — still carries ตาราง/ไมค์/ไลน์อัพ that must reach the
+          // venue, so it belongs in the prepare set too. getReadiness is only ever
+          // asked about real files, and prefetchEventAudio bails on an empty list by
+          // design (its "never run the orphan-cleanup with an empty target list" guard).
           outTargets[e.id] = targets;
-          const r: Readiness = await getReadiness(e.id, targets);
-          out[e.id] = { ready: r.ready, total: r.total };
+          const r: Readiness =
+            targets.length > 0
+              ? await getReadiness(e.id, targets)
+              : { total: 0, ready: 0, stale: 0, missing: 0 };
+          out[e.id] = {
+            ready: r.ready,
+            total: r.total,
+            data: cache ? cache.isCached(e.id) : true,
+          };
         })
       );
       setReadiness(out);
@@ -330,12 +383,13 @@ export function EventsList({
     }
   }, [items, native]);
 
-  // Files still missing across all upcoming shows, and a one-tap "prepare them all".
+  // Shows still missing something across all upcoming dates — files OR the event
+  // bundle — and a one-tap "prepare them all".
   const notReadyIds = useMemo(
     () =>
       Object.keys(targetsByEvent).filter((id) => {
         const r = readiness[id];
-        return r && r.ready < r.total;
+        return r && (r.ready < r.total || !r.data);
       }),
     [targetsByEvent, readiness]
   );
@@ -343,17 +397,28 @@ export function EventsList({
   const prepareAll = useCallback(async () => {
     const todo = notReadyIds;
     if (todo.length === 0) return;
+    const cache = eventCache();
     const grandTotal = todo.reduce((n, id) => {
       const r = readiness[id];
-      return n + (r ? r.total - r.ready : 0);
+      // + 1 step for an event whose bundle still has to be pulled down (same
+      // condition the loop below uses, so the counter can't overshoot)
+      return n + (r ? r.total - r.ready : 0) + (cache && r && !r.data ? 1 : 0);
     }, 0);
     setBulk({ done: 0, total: grandTotal });
     let done = 0;
     for (const id of todo) {
+      const r = readiness[id];
+      // Data first: it's tiny next to the audio, and an event whose run sheet is
+      // cached can at least be OPENED offline if the transfer is cut short later.
+      // Swallow per event — one unreachable show must not abort the whole run.
+      if (cache && r && !r.data) {
+        await cache.warm(id).catch(() => {});
+        done += 1;
+        setBulk({ done, total: grandTotal });
+      }
       await prefetchEventAudio(id, targetsByEvent[id] ?? [], {
         onProgress: (p) => setBulk({ done: done + p.done, total: grandTotal }),
       });
-      const r = readiness[id];
       done += r ? r.total - r.ready : 0;
     }
     setBulk(null);
@@ -431,7 +496,7 @@ export function EventsList({
             type="button"
             onClick={prepareAll}
             disabled={!!bulk}
-            title="โหลดไฟล์เพลงของทุกงานที่กำลังจะถึงลงเครื่องนี้ไว้ก่อน"
+            title="โหลดข้อมูลงานและไฟล์เพลงของทุกงานที่กำลังจะถึงลงเครื่องนี้ไว้ก่อน"
             className="inline-flex shrink-0 items-center gap-1.5 rounded-md border px-3 py-2 text-sm font-medium text-muted-foreground transition hover:bg-muted hover:text-foreground disabled:opacity-70"
           >
             {bulk ? (

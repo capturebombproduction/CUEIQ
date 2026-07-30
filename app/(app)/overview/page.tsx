@@ -36,6 +36,76 @@ type SchedRow = {
   sort_order: number;
 };
 
+type SlRow = {
+  event_id: string;
+  song_id: string | null;
+  kind: string;
+  mic_slots: { mic: string; member: string }[] | null;
+};
+
+/** One festival key part (name + date) — see the run_sequence read below. */
+type RoRow = { event_name: string; event_date: string | null };
+
+/** A postgrest-shaped result, so callers keep the error handling they already had. */
+type Res<T> = { data: T[] | null; error: { message: string } | null };
+
+// PostgREST caps every response at max-rows (1000 on Supabase) and truncates
+// SILENTLY — .error stays null, so a partial read renders as if it were everything
+// the bands entered: blank stage/booth times, "ยังขาด" on an event that IS complete,
+// copyright counts of 0, a date header with no "คุมคิว (Live)" button. This board
+// mixes several tenant-sized reads, so it hits that cap long before anything looks
+// wrong. app/api/cron/backup/route.ts already pages around the same trap; the rule
+// here is the same — end ONLY on an EMPTY page (a server cap smaller than PAGE_SIZE
+// must never read as "that was the last page") and return an error rather than a
+// silently short list. MAX_PAGES only exists so a misbehaving server can't spin.
+const PAGE_SIZE = 1000;
+const MAX_PAGES = 200;
+// The event ids ride in the request URL (?event_id=in.(…)), ~37 chars per uuid, so
+// they go out in chunks that keep the URL well inside any proxy's header limit. More
+// events just means more (still fully paged) round-trips — never a dropped id.
+const ID_CHUNK = 80;
+
+async function readPaged<T>(
+  label: string,
+  select: (
+    from: number,
+    to: number
+  ) => PromiseLike<{ data: unknown; error: { message: string } | null }>
+): Promise<Res<T>> {
+  const rows: T[] = [];
+  for (let page = 0; page < MAX_PAGES; page++) {
+    const { data, error } = await select(rows.length, rows.length + PAGE_SIZE - 1);
+    if (error) return { data: null, error };
+    const batch = (data ?? []) as T[];
+    rows.push(...batch);
+    if (batch.length === 0) return { data: rows, error: null };
+  }
+  return {
+    data: null,
+    error: { message: `${label}: over ${MAX_PAGES * PAGE_SIZE} rows` },
+  };
+}
+
+/** Same, for a child table read per event: chunk the ids, page inside each chunk. */
+async function readForEvents<T>(
+  label: string,
+  eventIds: string[],
+  select: (
+    ids: string[],
+    from: number,
+    to: number
+  ) => PromiseLike<{ data: unknown; error: { message: string } | null }>
+): Promise<Res<T>> {
+  const rows: T[] = [];
+  for (let i = 0; i < eventIds.length; i += ID_CHUNK) {
+    const chunk = eventIds.slice(i, i + ID_CHUNK);
+    const res = await readPaged<T>(label, (from, to) => select(chunk, from, to));
+    if (res.error) return res;
+    rows.push(...(res.data ?? []));
+  }
+  return { data: rows, error: null };
+}
+
 export default async function OverviewPage() {
   const ws = await getWorkspace();
   if (!ws.membership || !ws.tenant) return <JoinDemo />;
@@ -54,64 +124,132 @@ export default async function OverviewPage() {
   const canApproveEvents = canApprove(ws.perms);
   const supabase = await createClient();
 
-  const [evRes, schedRes, memRes, slRes, songRes, staffRes, roRes, micRes] =
-    await Promise.all([
-    supabase
-      .from("events")
-      .select("*")
-      .eq("tenant_id", tid)
-      .in("group_id", viewableGroupIds) // only bands this user may view
-      .eq("is_template", false) // templates are not real shows
-      .eq("is_practice", false) // practice rooms aren't real shows
-      .order("event_date", { ascending: true, nullsFirst: false }),
-    supabase
-      .from("schedule_items")
-      .select("id, event_id, kind, start_time, end_time, sort_order")
-      .eq("tenant_id", tid),
-    supabase
-      .from("members")
-      .select("*")
-      .eq("tenant_id", tid)
-      .in("group_id", viewableGroupIds) // rosters for visible bands only
-      .order("sort_order", { ascending: true }),
-    supabase
-      .from("setlist_items")
-      .select("event_id, song_id, kind, mic_slots")
-      .eq("tenant_id", tid),
-    supabase
-      .from("songs")
-      .select("id, copyright_status")
-      .eq("tenant_id", tid),
-    supabase
-      .from("staff_contacts")
-      .select("*")
-      .eq("tenant_id", tid)
-      .order("sort_order", { ascending: true }),
-    // Which festivals (name + date) already have a running order — drives the
-    // "คุมคิว (Live)" entry on each date header (staff build & run from Overview now).
-    supabase
-      .from("run_sequence")
-      .select("event_name, event_date")
-      .eq("tenant_id", tid),
-    // Mic assignments — counted per event for the readiness (completeness) badge.
-    supabase.from("mic_assignments").select("event_id").eq("tenant_id", tid),
+  // Two phases: the per-event children are SCOPED to the events actually on the
+  // board, so the event ids have to land first. Everything within a phase still
+  // runs in parallel. Every read is paged (see readPaged) — a tenant-wide select
+  // that quietly stops at 1000 rows is the failure this shape exists to prevent.
+  const [evRes, memRes, songRes, staffRes] = await Promise.all([
+    readPaged<EventRow>("events", (from, to) =>
+      supabase
+        .from("events")
+        .select("*")
+        .eq("tenant_id", tid)
+        .in("group_id", viewableGroupIds) // only bands this user may view
+        .eq("is_template", false) // templates are not real shows
+        .eq("is_practice", false) // practice rooms aren't real shows
+        .order("event_date", { ascending: true, nullsFirst: false })
+        .order("id", { ascending: true }) // total order — paging must not skip/repeat
+        .range(from, to)
+    ),
+    readPaged<Member>("members", (from, to) =>
+      supabase
+        .from("members")
+        .select("*")
+        .eq("tenant_id", tid)
+        .in("group_id", viewableGroupIds) // rosters for visible bands only
+        .order("sort_order", { ascending: true })
+        .order("id", { ascending: true })
+        .range(from, to)
+    ),
+    readPaged<{ id: string; copyright_status: string }>("songs", (from, to) =>
+      supabase
+        .from("songs")
+        .select("id, copyright_status")
+        .eq("tenant_id", tid)
+        .order("id", { ascending: true })
+        .range(from, to)
+    ),
+    readPaged<StaffContact>("staff_contacts", (from, to) =>
+      supabase
+        .from("staff_contacts")
+        .select("*")
+        .eq("tenant_id", tid)
+        .order("sort_order", { ascending: true })
+        .order("id", { ascending: true })
+        .range(from, to)
+    ),
   ]);
 
   const eventRows = (evRes.data ?? []) as EventRow[];
-  const sched = (schedRes.data ?? []) as SchedRow[];
   const members = (memRes.data ?? []) as Member[];
-  const slRows = (slRes.data ?? []) as {
-    event_id: string;
-    song_id: string | null;
-    kind: string;
-    mic_slots: { mic: string; member: string }[] | null;
-  }[];
   const songRows = (songRes.data ?? []) as { id: string; copyright_status: string }[];
   const staff = (staffRes.data ?? []) as StaffContact[];
-  const roRows = (roRes.data ?? []) as {
-    event_name: string;
-    event_date: string | null;
-  }[];
+
+  const eventIds = eventRows.map((e) => e.id);
+  // run_sequence keys on the festival (name + date), not on an event id, so it's
+  // bounded by the dates the board actually shows instead of by event. An undated
+  // event keys on "name__", which only a null-date row can answer — so that bucket
+  // is read only when such an event is on the board.
+  const evDates = eventRows
+    .map((e) => e.event_date)
+    .filter((d): d is string => !!d)
+    .sort();
+  const dateLo = evDates[0];
+  const dateHi = evDates[evDates.length - 1];
+  const hasUndated = eventRows.some((e) => !e.event_date);
+  const readRunOrders = async (): Promise<Res<RoRow>> => {
+    const base = () =>
+      supabase.from("run_sequence").select("event_name, event_date").eq("tenant_id", tid);
+    const parts: Res<RoRow>[] = [];
+    if (dateLo) {
+      parts.push(
+        await readPaged<RoRow>("run_sequence", (from, to) =>
+          base()
+            .gte("event_date", dateLo)
+            .lte("event_date", dateHi)
+            .order("id", { ascending: true })
+            .range(from, to)
+        )
+      );
+    }
+    if (hasUndated) {
+      parts.push(
+        await readPaged<RoRow>("run_sequence", (from, to) =>
+          base().is("event_date", null).order("id", { ascending: true }).range(from, to)
+        )
+      );
+    }
+    const failed = parts.find((p) => p.error);
+    return failed ?? { data: parts.flatMap((p) => p.data ?? []), error: null };
+  };
+
+  const [schedRes, slRes, roRes, micRes] = await Promise.all([
+    readForEvents<SchedRow>("schedule_items", eventIds, (ids, from, to) =>
+      supabase
+        .from("schedule_items")
+        .select("id, event_id, kind, start_time, end_time, sort_order")
+        .eq("tenant_id", tid)
+        .in("event_id", ids)
+        .order("id", { ascending: true })
+        .range(from, to)
+    ),
+    readForEvents<SlRow>("setlist_items", eventIds, (ids, from, to) =>
+      supabase
+        .from("setlist_items")
+        .select("event_id, song_id, kind, mic_slots")
+        .eq("tenant_id", tid)
+        .in("event_id", ids)
+        .order("id", { ascending: true })
+        .range(from, to)
+    ),
+    // Which festivals (name + date) already have a running order — drives the
+    // "คุมคิว (Live)" entry on each date header (staff build & run from Overview now).
+    readRunOrders(),
+    // Mic assignments — counted per event for the readiness (completeness) badge.
+    readForEvents<{ event_id: string }>("mic_assignments", eventIds, (ids, from, to) =>
+      supabase
+        .from("mic_assignments")
+        .select("event_id")
+        .eq("tenant_id", tid)
+        .in("event_id", ids)
+        .order("id", { ascending: true })
+        .range(from, to)
+    ),
+  ]);
+
+  const sched = (schedRes.data ?? []) as SchedRow[];
+  const slRows = (slRes.data ?? []) as SlRow[];
+  const roRows = (roRes.data ?? []) as RoRow[];
   const micRows = (micRes.data ?? []) as { event_id: string }[];
   // Distinct festival keys (name__date) that have a running order. Same key the
   // client rebuilds from each event's name + date.

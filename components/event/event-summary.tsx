@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { Fragment, useRef, useState } from "react";
 import Link from "next/link";
 import { toast } from "sonner";
 import {
@@ -36,6 +36,7 @@ import {
 import { mapsEmbedUrl } from "@/lib/venues";
 import { cn } from "@/lib/utils";
 import {
+  SCHEDULE_KIND_LABELS,
   SETLIST_KIND_SHORT,
   type EventRow,
   type Group,
@@ -79,16 +80,23 @@ function Appt({
   label,
   time,
   item,
+  labelIsTitle = false,
 }: {
   label: string;
   time?: string | null;
   item?: ScheduleItem;
+  /** The row's own label is already the heading (see ApptList). */
+  labelIsTitle?: boolean;
 }) {
   const loc = item?.location?.trim() || null;
   const note = item?.notes?.trim() || null;
-  const lbl = item?.label?.trim() || null;
+  const own = item?.label?.trim() || null;
+  // When the row's own label is the heading, don't repeat it in the detail — but
+  // it still counts as content, so a row carrying nothing but a label ("จุดนัด"
+  // with no clock yet) isn't swallowed by the empty check below.
+  const lbl = labelIsTitle ? null : own;
   const detail = [time, lbl, loc].filter(Boolean).join(" · ");
-  if (!detail && !note) return null;
+  if (!detail && !note && !(labelIsTitle && own)) return null;
   return (
     <div className="text-sm">
       <div className="flex gap-2">
@@ -113,16 +121,29 @@ function ApptList({
   label,
   items,
   timeOf,
+  labelIsTitle = false,
 }: {
   label: string;
   items: ScheduleItem[];
   timeOf: (s: ScheduleItem) => string | null;
+  /** "other" rows have no meaningful kind name, so each titles itself with its own
+      label — the same rule the share page uses. */
+  labelIsTitle?: boolean;
 }) {
   return (
     <>
-      {items.map((s, i) => (
-        <Appt key={s.id} label={i === 0 ? label : ""} time={timeOf(s)} item={s} />
-      ))}
+      {items.map((s, i) => {
+        const own = labelIsTitle ? s.label?.trim() : null;
+        return (
+          <Appt
+            key={s.id}
+            label={own || (i === 0 ? label : "")}
+            time={timeOf(s)}
+            item={s}
+            labelIsTitle={labelIsTitle}
+          />
+        );
+      })}
     </>
   );
 }
@@ -143,6 +164,38 @@ function Section({
     </section>
   );
 }
+
+// WHERE each appointment kind prints, and in what order. The sheet used to be a
+// hand-written line per kind, which silently dropped "other" — the DB default, and
+// what the "แถวว่าง" quick-add button creates: a staffer's "รถออกจากค่าย 07:30 ·
+// จุดนัด BTS หมอชิต" showed up in the นัดหมาย tab and the export but never on the
+// sheet the band runs the day off. Rendering is now driven off the schedule data:
+// anything NOT listed here (today "other", tomorrow any kind added to ScheduleKind)
+// still prints, at the end of Call Time, instead of falling off.
+const CALL_TIME_KINDS: ScheduleKind[] = [
+  "on_location",
+  "dressing_room",
+  "sound_check",
+  "photo",
+  "costume",
+];
+const SHOWTIME_KINDS: ScheduleKind[] = ["stb", "stage", "booth"];
+
+// Short sheet headings — the label column is narrow, so these stay shorter than
+// SCHEDULE_KIND_LABELS, which is the fallback for every other kind (`kind` is free
+// text in the DB, so even an unknown value gets a heading).
+const KIND_HEADING: Partial<Record<ScheduleKind, string>> = {
+  on_location: "On Location",
+  dressing_room: "Dressing Room",
+  sound_check: "Sound Check",
+  photo: "Photo Session",
+  costume: "Costume",
+  stb: "Standby Time",
+  stage: "Stage",
+  booth: "Booth",
+};
+const headingOf = (kind: ScheduleKind) =>
+  KIND_HEADING[kind] ?? SCHEDULE_KIND_LABELS[kind] ?? kind;
 
 export function EventSummary({
   event,
@@ -204,9 +257,13 @@ export function EventSummary({
         }`
       : null;
 
-  const booth = schedAll("booth");
   const stageRows = schedAll("stage");
   const stageCovered = stageRows.some((s) => range(s) === showWindow);
+  // Kinds present in the data but placed by neither list above — they print at the
+  // end of Call Time so nothing the staff typed goes missing.
+  const extraKinds = [...new Set(schedule.map((s) => s.kind))].filter(
+    (k) => !CALL_TIME_KINDS.includes(k) && !SHOWTIME_KINDS.includes(k)
+  );
   const mapQuery = event.venue || event.name;
 
   async function exportJpg() {
@@ -326,6 +383,18 @@ export function EventSummary({
           </div>
         </div>
 
+        {/* Event note — the free text an Ar types on the event form ("ห้ามใช้ backing
+            track เพลง 3"). It used to render on no in-app surface at all: only on a
+            public share link that may never have been generated, so the instruction
+            reached nobody. First thing on the sheet, and it prints/exports with it. */}
+        {event.notes?.trim() && (
+          <Section title="Notes">
+            <p className="whitespace-pre-wrap rounded-lg bg-muted/50 p-3 text-sm">
+              {event.notes}
+            </p>
+          </Section>
+        )}
+
         {/* Location */}
         <Section title="Location">
           <Line label="Venue" value={event.venue} />
@@ -359,31 +428,47 @@ export function EventSummary({
 
         {/* Appointments */}
         <Section title="Call Time">
-          <ApptList label="On Location" items={schedAll("on_location")} timeOf={range} />
-          <ApptList
-            label="Dressing Room"
-            items={schedAll("dressing_room")}
-            timeOf={range}
-          />
-          <ApptList label="Sound Check" items={schedAll("sound_check")} timeOf={range} />
-          <ApptList label="Photo Session" items={schedAll("photo")} timeOf={range} />
-          <ApptList label="Costume" items={schedAll("costume")} timeOf={range} />
+          {CALL_TIME_KINDS.map((kind) => (
+            <ApptList
+              key={kind}
+              label={headingOf(kind)}
+              items={schedAll(kind)}
+              timeOf={range}
+            />
+          ))}
           <Line label="Costume Theme" value={event.costume_theme} />
+          {/* Everything the two lists above don't place — see CALL_TIME_KINDS. */}
+          {extraKinds.map((kind) => (
+            <ApptList
+              key={kind}
+              label={headingOf(kind)}
+              items={schedAll(kind)}
+              timeOf={range}
+              labelIsTitle={kind === "other"}
+            />
+          ))}
         </Section>
 
         {/* Stage & Booth */}
         <Section title="Showtime">
-          <ApptList label="Standby Time" items={schedAll("stb")} timeOf={range} />
-          <ApptList label="Stage" items={stageRows} timeOf={range} />
-          {/* event.show_start_time/hard_out_time is a separate field — it drives the
-              setlist timing below. Usually a stage row mirrors it, so print it only
-              when the schedule does NOT already cover that window (otherwise the
-              same slot appears twice), and keep carrying the label when there are
-              no stage rows at all — the original behaviour. */}
-          {showWindow && !stageCovered && (
-            <Line label={stageRows.length ? "" : "Stage"} value={showWindow} />
-          )}
-          <ApptList label="Booth" items={booth} timeOf={range} />
+          {SHOWTIME_KINDS.map((kind) => (
+            <Fragment key={kind}>
+              <ApptList
+                label={headingOf(kind)}
+                items={schedAll(kind)}
+                timeOf={range}
+              />
+              {/* event.show_start_time/hard_out_time is a separate field — it drives
+                  the setlist timing below. Usually a stage row mirrors it, so print
+                  it only when the schedule does NOT already cover that window
+                  (otherwise the same slot appears twice), and keep carrying the
+                  label when there are no stage rows at all — the original
+                  behaviour. It belongs right under Stage, hence the per-kind slot. */}
+              {kind === "stage" && showWindow && !stageCovered && (
+                <Line label={stageRows.length ? "" : "Stage"} value={showWindow} />
+              )}
+            </Fragment>
+          ))}
         </Section>
 
         {/* Setlist — detailed table */}
@@ -461,9 +546,18 @@ export function EventSummary({
                               {it.notes}
                             </span>
                           )}
+                          {/* Mics inline — like the Start–End cell above, un-hide
+                              during export: the Mic column is dropped from the
+                              capture, so on a laptop/desktop (lg and up) the JPG
+                              carried no mic assignments at all while the same
+                              export from a phone did. Names too, so the image says
+                              what the column says. */}
                           {slots.length > 0 && (
-                            <span className="mt-0.5 block text-[10px] font-normal text-muted-foreground lg:hidden">
-                              🎤 {slots.map((s) => s.mic).join(" ")}
+                            <span className={`mt-0.5 block text-[10px] font-normal text-muted-foreground ${isCapturing ? "" : "lg:hidden"}`}>
+                              🎤{" "}
+                              {slots
+                                .map((s) => (s.member ? `${s.mic}·${s.member}` : s.mic))
+                                .join("  ")}
                             </span>
                           )}
                         </TableCell>

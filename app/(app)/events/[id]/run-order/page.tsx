@@ -51,6 +51,8 @@ export default async function RunOrderPage({
   const { data: festEvents } = await fq;
 
   const ids = (festEvents ?? []).map((e) => e.id);
+  // Ordered by start_time so a band's slots arrive in the order it actually plays —
+  // the builder seeds the running order straight off this list.
   const { data: stages } = ids.length
     ? await supabase
         .from("schedule_items")
@@ -58,16 +60,30 @@ export default async function RunOrderPage({
         .eq("tenant_id", tid)
         .eq("kind", "stage")
         .in("event_id", ids)
+        .order("start_time", { ascending: true })
     : { data: [] as { event_id: string; start_time: string | null; end_time: string | null }[] };
 
   const groupName = new Map(ws.groups.map((g) => [g.id, g.name]));
-  const stageBy = new Map((stages ?? []).map((s) => [s.event_id, s]));
-  const bandEvents: RunBandEvent[] = (festEvents ?? []).map((e) => ({
-    id: e.id,
-    group_name: groupName.get(e.group_id) ?? "—",
-    stage_start: stageBy.get(e.id)?.start_time ?? null,
-    stage_end: stageBy.get(e.id)?.end_time ?? null,
-  }));
+  // A band can hold SEVERAL stage slots on one festival day — mig 0036 caps only
+  // 'photo' at one row per event. A Map keyed by event_id kept whichever row the query
+  // returned last, so a band booked twice reached the running order once (often at the
+  // wrong time) and the live caller never announced the other slot. Key a LIST instead.
+  const stagesBy = new Map<string, { start_time: string | null; end_time: string | null }[]>();
+  for (const s of stages ?? []) {
+    const list = stagesBy.get(s.event_id);
+    if (list) list.push(s);
+    else stagesBy.set(s.event_id, [s]);
+  }
+  // One entry PER STAGE SLOT, all carrying the band's event id (= linked_event_id).
+  // An event with no stage row still gets one slot-less entry so the builder's link
+  // dropdown can still reach it.
+  const bandEvents: RunBandEvent[] = (festEvents ?? []).flatMap((e) => {
+    const base = { id: e.id, group_name: groupName.get(e.group_id) ?? "—" };
+    const slots = stagesBy.get(e.id);
+    return slots?.length
+      ? slots.map((s) => ({ ...base, stage_start: s.start_time, stage_end: s.end_time }))
+      : [{ ...base, stage_start: null, stage_end: null }];
+  });
 
   let rq = supabase
     .from("run_sequence")

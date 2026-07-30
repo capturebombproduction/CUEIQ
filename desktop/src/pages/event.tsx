@@ -8,12 +8,15 @@ import { ArrowLeft, CalendarDays, MapPin, Music2, Pencil, AlarmClock } from "luc
 import { Button } from "@/components/ui/button";
 import { StatusBadge } from "@/components/status-badge";
 import { EventWorkspace } from "@/components/event/event-workspace";
+import type { RunSeqLive } from "@/components/event/event-live-caller";
+import { createClient } from "@/lib/supabase/client";
 import { canEditGroup, canViewGroup } from "@/lib/permissions";
 import { eventCompleteness } from "@/lib/completeness";
 import { EVENT_TYPES, type EventType, type GroupStatus } from "@/lib/types";
 import { shortClock, deadlineInfo } from "@/lib/time";
 import { cn } from "@/lib/utils";
 import { loadEventBundle, type EventBundle } from "~/data/event-bundle";
+import { isOffline, readCache, writeCache } from "~/data/cache";
 import { onRouterRefresh } from "~/shims/next-navigation";
 import { useWorkspace } from "~/data/workspace-context";
 
@@ -38,6 +41,7 @@ export function EventPage() {
     loading: true,
     bundle: null,
   });
+  const [runSeq, setRunSeq] = useState<RunSeqLive[]>([]);
 
   useEffect(() => {
     if (!id) return;
@@ -88,6 +92,62 @@ export function EventPage() {
       off();
     };
   }, [id]);
+
+  // This festival's running order, so the band sees its own live-queue card here
+  // too ("อีก 12 นาที ถึงคิวเรา" / "กำลังเล่น" / the drift the caller is pushing) —
+  // the desktop app is the one that actually goes to the venue. Same query the web
+  // event page runs (app/(app)/events/[id]/page.tsx): tenant + event name + date.
+  // Read only from a bundle that belongs to THIS route id — on a navigation the
+  // previous event's bundle is still in state for one render, and fetching from it
+  // would key another festival's order to this event.
+  const seqEvent =
+    state.bundle && state.bundle.event.id === id ? state.bundle.event : null;
+  const seqTenantId = seqEvent?.tenant_id ?? null;
+  const seqName = seqEvent?.name ?? null;
+  const seqDate = seqEvent?.event_date ?? null;
+  useEffect(() => {
+    if (!id || !seqTenantId || !seqName) {
+      // Nothing to show yet (still loading, or a different event) — never keep the
+      // previous event's queue on screen.
+      setRunSeq((prev) => (prev.length ? [] : prev));
+      return;
+    }
+    let alive = true;
+    const cacheKey = `runseq:${id}`;
+    // Cached alongside the event bundle so the card survives a venue cold-boot;
+    // any failure degrades to the last known order, or to no card at all.
+    const fallback = () => {
+      if (alive) setRunSeq(readCache<RunSeqLive[]>(cacheKey) ?? []);
+    };
+    if (isOffline()) {
+      fallback();
+    } else {
+      (async () => {
+        const sb = createClient();
+        let q = sb
+          .from("run_sequence")
+          .select("*")
+          .eq("tenant_id", seqTenantId)
+          .eq("event_name", seqName)
+          .order("sort_order", { ascending: true });
+        q = seqDate ? q.eq("event_date", seqDate) : q.is("event_date", null);
+        const { data, error } = await q;
+        if (!alive) return;
+        // postgrest reports a dead network as { data: null, error } instead of
+        // throwing — caching that would wipe a good cached order with an empty one.
+        if (error || !data) {
+          fallback();
+          return;
+        }
+        const rows = data as RunSeqLive[];
+        setRunSeq(rows);
+        writeCache(cacheKey, rows);
+      })().catch(fallback);
+    }
+    return () => {
+      alive = false;
+    };
+  }, [id, seqTenantId, seqName, seqDate]);
 
   if (state.loading) {
     return <p className="py-16 text-center text-sm text-muted-foreground">กำลังโหลดงาน…</p>;
@@ -204,6 +264,7 @@ export function EventPage() {
         members={bundle.members}
         songs={bundle.songs}
         lineup={bundle.lineup}
+        runSeq={runSeq}
       />
     </div>
   );

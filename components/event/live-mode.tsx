@@ -2420,6 +2420,16 @@ export function LiveMode({
             ))}
           </div>
         )}
+        {/* The crew's cue text for the item that's ON NOW (โปรย confetti / เปลี่ยนชุด /
+            สคริปต์ MC). It used to live ONLY on the next-up prep card, so it vanished
+            the instant the item became current — exactly when the cue is due — and that
+            card is landscape-only. Capped + scrollable (never truncated) so a long MC
+            script can't push the countdown off a phone screen. */}
+        {current?.notes && (
+          <p className="mt-3 max-h-24 overflow-y-auto break-words rounded-lg bg-black/10 px-3 py-2 text-left text-sm">
+            📝 {current.notes}
+          </p>
+        )}
 
         {/* Audio player for current item */}
         {current && (
@@ -2705,6 +2715,15 @@ export function LiveMode({
           <p className="truncate text-lg font-semibold">
             {next?.title || "— จบโชว์ —"}
           </p>
+          {/* …and its cue text with it: the prep card that carries 📝 is landscape-only,
+              so on a phone held UPRIGHT — how an operator actually holds it — the note
+              the band typed had nowhere at all to appear. Same cap-and-scroll rule as
+              the countdown card: compact, but the full text stays reachable. */}
+          {next?.notes && (
+            <p className="mt-1.5 max-h-16 overflow-y-auto break-words rounded-lg bg-muted/60 px-2 py-1 text-left text-xs">
+              📝 {next.notes}
+            </p>
+          )}
         </div>
       </div>
 

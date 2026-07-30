@@ -19,6 +19,12 @@ import type { SetlistItem } from "@/lib/types";
 // Snapshot of one setlist row (no id/audio_path — restore re-creates fresh rows).
 // song_id IS kept: it's the library link that resolves the row's audio. It stays
 // optional (as on SetlistItem) — snapshots saved before it existed lack the field.
+// loop_audio is kept for the same reason: it's a setting the crew typed in (MC /
+// interval rows loop their BGM to fill the slot), and leaving it out of the
+// snapshot un-looped every such row on restore without saying a word. Also
+// optional — a pre-existing snapshot has no such key, and a row inserted without
+// it takes the column default (false, migration 0014), i.e. exactly what those
+// restores already produced.
 export type SnapshotItem = Pick<
   SetlistItem,
   | "kind"
@@ -30,6 +36,7 @@ export type SnapshotItem = Pick<
   | "notes"
   | "sort_order"
   | "song_id"
+  | "loop_audio"
 >;
 
 interface Version {
@@ -50,6 +57,9 @@ function toSnapshot(items: SetlistItem[]): SnapshotItem[] {
     notes: it.notes,
     sort_order: it.sort_order,
     song_id: it.song_id,
+    // Write the column default rather than an absent key when a row somehow
+    // carries no flag, so every new snapshot round-trips to a real boolean.
+    loop_audio: it.loop_audio ?? false,
   }));
 }
 
