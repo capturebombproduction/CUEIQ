@@ -29,7 +29,12 @@
 4. **P6 — denylist ของ `guard_song_update`**: เติม `id` + `created_at` (ช่องเดียวกับที่
    0037 ปิดให้ events) → label_staff ที่ไม่ใช่ editor แก้ได้แค่ `copyright_status`
 
-## คำสั่ง (รันตามลำดับเลขไฟล์)
+## วิธีที่ง่ายที่สุด — ดับเบิลคลิก
+เปิดโฟลเดอร์ `D:\CUEIQ` แล้วดับเบิลคลิก **`run-migrations.bat`** → กด Enter ยืนยัน →
+มันรันทั้ง 2 ไฟล์ให้ตามลำดับ แล้วบอกผลเป็นภาษาไทยพร้อมรายการที่ต้องไปเช็คต่อ
+(หน้าต่างค้างไว้ให้อ่าน ไม่ปิดเอง). ถ้าพลาดจะบอกว่าพลาด และ DB ไม่เปลี่ยนอะไรเลย
+
+## คำสั่ง (ถ้าอยากรันเองในเทอร์มินัล — รันตามลำดับเลขไฟล์)
 ```bash
 npm run migrate supabase/migrations/0037_event_approval_guard.sql
 npm run migrate supabase/migrations/0038_round3_hardening.sql
