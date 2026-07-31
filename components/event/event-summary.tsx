@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import Link from "next/link";
 import { toast } from "sonner";
 import {
@@ -74,80 +74,6 @@ function Line({ label, value }: { label: string; value?: string | null }) {
   );
 }
 
-// An appointment line that surfaces all the detail entered on a schedule item —
-// time + label + location on the first line, notes underneath. Hidden if empty.
-function Appt({
-  label,
-  time,
-  item,
-  labelIsTitle = false,
-}: {
-  label: string;
-  time?: string | null;
-  item?: ScheduleItem;
-  /** The row's own label is already the heading (see ApptList). */
-  labelIsTitle?: boolean;
-}) {
-  const loc = item?.location?.trim() || null;
-  const note = item?.notes?.trim() || null;
-  const own = item?.label?.trim() || null;
-  // When the row's own label is the heading, don't repeat it in the detail — but
-  // it still counts as content, so a row carrying nothing but a label ("จุดนัด"
-  // with no clock yet) isn't swallowed by the empty check below.
-  const lbl = labelIsTitle ? null : own;
-  const detail = [time, lbl, loc].filter(Boolean).join(" · ");
-  if (!detail && !note && !(labelIsTitle && own)) return null;
-  return (
-    <div className="text-sm">
-      <div className="flex gap-2">
-        <span className="min-w-[120px] shrink-0 font-medium text-muted-foreground">
-          {label}
-        </span>
-        <span className="min-w-0 font-medium">{detail || "—"}</span>
-      </div>
-      {note && (
-        <p className="ml-[128px] mt-0.5 text-xs font-normal text-muted-foreground">
-          📝 {note}
-        </p>
-      )}
-    </div>
-  );
-}
-
-// Every appointment of one kind, as its own line. Only the FIRST line carries the
-// label — the rest align underneath it, so two stage slots read as one block
-// instead of repeating "Stage" down the sheet.
-function ApptList({
-  label,
-  items,
-  timeOf,
-  labelIsTitle = false,
-}: {
-  label: string;
-  items: ScheduleItem[];
-  timeOf: (s: ScheduleItem) => string | null;
-  /** "other" rows have no meaningful kind name, so each titles itself with its own
-      label — the same rule the share page uses. */
-  labelIsTitle?: boolean;
-}) {
-  return (
-    <>
-      {items.map((s, i) => {
-        const own = labelIsTitle ? s.label?.trim() : null;
-        return (
-          <Appt
-            key={s.id}
-            label={own || (i === 0 ? label : "")}
-            time={timeOf(s)}
-            item={s}
-            labelIsTitle={labelIsTitle}
-          />
-        );
-      })}
-    </>
-  );
-}
-
 function Section({
   title,
   children,
@@ -165,37 +91,55 @@ function Section({
   );
 }
 
-// WHERE each appointment kind prints, and in what order. The sheet used to be a
-// hand-written line per kind, which silently dropped "other" — the DB default, and
-// what the "แถวว่าง" quick-add button creates: a staffer's "รถออกจากค่าย 07:30 ·
-// จุดนัด BTS หมอชิต" showed up in the นัดหมาย tab and the export but never on the
-// sheet the band runs the day off. Rendering is now driven off the schedule data:
-// anything NOT listed here (today "other", tomorrow any kind added to ScheduleKind)
-// still prints, at the end of Call Time, instead of falling off.
-const CALL_TIME_KINDS: ScheduleKind[] = [
-  "on_location",
-  "dressing_room",
-  "sound_check",
-  "photo",
-  "costume",
-];
-const SHOWTIME_KINDS: ScheduleKind[] = ["stb", "stage", "booth"];
-
-// Short sheet headings — the label column is narrow, so these stay shorter than
-// SCHEDULE_KIND_LABELS, which is the fallback for every other kind (`kind` is free
-// text in the DB, so even an unknown value gets a heading).
-const KIND_HEADING: Partial<Record<ScheduleKind, string>> = {
-  on_location: "On Location",
-  dressing_room: "Dressing Room",
+// Short row labels for the timeline. SCHEDULE_KIND_LABELS is the fallback (kind is
+// free text in the DB, so an unknown value still gets a name) but its entries carry
+// the English+Thai pair for a form dropdown — far too long once the time column
+// leads each line.
+const KIND_SHORT: Partial<Record<ScheduleKind, string>> = {
+  on_location: "ถึงสถานที่",
+  dressing_room: "ห้องแต่งตัว",
   sound_check: "Sound Check",
-  photo: "Photo Session",
-  costume: "Costume",
-  stb: "Standby Time",
-  stage: "Stage",
-  booth: "Booth",
+  photo: "ถ่ายรูป",
+  costume: "เปลี่ยนชุด",
+  stb: "STB",
+  stage: "ขึ้นเวที",
+  booth: "บูธ",
 };
-const headingOf = (kind: ScheduleKind) =>
-  KIND_HEADING[kind] ?? SCHEDULE_KIND_LABELS[kind] ?? kind;
+
+/** One line of the day's timetable: what happens, when. */
+type TimelineEntry = {
+  key: string;
+  /** raw "HH:MM:SS" for ordering; null rows (label only, no clock yet) sort last */
+  start: string | null;
+  sortOrder: number;
+  time: string | null;
+  label: string;
+  detail: string | null;
+  note: string | null;
+};
+
+// A single time-ordered list, NOT one block per kind. Grouping by kind put a band's
+// second STB directly under its first — "เอา stanby มารวมกัน ไม่ได้เรียงเป็นซีเควนซ์"
+// (Ipond, 2026-07-30) — so on a two-show day nobody could tell which standby belonged
+// to which stage slot. Read down the clock and the day plays back in order.
+function TimelineLine({ e }: { e: TimelineEntry }) {
+  const what = [e.label, e.detail].filter(Boolean).join(" · ");
+  return (
+    <div className="text-sm">
+      <div className="flex gap-3">
+        <span className="min-w-[104px] shrink-0 whitespace-nowrap font-medium tabular-nums">
+          {e.time || "—"}
+        </span>
+        <span className="min-w-0 font-medium">{what}</span>
+      </div>
+      {e.note && (
+        <p className="ml-[116px] mt-0.5 text-xs font-normal text-muted-foreground">
+          📝 {e.note}
+        </p>
+      )}
+    </div>
+  );
+}
 
 export function EventSummary({
   event,
@@ -259,11 +203,65 @@ export function EventSummary({
 
   const stageRows = schedAll("stage");
   const stageCovered = stageRows.some((s) => range(s) === showWindow);
-  // Kinds present in the data but placed by neither list above — they print at the
-  // end of Call Time so nothing the staff typed goes missing.
-  const extraKinds = [...new Set(schedule.map((s) => s.kind))].filter(
-    (k) => !CALL_TIME_KINDS.includes(k) && !SHOWTIME_KINDS.includes(k)
-  );
+
+  // The whole day as one list, earliest first. Every schedule row appears — including
+  // kinds nothing hard-codes (today "other", which is both the DB default and what
+  // the "แถวว่าง" button creates) — so a row can never fall off the sheet again.
+  const timeline: TimelineEntry[] = [
+    ...schedule.map((s) => {
+      const own = s.label?.trim() || null;
+      const loc = s.location?.trim() || null;
+      const short = KIND_SHORT[s.kind];
+      // An "other" row has no meaningful kind name, so it titles itself with its own
+      // label (same rule as the share page) and doesn't repeat it in the detail.
+      const named = short ?? null;
+      const label = named ?? own ?? SCHEDULE_KIND_LABELS[s.kind] ?? s.kind;
+      // People often retype the kind into the label ("ถ่ายรูป", "Stage", "Booth"),
+      // which printed as "ถ่ายรูป · ถ่ายรูป". Drop it when it just restates the kind
+      // — in Thai (the heading) or in English (SCHEDULE_KIND_LABELS' leading name).
+      // SCHEDULE_KIND_LABELS entries are dropdown text — "Stage (ขึ้นเวที)",
+      // "Booth / High-touch / แฟนไซน์" — so take the leading name off each.
+      const aliases = [short, SCHEDULE_KIND_LABELS[s.kind]?.split(/ \(| \/ /)[0]]
+        .filter(Boolean)
+        .map((x) => x!.toLowerCase());
+      const ownIsKind = !!own && aliases.includes(own.toLowerCase());
+      const detail =
+        [named && !ownIsKind ? own : null, loc].filter(Boolean).join(" · ") || null;
+      return {
+        key: s.id,
+        start: s.start_time,
+        sortOrder: s.sort_order ?? 0,
+        time: range(s),
+        label,
+        detail,
+        note: s.notes?.trim() || null,
+      };
+    }),
+    // events.show_start_time/hard_out_time is a SEPARATE field that drives the setlist
+    // timing below. A stage row usually mirrors it, so it only earns a line of its own
+    // when the schedule does not already cover that window — otherwise the same slot
+    // would print twice.
+    ...(showWindow && !stageCovered
+      ? [
+          {
+            key: "__show_window",
+            start: event.show_start_time,
+            sortOrder: -1,
+            time: showWindow,
+            label: KIND_SHORT.stage!,
+            detail: null,
+            note: null,
+          },
+        ]
+      : []),
+  ]
+    // A row with nothing on it at all would print as a bare "—".
+    .filter((e) => e.time || e.detail || e.note || e.label)
+    .sort(
+      (a, b) =>
+        (a.start ?? "￿").localeCompare(b.start ?? "￿") || a.sortOrder - b.sortOrder
+    );
+
   const mapQuery = event.venue || event.name;
 
   async function exportJpg() {
@@ -426,49 +424,14 @@ export function EventSummary({
           )}
         </Section>
 
-        {/* Appointments */}
-        <Section title="Call Time">
-          {CALL_TIME_KINDS.map((kind) => (
-            <ApptList
-              key={kind}
-              label={headingOf(kind)}
-              items={schedAll(kind)}
-              timeOf={range}
-            />
-          ))}
-          <Line label="Costume Theme" value={event.costume_theme} />
-          {/* Everything the two lists above don't place — see CALL_TIME_KINDS. */}
-          {extraKinds.map((kind) => (
-            <ApptList
-              key={kind}
-              label={headingOf(kind)}
-              items={schedAll(kind)}
-              timeOf={range}
-              labelIsTitle={kind === "other"}
-            />
-          ))}
-        </Section>
-
-        {/* Stage & Booth */}
-        <Section title="Showtime">
-          {SHOWTIME_KINDS.map((kind) => (
-            <Fragment key={kind}>
-              <ApptList
-                label={headingOf(kind)}
-                items={schedAll(kind)}
-                timeOf={range}
-              />
-              {/* event.show_start_time/hard_out_time is a separate field — it drives
-                  the setlist timing below. Usually a stage row mirrors it, so print
-                  it only when the schedule does NOT already cover that window
-                  (otherwise the same slot appears twice), and keep carrying the
-                  label when there are no stage rows at all — the original
-                  behaviour. It belongs right under Stage, hence the per-kind slot. */}
-              {kind === "stage" && showWindow && !stageCovered && (
-                <Line label={stageRows.length ? "" : "Stage"} value={showWindow} />
-              )}
-            </Fragment>
-          ))}
+        {/* The day, in order */}
+        <Section title="Schedule">
+          {timeline.length === 0 ? (
+            <p className="text-sm text-muted-foreground">ยังไม่มีกำหนดการ</p>
+          ) : (
+            timeline.map((e) => <TimelineLine key={e.key} e={e} />)
+          )}
+          <Line label="ธีมชุด" value={event.costume_theme} />
         </Section>
 
         {/* Setlist — detailed table */}
