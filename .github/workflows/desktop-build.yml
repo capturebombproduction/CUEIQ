@@ -140,6 +140,12 @@ jobs:
       - name: Publish the Release
         env:
           GH_TOKEN: ${{ github.token }}
+          # This job deliberately does NOT check the repo out — it only needs the
+          # built artifacts. But `gh` infers the repository from .git/config and
+          # dies with "fatal: not a git repository" without one, which is the exact
+          # shape of the failure that sank electron-builder's own publish. Naming
+          # the repo outright is cheaper than cloning it to read its name.
+          GH_REPO: ${{ github.repository }}
         shell: bash
         run: |
           set -euo pipefail
