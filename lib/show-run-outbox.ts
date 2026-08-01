@@ -11,6 +11,7 @@
 // Absolute path so the desktop build's "@/lib/supabase/client" alias applies
 // (see lib/show-authority.ts for why a relative import would break under file://).
 import { createClient } from "@/lib/supabase/client";
+import { settleOnAbort } from "@/lib/idb-tx";
 
 const DB_NAME = "cueiq-outbox";
 const STORE = "ops";
@@ -62,6 +63,10 @@ export async function enqueue(op: ShowRunOp): Promise<void> {
       db.close();
       reject(tx.error);
     };
+    settleOnAbort(tx, () => {
+      db.close();
+      reject(tx.error);
+    });
   });
 }
 
@@ -86,6 +91,10 @@ async function listOps(): Promise<{ key: string; rec: QueuedOp }[]> {
       db.close();
       reject(req.error);
     };
+    settleOnAbort(tx, () => {
+      db.close();
+      reject(tx.error);
+    });
   });
 }
 
@@ -102,6 +111,12 @@ async function removeOp(key: string): Promise<void> {
       db.close();
       resolve();
     };
+    // Awaited between two ops of the flush loop — a hang would stall the replay
+    // with the show's own last-run time still queued.
+    settleOnAbort(tx, () => {
+      db.close();
+      resolve();
+    });
   });
 }
 

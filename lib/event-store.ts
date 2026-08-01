@@ -11,6 +11,7 @@
 //
 // Distinct DB from the audio stores so clearing one never disturbs the other.
 
+import { settleOnAbort } from "./idb-tx";
 import type { SetlistItem } from "./types";
 import type { SongAudioMap } from "./audio-targets";
 
@@ -67,6 +68,10 @@ export async function saveEventSnapshot(
       db.close();
       reject(tx.error);
     };
+    settleOnAbort(tx, () => {
+      db.close();
+      reject(tx.error);
+    });
   });
 }
 
@@ -88,6 +93,10 @@ export async function getEventSnapshot(
         db.close();
         reject(req.error);
       };
+      settleOnAbort(tx, () => {
+        db.close();
+        reject(tx.error);
+      });
     });
   } catch {
     return null;
@@ -109,6 +118,10 @@ export async function listEventSnapshotIds(): Promise<string[]> {
         db.close();
         reject(req.error);
       };
+      settleOnAbort(tx, () => {
+        db.close();
+        reject(tx.error);
+      });
     });
   } catch {
     return [];
@@ -129,6 +142,10 @@ export async function deleteEventSnapshot(eventId: string): Promise<void> {
       db.close();
       reject(tx.error);
     };
+    settleOnAbort(tx, () => {
+      db.close();
+      reject(tx.error);
+    });
   });
 }
 
@@ -146,5 +163,9 @@ export async function clearEventSnapshots(): Promise<void> {
       db.close();
       reject(tx.error);
     };
+    settleOnAbort(tx, () => {
+      db.close();
+      reject(tx.error);
+    });
   });
 }

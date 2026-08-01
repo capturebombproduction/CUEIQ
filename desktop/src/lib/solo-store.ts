@@ -8,6 +8,8 @@
 // event/library stores (song-cache, audio-store): those mirror CLOUD state; this
 // IS the state.
 
+import { settleOnAbort } from "@/lib/idb-tx";
+
 const DB_NAME = "cueiq-solo";
 const ITEMS = "items";
 const META = "meta";
@@ -72,6 +74,10 @@ export async function listSoloItems(): Promise<SoloItem[]> {
         db.close();
         reject(req.error);
       };
+      settleOnAbort(tx, () => {
+        db.close();
+        reject(tx.error);
+      });
     });
   } catch {
     return [];
@@ -91,6 +97,12 @@ export async function putSoloItem(item: SoloItem): Promise<void> {
       db.close();
       reject(tx.error);
     };
+    // This record carries the audio itself — out of room is a real outcome, and
+    // the picker's "เพิ่มเพลงไม่สำเร็จ" path is already waiting for it.
+    settleOnAbort(tx, () => {
+      db.close();
+      reject(tx.error);
+    });
   });
 }
 
@@ -110,6 +122,10 @@ export async function putSoloItems(items: SoloItem[]): Promise<void> {
       db.close();
       reject(tx.error);
     };
+    settleOnAbort(tx, () => {
+      db.close();
+      reject(tx.error);
+    });
   });
 }
 
@@ -126,6 +142,10 @@ export async function deleteSoloItem(id: string): Promise<void> {
       db.close();
       reject(tx.error);
     };
+    settleOnAbort(tx, () => {
+      db.close();
+      reject(tx.error);
+    });
   });
 }
 
@@ -143,6 +163,10 @@ export async function getSoloLastRun(): Promise<SoloLastRun | null> {
         db.close();
         reject(req.error);
       };
+      settleOnAbort(tx, () => {
+        db.close();
+        reject(tx.error);
+      });
     });
   } catch {
     return null;
@@ -163,6 +187,10 @@ export async function setSoloLastRun(rec: SoloLastRun | null): Promise<void> {
       db.close();
       reject(tx.error);
     };
+    settleOnAbort(tx, () => {
+      db.close();
+      reject(tx.error);
+    });
   });
 }
 

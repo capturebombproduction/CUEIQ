@@ -4,6 +4,8 @@
 // each cached record also stores the object `path` so a replaced file (new path)
 // invalidates the stale cache.
 
+import { settleOnAbort } from "./idb-tx";
+
 const DB_NAME = "cueiq-audio";
 const STORE = "files";
 const SEP = "::";
@@ -47,6 +49,12 @@ export async function saveAudio(
       db.close();
       reject(tx.error);
     };
+    // Out of room mid-เตรียมเพลง: the prefetch loop counts a rejection as a failed
+    // file and moves on; a hang would stall the whole run with no error.
+    settleOnAbort(tx, () => {
+      db.close();
+      reject(tx.error);
+    });
   });
 }
 
@@ -63,6 +71,10 @@ export async function deleteAudio(eventId: string, itemId: string): Promise<void
       db.close();
       reject(tx.error);
     };
+    settleOnAbort(tx, () => {
+      db.close();
+      reject(tx.error);
+    });
   });
 }
 
@@ -126,6 +138,10 @@ export async function listCachedEntries(
       db.close();
       reject(req.error);
     };
+    settleOnAbort(tx, () => {
+      db.close();
+      reject(tx.error);
+    });
   });
 }
 
@@ -165,6 +181,10 @@ export async function getCacheSummary(): Promise<CacheSummary> {
       db.close();
       reject(req.error);
     };
+    settleOnAbort(tx, () => {
+      db.close();
+      reject(tx.error);
+    });
   });
 }
 
@@ -195,6 +215,10 @@ export async function clearEventAudio(eventId: string): Promise<number> {
       db.close();
       reject(tx.error);
     };
+    settleOnAbort(tx, () => {
+      db.close();
+      reject(tx.error);
+    });
   });
 }
 
@@ -212,6 +236,10 @@ export async function clearAllAudio(): Promise<void> {
       db.close();
       reject(tx.error);
     };
+    settleOnAbort(tx, () => {
+      db.close();
+      reject(tx.error);
+    });
   });
 }
 
@@ -253,5 +281,9 @@ export async function loadAudioForEvent(eventId: string): Promise<SavedAudio[]> 
       db.close();
       reject(req.error);
     };
+    settleOnAbort(tx, () => {
+      db.close();
+      reject(tx.error);
+    });
   });
 }

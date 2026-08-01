@@ -18,6 +18,8 @@
 // audio SOURCE without touching the transport/position logic on either path. The
 // reads are defensive (any failure resolves to null → fall back to the master).
 
+import { settleOnAbort } from "./idb-tx";
+
 const DB_NAME = "cueiq-local-source";
 const STORE = "sources";
 
@@ -66,6 +68,10 @@ export async function getLocalSource(
         db.close();
         reject(req.error);
       };
+      settleOnAbort(tx, () => {
+        db.close();
+        reject(tx.error);
+      });
     });
   } catch {
     return null; // IndexedDB unavailable → behave as "no override"
@@ -91,6 +97,12 @@ export async function setLocalSource(
       db.close();
       reject(tx.error);
     };
+    // Out of room is the expected failure here (a master can be 88 MB) and the
+    // caller — tryQueueAudioUpload — already knows what to do with a rejection.
+    settleOnAbort(tx, () => {
+      db.close();
+      reject(tx.error);
+    });
   });
 }
 
@@ -108,6 +120,12 @@ export async function clearLocalSource(songId: string): Promise<void> {
       db.close();
       reject(tx.error);
     };
+    // This one is awaited INSIDE the management outbox's lock — a hang here would
+    // wedge every later offline save for the rest of the session.
+    settleOnAbort(tx, () => {
+      db.close();
+      reject(tx.error);
+    });
   });
 }
 
@@ -127,6 +145,10 @@ export async function listLocalSourceIds(): Promise<Set<string>> {
         db.close();
         reject(req.error);
       };
+      settleOnAbort(tx, () => {
+        db.close();
+        reject(tx.error);
+      });
     });
   } catch {
     return new Set();

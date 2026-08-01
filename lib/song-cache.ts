@@ -13,6 +13,7 @@
 // that knows a song's audio_path finds the bytes — no event needed.
 
 import { downloadEventAudio } from "./audio-remote";
+import { settleOnAbort } from "./idb-tx";
 
 const DB_NAME = "cueiq-songs";
 const STORE = "blobs";
@@ -54,6 +55,10 @@ export async function getCachedSongBlob(path: string): Promise<Blob | null> {
         db.close();
         reject(req.error);
       };
+      settleOnAbort(tx, () => {
+        db.close();
+        reject(tx.error);
+      });
     });
   } catch {
     return null; // IndexedDB unavailable → behave as a cache miss
@@ -78,6 +83,11 @@ export async function cacheSongBlob(
       db.close();
       reject(tx.error);
     };
+    // The likeliest failure in the whole file: an 88 MB master that doesn't fit.
+    settleOnAbort(tx, () => {
+      db.close();
+      reject(tx.error);
+    });
   });
 }
 
@@ -110,6 +120,10 @@ export async function listCachedSongPaths(): Promise<Set<string>> {
         db.close();
         reject(req.error);
       };
+      settleOnAbort(tx, () => {
+        db.close();
+        reject(tx.error);
+      });
     });
   } catch {
     return new Set();
@@ -144,6 +158,10 @@ export async function getSongCacheSummary(): Promise<SongCacheSummary> {
       db.close();
       reject(req.error);
     };
+    settleOnAbort(tx, () => {
+      db.close();
+      reject(tx.error);
+    });
   });
 }
 
@@ -211,6 +229,12 @@ export async function pruneSupersededSongs(
       db.close();
       resolve(removed);
     };
+    // An abort ROLLS BACK the deletes, so nothing was actually removed — report 0
+    // rather than the count we merely attempted.
+    settleOnAbort(tx, () => {
+      db.close();
+      resolve(0);
+    });
   });
 }
 
@@ -228,5 +252,9 @@ export async function clearSongCache(): Promise<void> {
       db.close();
       reject(tx.error);
     };
+    settleOnAbort(tx, () => {
+      db.close();
+      reject(tx.error);
+    });
   });
 }
