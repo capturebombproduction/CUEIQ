@@ -10,6 +10,7 @@ import { createClient } from "@/lib/supabase/client";
 import { applyPending, materializeEventRow, type MgmtOp } from "@/lib/mgmt-outbox";
 import type { EventRow } from "@/lib/types";
 import { isOffline, readCache, writeCache } from "~/data/cache";
+import { hasLiveSession } from "@/lib/auth-session";
 import { pendingMgmtOps } from "~/data/mgmt-outbox";
 import type { WorkspaceData } from "~/data/workspace";
 
@@ -72,6 +73,17 @@ export async function loadEventsList(
   if (res.error) return withPendingOverlay(readCache<EventWithGroup[]>(cacheKey) ?? []);
 
   const events = (res.data ?? []) as EventWithGroup[];
+  // An EMPTY result is the one answer we can't take at face value: a request that
+  // went out as anon (see hasLiveSession — a refresh that failed in the last
+  // minute) is refused by RLS as an empty list with NO error, and it looks exactly
+  // like "this user has no events". Writing that through would replace this
+  // device's cached dashboard with nothing — and the next time it opens with no
+  // network, the whole dashboard is blank, which is precisely the failure the
+  // read-cache exists to prevent. Cheap to prove, so prove it (a real empty list
+  // still caches: the check only runs when there is nothing to lose).
+  if (events.length === 0 && !(await hasLiveSession())) {
+    return withPendingOverlay(readCache<EventWithGroup[]>(cacheKey) ?? []);
+  }
   writeCache(cacheKey, events);
   return withPendingOverlay(events);
 }

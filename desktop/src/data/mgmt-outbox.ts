@@ -37,6 +37,7 @@ import {
 import { removeEventAudio, uploadEventAudio } from "@/lib/audio-remote";
 import { clearLocalSource, getLocalSource } from "@/lib/local-source";
 import { cacheSongBlob } from "@/lib/song-cache";
+import { hasLiveSession } from "@/lib/auth-session";
 import { getStoredSessionUser } from "~/data/stored-session";
 
 const DB_NAME = "cueiq-mgmt-outbox";
@@ -100,28 +101,6 @@ function currentUserId(): string | null {
 }
 
 /**
- * Will the next PostgREST request really go out as THIS user — or as anon?
- *
- * supabase-js degrades silently instead of failing: SupabaseClient._getAccessToken
- * falls back to the ANON key whenever getSession() hands back null, and auth-js
- * caches a failed refresh for a minute (REFRESH_FAILURE_COOLDOWN_MS, kept warm by
- * the 30s auto-refresh ticker) — exactly the window the 'online' listener fires a
- * flush in right after a venue reconnect. An anon request is NOT an error: RLS
- * simply returns an empty result, so every verdict this file draws from a read
- * ("the row is gone online", "the online list changed", even "already applied")
- * would be a lie that parks or destroys the venue's offline work. So we ask the
- * same question _getAccessToken asks, right before trusting any such verdict.
- */
-async function hasLiveSession(): Promise<boolean> {
-  try {
-    const { data } = await createClient().auth.getSession();
-    return !!data.session?.access_token;
-  } catch {
-    return false;
-  }
-}
-
-/**
  * Same check for the flush path, as a throw: the loop already treats a throw as
  * "not now — leave the whole queue alone and retry on the next reconnect", which
  * is exactly right here. A queued op is always recoverable; a parked-or-deleted
@@ -160,6 +139,9 @@ function openDB(): Promise<IDBDatabase> {
  * arrives. A promise that settles on 'error' alone would then hang forever, and
  * every one of these runs inside the outbox lock — a hang there wedges enqueue and
  * flush for the rest of the session. So every readwrite tx below settles on both.
+ * (The same rule now covers every other IndexedDB store in the app through the
+ * shared lib/idb-tx.ts helper; this local one predates it and stays as-is because
+ * its call sites all assign tx.onerror first.)
  */
 function settleOnAbort(tx: IDBTransaction): void {
   tx.onabort = tx.onerror;
@@ -185,6 +167,13 @@ function listStore<T>(store: string): Promise<{ key: number; rec: T }[]> {
         req.onerror = () => {
           db.close();
           reject(req.error);
+        };
+        // Readonly, but the same abort rule applies: this one is awaited INSIDE the
+        // outbox lock, so a transaction that dies without a request error would
+        // wedge every enqueue and flush behind it.
+        tx.onabort = () => {
+          db.close();
+          reject(tx.error);
         };
       })
   );

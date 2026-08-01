@@ -17,6 +17,7 @@ import { shortClock, deadlineInfo } from "@/lib/time";
 import { cn } from "@/lib/utils";
 import { loadEventBundle, type EventBundle } from "~/data/event-bundle";
 import { isOffline, readCache, writeCache } from "~/data/cache";
+import { hasLiveSession } from "@/lib/auth-session";
 import { onRouterRefresh } from "~/shims/next-navigation";
 import { useWorkspace } from "~/data/workspace-context";
 
@@ -140,6 +141,15 @@ export function EventPage() {
           return;
         }
         const rows = data as RunSeqLive[];
+        // An empty answer can also mean the request went out as anon (a token
+        // refresh that failed a moment ago — see hasLiveSession), which RLS
+        // returns as no rows and no error. Keep the cached order rather than
+        // overwrite it with a blank one we can't vouch for.
+        if (rows.length === 0 && !(await hasLiveSession())) {
+          fallback();
+          return;
+        }
+        if (!alive) return;
         setRunSeq(rows);
         writeCache(cacheKey, rows);
       })().catch(fallback);

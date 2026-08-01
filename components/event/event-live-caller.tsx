@@ -20,6 +20,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { createClient } from "@/lib/supabase/client";
+import { hasLiveSession } from "@/lib/auth-session";
 import { notify } from "@/lib/notify-client";
 import { captureElementToImage } from "@/lib/export-image";
 import { Button } from "@/components/ui/button";
@@ -239,7 +240,15 @@ export function EventLiveCaller({
       missedRefetchRef.current = true;
       return;
     }
-    if (data) setRows(data as RunSeqLive[]);
+    if (!data) return;
+    // `data: [], error: null` is also what RLS answers an ANON request with, and
+    // supabase-js falls back to the anon key for the minute after a failed token
+    // refresh — the same minute a backgrounded phone comes back and this refetch
+    // fires on wake/reconnect. Blanking the running order on the one screen the
+    // whole festival is called from is not a risk worth an unverified read.
+    if (data.length === 0 && rows.length > 0 && !(await hasLiveSession())) return;
+    if (seq !== refetchSeqRef.current) return;
+    setRows(data as RunSeqLive[]);
   }
   const refetchRef = useRef(refetch);
   refetchRef.current = refetch;

@@ -7,6 +7,7 @@
 import { createClient } from "@/lib/supabase/client";
 import { applyPendingChildren, materializeEventRow } from "@/lib/mgmt-outbox";
 import { hasCache, isOffline, readCache, readCacheKeys, writeCache } from "~/data/cache";
+import { hasLiveSession } from "@/lib/auth-session";
 import { pendingMgmtOps } from "~/data/mgmt-outbox";
 import type { WorkspaceData } from "~/data/workspace";
 import type {
@@ -106,10 +107,12 @@ export async function loadEventBundle(eventId: string): Promise<EventBundle | nu
     // resurface the cache on an actual error, never for a genuine deletion.
     // (The overlay still synthesizes a pending offline CREATE the flusher hasn't
     // landed yet — to the server that id doesn't exist, but it must open here.)
-    return withPendingOverlay(
-      eventRes.error ? readCache<EventBundle>(cacheKey) : null,
-      eventId
-    );
+    // A request sent as anon is a third case that looks like the second: RLS
+    // answers it with an empty row and no error, so an event whose bundle is
+    // sitting right here on disk would open as "ไม่พบงานนี้ หรือไม่มีสิทธิ์เข้าถึง"
+    // just because a token refresh failed a moment ago (see hasLiveSession).
+    const reallyGone = !eventRes.error && (await hasLiveSession());
+    return withPendingOverlay(reallyGone ? null : readCache<EventBundle>(cacheKey), eventId);
   }
 
   const membershipRes = await supabase
