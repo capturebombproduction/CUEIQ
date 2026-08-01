@@ -108,6 +108,32 @@ export function EventWorkspace({
   useEffect(() => {
     syncing.current = false;
   }, [status]);
+
+  // Every editor in here commits on BLUR. That is fine on a laptop, where leaving
+  // the page always blurs the field first — but a phone or tablet doesn't work
+  // that way: switching apps, locking the screen or a swipe-away leaves the field
+  // focused and the page frozen, so the last thing typed (a stage time, a song
+  // title, a mic number) was never sent anywhere. Blurring on the way out gives
+  // each editor its normal save path one last chance, with no change to how any of
+  // them work. Best effort by nature — if the OS freezes us first, the write goes
+  // with it — but it costs nothing and covers the ordinary "I switched to LINE for
+  // a second" case, which is most of them.
+  useEffect(() => {
+    const commitFocused = () => {
+      const el = document.activeElement as HTMLElement | null;
+      if (!el) return;
+      if (el.tagName === "INPUT" || el.tagName === "TEXTAREA") el.blur();
+    };
+    const onHide = () => {
+      if (document.visibilityState === "hidden") commitFocused();
+    };
+    window.addEventListener("pagehide", commitFocused);
+    document.addEventListener("visibilitychange", onHide);
+    return () => {
+      window.removeEventListener("pagehide", commitFocused);
+      document.removeEventListener("visibilitychange", onHide);
+    };
+  }, []);
   useEffect(() => {
     if (!editable || event.is_template || syncing.current) return;
     let next: GroupStatus | null = null;
