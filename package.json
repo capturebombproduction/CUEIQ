@@ -26,7 +26,7 @@
     "clsx": "^2.1.1",
     "html-to-image": "^1.11.13",
     "lucide-react": "^1.21.0",
-    "next": "^15.5.21",
+    "next": "^15.5.22",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "sonner": "^2.0.7",
@@ -48,6 +48,7 @@
     "vitest": "^4.1.9"
   },
   "overrides": {
-    "postcss": "$postcss"
+    "postcss": "$postcss",
+    "sharp": "^0.35.3"
   }
 }
