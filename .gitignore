@@ -47,3 +47,9 @@ docs/*.pdf
 
 # database snapshots from scripts/backup.mjs — contains sensitive data, never committed
 /backups/
+
+# scratch files audit/review agents drop at the repo root — three separate sessions
+# have now had one of these sneak into a commit (a stray `nul` even broke `git add`)
+/.audit-tmp/
+/*-tmp-*.html
+/public/audit-*.html
