@@ -542,6 +542,7 @@ export function RunOrderBuilder({
         shareTitle: `${eventName} — ลำดับงาน`,
         width: 600,
       });
+      if (how === "cancelled") return; // user dismissed the share sheet — nothing was saved
       toast.success(how === "shared" ? "แชร์รูปแล้ว" : "บันทึกรูปแล้ว 🖼️");
     } catch (e) {
       toast.error("บันทึกรูปไม่สำเร็จ", {

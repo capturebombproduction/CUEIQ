@@ -83,7 +83,7 @@ export function InstallButton() {
         <button
           type="button"
           onClick={() => setShowHelp(true)}
-          title="ติดตั้ง CueIQ ลงเครื่อง — เปิดเร็วขึ้นและใช้ออฟไลน์ได้"
+          title="ติดตั้ง CueIQ ลงเครื่อง — เปิดเร็วขึ้น ใช้งานเหมือนแอป (ยังต้องต่อเน็ต)"
           className={BTN_CLASS}
         >
           <Download className="h-4 w-4" />
@@ -95,7 +95,7 @@ export function InstallButton() {
               <DialogTitle>ติดตั้ง CueIQ ลงไอโฟน / ไอแพด</DialogTitle>
               <DialogDescription>
                 บน iOS ติดตั้งผ่าน Safari เองไม่กี่ขั้นตอน — ติดแล้วเปิดจากหน้าจอโฮมได้เหมือนแอป
-                และใช้งานออฟไลน์ได้
+                (ยังต้องต่อเน็ตนะ ถ้าต้องรันโชว์ตอนเน็ตหลุด ให้ใช้แอป CueIQ Desktop)
               </DialogDescription>
             </DialogHeader>
             <ol className="space-y-3 text-sm">
@@ -138,7 +138,7 @@ export function InstallButton() {
     <button
       type="button"
       onClick={install}
-      title="ติดตั้ง CueIQ ลงเครื่อง — เปิดเร็วขึ้นและใช้ออฟไลน์ได้"
+      title="ติดตั้ง CueIQ ลงเครื่อง — เปิดเร็วขึ้น ใช้งานเหมือนแอป (ยังต้องต่อเน็ต)"
       className={BTN_CLASS}
     >
       <Download className="h-4 w-4" />

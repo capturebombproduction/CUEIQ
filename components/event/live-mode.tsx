@@ -388,9 +388,26 @@ export function LiveMode({
   // (the "แตะเพื่อเล่นเสียงต่อ" banner is the affordance for that, so it stays silent
   // here) and AbortError = our own pause / src-swap interrupting a pending play, which
   // happens on every track change and overlap. Anything else is a real media failure.
-  function onPlayRejected(itemId: string | null, err: unknown) {
+  /**
+   * `sounding` = this play() was meant to put audio out of the speakers right now.
+   * A PRE-ROLL on the secondary element is not: the current track is still playing
+   * happily, so a refusal there must not tell the operator the show has gone quiet.
+   */
+  function onPlayRejected(itemId: string | null, err: unknown, sounding = true) {
     const name = (err as { name?: string } | null)?.name;
-    if (name === "NotAllowedError" || name === "AbortError") return;
+    if (name === "AbortError") return;
+    if (name === "NotAllowedError") {
+      if (!sounding) return;
+      // The rescue affordance for this already exists — needsAudioResume renders
+      // "แตะเพื่อเล่นเสียงต่อ", and resumeAudio() plays from the committed position
+      // inside the operator's own tap. But it is gated on !audioPlaying, and every
+      // play site sets that flag true SYNCHRONOUSLY, before the promise settles. So
+      // the one case that needed the banner was the one case that suppressed it:
+      // countdown running, row lit, PA silent, and nothing on screen to press.
+      // Telling the truth here is what turns a dead show back into one tap.
+      setAudioPlaying(false);
+      return;
+    }
     reportAudioFault(itemId);
   }
   // ref for the effects with a curated dep list (they must not re-run per render)
@@ -436,6 +453,27 @@ export function LiveMode({
       });
       a.addEventListener("loadedmetadata", () => {
         if (a === audioRef.current) setAudioDuration(a.duration);
+      });
+      // Sound is a fact about the element, not about what we asked it to do. These
+      // two make audioPlaying follow reality, so the "แตะเพื่อเล่นเสียงต่อ" rescue
+      // can appear for anything that stops the audio without going through us.
+      a.addEventListener("playing", () => {
+        if (a === audioRef.current) setAudioPlaying(true);
+      });
+      a.addEventListener("pause", () => {
+        // Every app-initiated stop passes through here too — playItemAudio pauses
+        // before swapping src, and the viewer path pauses on a controller pause —
+        // so judging immediately would flash the banner on every track change.
+        // Re-check on the next macrotask instead: by then a real track change has
+        // already started playing again (a.paused === false) and self-suppresses,
+        // while an outside interruption (a call, the lock screen, a headphone
+        // button, Control Centre) is still paused and is exactly what we want to
+        // surface. Deliberate stops set the flag themselves, so agreeing is a no-op.
+        setTimeout(() => {
+          if (a !== audioRef.current || !a.paused || a.ended) return;
+          if (!playingIdRef.current || endedItemRef.current === playingIdRef.current) return;
+          setAudioPlaying(false);
+        }, 400);
       });
       return a;
     };
@@ -689,10 +727,15 @@ export function LiveMode({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [audioSig, eventId]);
 
-  // Wake Lock — keep screen on while running
+  // Wake Lock — keep the screen on for as long as the operator is IN the show.
+  // Keyed on `begun`, not `running`: the run clock stops between every Manual cue
+  // and on every pause, and dropping the lock there let the phone dim and auto-lock
+  // in exactly the gaps where the operator is waiting to press the next cue —
+  // needing a wake, a passcode and a re-render to run their own show. `begun` is
+  // "show entered", which is the lifetime that was always meant.
   const wakeLockRef = useRef<WakeLockSentinel | null>(null);
   useEffect(() => {
-    if (!state.running) {
+    if (!state.begun) {
       wakeLockRef.current?.release().catch(() => {});
       wakeLockRef.current = null;
       return;
@@ -711,14 +754,14 @@ export function LiveMode({
       wakeLockRef.current?.release().catch(() => {});
       wakeLockRef.current = null;
     };
-  }, [state.running]);
+  }, [state.begun]);
 
   // re-acquire Wake Lock when returning to the tab (browser auto-releases it on hide)
   useEffect(() => {
     function onVisible() {
       if (
         document.visibilityState === "visible" &&
-        stateRef.current.running &&
+        stateRef.current.begun &&
         !wakeLockRef.current
       ) {
         navigator.wakeLock
@@ -791,8 +834,21 @@ export function LiveMode({
         sec.src = url;
         sec.currentTime = 0;
         sec.volume = Math.min(1, Math.max(0, (volumesRef.current[nxt.id] ?? 100) / 100));
-        sec.play().catch((err) => onPlayRejectedRef.current(nxt.id, err));
-        overlapNextIdRef.current = nxt.id; // promoted to primary on advance
+        // Only claim the pre-roll once it is genuinely SOUNDING. Marking it up front
+        // meant a blocked pre-roll (WebKit refuses a play() on an element the user
+        // has never touched, and the secondary is never touched) still got promoted
+        // to primary on advance — handing the whole rest of the show to a locked
+        // element. Falling back leaves goto() to take its ordinary hard-cut path on
+        // the element that IS unlocked.
+        sec
+          .play()
+          .then(() => {
+            overlapNextIdRef.current = nxt.id; // promoted to primary on advance
+          })
+          .catch((err) => {
+            overlapNextIdRef.current = null;
+            onPlayRejectedRef.current(nxt.id, err, false); // the current track is still sounding
+          });
       }
     }
   }, [now, state, items, audioUrls]);
@@ -827,12 +883,17 @@ export function LiveMode({
         audio.currentTime = Math.max(0, pos);
         audio.playbackRate = 1;
         setPlayingId(cmd.id);
+        // No optimistic true here. This device is the one wired to the PA, and it
+        // is following a command from ANOTHER device — nobody has touched this
+        // screen, which is precisely the case WebKit refuses. Claiming it plays
+        // hid the "แตะเพื่อเล่นเสียงต่อ" banner (gated on !audioPlaying) and left
+        // the room silent while every indicator here said the show was running.
+        // The element's own "playing" event sets the flag when sound really starts.
         audio.play().catch((err) => onPlayRejected(cmd.id, err));
-        if (!audioPlaying) setAudioPlaying(true);
       } else {
         // same track already loaded — follow PLAY only; NEVER touch the position.
         if (audio.paused) audio.play().catch((err) => onPlayRejected(cmd.id, err));
-        if (!audioPlaying) setAudioPlaying(true);
+        else if (!audioPlaying) setAudioPlaying(true);
       }
     } else {
       // controller paused, or we don't have this item's file → stop our audio
@@ -1571,6 +1632,9 @@ export function LiveMode({
   // "รันโชว์" on a cued item actually fires that track (in Manual it's how you commit
   // a cued song; Auto additionally auto-advances at 0).
   function toggleShowRun() {
+    // Also a real tap, and the one a device that JOINS a show mid-set presses — it
+    // never sees start(), so this is its only chance to unlock the second element.
+    primeSecondaryAudio();
     const audio = audioRef.current;
     const cur = items[state.currentIndex];
     if (state.running) {
@@ -1716,6 +1780,43 @@ export function LiveMode({
     }
   }
 
+  /**
+   * Unlock the SECONDARY audio element. Must be called synchronously inside a real
+   * user gesture (the START tap) — that is the whole point.
+   *
+   * WebKit grants permission to play per ELEMENT, not per page: the primary element
+   * is unlocked because the operator's tap starts the first track on it, but the
+   * secondary is only ever touched later by a timer — the negative-buffer pre-roll
+   * and the crossfade. On an iPhone or iPad those play() calls are refused, and
+   * since the refusal used to be swallowed the show handed itself to a silent
+   * element mid-set. Playing a moment of silence on it now, inside the tap, means
+   * it is already allowed when its turn comes.
+   *
+   * Idempotent and harmless everywhere else: the element is left paused with no src,
+   * exactly as it started, and the errors are ignored.
+   */
+  const SILENT_WAV =
+    "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAgD4AAAB9AAACABAAZGF0YQAAAAA=";
+  const secondaryPrimedRef = useRef(false);
+  function primeSecondaryAudio() {
+    const b = audioRef2.current;
+    if (!b || secondaryPrimedRef.current || b.src) return;
+    secondaryPrimedRef.current = true;
+    try {
+      b.src = SILENT_WAV;
+      b.play()
+        .then(() => {
+          b.pause();
+          if (b.src === SILENT_WAV) b.removeAttribute("src");
+        })
+        .catch(() => {
+          if (b.src === SILENT_WAV) b.removeAttribute("src");
+        });
+    } catch {
+      /* nothing here may ever affect the show */
+    }
+  }
+
   // Crossfade path (OPT-IN via the toggle; default = playItemAudio's hard cut):
   // start the incoming track on the secondary element, promote it to primary, and
   // fade the outgoing one down (~2s) before stopping it. The negative-buffer
@@ -1778,6 +1879,7 @@ export function LiveMode({
     // running elsewhere, and starting now would hijack/reset it to item 0.
     // (Guards the Space shortcut; the START button is also disabled until then.)
     if (!syncSettled) return;
+    primeSecondaryAudio(); // must happen inside this tap — see the helper
     const ts = Date.now();
     controllerSinceRef.current = ts; // this device began the show → it is the controller as of now
     if (state.mode === "auto") {
@@ -1896,6 +1998,13 @@ export function LiveMode({
     if (state.mode === "auto") {
       // Overlap hand-off: the next track has been pre-rolling on the secondary
       // element (negative buffer). Promote it instead of restarting from 0.
+      // The pre-roll only claims the id once its play() resolved, but the element
+      // can still have been stopped since (an interruption, a route change). Promote
+      // only something that is genuinely sounding — otherwise fall through to the
+      // ordinary branch below, which hard-cuts on the element we know works.
+      if (it && overlapNextIdRef.current === it.id && audioRef2.current?.paused) {
+        overlapNextIdRef.current = null;
+      }
       if (it && overlapNextIdRef.current === it.id) {
         const lead = -(it.buffer_before_seconds ?? 0);
         swapAudio();

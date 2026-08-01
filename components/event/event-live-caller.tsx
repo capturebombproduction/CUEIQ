@@ -252,10 +252,26 @@ export function EventLiveCaller({
     ch.on("broadcast", { event: "changed" }, ({ payload }) => {
       if (payload?.sender !== meId.current) refetchRef.current();
     });
-    ch.subscribe();
+    // A broadcast only reaches whoever is listening at that moment, and iOS
+    // suspends a backgrounded tab's socket within seconds — so a show-caller who
+    // locked their phone for one act came back to a board that had silently missed
+    // every change since. Re-ask the server on (re)connect, on returning to the
+    // foreground, and when the network comes back. refetch() already defers against
+    // its own in-flight writes, so extra calls are safe.
+    ch.subscribe((status) => {
+      if (status === "SUBSCRIBED") refetchRef.current();
+    });
+    const onWake = () => {
+      if (document.visibilityState === "visible") refetchRef.current();
+    };
+    const onOnline = () => refetchRef.current();
+    document.addEventListener("visibilitychange", onWake);
+    window.addEventListener("online", onOnline);
     channelRef.current = ch;
     return () => {
       channelRef.current = null;
+      document.removeEventListener("visibilitychange", onWake);
+      window.removeEventListener("online", onOnline);
       supabase.removeChannel(ch);
     };
   }, [supabase, tenantId, eventName, eventDate]);
@@ -597,6 +613,7 @@ export function EventLiveCaller({
         shareTitle: `${eventName} — รายงานเวลา`,
         width: 720,
       });
+      if (how === "cancelled") return; // user dismissed the share sheet — nothing was saved
       toast.success(how === "shared" ? "แชร์รายงานแล้ว" : "บันทึกรายงานแล้ว");
     } catch (e) {
       toast.error("บันทึกรายงานไม่สำเร็จ", {

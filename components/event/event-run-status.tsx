@@ -107,10 +107,27 @@ export function EventRunStatusCard({
       { config: { broadcast: { self: false } } }
     );
     ch.on("broadcast", { event: "changed" }, () => refetchRef.current());
-    ch.subscribe();
+    // Broadcast is the ONLY way this board learned anything — and a broadcast
+    // reaches nobody who wasn't listening at the time. iOS suspends a backgrounded
+    // tab's socket within seconds, so a band member who put their phone down
+    // through two acts came back to a board that had missed every change and kept
+    // ticking its clock over stale rows: it looks live, which is worse than looking
+    // stale. Re-ask the server whenever the socket (re)connects, whenever the page
+    // comes back into view, and whenever the network returns.
+    ch.subscribe((status) => {
+      if (status === "SUBSCRIBED") refetchRef.current();
+    });
+    const onWake = () => {
+      if (document.visibilityState === "visible") refetchRef.current();
+    };
+    const onOnline = () => refetchRef.current();
+    document.addEventListener("visibilitychange", onWake);
+    window.addEventListener("online", onOnline);
     channelRef.current = ch;
     return () => {
       channelRef.current = null;
+      document.removeEventListener("visibilitychange", onWake);
+      window.removeEventListener("online", onOnline);
       supabase.removeChannel(ch);
     };
   }, [supabase, tenantId, eventName, eventDate]);

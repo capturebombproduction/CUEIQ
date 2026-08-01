@@ -1051,7 +1051,14 @@ export function SetlistBuilder({
                   กำลังเล่นอยู่บนเวที — ล็อกแก้ไขชั่วคราว
                 </div>
               )}
-              <div className="flex items-center gap-2">
+              {/* flex-wrap, because an EDITOR's row carries ~320px of controls that
+                  cannot shrink (grip, index, kind select, four icon buttons) inside
+                  a 332px content box on a 390px phone. The song title is the only
+                  flexible child, so it absorbed the whole overshoot and collapsed to
+                  a ~26px sliver — padding and border, no readable text. Wrapping puts
+                  the title on its own line below sm and restores the single-line
+                  desktop layout at sm: (see the Input's basis-full sm:basis-0). */}
+              <div className="flex flex-wrap items-center gap-2">
                 {rowEditable && (
                   <button
                     type="button"
@@ -1091,7 +1098,10 @@ export function SetlistBuilder({
                   </Select>
                 </div>
                 <Input
-                  className="flex-1"
+                  // grow + basis rather than flex-1: Tailwind emits flex-basis
+                  // before flex, so flex-1 (basis:0%) would win over basis-full and
+                  // the row would never wrap.
+                  className="min-w-0 grow basis-full sm:basis-0"
                   value={it.title}
                   disabled={!rowEditable}
                   placeholder="ชื่อเพลง / หัวข้อ"

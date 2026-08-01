@@ -276,6 +276,7 @@ export function EventSummary({
         filename,
         shareTitle: event.name,
       });
+      if (how === "cancelled") return; // user dismissed the share sheet — nothing was saved
       toast.success(how === "shared" ? "แชร์รูปสรุปแล้ว" : "บันทึกรูปสรุปแล้ว");
     } catch (e) {
       toast.error("บันทึกรูปไม่สำเร็จ — แคปหน้าจอแทนได้", {

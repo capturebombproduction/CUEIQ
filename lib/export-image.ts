@@ -42,7 +42,7 @@ export async function captureElementToImage(
     shareTitle,
     width = 600,
   }: { filename: string; shareTitle?: string; width?: number }
-): Promise<"shared" | "downloaded"> {
+): Promise<"shared" | "downloaded" | "cancelled"> {
   const prevWidth = el.style.width;
   try {
     const { toJpeg } = await import("html-to-image");
@@ -76,8 +76,17 @@ export async function captureElementToImage(
           await navigator.share({ files: [file], title: shareTitle ?? filename });
           return "shared";
         }
-      } catch {
-        // share cancelled or unsupported — fall through to download
+      } catch (err) {
+        // Dismissing the iOS share sheet REJECTS the promise — and a bare catch
+        // treated that exactly like "this browser can't share", fell through to the
+        // <a download> path (which iOS ignores) and told the user "บันทึกรูปแล้ว".
+        // So the one action a person takes to say "no, not that" was reported back
+        // as done, with nothing saved anywhere. NotAllowedError is the same story
+        // from the other side (the tap's activation expired while the image
+        // rendered) — also the user's own gesture, also not a fallback case.
+        const name = err instanceof Error ? err.name : "";
+        if (name === "AbortError" || name === "NotAllowedError") return "cancelled";
+        // genuinely unsupported → the download fallback below is the right answer
       }
     }
 

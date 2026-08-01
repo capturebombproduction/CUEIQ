@@ -358,17 +358,10 @@ function StatusCell({
       compact={compact}
     />
   ) : compact ? (
-    // The dot's label lives only in its title tooltip, so it is readable ONLY on a
-    // device that hovers. Splitting on WIDTH alone got phones right and left the
-    // iPad — wide enough for the dot branch, no hover to read it with, and no
-    // legend anywhere (two of the six states are both red). Split on hover instead:
-    // a laptop keeps the compact dot, anything touched gets the words.
+    // Phone: text badge (no hover on touch); wide single-row: colour dot only.
     <>
-      <StatusBadge status={ev.status} className="sm:[@media(hover:hover)]:hidden" />
-      <StatusDot
-        status={ev.status}
-        className="hidden sm:[@media(hover:hover)]:inline-block"
-      />
+      <StatusBadge status={ev.status} className="sm:hidden" />
+      <StatusDot status={ev.status} className="hidden sm:inline-block" />
     </>
   ) : (
     <StatusBadge status={ev.status} />
@@ -1111,6 +1104,7 @@ export function OverviewClient({
         shareTitle: `${labelName} · ตารางงาน`,
         width: 820, // wider so the time/date/name columns stay on one line
       });
+      if (how === "cancelled") return; // user dismissed the share sheet — nothing was saved
       toast.success(how === "shared" ? "แชร์รูปตารางแล้ว" : "บันทึกรูปตารางแล้ว");
     } catch (e) {
       toast.error("บันทึกรูปไม่สำเร็จ — แคปหน้าจอแทนได้", {
