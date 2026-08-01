@@ -53,13 +53,21 @@ export const getWorkspace = cache(async (): Promise<Workspace> => {
     null;
   const base = { id: user.id, email: user.email ?? null, name };
 
-  const { data: memberRow } = await supabase
-    .from("tenant_members")
-    .select("tenant_id, role")
-    .eq("user_id", user.id)
-    .order("created_at", { ascending: true })
-    .limit(1)
-    .maybeSingle();
+  // Both of these key on user.id alone, so they go out together. This runs on
+  // EVERY authenticated navigation (the layout awaits it before rendering
+  // anything), and each Supabase round trip from the serverless region is worth
+  // real milliseconds — the group_roles read used to sit behind the membership
+  // read for no reason but the order it was written in.
+  const [{ data: memberRow }, { data: groupRoleRows }] = await Promise.all([
+    supabase
+      .from("tenant_members")
+      .select("tenant_id, role")
+      .eq("user_id", user.id)
+      .order("created_at", { ascending: true })
+      .limit(1)
+      .maybeSingle(),
+    supabase.from("group_roles").select("group_id, role").eq("user_id", user.id),
+  ]);
 
   if (!memberRow) {
     return {
@@ -74,23 +82,18 @@ export const getWorkspace = cache(async (): Promise<Workspace> => {
 
   const role = memberRow.role as Role;
 
-  const [{ data: tenant }, { data: groups }, { data: groupRoleRows }] =
-    await Promise.all([
-      supabase
-        .from("tenants")
-        .select("*")
-        .eq("id", memberRow.tenant_id)
-        .maybeSingle(),
-      supabase
-        .from("groups")
-        .select("*")
-        .eq("tenant_id", memberRow.tenant_id)
-        .order("created_at", { ascending: true }),
-      supabase
-        .from("group_roles")
-        .select("group_id, role")
-        .eq("user_id", user.id),
-    ]);
+  const [{ data: tenant }, { data: groups }] = await Promise.all([
+    supabase
+      .from("tenants")
+      .select("*")
+      .eq("id", memberRow.tenant_id)
+      .maybeSingle(),
+    supabase
+      .from("groups")
+      .select("*")
+      .eq("tenant_id", memberRow.tenant_id)
+      .order("created_at", { ascending: true }),
+  ]);
 
   const groupRoles = (groupRoleRows ?? []) as GroupRoleRow[];
 

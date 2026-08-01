@@ -67,13 +67,18 @@ export async function loadWorkspace(): Promise<WorkspaceData> {
     (user.user_metadata?.full_name as string | undefined) ?? user.email ?? null;
   const base = { id: user.id, email: user.email ?? null, name };
 
-  const { data: memberRow } = await supabase
-    .from("tenant_members")
-    .select("tenant_id, role")
-    .eq("user_id", user.id)
-    .order("created_at", { ascending: true })
-    .limit(1)
-    .maybeSingle();
+  // Both key on user.id alone — one round trip instead of two (mirrors
+  // lib/queries.ts getWorkspace).
+  const [{ data: memberRow }, groupRolesRes] = await Promise.all([
+    supabase
+      .from("tenant_members")
+      .select("tenant_id, role")
+      .eq("user_id", user.id)
+      .order("created_at", { ascending: true })
+      .limit(1)
+      .maybeSingle(),
+    supabase.from("group_roles").select("group_id, role").eq("user_id", user.id),
+  ]);
 
   if (!memberRow) {
     // No membership found — but a transient network blip can also yield null.
@@ -85,7 +90,7 @@ export async function loadWorkspace(): Promise<WorkspaceData> {
 
   const role = memberRow.role as Role;
 
-  const [tenantRes, groupsRes, groupRolesRes] = await Promise.all([
+  const [tenantRes, groupsRes] = await Promise.all([
     supabase
       .from("tenants")
       .select("*")
@@ -96,10 +101,6 @@ export async function loadWorkspace(): Promise<WorkspaceData> {
       .select("*")
       .eq("tenant_id", memberRow.tenant_id)
       .order("created_at", { ascending: true }),
-    supabase
-      .from("group_roles")
-      .select("group_id, role")
-      .eq("user_id", user.id),
   ]);
   const tenant = tenantRes.data;
 

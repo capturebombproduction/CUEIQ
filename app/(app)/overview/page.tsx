@@ -70,14 +70,25 @@ async function readPaged<T>(
   select: (
     from: number,
     to: number
-  ) => PromiseLike<{ data: unknown; error: { message: string } | null }>
+  ) => PromiseLike<{
+    data: unknown;
+    error: { message: string } | null;
+    count?: number | null;
+  }>
 ): Promise<Res<T>> {
   const rows: T[] = [];
   for (let page = 0; page < MAX_PAGES; page++) {
-    const { data, error } = await select(rows.length, rows.length + PAGE_SIZE - 1);
+    const { data, error, count } = await select(rows.length, rows.length + PAGE_SIZE - 1);
     if (error) return { data: null, error };
     const batch = (data ?? []) as T[];
     rows.push(...batch);
+    // Every read below asks for an exact count, so we know when we have the whole
+    // set from the FIRST response. Ending only on an empty page (the shape this
+    // had) is just as correct but costs one extra round trip PER READ, every time
+    // this board is opened — with eight reads across two phases that is real
+    // latency on the page the label lives in. The empty-page rule stays as the
+    // fallback for a response that carries no count, and as the no-progress stop.
+    if (typeof count === "number" && rows.length >= count) return { data: rows, error: null };
     if (batch.length === 0) return { data: rows, error: null };
   }
   return {
@@ -94,7 +105,11 @@ async function readForEvents<T>(
     ids: string[],
     from: number,
     to: number
-  ) => PromiseLike<{ data: unknown; error: { message: string } | null }>
+  ) => PromiseLike<{
+    data: unknown;
+    error: { message: string } | null;
+    count?: number | null;
+  }>
 ): Promise<Res<T>> {
   const rows: T[] = [];
   for (let i = 0; i < eventIds.length; i += ID_CHUNK) {
@@ -132,7 +147,7 @@ export default async function OverviewPage() {
     readPaged<EventRow>("events", (from, to) =>
       supabase
         .from("events")
-        .select("*")
+        .select("*", { count: "exact" })
         .eq("tenant_id", tid)
         .in("group_id", viewableGroupIds) // only bands this user may view
         .eq("is_template", false) // templates are not real shows
@@ -144,7 +159,7 @@ export default async function OverviewPage() {
     readPaged<Member>("members", (from, to) =>
       supabase
         .from("members")
-        .select("*")
+        .select("*", { count: "exact" })
         .eq("tenant_id", tid)
         .in("group_id", viewableGroupIds) // rosters for visible bands only
         .order("sort_order", { ascending: true })
@@ -154,7 +169,7 @@ export default async function OverviewPage() {
     readPaged<{ id: string; copyright_status: string }>("songs", (from, to) =>
       supabase
         .from("songs")
-        .select("id, copyright_status")
+        .select("id, copyright_status", { count: "exact" })
         .eq("tenant_id", tid)
         .order("id", { ascending: true })
         .range(from, to)
@@ -162,7 +177,7 @@ export default async function OverviewPage() {
     readPaged<StaffContact>("staff_contacts", (from, to) =>
       supabase
         .from("staff_contacts")
-        .select("*")
+        .select("*", { count: "exact" })
         .eq("tenant_id", tid)
         .order("sort_order", { ascending: true })
         .order("id", { ascending: true })
@@ -189,7 +204,10 @@ export default async function OverviewPage() {
   const hasUndated = eventRows.some((e) => !e.event_date);
   const readRunOrders = async (): Promise<Res<RoRow>> => {
     const base = () =>
-      supabase.from("run_sequence").select("event_name, event_date").eq("tenant_id", tid);
+      supabase
+        .from("run_sequence")
+        .select("event_name, event_date", { count: "exact" })
+        .eq("tenant_id", tid);
     const parts: Res<RoRow>[] = [];
     if (dateLo) {
       parts.push(
@@ -217,7 +235,9 @@ export default async function OverviewPage() {
     readForEvents<SchedRow>("schedule_items", eventIds, (ids, from, to) =>
       supabase
         .from("schedule_items")
-        .select("id, event_id, kind, start_time, end_time, sort_order")
+        .select("id, event_id, kind, start_time, end_time, sort_order", {
+          count: "exact",
+        })
         .eq("tenant_id", tid)
         .in("event_id", ids)
         .order("id", { ascending: true })
@@ -226,7 +246,7 @@ export default async function OverviewPage() {
     readForEvents<SlRow>("setlist_items", eventIds, (ids, from, to) =>
       supabase
         .from("setlist_items")
-        .select("event_id, song_id, kind, mic_slots")
+        .select("event_id, song_id, kind, mic_slots", { count: "exact" })
         .eq("tenant_id", tid)
         .in("event_id", ids)
         .order("id", { ascending: true })
@@ -239,7 +259,7 @@ export default async function OverviewPage() {
     readForEvents<{ event_id: string }>("mic_assignments", eventIds, (ids, from, to) =>
       supabase
         .from("mic_assignments")
-        .select("event_id")
+        .select("event_id", { count: "exact" })
         .eq("tenant_id", tid)
         .in("event_id", ids)
         .order("id", { ascending: true })
