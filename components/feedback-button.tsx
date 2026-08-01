@@ -153,7 +153,10 @@ export function FeedbackButton({
                 onChange={(e) => setMessage(e.target.value)}
                 rows={5}
                 placeholder="อธิบายสั้น ๆ ก็ได้ครับ เช่น กดปุ่มนี้แล้วเสียงไม่เล่น…"
-                className="w-full rounded-md border bg-background p-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                // the one raw textarea in the app, so it needs the 16px-on-phones
+                // rule components/ui/textarea.tsx carries — and this is the field
+                // people type into FROM a phone, to report the bug they just hit
+                className="w-full rounded-md border bg-background p-2 text-base focus:outline-none focus:ring-2 focus:ring-ring sm:text-sm"
               />
               <p className="text-xs text-muted-foreground">
                 แนบหน้าที่เปิดอยู่ + รุ่นแอปให้อัตโนมัติ เพื่อให้แก้ได้ตรงจุด
