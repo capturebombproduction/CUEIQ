@@ -1795,6 +1795,23 @@ export function LiveMode({
    * Idempotent and harmless everywhere else: the element is left paused with no src,
    * exactly as it started, and the errors are ignored.
    */
+  /**
+   * Is HTMLMediaElement.volume actually writable here? On iOS it is not — the
+   * assignment is silently ignored because Apple reserves level control for the
+   * hardware buttons. Probed once on a throwaway element (never on the show's own),
+   * so nothing about the audio path depends on the answer.
+   */
+  const [volumeIsDead, setVolumeIsDead] = useState(false);
+  useEffect(() => {
+    try {
+      const probe = new Audio();
+      probe.volume = 0.5;
+      setVolumeIsDead(probe.volume !== 0.5);
+    } catch {
+      /* leave it false — never claim a limitation we couldn't establish */
+    }
+  }, []);
+
   const SILENT_WAV =
     "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAgD4AAAB9AAACABAAZGF0YQAAAAA=";
   const secondaryPrimedRef = useRef(false);
@@ -2619,6 +2636,19 @@ export function LiveMode({
                     {volumes[current.id] ?? 100}%
                   </span>
                 </div>
+                {/* iOS hands back a READ-ONLY HTMLMediaElement.volume: the assignment
+                    is accepted and does nothing, so this slider, the 3-second Auto
+                    Mute fade and the MC duck all animate convincingly while the PA
+                    stays at full level. Only says so on the device that is actually
+                    the sound host — if the speakers hang off a laptop or the desktop
+                    app, an iPad operator's slider works fine (the level is broadcast
+                    and applied over there). */}
+                {volumeIsDead && soundOutput && (
+                  <p className="text-[11px] leading-snug text-amber-200">
+                    เครื่องนี้ (iPhone/iPad) ปรับ “ระดับเสียง” ในแอปไม่ได้ — สไลเดอร์กับปุ่มหรี่เสียงจะไม่มีผลจริง
+                    ใช้ปุ่มเพิ่ม/ลดเสียงข้างเครื่อง หรือให้เครื่องอื่นเป็นตัวปล่อยเสียงแทน (ปุ่มปิดเสียงยังใช้ได้)
+                  </p>
+                )}
 
                 {/* big one-tap auto-fade buttons — controller only */}
                 <div className="grid grid-cols-3 gap-2">
