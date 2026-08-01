@@ -19,6 +19,7 @@
 // desktop/src/data/mgmt-outbox.ts so the web build never carries them. This file
 // stays pure (unit-tested in lib/mgmt-outbox.test.ts) and is shared by the desktop
 // queue, the loader overlays, and the EventForm write seam (lib/mgmt-write.ts).
+import type { AudioUploadOp } from "@/lib/audio-upload-queue";
 import type { EventRow } from "@/lib/types";
 
 /**
@@ -51,14 +52,23 @@ export type ChildListOp = {
   eventName?: string | null;
 };
 
+/**
+ * Fired on `window` after any queue change so the shell's status chips — and the
+ * Library's "รออัปโหลด" badges — can refresh. Lives here rather than in the
+ * desktop store so a SHARED component can listen for it without importing
+ * desktop-only code (on the web nothing ever dispatches it).
+ */
+export const MGMT_OUTBOX_EVENT = "cueiq:mgmt-outbox-change";
+
 export type NewMgmtOp =
   | { kind: "event.create"; id: string; values: Partial<EventRow> }
   | { kind: "event.update"; id: string; patch: Partial<EventRow>; base: number | null }
   | { kind: "event.delete"; id: string; base: number | null }
-  | ChildListOp;
+  | ChildListOp
+  | AudioUploadOp;
 
 /** The event-row ops (whose `base` is an epoch-ms timestamp, not a fingerprint). */
-export type EventScopedOp = Exclude<NewMgmtOp, ChildListOp>;
+export type EventScopedOp = Exclude<NewMgmtOp, ChildListOp | AudioUploadOp>;
 
 export function isChildListOp(op: NewMgmtOp): op is ChildListOp {
   return (
@@ -67,6 +77,16 @@ export function isChildListOp(op: NewMgmtOp): op is ChildListOp {
     op.kind === "mic.upsert" ||
     op.kind === "lineup.upsert"
   );
+}
+
+/**
+ * ⭐#1 step 6 — a queued audio upload (lib/audio-upload-queue.ts). It rides this
+ * queue for the chips, the conflict panel and the session gating, but it is not
+ * an EVENT op: its `id` is a songId, so every event-scoped code path below has to
+ * step over it. Grouped here so that stays impossible to forget.
+ */
+export function isAudioUploadOp(op: NewMgmtOp): op is AudioUploadOp {
+  return op.kind === "audio.upload";
 }
 
 /**
@@ -89,6 +109,9 @@ export function applyPending<T extends { id: string }>(rows: T[], ops: MgmtOp[])
   let out = rows.slice();
   for (const op of ops.slice().sort(bySeq)) {
     if (isChildListOp(op)) continue; // child-table snapshots don't touch the events list
+    // Neither does an audio upload — and its `id` is a songId, so falling through
+    // to the delete branch below would drop an unrelated event off the dashboard.
+    if (isAudioUploadOp(op)) continue;
     if (op.kind === "event.create") {
       if (!out.some((r) => r.id === op.id)) {
         // A freshly-created offline event: surface it at the top with its client id.
@@ -371,6 +394,20 @@ export function planEnqueue(existing: MgmtOp[], incoming: NewMgmtOp): EnqueuePla
   }
   const mine = existing.filter((o) => o.id === incoming.id).sort(bySeq);
 
+  if (isAudioUploadOp(incoming)) {
+    // One pending upload per song: picking file A and then file B while offline
+    // should put B in the library, not both in sequence. The retained `basePath`
+    // is the FIRST one's — it records the master as it stood before this device
+    // went offline, which is the only reference that can tell us whether someone
+    // else has replaced it since. Keeping the later, locally-advanced value would
+    // compare our own work against itself and call every collision clean.
+    const prev = mine.find((o) => o.kind === "audio.upload");
+    if (prev && isAudioUploadOp(prev)) {
+      return { dropSeqs: [], replaceSeq: prev.seq, op: { ...incoming, basePath: prev.basePath } };
+    }
+    return { dropSeqs: [], replaceSeq: null, op: incoming };
+  }
+
   if (isChildListOp(incoming)) {
     // One snapshot per (event × table): a newer snapshot supersedes the queued one
     // in place, keeping the ORIGINAL base — both edits were made against the same
@@ -475,6 +512,10 @@ const CHILD_LABELS: Record<ChildListKind, string> = {
 
 /** Thai one-liner for a queued/parked op (status chip + conflict list). */
 export function describeOp(op: NewMgmtOp): string {
+  if (isAudioUploadOp(op)) {
+    const title = op.songTitle?.trim();
+    return `อัปไฟล์เสียงของ${title ? `เพลง “${title}”` : `เพลง #${op.id.slice(0, 8)}`}`;
+  }
   const name = isChildListOp(op)
     ? op.eventName
     : op.kind === "event.create"

@@ -17,9 +17,11 @@ import {
   childFlushDecision,
   eventPatchApplied,
   isApprovalGuardError,
+  isAudioUploadOp,
   isChildListOp,
   isQueueableWriteError,
   isUniqueViolation,
+  MGMT_OUTBOX_EVENT,
   nextOpRev,
   planEnqueue,
   shouldApplyOnFlush,
@@ -27,14 +29,25 @@ import {
   type MgmtOp,
   type NewMgmtOp,
 } from "@/lib/mgmt-outbox";
+import {
+  audioConflictReason,
+  audioFlushDecision,
+  type AudioUploadOp,
+} from "@/lib/audio-upload-queue";
+import { removeEventAudio, uploadEventAudio } from "@/lib/audio-remote";
+import { clearLocalSource, getLocalSource } from "@/lib/local-source";
+import { cacheSongBlob } from "@/lib/song-cache";
 import { getStoredSessionUser } from "~/data/stored-session";
 
 const DB_NAME = "cueiq-mgmt-outbox";
 const OPS = "ops";
 const CONFLICTS = "conflicts";
 
-/** Fired after any queue change so the shell's status chips can refresh. */
-export const MGMT_OUTBOX_EVENT = "cueiq:mgmt-outbox-change";
+/** Fired after any queue change so the shell's status chips can refresh.
+ *  Defined in the shared core so shared components can listen without importing
+ *  this desktop-only module; re-exported here because every caller reaches for it
+ *  next to the store it belongs to. */
+export { MGMT_OUTBOX_EVENT };
 
 interface OpRec {
   op: NewMgmtOp;
@@ -285,6 +298,17 @@ export async function pendingMgmtCount(): Promise<number> {
   return (await pendingMgmtOps()).length;
 }
 
+/**
+ * songIds whose audio is still sitting on this device waiting to be pushed
+ * (⭐#1 step 6) — what the Library badges as "รออัปโหลด". Parked conflicts are
+ * deliberately excluded: those are not waiting for the network, they are waiting
+ * for a person, and the shell's "ชนกัน" chip is where that lives.
+ */
+export async function pendingAudioSongIds(): Promise<Set<string>> {
+  const ops = await pendingMgmtOps().catch(() => [] as MgmtOp[]);
+  return new Set(ops.filter(isAudioUploadOp).map((op) => op.id));
+}
+
 /** Current user's parked conflicts (with their store keys, for resolution). */
 export async function listMgmtConflicts(): Promise<{ key: number; rec: ConflictRec }[]> {
   try {
@@ -439,6 +463,87 @@ async function applyChildListOp(
 }
 
 /**
+ * ⭐#1 step 6 — push an audio file that was picked while this device was offline.
+ *
+ * The bytes are the song's LOCAL SOURCE (lib/local-source.ts): the same blob this
+ * device has been playing since it was picked, so a successful flush is really
+ * just "make what I'm already hearing the master everyone gets". That is why the
+ * tail mirrors the Library's own pushLocalAsMaster — cache the blob under its new
+ * key, sweep the file it replaced, then drop the override so playback falls back
+ * to the (now identical) master.
+ *
+ * `force` = the user pressed "ใช้ของฉัน" on a parked conflict: skip the guard and
+ * overwrite whatever is there now. Everything else is decided by
+ * audioFlushDecision, which is unit-tested in lib/audio-upload-queue.test.ts.
+ */
+async function applyAudioUploadOp(
+  op: AudioUploadOp,
+  onLine: boolean,
+  force: boolean
+): Promise<"applied" | { conflict: string }> {
+  const supabase = createClient();
+  const { data, error } = await supabase
+    .from("songs")
+    .select("id, audio_path")
+    .eq("id", op.id)
+    .maybeSingle();
+  if (error) {
+    if (isQueueableWriteError(error.message, onLine)) throw new Error(error.message);
+    return { conflict: error.message };
+  }
+  // An anon read is an empty result too, and "the song is gone" is a terminal
+  // verdict — prove the read was ours before believing it (same rule as events).
+  if (!data) await requireLiveSession();
+  const serverPath = (data?.audio_path as string | null) ?? null;
+  const action = force && data ? "upload" : audioFlushDecision(op, { exists: !!data, audioPath: serverPath });
+
+  if (action === "gone") {
+    // Nothing to attach the bytes to. Park rather than drop — the file on this
+    // device is still the only copy of whatever they picked, and a silent
+    // disappearance is exactly what this whole queue exists to prevent.
+    return { conflict: "เพลงนี้ถูกลบไปแล้วบนออนไลน์ — อัปไฟล์ขึ้นไม่ได้" };
+  }
+  if (action === "conflict") return { conflict: audioConflictReason({ audioPath: serverPath }) };
+
+  const local = await getLocalSource(op.id);
+  if (action === "upload") {
+    if (!local) {
+      // The bytes are gone (storage cleared, or the override was replaced by a
+      // later deliberate pick). There is nothing left to send.
+      return { conflict: "ไม่พบไฟล์เสียงที่รออัปโหลดในเครื่องนี้แล้ว" };
+    }
+    try {
+      await uploadEventAudio(op.path, local.blob, op.contentType || local.blob.type);
+    } catch (e) {
+      // The transport already retries and classifies; a failure here is a network
+      // one by construction, so retry on the next reconnect rather than parking.
+      throw e instanceof Error ? e : new Error(String(e));
+    }
+    const upd = await supabase
+      .from("songs")
+      .update({ audio_path: op.path, audio_name: op.fileName, audio_expires_at: null })
+      .eq("id", op.id)
+      .select("id");
+    if (upd.error) {
+      if (isQueueableWriteError(upd.error.message, onLine)) throw new Error(upd.error.message);
+      return { conflict: upd.error.message };
+    }
+    if (!upd.data || upd.data.length === 0) {
+      // 0 rows and no error: deleted between the guard read and the write — or
+      // sent as anon, which looks identical. Re-prove the session before parking.
+      await requireLiveSession();
+      return { conflict: "เพลงนี้ถูกลบไปแล้วบนออนไลน์ — อัปไฟล์ขึ้นไม่ได้" };
+    }
+  }
+  // Landed (or was already landed by a half-finished flush). Best-effort tail —
+  // none of it may fail the op, which the server has now accepted.
+  if (local) await cacheSongBlob(op.path, local.blob, op.fileName).catch(() => {});
+  if (op.basePath && op.basePath !== op.path) removeEventAudio(op.basePath).catch(() => {});
+  await clearLocalSource(op.id).catch(() => {});
+  return "applied";
+}
+
+/**
  * Apply one op online. Returns "applied", or a conflict reason to park it.
  * Throws when the attempt must be RETRIED rather than judged: a NETWORK failure
  * (still offline), or a session we can't prove is live (see hasLiveSession) — the
@@ -453,6 +558,7 @@ async function applyOp(op: NewMgmtOp): Promise<"applied" | { conflict: string }>
   await requireLiveSession();
 
   if (isChildListOp(op)) return applyChildListOp(op, onLine, false);
+  if (isAudioUploadOp(op)) return applyAudioUploadOp(op, onLine, false);
 
   if (op.kind === "event.create") {
     // upsert on the client-minted id → idempotent when a half-flushed queue re-runs.
@@ -650,7 +756,18 @@ export function resolveMgmtConflict(
           // into "กด 'ใช้ของออนไลน์'" — telling the user to throw away work that
           // can still land. Bail out first; the conflict stays parked, unchanged.
           if (!(await hasLiveSession())) return { ok: false, message: NO_SESSION_REASON };
-          if (isChildListOp(op)) {
+          if (isAudioUploadOp(op)) {
+            const onLine = typeof navigator === "undefined" || navigator.onLine !== false;
+            const res = await applyAudioUploadOp(op, onLine, true).catch((e) => ({
+              conflict: e instanceof Error ? e.message : String(e),
+            }));
+            if (res !== "applied") {
+              // A deleted song or vanished bytes is not something retrying fixes —
+              // keep it parked with THAT reason instead of "try again when online".
+              await setConflictReason(key, res.conflict);
+              return { ok: false, message: res.conflict };
+            }
+          } else if (isChildListOp(op)) {
             const onLine = typeof navigator === "undefined" || navigator.onLine !== false;
             const res = await applyChildListOp(op, onLine, true);
             if (res !== "applied") {
@@ -712,6 +829,16 @@ export function resolveMgmtConflict(
           return { ok: false };
         }
       }
+    } else {
+      // "ใช้ของออนไลน์" on a queued audio upload has to mean it on the SPEAKER too:
+      // the file was left as this device's local source so it could be played while
+      // offline, and leaving it there would keep this one machine playing the
+      // discarded take while every other device has the master. Drop the override.
+      const all = await listStore<ConflictRec>(CONFLICTS).catch(
+        () => [] as { key: number; rec: ConflictRec }[]
+      );
+      const op = all.find((r) => r.key === key)?.rec.op;
+      if (op && isAudioUploadOp(op)) await clearLocalSource(op.id).catch(() => {});
     }
     await deleteFrom(CONFLICTS, key);
     notify();

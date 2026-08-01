@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import type { AudioUploadOp } from "./audio-upload-queue";
 import {
   type ChildListOp,
   type EventScopedOp,
@@ -562,5 +563,75 @@ describe("describeOp — child snapshot labels", () => {
   });
   it("falls back to the event id snippet", () => {
     expect(describeOp(childOp({ id: "12345678-x" }))).toContain("12345678");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ⭐#1 step 6 — audio uploads ride this queue but are NOT event ops: their `id` is
+// a songId, so every event-scoped path has to step over them.
+// ---------------------------------------------------------------------------
+function audioOp(over: Partial<AudioUploadOp> = {}): AudioUploadOp {
+  return {
+    kind: "audio.upload",
+    id: "song-1",
+    tenantId: "t1",
+    groupId: "g1",
+    path: "t1/g1/songs/song-1-aaaa1111.wav",
+    fileName: "master.wav",
+    contentType: "audio/wav",
+    basePath: null,
+    songTitle: "ดาวกระดาษ",
+    ...over,
+  };
+}
+
+describe("planEnqueue — one pending audio upload per song", () => {
+  it("replaces a queued upload for the same song, keeping the ORIGINAL base", () => {
+    const first: MgmtOp = { ...audioOp({ basePath: "server/old.wav" }), seq: 4 };
+    // by the second pick the UI has optimistically advanced to our own key
+    const plan = planEnqueue(
+      [first],
+      audioOp({ path: "t1/g1/songs/song-1-bbbb2222.wav", basePath: "t1/g1/songs/song-1-aaaa1111.wav" })
+    );
+    expect(plan.replaceSeq).toBe(4);
+    expect(plan.dropSeqs).toEqual([]);
+    const op = plan.op as AudioUploadOp;
+    expect(op.path).toBe("t1/g1/songs/song-1-bbbb2222.wav");
+    // comparing our own work against itself would call every collision clean
+    expect(op.basePath).toBe("server/old.wav");
+  });
+
+  it("keeps different songs separate", () => {
+    const first: MgmtOp = { ...audioOp({ id: "song-1" }), seq: 1 };
+    const plan = planEnqueue([first], audioOp({ id: "song-2" }));
+    expect(plan.replaceSeq).toBeNull();
+    expect(plan.op?.kind).toBe("audio.upload");
+  });
+
+  it("an event.delete never sweeps up an audio upload", () => {
+    // an event's cascade wipes its child tables; it has nothing to do with the
+    // band's song library, and the ids only look alike
+    const audio: MgmtOp = { ...audioOp({ id: "ev1" }), seq: 2 };
+    const plan = planEnqueue([audio], { kind: "event.delete", id: "ev1", base: null });
+    expect(plan.dropSeqs).toEqual([]);
+  });
+});
+
+describe("applyPending — audio uploads never touch the events list", () => {
+  it("leaves the list alone even when a songId happens to match an event id", () => {
+    const rows = [{ id: "ev1" }, { id: "ev2" }];
+    // the delete branch is the fall-through: an unguarded audio op would drop ev1
+    expect(applyPending(rows, [{ ...audioOp({ id: "ev1" }), seq: 1 }])).toEqual(rows);
+  });
+});
+
+describe("describeOp — audio upload labels", () => {
+  it("names the song", () => {
+    expect(describeOp(audioOp())).toContain("ดาวกระดาษ");
+  });
+
+  it("falls back to a short id when the title is missing or blank", () => {
+    expect(describeOp(audioOp({ songTitle: null }))).toContain("song-1");
+    expect(describeOp(audioOp({ songTitle: "  " }))).toContain("song-1");
   });
 });

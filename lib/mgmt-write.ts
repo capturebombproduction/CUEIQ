@@ -9,6 +9,8 @@
 // network failure (and only a network failure — RLS/validation errors still surface)
 // becomes a queued op + an immediate optimistic result.
 import { createClient } from "@/lib/supabase/client";
+import { MAX_QUEUED_AUDIO_BYTES } from "@/lib/audio-upload-queue";
+import { clearLocalSource, setLocalSource } from "@/lib/local-source";
 import {
   fingerprintChildRows,
   isQueueableWriteError,
@@ -30,6 +32,30 @@ let queueSink: MgmtQueueSink | null = null;
 /** Desktop-only: point failed writes at the offline outbox. Web never calls this. */
 export function registerMgmtQueueSink(sink: MgmtQueueSink | null): void {
   queueSink = sink;
+}
+
+/** songIds with an audio upload still waiting to be pushed (⭐#1 step 6). */
+type PendingAudioReader = () => Promise<Set<string>>;
+
+let pendingAudioReader: PendingAudioReader | null = null;
+
+/** Desktop-only: let shared UI ask the outbox which songs are still waiting. */
+export function registerPendingAudioReader(reader: PendingAudioReader | null): void {
+  pendingAudioReader = reader;
+}
+
+/**
+ * Which songs have bytes sitting on this device waiting to become the master.
+ * Always resolves — the web (and any failure) reports none, so the Library simply
+ * renders no "รออัปโหลด" badges rather than breaking.
+ */
+export async function listPendingAudioUploads(): Promise<Set<string>> {
+  if (!pendingAudioReader) return new Set();
+  try {
+    return await pendingAudioReader();
+  } catch {
+    return new Set();
+  }
 }
 
 export type SaveEventResult =
@@ -118,6 +144,64 @@ export async function tryQueueChildList(args: {
   } catch {
     // IndexedDB unavailable/full — genuinely can't queue; let the caller surface
     // its normal error (the write is lost either way, but never silently).
+    return false;
+  }
+}
+
+/**
+ * ⭐#1 step 6 — the audio-upload fallback the Library calls after an R2 upload
+ * failed. When a queue sink exists (desktop) and the failure was a network one,
+ * the bytes are kept as this song's LOCAL SOURCE — so this device plays them
+ * immediately, exactly as if the user had pressed "ใช้ไฟล์ในเครื่องนี้" — and an
+ * `audio.upload` op remembers to push them as the master when the network is back.
+ * Returns true when that happened; false leaves the caller's own error handling
+ * untouched (the web always takes that path, as do real rejections).
+ *
+ * Bytes first, intent second, and the bytes are rolled back if the intent won't
+ * store: a local override with nothing queued behind it would quietly make one
+ * machine play a file no one else can hear, with nothing on screen saying so.
+ */
+export async function tryQueueAudioUpload(args: {
+  songId: string;
+  tenantId: string;
+  groupId: string;
+  /** The R2 key the failed upload was aiming at — reused verbatim on flush. */
+  path: string;
+  file: Blob;
+  fileName: string;
+  contentType: string;
+  /** The song's audio_path before this upload — the flush guard's reference. */
+  basePath: string | null;
+  songTitle: string | null;
+  errorMessage?: string | null;
+}): Promise<boolean> {
+  if (!queueSink) return false;
+  const onLine = typeof navigator === "undefined" || navigator.onLine !== false;
+  if (!isQueueableWriteError(args.errorMessage ?? null, onLine)) return false;
+  // Refuse absurd files rather than take the whole origin's storage down with
+  // them — the queued setlist edits sitting in the same budget are not worth a
+  // gigabyte of stems.
+  if (args.file.size > MAX_QUEUED_AUDIO_BYTES) return false;
+  try {
+    await setLocalSource(args.songId, args.file, args.fileName);
+  } catch {
+    return false; // no room / IndexedDB unavailable — nothing to promise
+  }
+  try {
+    await queueSink({
+      kind: "audio.upload",
+      id: args.songId,
+      tenantId: args.tenantId,
+      groupId: args.groupId,
+      path: args.path,
+      fileName: args.fileName,
+      contentType: args.contentType,
+      basePath: args.basePath,
+      songTitle: args.songTitle,
+    });
+    return true;
+  } catch {
+    await clearLocalSource(args.songId).catch(() => {});
     return false;
   }
 }

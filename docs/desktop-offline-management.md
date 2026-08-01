@@ -140,7 +140,21 @@ On reconnect (the existing `OutboxFlusher` / online event already wired in the w
    server fp ตรงกับ snapshot เรา = already-applied กัน false-conflict ตอน re-run).
    แถวใหม่ตอนออฟไลน์ mint uuid ฝั่ง client (`newLocalRowId`). Browser-E2E ผ่านครบ
    (ทั้ง 4 editor + overlay + conflict park + resolve 2 ทาง + ศูนย์ residue).
-6. (later) offline audio-upload queue.
+6. ✅ **DONE (2026-08-01)** — offline AUDIO-UPLOAD queue. `lib/audio-upload-queue.ts` (pure:
+   flush decision + conflict copy + size ceiling, vitest) + an `audio.upload` op on the
+   EXISTING outbox (same chips, same conflict panel, same session gating) whose `id` is a
+   songId — the bytes deliberately do NOT ride the queue: they are stored as the song's
+   LOCAL SOURCE (`lib/local-source.ts`), which is both where they already belong and what
+   makes the file playable on this device the instant it is picked. Flush = presign PUT to
+   the key minted at QUEUE time (so a half-finished flush recognises its own work) → update
+   `songs` → cache the blob under the new path → sweep the replaced object → drop the
+   override, i.e. exactly the Library's own pushLocalAsMaster tail. Someone else having
+   changed that song's audio meanwhile PARKS as a conflict rather than clobbering their
+   master; "ใช้ของออนไลน์" also drops the local override so this machine stops playing the
+   discarded take. Library badges the song "รออัปโหลด" instead of "ไม่มีไฟล์เสียง".
+7. (later) make a song whose ONLY copy is a pending local upload playable in Live Mode
+   (`live-mode.tsx` skips items with no `audio_path`) — needed for the "brand-new song,
+   added offline at the venue" case.
 
 ⚠️ After every step: `cd desktop && npx tsc --noEmit` (root build excludes desktop),
 and พี่ tests the rebuilt `.exe` (create offline → reopen → still there → reconnect →

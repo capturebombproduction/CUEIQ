@@ -11,6 +11,7 @@ import {
   Loader2,
   Search,
   CloudUpload,
+  CloudOff,
   Volume2,
   Clock3,
   Lock,
@@ -32,6 +33,9 @@ import {
   clearLocalSource,
   listLocalSourceIds,
 } from "@/lib/local-source";
+import { AUDIO_QUEUED_MESSAGE } from "@/lib/audio-upload-queue";
+import { MGMT_OUTBOX_EVENT } from "@/lib/mgmt-outbox";
+import { listPendingAudioUploads, tryQueueAudioUpload } from "@/lib/mgmt-write";
 import { formatDuration, parseDurationToSeconds } from "@/lib/time";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -162,6 +166,26 @@ export function SongLibrary({
     if (!native) return;
     listLocalSourceIds().then(setLocalIds).catch(() => {});
   }, [native]);
+  // ⭐#1 step 6 — songs whose audio was picked while offline and is still waiting
+  // to become the master. Empty on the web (nothing registers a reader), so this
+  // costs the web build one resolved promise and renders nothing.
+  const [pendingUploads, setPendingUploads] = useState<Set<string>>(new Set());
+  useEffect(() => {
+    let alive = true;
+    const refresh = () => {
+      listPendingAudioUploads().then((s) => {
+        if (alive) setPendingUploads(s);
+      });
+    };
+    refresh();
+    // the outbox fires this after every queue change — including the flush that
+    // clears these, so a badge disappears the moment its file has landed
+    window.addEventListener(MGMT_OUTBOX_EVENT, refresh);
+    return () => {
+      alive = false;
+      window.removeEventListener(MGMT_OUTBOX_EVENT, refresh);
+    };
+  }, []);
 
   const groupName = useMemo(
     () => Object.fromEntries(groups.map((g) => [g.id, g.name])),
@@ -457,9 +481,32 @@ export function SongLibrary({
       toast.success("อัปโหลดไฟล์เพลงขึ้นคลังแล้ว 🎵");
       return path;
     } catch (e) {
-      toast.error("อัปโหลดไม่สำเร็จ", {
-        description: e instanceof Error ? e.message : String(e),
+      const message = e instanceof Error ? e.message : String(e);
+      // ⭐#1 step 6 — offline (desktop): don't lose the bytes. They become this
+      // song's local source, so this machine plays them straight away, and an
+      // audio.upload op remembers to make them the master when the net is back.
+      // The R2 object we may already have PUT is deliberately left in place: the
+      // queued op aims at that same key, so finishing the job later is a no-op
+      // upload rather than a fresh 88 MB transfer.
+      const queued = await tryQueueAudioUpload({
+        songId: song.id,
+        tenantId: song.tenant_id,
+        groupId: song.group_id,
+        path,
+        file,
+        fileName: file.name,
+        contentType: file.type || "",
+        basePath: prevPath,
+        songTitle: song.title,
+        errorMessage: message,
       });
+      if (queued) {
+        setLocalIds((prev) => new Set(prev).add(song.id));
+        setPendingUploads((prev) => new Set(prev).add(song.id));
+        toast.success(AUDIO_QUEUED_MESSAGE, { id: `audio-queued-${song.id}` });
+        return null;
+      }
+      toast.error("อัปโหลดไม่สำเร็จ", { description: message });
       // The PUT landed but the update threw. A thrown update does NOT prove the
       // server rejected it — a dropped response after PostgREST committed looks
       // identical here. So delete the fresh object only when we can PROVE no row
@@ -746,6 +793,36 @@ export function SongLibrary({
           <Loader2 className="h-3.5 w-3.5 animate-spin" />
           {busy === "up" ? "กำลังอัป…" : "กำลังลบ…"}
         </span>
+      );
+    }
+    // ⭐#1 step 6 — picked offline, bytes held on this device. Says so plainly
+    // instead of "ไม่มีไฟล์เสียง" (a song that has never had a master would
+    // otherwise look untouched right after the user just gave it a file).
+    if (pendingUploads.has(song.id)) {
+      return (
+        <div className="flex flex-wrap items-center gap-1.5">
+          <Badge
+            variant="secondary"
+            className="gap-1"
+            title="เก็บไฟล์ไว้ในเครื่องนี้แล้ว — เล่นบนเครื่องนี้ได้เลย และจะอัปขึ้นคลังให้เองเมื่อเน็ตกลับ"
+          >
+            <CloudOff className="h-3 w-3" /> รออัปโหลด
+          </Badge>
+          {songEditable && (
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-9 w-9"
+              title="เลือกไฟล์ใหม่แทนไฟล์ที่รออัปโหลด"
+              onClick={() => {
+                audioTargetRef.current = song;
+                audioFileRef.current?.click();
+              }}
+            >
+              <CloudUpload className="h-4 w-4" />
+            </Button>
+          )}
+        </div>
       );
     }
     if (hasAudio) {
