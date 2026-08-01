@@ -738,9 +738,15 @@ export function LiveMode({
   // in exactly the gaps where the operator is waiting to press the next cue —
   // needing a wake, a passcode and a re-render to run their own show. `begun` is
   // "show entered", which is the lifetime that was always meant.
+  // จบโชว์ leaves `begun` true on purpose (the show stays open with its clock
+  // frozen), so the lock's `begun` lifetime would otherwise run until reset or
+  // unmount — on every viewer phone in the band, not just the operator's.
+  const [showEnded, setShowEnded] = useState(false);
+  const showEndedRef = useRef(showEnded);
+  showEndedRef.current = showEnded;
   const wakeLockRef = useRef<WakeLockSentinel | null>(null);
   useEffect(() => {
-    if (!state.begun) {
+    if (!state.begun || showEnded) {
       wakeLockRef.current?.release().catch(() => {});
       wakeLockRef.current = null;
       return;
@@ -759,7 +765,7 @@ export function LiveMode({
       wakeLockRef.current?.release().catch(() => {});
       wakeLockRef.current = null;
     };
-  }, [state.begun]);
+  }, [state.begun, showEnded]);
 
   // re-acquire Wake Lock when returning to the tab (browser auto-releases it on hide)
   useEffect(() => {
@@ -767,6 +773,7 @@ export function LiveMode({
       if (
         document.visibilityState === "visible" &&
         stateRef.current.begun &&
+        !showEndedRef.current &&
         !wakeLockRef.current
       ) {
         navigator.wakeLock
@@ -1409,6 +1416,7 @@ export function LiveMode({
       audioRef2.current?.pause();
       setAudioPlaying(false);
     }
+    setShowEnded(true); // let the screen sleep again — the show is over
     toast.success(`บันทึกเวลาโชว์ล่าสุด ${formatDuration(seconds)} แล้ว`);
   }
 
@@ -1905,6 +1913,7 @@ export function LiveMode({
     // running elsewhere, and starting now would hijack/reset it to item 0.
     // (Guards the Space shortcut; the START button is also disabled until then.)
     if (!syncSettled) return;
+    setShowEnded(false);
     primeSecondaryAudio(); // must happen inside this tap — see the helper
     const ts = Date.now();
     controllerSinceRef.current = ts; // this device began the show → it is the controller as of now
@@ -2115,6 +2124,7 @@ export function LiveMode({
     setAudioPlaying(false);
     setAudioCurrent(0);
     setAudioDuration(0);
+    setShowEnded(false); // a reset show is a fresh one — it may be run again
     apply({ ...INITIAL, mode: state.mode }); // keep chosen mode after reset
   }
 
