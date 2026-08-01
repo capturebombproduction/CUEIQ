@@ -5,18 +5,26 @@
 # No secrets needed: desktop/vite.config.ts bakes in public Supabase URL + anon key
 # + web origin as defaults, so `npm run dist` builds straight through.
 #
-# How to get the installers (BOTH a manual dispatch and a v* tag work the same):
-#   Actions tab → this run → scroll to "Artifacts" → download `CueIQ-mac-dmg`
-#   (the .dmg, zipped) or `CueIQ-win-exe` (the .exe). That's it — ARTIFACT-ONLY.
+# TWO WAYS TO GET A BUILD:
+#   • Manual dispatch → artifacts only. Actions tab → the run → "Artifacts" →
+#     `CueIQ-mac-dmg` (the .dmg, zipped) or `CueIQ-win-exe` (the .exe + update feed).
+#   • Push a `v*` tag → same build, PLUS a published GitHub Release carrying the
+#     installers and `latest.yml`. That Release is what makes AUTO-UPDATE work:
+#     an installed Windows copy checks it at startup, downloads in the background
+#     and installs on the next quit (never mid-show — see electron/main.cjs).
 #
-# We build with `--publish never`: electron-builder's implicit publish-on-tag kept
-# breaking (mac: rename-hook vs publish → ENOENT; then a publish-config resolution
-# error on both). Auto-update via a published GitHub Release is DEFERRED — the
-# electron-updater code in electron/main.cjs stays but is dormant (no release to
-# check) until the release pipeline is set up separately and reliably.
+# ⚠️ WHY PUBLISHING IS ITS OWN JOB. electron-builder's implicit publish-on-tag broke
+# repeatedly (mac: the rename hook renames the .dmg, then publish reopens the
+# pre-rename name → ENOENT; then "cannot detect repository by .git/config" on both
+# legs). So the BUILD stays `--publish never` — the exact command that builds
+# cleanly locally — and a separate ubuntu job takes the finished artifacts and
+# creates the Release with `gh`. Build failures and publish failures can no longer
+# take each other down.
 #
 # ⚠️ Unsigned: the .dmg has no Apple Developer cert, so on first open a Mac user runs
 # `xattr -dr com.apple.quarantine /Applications/CueIQ.app`. Fine for internal use.
+# macOS gets NO auto-update (Squirrel.Mac requires a signed app) — Mac users
+# re-download the .dmg from the Release.
 name: Desktop build
 
 on:
@@ -62,6 +70,23 @@ jobs:
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: false
 
+      # `--publish never` means "don't UPLOAD", not "don't generate": electron-builder
+      # still writes the update feed next to the installer because a publish provider
+      # is configured for win. Auto-update is silently dead without it, and a missing
+      # file would otherwise only surface on พี่'s machine weeks later — so fail here.
+      - name: Verify the Windows update feed was generated
+        if: matrix.label == 'win-exe'
+        shell: bash
+        run: |
+          ls -la desktop/release
+          test -f desktop/release/latest.yml || {
+            echo "::error::latest.yml missing — electron-updater has no feed to read, auto-update would be dead."
+            exit 1
+          }
+
+      # The .exe alone is not enough for auto-update: electron-updater reads
+      # latest.yml (version + sha512) and uses the .blockmap for differential
+      # downloads. Ship all three.
       - name: Upload installer
         if: always() # upload whatever built even if the other matrix leg failed
         uses: actions/upload-artifact@v4
@@ -70,4 +95,70 @@ jobs:
           path: |
             desktop/release/*.dmg
             desktop/release/*.exe
+            desktop/release/*.blockmap
+            desktop/release/latest*.yml
           if-no-files-found: ignore
+
+  # Turns a `v*` tag's artifacts into a PUBLISHED GitHub Release. Runs even if one
+  # build leg failed (`always()`), because a broken Mac build must not withhold the
+  # Windows update — the assertion below still refuses to publish a Release that
+  # can't serve one.
+  publish:
+    needs: build
+    if: ${{ always() && startsWith(github.ref, 'refs/tags/v') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Collect release files
+        id: collect
+        shell: bash
+        run: |
+          mkdir -p out
+          find artifacts -type f \( -name '*.exe' -o -name '*.blockmap' -o -name '*.dmg' -o -name 'latest*.yml' \) \
+            -exec cp -n {} out/ \;
+          ls -la out
+          # An update feed with no installer beside it makes every client error on
+          # download; an installer with no feed is invisible to the updater. Refuse
+          # to publish a half-set rather than ship a Release that looks fine and
+          # silently breaks updates.
+          if [ ! -f out/latest.yml ] || ! ls out/*.exe >/dev/null 2>&1; then
+            echo "::error::Windows installer and/or latest.yml missing — refusing to publish an unusable Release."
+            exit 1
+          fi
+
+      # `gh` is preinstalled on the runner and authenticates with the built-in
+      # GITHUB_TOKEN, so no PAT or third-party action is involved. Idempotent: a
+      # re-run of the same tag re-uploads over the existing assets, and a release
+      # left as a DRAFT by an earlier failed attempt is flipped to published —
+      # electron-updater cannot see drafts at all, so a lingering draft is exactly
+      # how "the release exists but nobody updates" happens.
+      - name: Publish the Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          cat > notes.md <<'NOTES'
+          **Windows** — ดาวน์โหลด `.exe` แล้วเปิดติดตั้งได้เลย
+          เครื่องที่ลง CueIQ ไว้อยู่แล้วไม่ต้องทำอะไร: มันจะเห็นเวอร์ชันนี้เองตอนเปิดโปรแกรมครั้งถัดไป
+          โหลดเบื้องหลังแล้วติดตั้งตอน**ปิด**โปรแกรม — ไม่มีทางเด้งใส่ระหว่างโชว์
+
+          **Mac** — ดาวน์โหลด `.dmg` ให้ตรงเครื่อง (Apple Silicon หรือ Intel) แล้วลากลง Applications
+          แอปยังไม่ได้เซ็นใบรับรอง เปิดครั้งแรกให้รัน `xattr -dr com.apple.quarantine /Applications/CueIQ.app`
+          ฝั่ง Mac ยังไม่มีอัปเดตอัตโนมัติ (ต้องเซ็นใบรับรองก่อน) — โหลด `.dmg` ใหม่เอาเอง
+          NOTES
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "release $tag exists — updating assets"
+            gh release upload "$tag" out/* --clobber
+            gh release edit "$tag" --draft=false --prerelease=false --latest --notes-file notes.md
+          else
+            gh release create "$tag" out/* --title "CueIQ $tag" --latest --notes-file notes.md
+          fi
+          gh release view "$tag" --json isDraft,tagName,assets \
+            --jq '"published: \(.tagName) draft=\(.isDraft) assets=\([.assets[].name] | join(", "))"'

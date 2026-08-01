@@ -108,7 +108,13 @@ function initAutoUpdate() {
   autoUpdater.autoInstallOnAppQuit = true;
   autoUpdater.on("error", (err) => console.log("AUTOUPDATE_ERROR " + String(err)));
   autoUpdater
-    .checkForUpdatesAndNotify()
+    // The default toast is electron-updater's own English one. The people running
+    // shows on this app read Thai, and the one thing they need to know is that
+    // nothing is about to happen TO THEM mid-show — it installs when they quit.
+    .checkForUpdatesAndNotify({
+      title: "CueIQ มีเวอร์ชันใหม่",
+      body: "โหลดไว้ให้แล้ว — จะติดตั้งให้เองตอนปิดโปรแกรม ไม่รบกวนระหว่างโชว์",
+    })
     .catch((e) => console.log("AUTOUPDATE_CHECK_FAIL " + String(e)));
 }
 
