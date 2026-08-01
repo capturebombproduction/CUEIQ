@@ -25,7 +25,7 @@ import {
 } from "lucide-react";
 import { EventStatusActions } from "@/components/overview/event-status-actions";
 import { PhotoTimeCell } from "@/components/overview/photo-time-cell";
-import { StatusBadge, StatusDot } from "@/components/status-badge";
+import { StatusBadge } from "@/components/status-badge";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { shortClock, deadlineInfo } from "@/lib/time";
@@ -344,25 +344,16 @@ function DeadlineCell({ ev }: { ev: OverviewEvent }) {
 function StatusCell({
   ev,
   canApproveEvents,
-  compact = false,
 }: {
   ev: OverviewEvent;
   canApproveEvents: boolean;
-  compact?: boolean; // tight rows (รายงาน): colour dot only, no text badge
 }) {
   return canApproveEvents ? (
     <EventStatusActions
       eventId={ev.id}
       initialStatus={ev.status}
       eventName={ev.name}
-      compact={compact}
     />
-  ) : compact ? (
-    // Phone: text badge (no hover on touch); wide single-row: colour dot only.
-    <>
-      <StatusBadge status={ev.status} className="sm:hidden" />
-      <StatusDot status={ev.status} className="hidden sm:inline-block" />
-    </>
   ) : (
     <StatusBadge status={ev.status} />
   );

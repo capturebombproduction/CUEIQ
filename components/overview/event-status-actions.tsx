@@ -5,7 +5,7 @@ import { Check, X, Loader2, ChevronDown } from "lucide-react";
 import { toast } from "sonner";
 import { createClient } from "@/lib/supabase/client";
 import { notify } from "@/lib/notify-client";
-import { StatusBadge, StatusDot } from "@/components/status-badge";
+import { StatusBadge } from "@/components/status-badge";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -24,12 +24,10 @@ export function EventStatusActions({
   eventId,
   initialStatus,
   eventName,
-  compact = false,
 }: {
   eventId: string;
   initialStatus: GroupStatus;
   eventName?: string;
-  compact?: boolean; // tight rows: show just the colour dot, not the text badge
 }) {
   const [status, setStatus] = useState<GroupStatus>(initialStatus);
   const [busy, setBusy] = useState(false);
@@ -66,20 +64,7 @@ export function EventStatusActions({
         title="แตะเพื่อเปลี่ยนสถานะ (อนุมัติ / ปฏิเสธ)"
         className="inline-flex items-center gap-0.5 rounded-md transition-opacity hover:opacity-80 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
       >
-        {compact ? (
-          // Phone (2-row card has room): full text badge — readable without hover,
-          // which a touch device doesn't have. Wide single-row: just the colour dot
-          // so the variable-width badge can't crowd the times.
-          <>
-            <StatusBadge
-              status={status}
-              className="px-2 py-0 text-[11px] sm:hidden"
-            />
-            <StatusDot status={status} className="hidden sm:inline-block" />
-          </>
-        ) : (
-          <StatusBadge status={status} className="px-2 py-0 text-[11px]" />
-        )}
+        <StatusBadge status={status} className="px-2 py-0 text-[11px]" />
         <ChevronDown className="h-3 w-3 text-muted-foreground" />
       </button>
 
