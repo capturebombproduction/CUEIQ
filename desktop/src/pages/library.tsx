@@ -10,6 +10,8 @@ import { Card, CardContent } from "@/components/ui/card";
 import { createClient } from "@/lib/supabase/client";
 import { canViewLibrary, viewableGroups } from "@/lib/permissions";
 import type { Song } from "@/lib/types";
+import { isOffline, readCache, writeCache } from "~/data/cache";
+import { hasLiveSession } from "@/lib/auth-session";
 import { useWorkspace } from "~/data/workspace-context";
 
 export function Library() {
@@ -20,6 +22,12 @@ export function Library() {
   const ids = bands.map((g) => g.id);
   const key = ids.join(",");
 
+  // Read-cached like the dashboard and the event bundles (~/data/cache). Without
+  // this the catalogue is simply unreachable with no network — and that locks the
+  // door on the one thing the offline audio-upload queue exists for: picking a
+  // file for a song AT THE VENUE, playing it here immediately, and pushing it as
+  // the master when the network comes back. The picker lives on this page.
+  const tenantId = ws?.membership?.tenant_id ?? null;
   useEffect(() => {
     if (!ws?.membership) return;
     if (ids.length === 0) {
@@ -27,28 +35,50 @@ export function Library() {
       return;
     }
     let alive = true;
+    const cacheKey = `songs:${tenantId}:${[...ids].sort().join(",")}`;
+    const serveCached = (): boolean => {
+      const cached = readCache<Song[]>(cacheKey);
+      if (!alive || !cached) return false;
+      setLoadError(false);
+      setSongs(cached);
+      return true;
+    };
+    if (isOffline()) {
+      if (!serveCached()) setLoadError(true);
+      return;
+    }
     createClient()
       .from("songs")
       .select("*")
       .eq("tenant_id", ws.membership.tenant_id)
       .in("group_id", ids)
       .order("created_at", { ascending: false })
-      .then(({ data, error }) => {
+      .then(async ({ data, error }) => {
         if (!alive) return;
         // postgrest resolves offline/network failures as { data: null, error } —
         // a failed read is NOT an empty catalogue, so never render "0 เพลง" for it.
         if (error) {
-          setLoadError(true);
+          if (!serveCached()) setLoadError(true);
           return;
         }
+        const rows = (data ?? []) as Song[];
+        // An empty answer we can't prove carried our token is an anon RLS refusal,
+        // not an empty library — caching it would wipe this device's copy.
+        if (rows.length === 0 && !(await hasLiveSession())) {
+          if (!alive) return;
+          if (!serveCached()) setLoadError(true);
+          return;
+        }
+        if (!alive) return;
         setLoadError(false);
-        setSongs((data ?? []) as Song[]);
+        setSongs(rows);
+        writeCache(cacheKey, rows);
       });
     return () => {
       alive = false;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ws?.membership?.tenant_id, key]);
+  }, [tenantId, key]);
 
   if (!ws?.membership || !ws.tenant) {
     return (
