@@ -358,10 +358,17 @@ function StatusCell({
       compact={compact}
     />
   ) : compact ? (
-    // Phone: text badge (no hover on touch); wide single-row: colour dot only.
+    // The dot's label lives only in its title tooltip, so it is readable ONLY on a
+    // device that hovers. Splitting on WIDTH alone got phones right and left the
+    // iPad — wide enough for the dot branch, no hover to read it with, and no
+    // legend anywhere (two of the six states are both red). Split on hover instead:
+    // a laptop keeps the compact dot, anything touched gets the words.
     <>
-      <StatusBadge status={ev.status} className="sm:hidden" />
-      <StatusDot status={ev.status} className="hidden sm:inline-block" />
+      <StatusBadge status={ev.status} className="sm:[@media(hover:hover)]:hidden" />
+      <StatusDot
+        status={ev.status}
+        className="hidden sm:[@media(hover:hover)]:inline-block"
+      />
     </>
   ) : (
     <StatusBadge status={ev.status} />

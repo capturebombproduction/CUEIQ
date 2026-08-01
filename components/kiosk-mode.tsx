@@ -49,6 +49,10 @@ export function KioskMode() {
   // fullscreen toggle is redundant (and a no-op on iOS, which has no
   // Fullscreen API). Hide the button there; only show it in a browser tab.
   const [standalone, setStandalone] = useState(false);
+  // …and on iPhone there is no Fullscreen API at all, so the button was a control
+  // that visibly did nothing on every page (enter() optional-chains straight into
+  // undefined and swallows it). Render it only where it can work.
+  const [supported, setSupported] = useState(false);
   const kioskRef = useRef(false); // installed app + Fullscreen API available
   const wasFsRef = useRef(false);
 
@@ -66,6 +70,7 @@ export function KioskMode() {
 
   useEffect(() => {
     setStandalone(isStandalone());
+    setSupported(fsSupported());
     const kiosk = isStandalone() && fsSupported();
     kioskRef.current = kiosk;
 
@@ -91,7 +96,7 @@ export function KioskMode() {
 
   return (
     <>
-      {!standalone && (
+      {!standalone && supported && (
         <Button
           type="button"
           variant="ghost"
