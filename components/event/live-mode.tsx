@@ -30,6 +30,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { createClient } from "@/lib/supabase/client";
+import { hasLiveSession } from "@/lib/auth-session";
 import { saveAudio, loadAudioForEvent } from "@/lib/audio-store";
 import { getCachedSongBlob } from "@/lib/song-cache";
 import { getLocalSource } from "@/lib/local-source";
@@ -291,23 +292,31 @@ export function LiveMode({
     volumesLoadedRef.current = true;
   }, [eventId]);
 
+  // The single writer for the volume presets — shared by the debounce below and the
+  // flush-on-hide further down, so the two can never drift apart.
+  function writeVolumePreset() {
+    if (!volumesLoadedRef.current) return; // don't overwrite before the restore runs
+    try {
+      // A loop item's end-fade (loopFadeRef, declared with its effect further down)
+      // is TRANSIENT: it dips that track to 0 so the BGM lands on time and restores
+      // once the show moves off it. When it never moves off (last item, or the
+      // operator leaves it running) the restore never fires, and persisting that 0
+      // would re-open the event with the row muted. Save the operator's INTENDED
+      // level for a track that's mid-fade — the audible fade itself is untouched.
+      const lf = loopFadeRef.current;
+      const vols = volumesRef.current;
+      const preset = lf ? { ...vols, [lf.id]: lf.prevVol } : vols;
+      localStorage.setItem(`cueiq:vol:${eventId}`, JSON.stringify(preset));
+    } catch {}
+  }
+  const writeVolumePresetRef = useRef(writeVolumePreset);
+  writeVolumePresetRef.current = writeVolumePreset;
+
   // persist volume presets, debounced (the fade buttons update this ~60fps — only
   // the settled value is written). Survives refresh so soundcheck levels stick.
   useEffect(() => {
-    if (!volumesLoadedRef.current) return; // don't overwrite before the restore runs
-    const id = setTimeout(() => {
-      try {
-        // A loop item's end-fade (loopFadeRef, declared with its effect further down)
-        // is TRANSIENT: it dips that track to 0 so the BGM lands on time and restores
-        // once the show moves off it. When it never moves off (last item, or the
-        // operator leaves it running) the restore never fires, and persisting that 0
-        // would re-open the event with the row muted. Save the operator's INTENDED
-        // level for a track that's mid-fade — the audible fade itself is untouched.
-        const lf = loopFadeRef.current;
-        const preset = lf ? { ...volumes, [lf.id]: lf.prevVol } : volumes;
-        localStorage.setItem(`cueiq:vol:${eventId}`, JSON.stringify(preset));
-      } catch {}
-    }, 400);
+    if (!volumesLoadedRef.current) return;
+    const id = setTimeout(() => writeVolumePresetRef.current(), 400);
     return () => clearTimeout(id);
   }, [volumes, eventId]);
 
@@ -343,27 +352,56 @@ export function LiveMode({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [eventId]);
 
+  // The single writer for the crash-recovery snapshot (see the flush-on-hide below).
+  function writeLiveSnapshot() {
+    if (!liveRestoredRef.current) return; // don't write before the restore check ran
+    try {
+      const s = stateRef.current;
+      if (s.begun) {
+        localStorage.setItem(
+          `cueiq:live:${eventId}`,
+          JSON.stringify({
+            state: s,
+            committed: committedRef.current,
+            savedAt: Date.now(),
+          })
+        );
+      } else {
+        localStorage.removeItem(`cueiq:live:${eventId}`);
+      }
+    } catch {}
+  }
+  const writeLiveSnapshotRef = useRef(writeLiveSnapshot);
+  writeLiveSnapshotRef.current = writeLiveSnapshot;
+
   // persist the running show (debounced); a reset (begun=false) clears it
   useEffect(() => {
-    if (!liveRestoredRef.current) return; // don't write before the restore check ran
-    const id = setTimeout(() => {
-      try {
-        if (state.begun) {
-          localStorage.setItem(
-            `cueiq:live:${eventId}`,
-            JSON.stringify({
-              state,
-              committed: committedRef.current,
-              savedAt: Date.now(),
-            })
-          );
-        } else {
-          localStorage.removeItem(`cueiq:live:${eventId}`);
-        }
-      } catch {}
-    }, 500);
+    if (!liveRestoredRef.current) return;
+    const id = setTimeout(() => writeLiveSnapshotRef.current(), 500);
     return () => clearTimeout(id);
   }, [state, eventId]);
+
+  // Both persists above are debounced, and a phone can outrun the debounce: iOS
+  // Safari never acts on `beforeunload`, so a pull-to-refresh or a tab close within
+  // half a second of the last advance would come back one cue behind. pagehide and
+  // visibilitychange ARE delivered there, and localStorage.setItem is synchronous,
+  // so flushing on them costs nothing and closes the window. Registered once —
+  // both writers read the live values off refs.
+  useEffect(() => {
+    const flush = () => {
+      writeLiveSnapshotRef.current();
+      writeVolumePresetRef.current();
+    };
+    const onVisibility = () => {
+      if (document.visibilityState === "hidden") flush();
+    };
+    window.addEventListener("pagehide", flush);
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      window.removeEventListener("pagehide", flush);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, []);
 
   // stop any running fade / pending volume broadcast on unmount
   useEffect(() => {
@@ -1106,6 +1144,34 @@ export function LiveMode({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [eventId, groupId]);
 
+  // A broadcast only reaches whoever is listening at that moment, and a phone or
+  // tablet suspends a backgrounded socket within seconds — so a second screen put
+  // down for one song comes back on the wrong row with its countdown still
+  // ticking, and nothing on it looks wrong. Re-ask on wake and on reconnect:
+  // whoever is running the show answers with the truth. It also heals the worst
+  // case of a network split, where two devices both believe they are the
+  // controller — the reply runs the same deterministic settle as any other
+  // controller broadcast, so exactly one of them steps down.
+  // (Same fix the run-order board already carries — event-live-caller.tsx.)
+  useEffect(() => {
+    const ask = () => {
+      channelRef.current?.send({
+        type: "broadcast",
+        event: "sync-request",
+        payload: { sender: meId.current },
+      });
+    };
+    const onWake = () => {
+      if (document.visibilityState === "visible") ask();
+    };
+    document.addEventListener("visibilitychange", onWake);
+    window.addEventListener("online", ask);
+    return () => {
+      document.removeEventListener("visibilitychange", onWake);
+      window.removeEventListener("online", ask);
+    };
+  }, []);
+
   // Derive the audio intent for a broadcast: which item should be SOUNDING, whether
   // it's playing, and its start anchor. While running, that's the current item. When
   // not running it's either a Manual cue (a different committed item still plays) or
@@ -1243,6 +1309,24 @@ export function LiveMode({
       return;
     }
     if (!itemsRes.data) return;
+    // An EMPTY read is not the same as an empty setlist. A request that went out
+    // as anon — supabase-js quietly falls back to the anon key for the minute
+    // after a failed token refresh, which is exactly what a venue wifi blip
+    // produces — is refused by RLS as `data: [], error: null`. Applying that here
+    // would blank the RUNNING order and wipe every song's audio path: countdown
+    // still ticking, list empty, PA silent, and NEXT broadcasting an index that
+    // means nothing on the viewers. This refetch is a refresh, not a command —
+    // when it comes back empty and we can't prove it was ours, keep what we have.
+    // (Only asked when there is something to lose; a truly empty list costs nothing.)
+    const wouldEmptyItems = itemsRes.data.length === 0 && itemsRef.current.length > 0;
+    const wouldEmptySongs =
+      (songsRes.data?.length ?? 0) === 0 &&
+      Object.keys(songAudioRef.current).length > 0;
+    if (wouldEmptyItems || wouldEmptySongs) {
+      if (!(await hasLiveSession())) return;
+      // a newer refetch overtook us while we were asking — let it apply instead
+      if (seq !== refetchSeqRef.current) return;
+    }
     if (songsRes.data) {
       const map: SongAudioMap = {};
       for (const s of songsRes.data as {
@@ -1339,7 +1423,26 @@ export function LiveMode({
       prev.map((it) => (it.id === itemId ? { ...it, loop_audio: next } : it))
     );
     const supabase = createClient();
-    await supabase.from("setlist_items").update({ loop_audio: next }).eq("id", itemId);
+    const { data, error } = await supabase
+      .from("setlist_items")
+      .update({ loop_audio: next })
+      .eq("id", itemId)
+      .select("id");
+    // Same silent-failure shape as a reorder (see reorderLanded) — with the same
+    // exception: OFFLINE, the flag stands on this device, because looping the BGM
+    // is something the show needs NOW and this screen is built to run without a
+    // network. Reverting it there would take a working control away mid-show.
+    if (error && isOffline()) {
+      toast.warning("ออฟไลน์ — ตั้งเล่นวนไว้เฉพาะเครื่องนี้", { id: "loop-offline" });
+      return;
+    }
+    if (error || (data?.length ?? 0) === 0) {
+      setItems((prev) =>
+        prev.map((it) => (it.id === itemId ? { ...it, loop_audio: item.loop_audio } : it))
+      );
+      toast.error("ตั้งค่าเล่นวนไม่สำเร็จ", { description: error?.message });
+      return;
+    }
     bcastSetlistChanged();
   }
 
@@ -1375,16 +1478,68 @@ export function LiveMode({
       }
     }
     const supabase = createClient();
-    await Promise.all([
-      supabase.from("setlist_items").update({ sort_order: b.sort_order }).eq("id", a.id),
-      supabase.from("setlist_items").update({ sort_order: a.sort_order }).eq("id", b.id),
+    const res = await Promise.all([
+      supabase
+        .from("setlist_items")
+        .update({ sort_order: b.sort_order })
+        .eq("id", a.id)
+        .select("id"),
+      supabase
+        .from("setlist_items")
+        .update({ sort_order: a.sort_order })
+        .eq("id", b.id)
+        .select("id"),
     ]).finally(() => {
       // clear the gate even if the round-trip threw, or refetches stay deferred
       writesInFlightRef.current--;
     });
+    if (!reorderLanded(res)) return;
     bcastSetlistChanged();
     // a refetch landed while we were writing — pull it now that we're settled
     if (missedRefetchRef.current) refetchRef.current();
+  }
+
+  /**
+   * Did a live reorder actually land? The list was moved OPTIMISTICALLY, and the
+   * two ways it can fail are both silent: an error (a demoted account, a dead
+   * connection) and a 0-row update — which is what a request sent as anon looks
+   * like after a failed token refresh, with no error at all. Either way this
+   * device would then broadcast "setlist-changed", every OTHER device would
+   * refetch the unchanged server order, and the show would run with two different
+   * running orders: the controller's NEXT travels as an INDEX, so the viewers
+   * would light up a different song. Say so and pull the board back to server
+   * truth instead.
+   *
+   * OFFLINE is the one failure that is not a failure. A show is meant to run with
+   * no network at all, so the new order stands HERE — it just can't reach anyone
+   * else. Keep it, say exactly that, and don't try to "restore" from a server we
+   * can't even reach.
+   */
+  function reorderLanded(
+    results: { error: { message: string } | null; data: unknown[] | null }[]
+  ): boolean {
+    const err = results.find((r) => r.error)?.error;
+    const missed = results.some((r) => !r.error && (r.data?.length ?? 0) === 0);
+    if (!err && !missed) return true;
+    if (err && isOffline()) {
+      toast.warning("ออฟไลน์ — สลับลำดับแล้วเฉพาะเครื่องนี้", {
+        description: "โชว์เดินตามลำดับใหม่ที่นี่ แต่เครื่องอื่นยังเห็นลำดับเดิมจนกว่าเน็ตจะกลับ",
+        id: "reorder-offline",
+      });
+      return false; // nothing to broadcast, nothing to re-pull
+    }
+    toast.error("เรียงลำดับไม่สำเร็จ", {
+      description: err
+        ? err.message
+        : "อาจไม่มีสิทธิ์แก้ หรือหลุดการเชื่อมต่อชั่วคราว — ดึงลำดับจากเซิร์ฟเวอร์กลับมาแล้ว",
+    });
+    refetchRef.current();
+    return false;
+  }
+
+  /** navigator says there's no network — a normal state for this screen, not an error. */
+  function isOffline(): boolean {
+    return typeof navigator !== "undefined" && navigator.onLine === false;
   }
 
   // "จบโชว์" — freeze the accumulated clock + SAVE it as the last-show record (kept
@@ -1455,16 +1610,21 @@ export function LiveMode({
       }
     }
     const supabase = createClient();
-    await Promise.all(
+    const res = await Promise.all(
       renumbered
         .filter((it) => orig.find((o) => o.id === it.id)?.sort_order !== it.sort_order)
         .map((it) =>
-          supabase.from("setlist_items").update({ sort_order: it.sort_order }).eq("id", it.id)
+          supabase
+            .from("setlist_items")
+            .update({ sort_order: it.sort_order })
+            .eq("id", it.id)
+            .select("id")
         )
     ).finally(() => {
       // clear the gate even if the round-trip threw, or refetches stay deferred
       writesInFlightRef.current--;
     });
+    if (!reorderLanded(res)) return;
     bcastSetlistChanged();
     // a refetch landed while we were writing — pull it now that we're settled
     if (missedRefetchRef.current) refetchRef.current();
