@@ -61,7 +61,10 @@ export function DeleteEventButton({
       onClick={onClick}
       disabled={busy}
       title="ลบงานนี้"
-      className="absolute bottom-2 right-12 z-10 flex h-8 w-8 items-center justify-center rounded-md border bg-background/80 text-muted-foreground opacity-0 shadow-sm backdrop-blur transition hover:text-destructive focus:opacity-100 group-hover:opacity-100"
+      // See duplicate-event-button: hover-reveal made this unreachable on touch,
+      // which meant an event could not be deleted at all from an iPad — this is the
+      // only delete control in the app.
+      className="absolute bottom-2 right-12 z-10 flex h-9 w-9 items-center justify-center rounded-md border bg-background/80 text-muted-foreground shadow-sm backdrop-blur transition hover:text-destructive focus:opacity-100 [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover:opacity-100"
     >
       {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
     </button>

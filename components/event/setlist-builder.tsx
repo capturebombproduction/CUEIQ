@@ -85,7 +85,11 @@ function DurationField({
     <Input
       value={text}
       disabled={disabled}
-      inputMode="numeric"
+      // NOT inputMode="numeric": iOS renders that as a bare 0-9 keypad with no
+      // colon, so on an iPad the one format this field asks for cannot be typed.
+      // Worse, the fallback people reach for is silently wrong — parse reads a
+      // lone number as SECONDS, so "345" meaning 3:45 commits 5:45 with no error.
+      inputMode="text"
       placeholder="m:ss"
       className="tabular-nums"
       onChange={(e) => setText(e.target.value)}
@@ -100,6 +104,61 @@ function DurationField({
         } else {
           onCommit(s);
         }
+      }}
+    />
+  );
+}
+
+/**
+ * "เล่นซ้อน" — how many seconds this item starts BEFORE the previous one ends,
+ * held as a negative number because that is how พี่ reads it (and how Quick Show
+ * takes it). A controlled numeric field cannot express that on a phone: iOS's
+ * numeric keypad has no minus key, and even where one exists the intermediate
+ * text "-" parses to NaN, so a controlled value would snap back to 0 the instant
+ * the minus was typed and the user could never reach "-5". So the text is buffered
+ * here and only a COMPLETE number is propagated; blur normalizes and commits.
+ */
+function OverlapInput({
+  seconds,
+  disabled,
+  onChange,
+  onCommit,
+}: {
+  seconds: number;
+  disabled?: boolean;
+  onChange: (s: number) => void;
+  onCommit: (s: number) => void;
+}) {
+  const [text, setText] = useState(String(seconds));
+  useEffect(() => {
+    setText(String(seconds));
+  }, [seconds]);
+  const parse = (raw: string): number | null => {
+    const t = raw.trim();
+    if (t === "" || t === "-") return null; // mid-typing, not a value yet
+    const n = Number(t);
+    return Number.isFinite(n) ? Math.max(-300, Math.min(0, Math.round(n))) : null;
+  };
+  return (
+    <Input
+      type="text"
+      inputMode="text"
+      placeholder="เช่น -5"
+      className="tabular-nums"
+      value={text}
+      disabled={disabled}
+      onChange={(e) => {
+        setText(e.target.value);
+        const n = parse(e.target.value);
+        if (n != null) onChange(n);
+      }}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+      }}
+      onBlur={(e) => {
+        const n = parse(e.target.value) ?? 0;
+        setText(String(n));
+        onCommit(n);
       }}
     />
   );
@@ -1150,24 +1209,15 @@ export function SetlistBuilder({
                   <Label className="text-xs text-muted-foreground">
                     เล่นซ้อน (วิ · เริ่มก่อนเพลงก่อนจบ)
                   </Label>
-                  <Input
-                    type="number"
-                    max={0}
-                    min={-300}
-                    placeholder="เช่น -5"
-                    className="tabular-nums"
-                    value={it.buffer_before_seconds}
+                  {/* type="number" made this unreachable on iOS, whose numeric keypad
+                      has no minus key: an iPad user could only type positives, which
+                      Math.min(0, …) silently flattened to 0 — the overlap looked
+                      accepted and simply never happened. See OverlapInput. */}
+                  <OverlapInput
+                    seconds={it.buffer_before_seconds}
                     disabled={!rowEditable}
-                    onChange={(e) =>
-                      setLocal(it.id, {
-                        buffer_before_seconds: Math.min(0, Number(e.target.value) || 0),
-                      })
-                    }
-                    onBlur={(e) =>
-                      persist(it.id, {
-                        buffer_before_seconds: Math.min(0, Number(e.target.value) || 0),
-                      })
-                    }
+                    onChange={(s) => setLocal(it.id, { buffer_before_seconds: s })}
+                    onCommit={(s) => persist(it.id, { buffer_before_seconds: s })}
                   />
                 </div>
                 <div className="space-y-1 sm:col-span-2">

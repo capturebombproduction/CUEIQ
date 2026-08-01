@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { Copy, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { createClient } from "@/lib/supabase/client";
+import { useConfirm } from "@/components/ui/confirm-dialog";
 
 // Idol groups run the same show repeatedly, so let an editor clone an event with
 // its schedule + setlist + mic map in one click. Audio files are NOT copied: a
@@ -24,12 +25,24 @@ function childRows(rows: Row[] | null, drop: string[], eventId: string): Row[] {
 
 export function DuplicateEventButton({ eventId }: { eventId: string }) {
   const router = useRouter();
+  const confirm = useConfirm();
   const [busy, setBusy] = useState(false);
 
   async function duplicate(e: React.MouseEvent) {
     e.preventDefault(); // the card is a <Link> — don't navigate
     e.stopPropagation();
     if (busy) return;
+    // Duplicating writes a whole new event (plus its schedule, setlist and mics)
+    // and then navigates to it. That is too much to happen from one tap with no
+    // question asked — especially on a phone, where this button sits on top of a
+    // card people tap to open.
+    const ok = await confirm({
+      title: "ทำสำเนางานนี้?",
+      description:
+        "จะสร้างงานใหม่ชื่อ “… (สำเนา)” เป็นฉบับร่าง พร้อมคิว / เซ็ตลิสต์ / ไมค์ชุดเดียวกัน แล้วเปิดงานสำเนาให้เลย",
+      confirmText: "ทำสำเนา",
+    });
+    if (!ok) return;
     setBusy(true);
     const supabase = createClient();
     try {
@@ -101,7 +114,12 @@ export function DuplicateEventButton({ eventId }: { eventId: string }) {
       onClick={duplicate}
       disabled={busy}
       title="ก๊อปงานนี้เป็นงานใหม่ (รวมคิว / เซ็ตลิสต์ / ไมค์ — ไม่รวมไฟล์เพลง)"
-      className="absolute bottom-2 right-2 z-10 flex h-8 w-8 items-center justify-center rounded-md border bg-background/80 text-muted-foreground opacity-0 shadow-sm backdrop-blur transition hover:text-primary focus:opacity-100 group-hover:opacity-100 disabled:opacity-100"
+      // Was `opacity-0 group-hover:opacity-100`: a touch device never hovers, so
+      // this control was permanently invisible on the iPads the bands use — and
+      // still tappable, sitting over the bottom-right corner of a card that is
+      // itself a link. Reveal-on-hover only where hover exists; everywhere else it
+      // is simply visible.
+      className="absolute bottom-2 right-2 z-10 flex h-9 w-9 items-center justify-center rounded-md border bg-background/80 text-muted-foreground shadow-sm backdrop-blur transition hover:text-primary focus:opacity-100 disabled:opacity-100 [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover:opacity-100"
     >
       {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Copy className="h-4 w-4" />}
     </button>

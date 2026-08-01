@@ -604,13 +604,19 @@ export function RunOrderBuilder({
           {ordered.map((r, i) => (
             <div key={r.id} className="rounded-lg border bg-card p-2">
               <div className="flex flex-wrap items-center gap-2">
-                <div className="flex flex-col">
+                {/* These carried no size classes, so each button collapsed to its
+                    16px icon and the pair sat flush — one 16px target directly on
+                    top of a 16px target that does the opposite, and they are the
+                    ONLY reorder control here. A mis-tap reorders the festival
+                    running order and broadcasts it to the live คุมคิว board. */}
+                <div className="flex flex-col gap-0.5">
                   <button
                     type="button"
                     onClick={() => move(r.id, -1)}
                     disabled={i === 0}
-                    className="text-muted-foreground disabled:opacity-30"
+                    className="flex h-8 w-8 items-center justify-center rounded text-muted-foreground hover:bg-muted disabled:opacity-30"
                     aria-label="เลื่อนขึ้น"
+                    title="เลื่อนขึ้น"
                   >
                     <ArrowUp className="h-4 w-4" />
                   </button>
@@ -618,8 +624,9 @@ export function RunOrderBuilder({
                     type="button"
                     onClick={() => move(r.id, 1)}
                     disabled={i === ordered.length - 1}
-                    className="text-muted-foreground disabled:opacity-30"
+                    className="flex h-8 w-8 items-center justify-center rounded text-muted-foreground hover:bg-muted disabled:opacity-30"
                     aria-label="เลื่อนลง"
+                    title="เลื่อนลง"
                   >
                     <ArrowDown className="h-4 w-4" />
                   </button>

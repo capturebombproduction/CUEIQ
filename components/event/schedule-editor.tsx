@@ -2,7 +2,7 @@
 
 import { useRef, useState } from "react";
 import { toast } from "sonner";
-import { GripVertical, Trash2, Plus, Clock } from "lucide-react";
+import { GripVertical, Trash2, Plus, Clock, ChevronUp, ChevronDown } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { newLocalRowId } from "@/lib/mgmt-outbox";
 import { OFFLINE_QUEUED_MESSAGE, tryQueueChildList } from "@/lib/mgmt-write";
@@ -177,28 +177,19 @@ export function ScheduleEditor({
     }
   }
 
-  async function handleDrop(targetIndex: number) {
-    const from = dragIndex.current;
-    if (from === null || from === targetIndex) {
-      dragIndex.current = null;
-      setDragOverIndex(null);
-      return;
-    }
-    const next = [...items];
-    const [moved] = next.splice(from, 1);
-    next.splice(targetIndex, 0, moved);
-    // renumber sort_order 1..n
+  /**
+   * Commit `next` as the new order: renumber 1..n and persist only the rows whose
+   * OWN sort_order actually changed (comparing by id, not by the item that happened
+   * to share an index — otherwise nothing persists). Shared by the desktop drag and
+   * the ▲▼ buttons so the two can never drift apart.
+   */
+  async function applyOrder(next: ScheduleItem[]) {
+    const before = items;
     const renumbered = next.map((it, i) => ({ ...it, sort_order: i + 1 }));
     setItems(renumbered);
-    dragIndex.current = null;
-    setDragOverIndex(null);
-
-    // compare each item's new sort_order against its OWN previous value (by id),
-    // not the item that happened to share its index — otherwise nothing persists
-    const prevById = new Map(items.map((it) => [it.id, it.sort_order]));
-    const changed = renumbered.filter(
-      (it) => prevById.get(it.id) !== it.sort_order
-    );
+    const prevById = new Map(before.map((it) => [it.id, it.sort_order]));
+    const changed = renumbered.filter((it) => prevById.get(it.id) !== it.sort_order);
+    if (changed.length === 0) return;
     const { error } = await Promise.all(
       changed.map((it) =>
         supabase
@@ -210,8 +201,34 @@ export function ScheduleEditor({
     if (error) {
       if (await queueOffline(renumbered, error.message)) return;
       toast.error("Reorder failed", { description: error.message });
-      setItems(items);
+      setItems(before);
     }
+  }
+
+  async function handleDrop(targetIndex: number) {
+    const from = dragIndex.current;
+    dragIndex.current = null;
+    setDragOverIndex(null);
+    if (from === null || from === targetIndex) return;
+    const next = [...items];
+    const [moved] = next.splice(from, 1);
+    next.splice(targetIndex, 0, moved);
+    await applyOrder(next);
+  }
+
+  /**
+   * The touch half of reordering. HTML5 drag never starts from a finger, so on the
+   * iPads and iPhones the bands actually use, the grip handle above does nothing —
+   * and this list had no other control, which left the call sheet stuck in the
+   * order rows happened to be created in (it drives the printed run sheet, ordered
+   * by sort_order). Every other ordered list in the app already ships this pair.
+   */
+  async function move(index: number, dir: -1 | 1) {
+    const target = index + dir;
+    if (target < 0 || target >= items.length) return;
+    const next = [...items];
+    [next[index], next[target]] = [next[target], next[index]];
+    await applyOrder(next);
   }
 
   // Day span: earliest start → latest end (end falls back to its start time).
@@ -338,12 +355,39 @@ export function ScheduleEditor({
             <div className="flex items-end justify-end gap-1 sm:col-span-2">
               {editable && (
                 <>
+                  {/* Touch can't start an HTML5 drag, so these are the ONLY way to
+                      reorder on the iPads the bands work from. Full-size targets,
+                      not the 16px icon boxes — a mis-tap here reorders the call
+                      sheet the crew reads. */}
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    disabled={idx === 0}
+                    title="เลื่อนขึ้น"
+                    aria-label="เลื่อนขึ้น"
+                    onClick={() => move(idx, -1)}
+                  >
+                    <ChevronUp className="h-4 w-4" />
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    disabled={idx === items.length - 1}
+                    title="เลื่อนลง"
+                    aria-label="เลื่อนลง"
+                    onClick={() => move(idx, 1)}
+                  >
+                    <ChevronDown className="h-4 w-4" />
+                  </Button>
                   <button
                     type="button"
                     draggable
                     onDragStart={() => { dragIndex.current = idx; }}
                     onDragEnd={() => { dragIndex.current = null; setDragOverIndex(null); }}
-                    className="cursor-grab rounded p-1.5 text-muted-foreground hover:bg-muted active:cursor-grabbing"
+                    className="hidden cursor-grab rounded p-1.5 text-muted-foreground hover:bg-muted active:cursor-grabbing sm:block"
+                    title="ลากเพื่อสลับลำดับ (เดสก์ท็อป) — มือถือใช้ปุ่ม ▲▼"
                     aria-label="Drag to reorder"
                   >
                     <GripVertical className="h-4 w-4" />

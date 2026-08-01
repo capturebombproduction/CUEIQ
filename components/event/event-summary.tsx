@@ -471,8 +471,15 @@ export function EventSummary({
                       <TableHead className={`w-24 py-2 text-xs ${isCapturing ? "hidden" : "hidden sm:table-cell"}`}>Start – End</TableHead>
                     )}
                     <TableHead className="py-2 text-xs">Title / Topic</TableHead>
-                    <TableHead className="hidden w-16 py-2 text-right text-xs sm:table-cell">Duration</TableHead>
-                    <TableHead className="hidden w-20 py-2 text-right text-xs sm:table-cell">Running Time</TableHead>
+                    {/* These two were `hidden sm:table-cell` with no capture rule,
+                        so a run sheet exported from a PHONE silently came out
+                        without Duration or Running Time while the same export from
+                        a laptop carried both — the same "the image says less than
+                        the app does" defect the mic column already had. Forced on
+                        during capture; on-screen the phone gets them inlined under
+                        the title instead (below). */}
+                    <TableHead className={`w-16 py-2 text-right text-xs ${isCapturing ? "" : "hidden sm:table-cell"}`}>Duration</TableHead>
+                    <TableHead className={`w-20 py-2 text-right text-xs ${isCapturing ? "" : "hidden sm:table-cell"}`}>Running Time</TableHead>
                     <TableHead className={`w-40 py-2 text-xs ${isCapturing ? "hidden" : "hidden lg:table-cell"}`}>Mic Assignment</TableHead>
                   </TableRow>
                 </TableHeader>
@@ -504,6 +511,16 @@ export function EventSummary({
                             </span>
                           )}
                           <span className="text-xs sm:text-sm">{it.title || "—"}</span>
+                          {/* Same treatment the Start–End cell gets: the Duration
+                              and Running Time columns are dropped below sm, so on a
+                              phone they'd otherwise exist nowhere at all. Suppressed
+                              during capture, where the real columns are shown. */}
+                          <span
+                            className={`block tabular-nums text-[10px] font-normal text-muted-foreground ${isCapturing ? "hidden" : "sm:hidden"}`}
+                          >
+                            ยาว {formatDuration(it.duration_seconds)} · สะสม{" "}
+                            {formatDuration(t?.accumulatedSec ?? 0)}
+                          </span>
                           {it.notes && (
                             <span className="block text-[10px] font-normal text-muted-foreground">
                               {it.notes}
@@ -524,12 +541,14 @@ export function EventSummary({
                             </span>
                           )}
                         </TableCell>
-                        {/* Duration — hidden on portrait */}
-                        <TableCell className="hidden py-1.5 text-right tabular-nums text-xs sm:table-cell">
+                        {/* Duration / Running Time — dropped on a narrow screen to
+                            keep the table readable (inlined under the title there),
+                            but ALWAYS present in an export so the JPG doesn't
+                            depend on which device pressed the button. */}
+                        <TableCell className={`py-1.5 text-right tabular-nums text-xs ${isCapturing ? "" : "hidden sm:table-cell"}`}>
                           {formatDuration(it.duration_seconds)}
                         </TableCell>
-                        {/* Running Time — hidden on portrait */}
-                        <TableCell className="hidden py-1.5 text-right tabular-nums text-xs text-muted-foreground sm:table-cell">
+                        <TableCell className={`py-1.5 text-right tabular-nums text-xs text-muted-foreground ${isCapturing ? "" : "hidden sm:table-cell"}`}>
                           {formatDuration(t?.accumulatedSec ?? 0)}
                         </TableCell>
                         {/* Mic — landscape/tablet only, hidden during export */}
