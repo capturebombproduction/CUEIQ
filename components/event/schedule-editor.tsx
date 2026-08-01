@@ -190,18 +190,26 @@ export function ScheduleEditor({
     const prevById = new Map(before.map((it) => [it.id, it.sort_order]));
     const changed = renumbered.filter((it) => prevById.get(it.id) !== it.sort_order);
     if (changed.length === 0) return;
-    const { error } = await Promise.all(
-      changed.map((it) =>
-        supabase
-          .from("schedule_items")
-          .update({ sort_order: it.sort_order })
-          .eq("id", it.id)
-      )
-    ).then((results) => results.find((r) => r.error) ?? { error: null });
-    if (error) {
-      if (await queueOffline(renumbered, error.message)) return;
-      toast.error("Reorder failed", { description: error.message });
-      setItems(before);
+    // These writes are ABSOLUTE positions, so two of them in flight at once can
+    // land out of order and leave two rows sharing a sort_order — which then makes
+    // the next ▲ a no-op forever. One at a time; the buttons gate on this.
+    setBusy(true);
+    try {
+      const { error } = await Promise.all(
+        changed.map((it) =>
+          supabase
+            .from("schedule_items")
+            .update({ sort_order: it.sort_order })
+            .eq("id", it.id)
+        )
+      ).then((results) => results.find((r) => r.error) ?? { error: null });
+      if (error) {
+        if (await queueOffline(renumbered, error.message)) return;
+        toast.error("Reorder failed", { description: error.message });
+        setItems(before);
+      }
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -352,18 +360,23 @@ export function ScheduleEditor({
               />
             </div>
 
-            <div className="flex items-end justify-end gap-1 sm:col-span-2">
+            <div className="flex shrink-0 items-end justify-end gap-1 sm:col-span-2">
               {editable && (
                 <>
                   {/* Touch can't start an HTML5 drag, so these are the ONLY way to
                       reorder on the iPads the bands work from. Full-size targets,
                       not the 16px icon boxes — a mis-tap here reorders the call
-                      sheet the crew reads. */}
+                      sheet the crew reads. Everything here is shrink-0: four
+                      controls in a 2/12 cell would otherwise squash to ~22px on an
+                      iPad in portrait, which is worse than what this replaced. The
+                      grip only appears from lg: up, where there is both room and a
+                      mouse to use it with. */}
                   <Button
                     type="button"
                     variant="ghost"
                     size="icon"
-                    disabled={idx === 0}
+                    className="shrink-0"
+                    disabled={idx === 0 || busy}
                     title="เลื่อนขึ้น"
                     aria-label="เลื่อนขึ้น"
                     onClick={() => move(idx, -1)}
@@ -374,7 +387,8 @@ export function ScheduleEditor({
                     type="button"
                     variant="ghost"
                     size="icon"
-                    disabled={idx === items.length - 1}
+                    className="shrink-0"
+                    disabled={idx === items.length - 1 || busy}
                     title="เลื่อนลง"
                     aria-label="เลื่อนลง"
                     onClick={() => move(idx, 1)}
@@ -386,7 +400,7 @@ export function ScheduleEditor({
                     draggable
                     onDragStart={() => { dragIndex.current = idx; }}
                     onDragEnd={() => { dragIndex.current = null; setDragOverIndex(null); }}
-                    className="hidden cursor-grab rounded p-1.5 text-muted-foreground hover:bg-muted active:cursor-grabbing sm:block"
+                    className="hidden shrink-0 cursor-grab rounded p-1.5 text-muted-foreground hover:bg-muted active:cursor-grabbing lg:block"
                     title="ลากเพื่อสลับลำดับ (เดสก์ท็อป) — มือถือใช้ปุ่ม ▲▼"
                     aria-label="Drag to reorder"
                   >
@@ -396,7 +410,7 @@ export function ScheduleEditor({
                     type="button"
                     variant="ghost"
                     size="icon"
-                    className="text-destructive hover:text-destructive"
+                    className="shrink-0 text-destructive hover:text-destructive"
                     onClick={() => removeItem(it.id)}
                   >
                     <Trash2 className="h-4 w-4" />

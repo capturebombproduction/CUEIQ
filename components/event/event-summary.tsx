@@ -305,7 +305,7 @@ export function EventSummary({
           )}
           บันทึกเป็นรูป (JPG)
         </Button>
-        <PrintButton />
+        <PrintButton altHint="หรือกด “บันทึกเป็นรูป (JPG)” ที่อยู่ข้าง ๆ" />
         <p className="self-center text-xs text-muted-foreground">
           หน้านี้เป็นสรุปอย่างเดียว — แก้ข้อมูลที่แท็บ/ปุ่มด้านล่าง
         </p>

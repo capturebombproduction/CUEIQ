@@ -44,6 +44,31 @@ export function registerPendingAudioReader(reader: PendingAudioReader | null): v
   pendingAudioReader = reader;
 }
 
+type PendingAudioDropper = (songId: string) => Promise<void>;
+
+let pendingAudioDropper: PendingAudioDropper | null = null;
+
+/** Desktop-only: let shared UI cancel a queued upload that has been superseded. */
+export function registerPendingAudioDropper(dropper: PendingAudioDropper | null): void {
+  pendingAudioDropper = dropper;
+}
+
+/**
+ * Forget a queued upload for this song, bytes and all. Called when something makes
+ * it obsolete — most importantly a LATER successful upload: without this the device
+ * keeps a local-source override of the old take, and lib/local-source is the FIRST
+ * thing Live Mode consults, so the machine wired to the PA would play a take
+ * nobody else has.
+ */
+export async function dropPendingAudioUpload(songId: string): Promise<void> {
+  if (!pendingAudioDropper) return;
+  try {
+    await pendingAudioDropper(songId);
+  } catch {
+    /* best effort — never fail a successful upload over its own bookkeeping */
+  }
+}
+
 /**
  * Which songs have bytes sitting on this device waiting to become the master.
  * Always resolves — the web (and any failure) reports none, so the Library simply

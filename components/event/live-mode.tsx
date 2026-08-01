@@ -181,7 +181,12 @@ export function LiveMode({
   // without cutting the current one. audioRef = primary (drives the UI scrubber).
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const audioRef2 = useRef<HTMLAudioElement | null>(null);
-  const overlapNextIdRef = useRef<string | null>(null); // item pre-rolling on secondary
+  const overlapNextIdRef = useRef<string | null>(null); // pre-roll PROVEN to be sounding
+  // What is loaded on the secondary right now, set synchronously at pre-roll time.
+  // The claim above waits for play() to resolve; this does not, so goto() can always
+  // silence a pre-roll it isn't going to promote (otherwise the same track plays on
+  // both elements at once).
+  const preRollIdRef = useRef<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const loadTargetRef = useRef<string | null>(null);
   const [audioUrls, setAudioUrls] = useState<Record<string, string>>({}); // itemId → objectURL
@@ -834,21 +839,23 @@ export function LiveMode({
         sec.src = url;
         sec.currentTime = 0;
         sec.volume = Math.min(1, Math.max(0, (volumesRef.current[nxt.id] ?? 100) / 100));
-        // Only claim the pre-roll once it is genuinely SOUNDING. Marking it up front
-        // meant a blocked pre-roll (WebKit refuses a play() on an element the user
-        // has never touched, and the secondary is never touched) still got promoted
-        // to primary on advance — handing the whole rest of the show to a locked
-        // element. Falling back leaves goto() to take its ordinary hard-cut path on
-        // the element that IS unlocked.
-        sec
-          .play()
-          .then(() => {
-            overlapNextIdRef.current = nxt.id; // promoted to primary on advance
-          })
-          .catch((err) => {
-            overlapNextIdRef.current = null;
-            onPlayRejectedRef.current(nxt.id, err, false); // the current track is still sounding
-          });
+        // Synchronous record of WHAT is loaded on the secondary — needed by goto()
+        // to stop a pre-roll it decides not to promote. Distinct from
+        // overlapNextIdRef, which means "proven to be sounding".
+        preRollIdRef.current = nxt.id;
+        // Claim SYNCHRONOUSLY and retract on failure — not the other way round. A
+        // play() promise resolves only once audio actually begins, which on an 88 MB
+        // master is easily longer than the remaining lead, so waiting for it would
+        // leave goto() thinking there was no pre-roll: it would hard-cut the same
+        // track on the primary while the secondary carried on, and the PA would get
+        // two offset copies of one song. Retracting on the catch keeps the seamless
+        // hand-off everywhere it worked before, and a WebKit-refused pre-roll leaves
+        // the element PAUSED — which is what goto() actually checks below.
+        overlapNextIdRef.current = nxt.id; // promoted to primary on advance
+        sec.play().catch((err) => {
+          if (overlapNextIdRef.current === nxt.id) overlapNextIdRef.current = null;
+          onPlayRejectedRef.current(nxt.id, err, false); // the current track is still sounding
+        });
       }
     }
   }, [now, state, items, audioUrls]);
@@ -1648,6 +1655,7 @@ export function LiveMode({
       if (state.mode === "auto") {
         audioRef2.current?.pause(); // also halt any overlap pre-roll
         overlapNextIdRef.current = null;
+        preRollIdRef.current = null;
         autoTriggeredForRef.current = null; // let overlap re-arm on resume
       }
     } else {
@@ -1843,6 +1851,7 @@ export function LiveMode({
     const incoming = audioRef2.current;
     if (!incoming || !audioRef.current) return;
     overlapNextIdRef.current = null; // the secondary element is ours now
+    preRollIdRef.current = null;
     endedItemRef.current = null;
     incoming.pause();
     incoming.src = url;
@@ -1976,6 +1985,7 @@ export function LiveMode({
       if (mode === "manual") {
         audioRef2.current?.pause();
         overlapNextIdRef.current = null;
+        preRollIdRef.current = null;
       }
       apply({ ...state, mode });
     }
@@ -2022,6 +2032,17 @@ export function LiveMode({
       if (it && overlapNextIdRef.current === it.id && audioRef2.current?.paused) {
         overlapNextIdRef.current = null;
       }
+      // …and whenever we are NOT promoting — a refused pre-roll, or the operator
+      // tapping some other row — the secondary may still be sounding the track it
+      // pre-rolled. The ordinary branch below starts a track on the PRIMARY, so
+      // leaving it running puts two songs out of the PA at once. Silence it first.
+      if (!it || overlapNextIdRef.current !== it.id) {
+        if (preRollIdRef.current) {
+          audioRef2.current?.pause();
+          preRollIdRef.current = null;
+          overlapNextIdRef.current = null;
+        }
+      }
       if (it && overlapNextIdRef.current === it.id) {
         const lead = -(it.buffer_before_seconds ?? 0);
         swapAudio();
@@ -2029,6 +2050,7 @@ export function LiveMode({
         setPlayingId(it.id);
         setAudioPlaying(true);
         overlapNextIdRef.current = null;
+        preRollIdRef.current = null; // it is the primary now, not a pre-roll
         apply({
           ...state,
           currentIndex: index,
@@ -2085,6 +2107,7 @@ export function LiveMode({
     audioRef.current?.pause();
     audioRef2.current?.pause();
     overlapNextIdRef.current = null;
+    preRollIdRef.current = null;
     autoTriggeredForRef.current = null;
     autoAdvanceForRef.current = null;
     endedItemRef.current = null;

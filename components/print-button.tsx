@@ -16,7 +16,15 @@ import { isIOS, isStandalone } from "@/lib/platform";
  * same person on the same page in Safari has it), say what to do instead and point
  * at the JPG export sitting next to it.
  */
-export function PrintButton({ label = "พิมพ์ / บันทึก PDF" }: { label?: string }) {
+export function PrintButton({
+  label = "พิมพ์ / บันทึก PDF",
+  /** Named alternative on THIS page, if there is one — the public share page has
+   *  no JPG export, so pointing at one would send the reader hunting. */
+  altHint,
+}: {
+  label?: string;
+  altHint?: string;
+}) {
   const [dead, setDead] = useState(false);
   useEffect(() => {
     // After mount only: both call sites are server-rendered.
@@ -29,7 +37,7 @@ export function PrintButton({ label = "พิมพ์ / บันทึก PDF"
       onClick={() =>
         dead
           ? toast.info("แอปที่ติดตั้งบน iOS สั่งพิมพ์ไม่ได้", {
-              description: "เปิดหน้านี้ใน Safari เพื่อพิมพ์ / บันทึก PDF หรือกด “บันทึกเป็นรูป (JPG)”",
+              description: `เปิดหน้านี้ใน Safari เพื่อพิมพ์ / บันทึก PDF${altHint ? ` ${altHint}` : ""}`,
             })
           : window.print()
       }

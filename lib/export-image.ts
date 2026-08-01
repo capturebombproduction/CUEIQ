@@ -67,7 +67,15 @@ export async function captureElementToImage(
     }
 
     // Web Share API — saves directly to gallery on iOS/Android.
-    if (navigator.share && navigator.canShare) {
+    // NOT under Electron: Chromium exposes navigator.share and canShare({files})
+    // returns true there, but the desktop app's browser process implements no share
+    // service, so the call rejects with a synthetic AbortError that is
+    // indistinguishable from a user dismissal. Taking the download path it always
+    // took is both correct and what a desktop user wants anyway.
+    const isNative =
+      typeof window !== "undefined" &&
+      !!(window as Window & { cueiqNative?: unknown }).cueiqNative;
+    if (!isNative && navigator.share && navigator.canShare) {
       try {
         const res = await fetch(dataUrl);
         const blob = await res.blob();
@@ -77,16 +85,20 @@ export async function captureElementToImage(
           return "shared";
         }
       } catch (err) {
-        // Dismissing the iOS share sheet REJECTS the promise — and a bare catch
-        // treated that exactly like "this browser can't share", fell through to the
+        // Dismissing the share sheet REJECTS the promise — and a bare catch treated
+        // that exactly like "this browser can't share", fell through to the
         // <a download> path (which iOS ignores) and told the user "บันทึกรูปแล้ว".
         // So the one action a person takes to say "no, not that" was reported back
-        // as done, with nothing saved anywhere. NotAllowedError is the same story
-        // from the other side (the tap's activation expired while the image
-        // rendered) — also the user's own gesture, also not a fallback case.
+        // as done, with nothing saved anywhere.
+        //
+        // ONLY AbortError. NotAllowedError means the share sheet never opened at
+        // all — usually because the tap's activation window expired while a big
+        // board rendered — and the user cannot have cancelled something they were
+        // never shown. That one must keep falling through to the download, which is
+        // exactly what used to save the file for them on Chromium.
         const name = err instanceof Error ? err.name : "";
-        if (name === "AbortError" || name === "NotAllowedError") return "cancelled";
-        // genuinely unsupported → the download fallback below is the right answer
+        if (name === "AbortError") return "cancelled";
+        // genuinely unsupported / never presented → the download fallback below
       }
     }
 

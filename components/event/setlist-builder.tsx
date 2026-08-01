@@ -158,6 +158,12 @@ function OverlapInput({
       onBlur={(e) => {
         const n = parse(e.target.value) ?? 0;
         setText(String(n));
+        // onChange first: clearing the field (or leaving it as a bare "-") never
+        // parsed, so the parent still held the OLD value while blur wrote the new
+        // one to the DB. The row's เริ่ม/จบ/สะสม, the total and the Hard Out badge
+        // are all computed from that stale local copy — and a later version save
+        // would have written it back over what the DB now says.
+        onChange(n);
         onCommit(n);
       }}
     />

@@ -4,8 +4,16 @@ import { HashRouter } from "react-router-dom";
 import { Toaster } from "sonner";
 import { createClient } from "@/lib/supabase/client";
 import { configureAudioTransport } from "@/lib/audio-remote";
-import { registerMgmtQueueSink, registerPendingAudioReader } from "@/lib/mgmt-write";
-import { enqueueMgmtOp, pendingAudioSongIds } from "~/data/mgmt-outbox";
+import {
+  registerMgmtQueueSink,
+  registerPendingAudioDropper,
+  registerPendingAudioReader,
+} from "@/lib/mgmt-write";
+import {
+  dropPendingAudioUploadOp,
+  enqueueMgmtOp,
+  pendingAudioSongIds,
+} from "~/data/mgmt-outbox";
 import { App } from "~/App";
 import "./index.css";
 
@@ -16,6 +24,8 @@ registerMgmtQueueSink(enqueueMgmtOp);
 // ⭐#1 step 6: and let the shared Library ask which songs still have audio waiting
 // to be pushed, so it can badge them "รออัปโหลด" instead of looking empty-handed.
 registerPendingAudioReader(pendingAudioSongIds);
+// …and to cancel one that a later real upload has made obsolete.
+registerPendingAudioDropper(dropPendingAudioUploadOp);
 
 // Reused R2 audio transport (lib/audio-remote) targets a same-origin /api route on
 // the web; the desktop SPA has none, so point it at the web origin and authorize

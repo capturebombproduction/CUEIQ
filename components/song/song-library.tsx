@@ -35,7 +35,11 @@ import {
 } from "@/lib/local-source";
 import { AUDIO_QUEUED_MESSAGE } from "@/lib/audio-upload-queue";
 import { MGMT_OUTBOX_EVENT } from "@/lib/mgmt-outbox";
-import { listPendingAudioUploads, tryQueueAudioUpload } from "@/lib/mgmt-write";
+import {
+  dropPendingAudioUpload,
+  listPendingAudioUploads,
+  tryQueueAudioUpload,
+} from "@/lib/mgmt-write";
 import { formatDuration, parseDurationToSeconds } from "@/lib/time";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -170,6 +174,8 @@ export function SongLibrary({
   // to become the master. Empty on the web (nothing registers a reader), so this
   // costs the web build one resolved promise and renders nothing.
   const [pendingUploads, setPendingUploads] = useState<Set<string>>(new Set());
+  const pendingUploadsRef = useRef(pendingUploads);
+  pendingUploadsRef.current = pendingUploads;
   useEffect(() => {
     let alive = true;
     const refresh = () => {
@@ -477,6 +483,23 @@ export function SongLibrary({
         )
       );
       if (prevPath && prevPath !== path) removeEventAudio(prevPath).catch(() => {});
+      // A real upload supersedes anything this device had queued for the song. Left
+      // behind, its local-source override would keep winning at playback (Live Mode
+      // reads local source FIRST), so the machine wired to the PA would play the old
+      // take while every other device has this one.
+      if (pendingUploadsRef.current.has(song.id)) {
+        await dropPendingAudioUpload(song.id);
+        setPendingUploads((prev) => {
+          const n = new Set(prev);
+          n.delete(song.id);
+          return n;
+        });
+        setLocalIds((prev) => {
+          const n = new Set(prev);
+          n.delete(song.id);
+          return n;
+        });
+      }
       broadcastSongsChanged(song.group_id); // live update any open Live Mode
       toast.success("อัปโหลดไฟล์เพลงขึ้นคลังแล้ว 🎵");
       return path;
@@ -692,6 +715,12 @@ export function SongLibrary({
   // chooses which BYTES this device plays for an existing library song).
   function localSourceControls(song: Song) {
     if (!native || !song.audio_path) return null;
+    // A queued offline upload stores its bytes AS this song's local source, so
+    // "ใช้ต้นฉบับ" here would delete exactly what the queue is waiting to send —
+    // no confirm, no warning, and the venue's replacement would simply never land.
+    // The "รออัปโหลด" badge already describes the state, and "ดันขึ้นเป็นต้นฉบับ"
+    // is what the queue is about to do by itself.
+    if (pendingUploads.has(song.id)) return null;
     const busy = !!localBusy[song.id];
     if (localIds.has(song.id)) {
       return (

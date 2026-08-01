@@ -309,6 +309,23 @@ export async function pendingAudioSongIds(): Promise<Set<string>> {
   return new Set(ops.filter(isAudioUploadOp).map((op) => op.id));
 }
 
+/**
+ * Forget a queued upload for `songId` — the op AND the local bytes it points at.
+ * Used when a later real upload supersedes it: leaving the local-source override
+ * behind would make THIS machine (often the one wired to the PA) keep playing the
+ * old take while every other device has the new master.
+ */
+export async function dropPendingAudioUploadOp(songId: string): Promise<void> {
+  await withOutboxLock(async () => {
+    const mine = await listMyOps().catch(() => [] as { key: number; rec: OpRec }[]);
+    for (const { key, rec } of mine) {
+      if (isAudioUploadOp(rec.op) && rec.op.id === songId) await deleteFrom(OPS, key);
+    }
+  });
+  await clearLocalSource(songId).catch(() => {});
+  notify();
+}
+
 /** Current user's parked conflicts (with their store keys, for resolution). */
 export async function listMgmtConflicts(): Promise<{ key: number; rec: ConflictRec }[]> {
   try {
@@ -463,6 +480,14 @@ async function applyChildListOp(
 }
 
 /**
+ * How long a queued master may hold the outbox lock. Deliberately generous — a
+ * 27–88 MB WAV over venue wifi legitimately takes minutes — but finite, because
+ * the alternative is a lock nobody ever gets back. Timing out is RETRYABLE: the op
+ * stays queued and the next reconnect tries again.
+ */
+const AUDIO_UPLOAD_TIMEOUT_MS = 10 * 60_000;
+
+/**
  * ⭐#1 step 6 — push an audio file that was picked while this device was offline.
  *
  * The bytes are the song's LOCAL SOURCE (lib/local-source.ts): the same blob this
@@ -513,11 +538,30 @@ async function applyAudioUploadOp(
       return { conflict: "ไม่พบไฟล์เสียงที่รออัปโหลดในเครื่องนี้แล้ว" };
     }
     try {
-      await uploadEventAudio(op.path, local.blob, op.contentType || local.blob.type);
+      // Bounded so the OUTBOX LOCK is always given back. This runs inside
+      // withOutboxLock, and the PUT has no timeout of its own — under Electron the
+      // bytes go through the main process's net.fetch, which on a black-holed venue
+      // AP never settles. An 88 MB master hanging there would hold the lock for the
+      // rest of the session: every later offline save silently blocks behind it.
+      await Promise.race([
+        uploadEventAudio(op.path, local.blob, op.contentType || local.blob.type),
+        new Promise<never>((_, reject) =>
+          setTimeout(
+            () => reject(new Error("หมดเวลาอัปโหลดไฟล์เสียง (เครือข่ายไม่ตอบสนอง)")),
+            AUDIO_UPLOAD_TIMEOUT_MS
+          )
+        ),
+      ]);
     } catch (e) {
-      // The transport already retries and classifies; a failure here is a network
-      // one by construction, so retry on the next reconnect rather than parking.
-      throw e instanceof Error ? e : new Error(String(e));
+      // NOT every failure here is a network one: presign answers 403/500/502/503 as
+      // a thrown Error too. Rethrowing those broke doFlush's loop, which stops at
+      // the first throw — so one permanently-rejected upload wedged the ENTIRE
+      // management queue, and every setlist and schedule edit behind it stopped
+      // syncing with no error anywhere. Classify like every other write: retry the
+      // transient, park the real rejection where a human can see it.
+      const msg = e instanceof Error ? e.message : String(e);
+      if (isQueueableWriteError(msg, onLine)) throw e instanceof Error ? e : new Error(msg);
+      return { conflict: msg };
     }
     const upd = await supabase
       .from("songs")
@@ -758,9 +802,12 @@ export function resolveMgmtConflict(
           if (!(await hasLiveSession())) return { ok: false, message: NO_SESSION_REASON };
           if (isAudioUploadOp(op)) {
             const onLine = typeof navigator === "undefined" || navigator.onLine !== false;
-            const res = await applyAudioUploadOp(op, onLine, true).catch((e) => ({
-              conflict: e instanceof Error ? e.message : String(e),
-            }));
+            // A THROW here is a network failure (applyAudioUploadOp classifies the
+            // rest into a conflict reason). Let it reach the outer catch and report
+            // the generic "try again when online" — overwriting the parked reason
+            // with a raw "Failed to fetch" would permanently replace the real
+            // explanation ("someone uploaded over this song") with a transport error.
+            const res = await applyAudioUploadOp(op, onLine, true);
             if (res !== "applied") {
               // A deleted song or vanished bytes is not something retrying fixes —
               // keep it parked with THAT reason instead of "try again when online".
