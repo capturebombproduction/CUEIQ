@@ -31,6 +31,7 @@ import {
 import { toast } from "sonner";
 import { createClient } from "@/lib/supabase/client";
 import { hasLiveSession } from "@/lib/auth-session";
+import { shouldMuteOnStepDown, shouldYieldControl } from "@/lib/live-arbitration";
 import { saveAudio, loadAudioForEvent } from "@/lib/audio-store";
 import { getCachedSongBlob } from "@/lib/song-cache";
 import { getLocalSource } from "@/lib/local-source";
@@ -980,18 +981,20 @@ export function LiveMode({
       // follows the new controller's commands — see the viewer audio-sync effect.)
       if (fromController && isControllerRef.current) {
         // Two devices both think they're the controller (e.g. both pressed "เริ่มโชว์"
-        // before either's broadcast arrived). Settle it deterministically instead of
-        // both stepping down (which left a silent, uncontrolled show): a device that
-        // never actively claimed (mine == null) always yields; otherwise the MORE-RECENT
-        // claim wins (intentional take-control refreshes its stamp), ties broken by
-        // sender id so every device reaches the same verdict.
+        // before either's broadcast arrived, or both RELOADED and restored the same
+        // running show). Settled by shouldYieldControl, which guarantees exactly one
+        // of the pair steps down — the rule used to be "mine == null always yields",
+        // and two reloaded devices are both null, so both stepped down and the show
+        // ran with nobody driving it. Pure + tested in lib/live-arbitration.ts.
         const mine = controllerSinceRef.current;
         const theirs =
           typeof payload.controllerSince === "number" ? payload.controllerSince : null;
-        const iYield =
-          mine == null ||
-          (theirs != null &&
-            (theirs > mine || (theirs === mine && payload.sender > meId.current)));
+        const iYield = shouldYieldControl({
+          mine,
+          theirs,
+          myId: meId.current,
+          theirId: String(payload.sender ?? ""),
+        });
         if (!iYield) {
           // I hold the stronger claim → keep control and re-assert so the OTHER device
           // steps down. Don't adopt its state — I'm the authority.
@@ -1005,24 +1008,24 @@ export function LiveMode({
         isControllerRef.current = false;
         setIsController(false);
         audioRef2.current?.pause(); // stop only any overlap pre-roll on the secondary
-        // เครื่องเสียงคุมคนเดียว: another device just took control → step down to a
-        // SILENT view-only viewer (auto-mute) so there's never two sound hosts and
-        // the new controller's audio is the single source. The taker had to turn ITS
-        // own sound on to take control, so the show audio moves there cleanly — no
-        // stale speaker keeps playing out of step with the new controller's clock.
-        // The ONE exception is a device that RESUMED this show from its OWN local
-        // snapshot (cueiq:live) and never claimed control itself, yielding to a claim
-        // that is OLDER than this page's own life: that's a reloaded PA/speaker
-        // handing its default controller flag back to the incumbent — muting it there
-        // is what silenced a reloaded speaker mid-show. The snapshot ref (not
-        // state.begun) is the discriminator on purpose: `begun` can be adopted from
-        // ANOTHER device's broadcast (a viewer's sync-reply lands first), which would
-        // let a phone that merely joined mid-show keep its sound on = two sound hosts.
-        // Everyone else mutes: a device that was not already running this show, and
-        // any device that lost a FRESH take-control.
-        const resumedThisShow = mine == null && resumedRunRef.current;
-        const freshClaim = theirs != null && theirs + skew > mountedAtRef.current;
-        if (!resumedThisShow || freshClaim) setSoundOutput(false);
+        // เครื่องเสียงคุมคนเดียว: whoever took control had to turn their OWN output on
+        // to do it, so the sound moves there and this device goes quiet — except for a
+        // reloaded speaker handing its default flag back to the incumbent it was
+        // already following, which is what silenced a PA mid-show once. The snapshot
+        // ref (not state.begun) is the discriminator on purpose: `begun` can be adopted
+        // from another device's broadcast, and a phone that merely joined mid-show
+        // keeping its sound on would mean two sound hosts. Pure + tested in
+        // lib/live-arbitration.ts.
+        if (
+          shouldMuteOnStepDown({
+            mine,
+            theirsAtMyClock: theirs != null ? theirs + skew : null,
+            resumedOwnSnapshot: resumedRunRef.current,
+            mountedAt: mountedAtRef.current,
+          })
+        ) {
+          setSoundOutput(false);
+        }
       }
       setState({
         running: payload.running,
