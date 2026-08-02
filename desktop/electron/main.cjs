@@ -84,10 +84,36 @@ function registerIpc() {
   ipcMain.handle("cueiq:pick-audio-file", () => pickAudioFile());
 }
 
+/** Remembers the one version the operator said "ไว้ก่อน" to, so declining is not
+ *  a decision they have to make again every single launch. */
+const SKIP_FILE = () => path.join(app.getPath("userData"), "update-skip.json");
+
+function readSkippedVersion() {
+  try {
+    return JSON.parse(fs.readFileSync(SKIP_FILE(), "utf8")).version || null;
+  } catch {
+    return null;
+  }
+}
+
+function writeSkippedVersion(version) {
+  try {
+    fs.writeFileSync(SKIP_FILE(), JSON.stringify({ version }), "utf8");
+  } catch {
+    /* best-effort — worst case we ask again next launch */
+  }
+}
+
 /**
- * Check GitHub Releases for a newer build and, if found, download it in the
- * background and install it on the NEXT quit — so an update can NEVER interrupt a
- * running show. Wired to the "publish: github" config in package.json.
+ * Check GitHub Releases for a newer build and ASK before doing anything about it.
+ * Wired to the "publish: github" config in package.json.
+ *
+ * พี่'s call (2026-08-02): ASK FIRST. The installer is ~107 MB and the check fires
+ * at launch — which at a venue is the same minute the operator is setting up, on
+ * the same phone hotspot Live Mode needs for realtime and for pulling audio off R2.
+ * Downloading that unasked is the app competing with its own show. So: check
+ * quietly, ask once, and only download if the answer is yes. Installing still
+ * happens on QUIT and never mid-show.
  *
  * Gated to a packaged WINDOWS build on purpose:
  *   • dev / unpacked (`!app.isPackaged`) has nothing to update;
@@ -104,17 +130,52 @@ function initAutoUpdate() {
   } catch {
     return; // dependency not bundled — never block startup
   }
-  autoUpdater.autoDownload = true;
-  autoUpdater.autoInstallOnAppQuit = true;
+  autoUpdater.autoDownload = false; // the whole point: ask first
+  autoUpdater.autoInstallOnAppQuit = true; // …but once downloaded, install on quit
   autoUpdater.on("error", (err) => console.log("AUTOUPDATE_ERROR " + String(err)));
+
+  autoUpdater.on("update-available", async (info) => {
+    const version = info?.version ? String(info.version) : "";
+    if (version && version === readSkippedVersion()) return; // already declined this one
+    try {
+      // NO parent window on purpose: a parented box is MODAL and disables the
+      // window under it (this file relies on that at the exit confirm). The check
+      // can resolve late on a slow venue hotspot, and a modal that lands over a
+      // running show kills every click and every keyboard cue until someone finds
+      // the mouse. Parentless, it is just a window the operator can ignore.
+      const { response, checkboxChecked } = await dialog.showMessageBox({
+        type: "question",
+        buttons: ["โหลดเลย", "ไว้ก่อน"],
+        defaultId: 0,
+        cancelId: 1,
+        title: "CueIQ มีเวอร์ชันใหม่",
+        message: `มีเวอร์ชันใหม่${version ? ` (${version})` : ""}`,
+        detail:
+          "ไฟล์ประมาณ 100 MB — ถ้าอยู่หน้างานและใช้เน็ตมือถือ กด “ไว้ก่อน” ได้เลย\n" +
+          "ถ้าโหลด จะติดตั้งให้ตอนปิดโปรแกรม ไม่รบกวนระหว่างโชว์",
+        checkboxLabel: "ไม่ต้องถามเรื่องเวอร์ชันนี้อีก",
+        checkboxChecked: false,
+      });
+      if (response === 0) {
+        autoUpdater.downloadUpdate().catch((e) => console.log("AUTOUPDATE_DL_FAIL " + String(e)));
+      } else if (checkboxChecked && version) {
+        writeSkippedVersion(version);
+      }
+    } catch (e) {
+      console.log("AUTOUPDATE_PROMPT_FAIL " + String(e));
+    }
+  });
+
+  // Deliberately SILENT. A 107 MB download over venue wifi finishes minutes after
+  // it was agreed to — which can easily be mid-show — and there is nothing for the
+  // operator to do about it: autoInstallOnAppQuit already handles the rest. An
+  // announcement here would be a dialog nobody asked for at the worst moment.
+  autoUpdater.on("update-downloaded", (info) => {
+    console.log("AUTOUPDATE_READY " + String(info?.version ?? ""));
+  });
+
   autoUpdater
-    // The default toast is electron-updater's own English one. The people running
-    // shows on this app read Thai, and the one thing they need to know is that
-    // nothing is about to happen TO THEM mid-show — it installs when they quit.
-    .checkForUpdatesAndNotify({
-      title: "CueIQ มีเวอร์ชันใหม่",
-      body: "โหลดไว้ให้แล้ว — จะติดตั้งให้เองตอนปิดโปรแกรม ไม่รบกวนระหว่างโชว์",
-    })
+    .checkForUpdates()
     .catch((e) => console.log("AUTOUPDATE_CHECK_FAIL " + String(e)));
 }
 
@@ -191,6 +252,9 @@ async function createWindow() {
 
 app.whenReady().then(() => {
   registerIpc();
+  // Deliberately NOT awaited: the update prompt is parentless, so it needs no
+  // window — and awaiting the page load would let a failed load take both the
+  // updater and the activate handler down with it.
   createWindow();
   initAutoUpdate();
   app.on("activate", () => {
