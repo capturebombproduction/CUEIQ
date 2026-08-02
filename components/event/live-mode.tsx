@@ -34,7 +34,8 @@ import { hasLiveSession } from "@/lib/auth-session";
 import { shouldMuteOnStepDown, shouldYieldControl } from "@/lib/live-arbitration";
 import { saveAudio, loadAudioForEvent } from "@/lib/audio-store";
 import { getCachedSongBlob } from "@/lib/song-cache";
-import { getLocalSource } from "@/lib/local-source";
+import { getLocalSource, listLocalSourceIds } from "@/lib/local-source";
+import { MGMT_OUTBOX_EVENT } from "@/lib/mgmt-outbox";
 import { persistLastRun } from "@/lib/show-run-outbox";
 import { setLiveShowActive } from "@/lib/live-guard";
 import { getDeviceId, deviceLabel } from "@/lib/device-id";
@@ -690,15 +691,70 @@ export function LiveMode({
     };
   }, [eventId]);
 
+  // ⭐#1 step 7 — songs whose ONLY copy is a file picked on THIS device (an upload
+  // queued while offline, or the desktop "ใช้ไฟล์ในเครื่องนี้" override). Live Mode
+  // used to bail on `!audio_path` before it ever asked lib/local-source, so the one
+  // case the offline upload queue exists for produced a row that looked ready in the
+  // Library and played nothing on stage. Re-read on every queue change so a file
+  // picked in the Library reaches an already-open Show Runner.
+  const [localSongIds, setLocalSongIds] = useState<Set<string>>(new Set());
+  const localSongIdsRef = useRef(localSongIds);
+  localSongIdsRef.current = localSongIds;
+  // The first read is ASYNC (IndexedDB), and audioSig below is the download
+  // effect's only dependency — so without this gate the effect runs once with an
+  // empty set, then AGAIN when the set lands, and that second run re-issues a full
+  // presign + GET for the first ordinary master, which is still in flight. Two
+  // copies of the same 88 MB file halving each other's bandwidth is the last thing
+  // a venue link needs. Hold the effect until the answer exists (a few ms, and it
+  // settles even when IndexedDB is unavailable).
+  const [localsRead, setLocalsRead] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    const refresh = () => {
+      listLocalSourceIds()
+        .then((ids) => {
+          if (!alive) return;
+          setLocalSongIds(ids);
+          setLocalsRead(true);
+        })
+        .catch(() => {
+          if (alive) setLocalsRead(true); // no local sources ≠ never start
+        });
+    };
+    refresh();
+    window.addEventListener(MGMT_OUTBOX_EVENT, refresh);
+    return () => {
+      alive = false;
+      window.removeEventListener(MGMT_OUTBOX_EVENT, refresh);
+    };
+  }, []);
+
+  /** Which bytes this row should be holding: the R2 key, or a local-only marker. */
+  function audioVersionOf(it: { song_id?: string | null; audio_path?: string | null }) {
+    if (it.audio_path) return it.audio_path;
+    if (it.song_id && localSongIdsRef.current.has(it.song_id)) return `local:${it.song_id}`;
+    return null;
+  }
+
   // What the download effect actually depends on: which item wants which file.
   // refetchItems() mints a BRAND-NEW items array on every refetch (tab focus,
   // "setlist-changed", library broadcast), so keying the effect on `items` restarted
   // — and abandoned — an in-flight download of an 80MB master every time the operator
   // switched apps. Keyed on this signature, a refetch that changed no audio leaves
-  // the running download alone.
+  // the running download alone. Local-only rows ride the same signature, so bytes
+  // that appear while this screen is open pull themselves in.
   const audioSig = useMemo(
-    () => items.map((it) => `${it.id}:${it.audio_path ?? ""}`).join("|"),
-    [items]
+    () =>
+      items
+        .map(
+          (it) =>
+            `${it.id}:${
+              it.audio_path ??
+              (it.song_id && localSongIds.has(it.song_id) ? `local:${it.song_id}` : "")
+            }`
+        )
+        .join("|"),
+    [items, localSongIds]
   );
 
   // Download any online audio this device doesn't already hold (or holds a stale
@@ -706,35 +762,47 @@ export function LiveMode({
   // another device appears here after the "setlist-changed" refetch. Best-effort: a
   // failure just leaves whatever local copy exists.
   useEffect(() => {
+    if (!localsRead) return; // see localsRead — don't start on a signature that is about to change
     let cancelled = false;
     const runId = ++downloadRunRef.current;
     (async () => {
       for (const it of items) {
         const path = it.audio_path;
-        if (!path) continue;
+        // ⭐#1 step 7: no online master, but this device holds the file — the bytes
+        // are already here, there is simply nothing to download.
+        const version = audioVersionOf(it);
+        if (!version) continue;
         // LOCK the on-air file: never re-download or revoke the track that's
         // currently sounding (a mid-show library re-upload won't cut the live song).
         if (it.id === playingIdRef.current && audioUrlsRef.current[it.id]) continue;
         // already holding this exact version locally? skip.
-        if (cachedPathRef.current[it.id] === path && audioUrlsRef.current[it.id]) continue;
+        if (cachedPathRef.current[it.id] === version && audioUrlsRef.current[it.id]) continue;
         setAudioBusy((prev) => ({ ...prev, [it.id]: "down" }));
         busyOwnerRef.current[it.id] = runId;
         try {
-          // Source order: a per-device local override (desktop "ใช้ไฟล์ในเครื่องนี้")
-          // wins; else the band-library prefetch cache; else hit the network. This
-          // only swaps which BYTES load — the transport/position logic below is
-          // untouched (the zero-tolerance single-audio-source path stays intact).
+          // Source order: a per-device local override (desktop "ใช้ไฟล์ในเครื่องนี้",
+          // or an upload still queued from a venue with no wifi) wins; else the
+          // band-library prefetch cache; else hit the network. This only swaps which
+          // BYTES load — the transport/position logic below is untouched (the
+          // zero-tolerance single-audio-source path stays intact).
           const local = await getLocalSource(it.song_id);
-          const blob =
-            local?.blob ?? (await getCachedSongBlob(path)) ?? (await downloadEventAudio(path));
+          // A local-only row with no bytes left (the queue flushed and cleared the
+          // override between the id listing and here) has no second source to try.
+          if (!path && !local) continue;
+          const blob = path
+            ? (local?.blob ?? (await getCachedSongBlob(path)) ?? (await downloadEventAudio(path)))
+            : local!.blob;
           // The bytes are HERE. Even if this run was superseded meanwhile, KEEP them:
           // dropping them un-cached meant re-downloading the whole master from zero on
           // venue wifi. Only discard when the item now wants a DIFFERENT file (a
           // mid-show replace), where what we just fetched is genuinely stale.
           const wanted = itemsRef.current.find((x) => x.id === it.id)?.audio_path;
           if (cancelled && wanted !== path) return;
-          const name = it.audio_name ?? "เพลง";
-          cachedPathRef.current[it.id] = path;
+          const name = it.audio_name ?? local?.name ?? "เพลง";
+          cachedPathRef.current[it.id] = version;
+          // path stays NULL for a local-only row — that is how audio-store marks
+          // "the only copy that exists", and audio-prefetch's orphan sweep skips
+          // exactly those records rather than deleting bytes it can't re-fetch.
           saveAudio(eventId, it.id, blob, name, path).catch(() => {});
           // Left Live Mode while this was transferring: the bytes are safely cached
           // for next time, but an object URL minted now would outlive the unmount
@@ -769,7 +837,7 @@ export function LiveMode({
     // `items` is read inside but deliberately NOT a dep — see audioSig above (a
     // refetch that changed no audio must not restart an in-flight download).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [audioSig, eventId]);
+  }, [audioSig, eventId, localsRead]);
 
   // Wake Lock — keep the screen on for as long as the operator is IN the show.
   // Keyed on `begun`, not `running`: the run clock stops between every Manual cue

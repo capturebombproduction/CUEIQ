@@ -10,7 +10,11 @@ import { LiveMode } from "@/components/event/live-mode";
 import { ShowReadinessCheck } from "@/components/event/show-readiness-check";
 import { EventSnapshotWriter } from "@/components/event/event-snapshot-writer";
 import { canLiveEdit, canViewGroup } from "@/lib/permissions";
-import { resolveAudioTargets, type SongAudioMap } from "@/lib/audio-targets";
+import {
+  resolveAudioTargets,
+  resolveLocalOnlyCandidates,
+  type SongAudioMap,
+} from "@/lib/audio-targets";
 import { loadEventBundle, type EventBundle } from "~/data/event-bundle";
 import { useWorkspace } from "~/data/workspace-context";
 
@@ -62,6 +66,10 @@ export function LivePage() {
     bundle.songs.map((s) => [s.id, { path: s.audio_path ?? null, name: s.audio_name ?? null }])
   );
   const audioTargets = resolveAudioTargets(bundle.setlist, songAudio);
+  // Rows whose song has no online master — either this device holds the file
+  // (an upload queued at a venue) or that row will be silent. Either way the
+  // preflight has to see them; resolveAudioTargets deliberately does not.
+  const localOnly = resolveLocalOnlyCandidates(bundle.setlist, songAudio);
 
   return (
     <div className="space-y-4">
@@ -72,7 +80,7 @@ export function LivePage() {
           </Link>
         </Button>
       </div>
-      <ShowReadinessCheck eventId={event.id} targets={audioTargets} />
+      <ShowReadinessCheck eventId={event.id} targets={audioTargets} localOnly={localOnly} />
       {/* Persist this show on-device so it can cold-boot offline later. */}
       <EventSnapshotWriter
         eventId={event.id}

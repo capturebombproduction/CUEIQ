@@ -44,3 +44,39 @@ export function resolveAudioTargets(
   }
   return out;
 }
+
+/** A setlist row whose song has NO online master (⭐#1 step 7). */
+export interface LocalOnlyCandidate {
+  itemId: string;
+  /** The library song — the key lib/local-source.ts stores per-device bytes under. */
+  songId: string;
+  name: string;
+}
+
+/**
+ * The rows resolveAudioTargets drops: linked to a library song that currently has
+ * no online master at all. There is nothing to download for them, so they cannot
+ * be prefetch TARGETS — but they are not nothing either, and treating them as
+ * nothing is how a show gets a silent track behind a green readiness check.
+ *
+ * Two very different situations hide in here, and only the DEVICE can tell them
+ * apart (lib/local-source.ts is IndexedDB; this file stays pure so a Server
+ * Component can call it):
+ *   • the song's only copy is a file picked on THIS device while offline, waiting
+ *     in the upload queue — playable here right now (⭐#1 step 6 + 7);
+ *   • the song genuinely has no audio anywhere — that row WILL be silent, and
+ *     saying so before the show is the whole point of the preflight.
+ * `name` is the row title, since a song with no file has no filename to show.
+ */
+export function resolveLocalOnlyCandidates(
+  items: (ResolvableItem & { title?: string | null })[],
+  songAudio: SongAudioMap
+): LocalOnlyCandidate[] {
+  const out: LocalOnlyCandidate[] = [];
+  for (const it of items) {
+    if (!it.song_id) continue; // unlinked legacy row: local-source has no key for it
+    if (songAudio[it.song_id]?.path) continue; // has a master → a normal target
+    out.push({ itemId: it.id, songId: it.song_id, name: it.title?.trim() || "เพลง" });
+  }
+  return out;
+}

@@ -21,6 +21,9 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { loadAudioSink } from "@/components/event/audio-output-picker";
 import { prefetchEventAudio, type PrefetchTarget } from "@/lib/audio-prefetch";
+import { listLocalSourceIds } from "@/lib/local-source";
+import { MGMT_OUTBOX_EVENT } from "@/lib/mgmt-outbox";
+import type { LocalOnlyCandidate } from "@/lib/audio-targets";
 import {
   getShowReadiness,
   requestPersist,
@@ -90,9 +93,18 @@ function Row({
 export function ShowReadinessCheck({
   eventId,
   targets,
+  localOnly = [],
 }: {
   eventId: string;
   targets: PrefetchTarget[];
+  /**
+   * Rows linked to a song with no online master (lib/audio-targets.ts). They are
+   * not prefetch targets — there is nothing to download — but they are not nothing
+   * either: either this device holds the file (⭐#1 step 7) or that row goes SILENT
+   * on stage. Before this, they were invisible here, so a set with a fileless song
+   * reported a clean green "พร้อมโชว์ออฟไลน์".
+   */
+  localOnly?: LocalOnlyCandidate[];
 }) {
   const [r, setR] = useState<ShowReadiness | null>(null);
   const [open, setOpen] = useState(false);
@@ -148,19 +160,27 @@ export function ShowReadinessCheck({
     };
   }, [isDesktop, eventId]);
 
+  // Of the master-less rows, how many does THIS device actually hold bytes for?
+  // The rest have no audio anywhere and will be silent — the one thing this
+  // preflight exists to say out loud.
+  const [heldLocally, setHeldLocally] = useState<Set<string>>(new Set());
+
   const refresh = useCallback(() => {
     getShowReadiness(eventId, targets)
-      .then((next) => {
-        setR(next);
-        // Auto-open the first time we learn audio isn't fully ready — but never
-        // override a choice the user already made.
-        if (!userToggled.current) {
-          const needCount = next.audio.stale + next.audio.missing;
-          setOpen(needCount > 0);
-        }
-      })
+      .then(setR)
       .catch(() => {});
-  }, [eventId, targets]);
+    if (localOnly.length > 0) {
+      listLocalSourceIds()
+        // UNION, never replace. A successful flush uploads the file and then
+        // CLEARS the local override, so a plain replace would drop the song out
+        // of "held here" and re-file it under "no file anywhere" — flipping the
+        // preflight to red for the one song that just got fixed, because
+        // `localOnly` is a snapshot of the bundle and cannot know the master
+        // landed. Bytes here OR bytes we promoted both mean playable.
+        .then((ids) => setHeldLocally((prev) => new Set([...prev, ...ids])))
+        .catch(() => {});
+    }
+  }, [eventId, targets, localOnly.length]);
 
   useEffect(() => {
     refresh();
@@ -168,12 +188,27 @@ export function ShowReadinessCheck({
     document.addEventListener("visibilitychange", onVisible);
     window.addEventListener("online", refresh);
     window.addEventListener("offline", refresh);
+    // a file picked in the Library changes this answer without a reload
+    window.addEventListener(MGMT_OUTBOX_EVENT, refresh);
     return () => {
       document.removeEventListener("visibilitychange", onVisible);
       window.removeEventListener("online", refresh);
       window.removeEventListener("offline", refresh);
+      window.removeEventListener(MGMT_OUTBOX_EVENT, refresh);
     };
   }, [refresh]);
+
+  // Auto-open the first time something is actually wrong — but never override a
+  // choice the user already made. Keyed on BOTH failure halves: this used to live
+  // inside the readiness callback, which only ever saw the download counts, so a
+  // set whose ONLY problem was a song with no file at all stayed collapsed —
+  // hiding the very row that names those songs.
+  const needCount = r ? r.audio.stale + r.audio.missing : 0;
+  const missingFileCount = localOnly.filter((c) => !heldLocally.has(c.songId)).length;
+  useEffect(() => {
+    if (!r || userToggled.current) return;
+    setOpen(needCount > 0 || missingFileCount > 0);
+  }, [r, needCount, missingFileCount]);
 
   const prepare = useCallback(async () => {
     const ac = new AbortController();
@@ -209,11 +244,23 @@ export function ShowReadinessCheck({
   }, [refresh]);
 
   // No audio in this event → nothing to preflight (e.g. an MC-only run).
-  if (targets.length === 0) return null;
+  if (targets.length === 0 && localOnly.length === 0) return null;
   if (!r) return null;
 
-  const needCount = r.audio.stale + r.audio.missing;
-  const audioReady = r.audio.total > 0 && needCount === 0;
+  // Master-less rows split in two: bytes on this device (playable) vs no audio
+  // anywhere (silent on stage). Only the second kind is a problem, and no amount
+  // of "เตรียม" fixes it — somebody has to put a file on the song. Counted per
+  // SONG, not per row: the same song can sit in a setlist twice and it is one
+  // file either way.
+  const bySong = (cs: LocalOnlyCandidate[]) => {
+    const seen = new Map<string, LocalOnlyCandidate>();
+    for (const c of cs) if (!seen.has(c.songId)) seen.set(c.songId, c);
+    return [...seen.values()];
+  };
+  const localReady = bySong(localOnly.filter((c) => heldLocally.has(c.songId)));
+  const noFileAtAll = bySong(localOnly.filter((c) => !heldLocally.has(c.songId)));
+  const audioReady =
+    r.audio.total + localReady.length > 0 && needCount === 0 && noFileAtAll.length === 0;
 
   // Critical = audio not all on-device at the current version (blocks offline run).
   // Warnings = won't stop the show but worth fixing: storage not pinned, low space,
@@ -233,11 +280,13 @@ export function ShowReadinessCheck({
     offlineData === false;
 
   const verdict: RowTone = !audioReady ? "bad" : hasWarn ? "warn" : "ok";
-  const verdictText = !audioReady
-    ? "ยังไม่พร้อม — เพลงยังไม่ครบในเครื่อง"
-    : hasWarn
-      ? "พร้อมโชว์ (มีข้อควรระวัง)"
-      : "พร้อมโชว์ออฟไลน์";
+  const verdictText = noFileAtAll.length
+    ? `ยังไม่พร้อม — มี ${noFileAtAll.length} เพลงที่ยังไม่มีไฟล์`
+    : !audioReady
+      ? "ยังไม่พร้อม — เพลงยังไม่ครบในเครื่อง"
+      : hasWarn
+        ? "พร้อมโชว์ (มีข้อควรระวัง)"
+        : "พร้อมโชว์ออฟไลน์";
 
   const toggle = () => {
     userToggled.current = true;
@@ -285,9 +334,12 @@ export function ShowReadinessCheck({
             icon={<Download className="h-4 w-4" />}
             label="เพลงในเครื่อง (เล่นได้แม้เน็ตหลุด)"
             value={
-              r.audio.total === 0
-                ? "ไม่มีไฟล์เพลง"
-                : `${r.audio.ready}/${r.audio.total}`
+              r.audio.total > 0
+                ? `${r.audio.ready}/${r.audio.total}`
+                : localReady.length > 0
+                  ? // no online master anywhere in this set, but the files are here
+                    `${localReady.length} เพลงจากเครื่องนี้`
+                  : "ไม่มีไฟล์เพลง"
             }
             action={
               needCount > 0 ? (
@@ -313,6 +365,31 @@ export function ShowReadinessCheck({
               ) : undefined
             }
           />
+
+          {/* Rows whose song has no online master. Bytes held here = playable
+              (⭐#1 step 7, an upload still queued from a venue with no wifi);
+              anything else is a track that will be silent, and no "เตรียม" fixes
+              it — the fix is to put a file on that song. */}
+          {localReady.length > 0 && (
+            <Row
+              tone="ok"
+              icon={<HardDrive className="h-4 w-4" />}
+              label="ไฟล์ที่รออัปโหลด (เล่นได้จากเครื่องนี้)"
+              value={`${localReady.length} เพลง`}
+            />
+          )}
+          {noFileAtAll.length > 0 && (
+            <Row
+              tone="bad"
+              icon={<XCircle className="h-4 w-4" />}
+              label="เพลงที่ยังไม่มีไฟล์เลย (จะเงียบตอนโชว์)"
+              value={noFileAtAll
+                .slice(0, 3)
+                .map((c) => c.name)
+                .join(", ")
+                .concat(noFileAtAll.length > 3 ? ` +${noFileAtAll.length - 3}` : "")}
+            />
+          )}
 
           <Row
             tone={

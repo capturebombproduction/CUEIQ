@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -27,7 +28,8 @@ import {
 import { toast } from "sonner";
 import { createClient } from "@/lib/supabase/client";
 import { getSongBlob } from "@/lib/song-cache";
-import { getLocalSource } from "@/lib/local-source";
+import { getLocalSource, listLocalSourceIds } from "@/lib/local-source";
+import { MGMT_OUTBOX_EVENT } from "@/lib/mgmt-outbox";
 import { PracticeAudioEngine } from "@/lib/practice-audio";
 import { detectBeats } from "@/lib/bpm-detect";
 import { Button } from "@/components/ui/button";
@@ -101,8 +103,37 @@ export function PracticePlayer({
 }) {
   const confirm = useConfirm();
   const songsById = useMemo(() => new Map(songs.map((s) => [s.id, s])), [songs]);
+  // ⭐#1 step 7 — a song whose only copy is a file held on THIS device (an upload
+  // queued at a venue with no wifi) is playable here, so it must not be filtered
+  // out of the practice list as if it had no audio at all.
+  const [localSongIds, setLocalSongIds] = useState<Set<string>>(new Set());
+  useEffect(() => {
+    let alive = true;
+    const refresh = () => {
+      listLocalSourceIds()
+        // UNION, never replace: a successful flush uploads the bytes and then
+        // clears the override, and the `songs` prop is a snapshot that will not
+        // learn about the new master until this page is reloaded. Replacing would
+        // make the song disappear from the practice list at the exact moment it
+        // became available to everyone — on the device that uploaded it.
+        .then((ids) => {
+          if (alive) setLocalSongIds((prev) => new Set([...prev, ...ids]));
+        })
+        .catch(() => {});
+    };
+    refresh();
+    window.addEventListener(MGMT_OUTBOX_EVENT, refresh);
+    return () => {
+      alive = false;
+      window.removeEventListener(MGMT_OUTBOX_EVENT, refresh);
+    };
+  }, []);
+  const playable = useCallback(
+    (s: Song) => !!s.audio_path || localSongIds.has(s.id),
+    [localSongIds]
+  );
   // library songs that actually have audio — the pool the picker offers
-  const library = useMemo(() => songs.filter((s) => !!s.audio_path), [songs]);
+  const library = useMemo(() => songs.filter(playable), [songs, playable]);
   const listedIds = useMemo(() => new Set(items.map((i) => i.song_id)), [items]);
   // resolve each list row to a playable song (skip songs that lost their audio)
   const practiceSongs = useMemo(
@@ -110,10 +141,9 @@ export function PracticePlayer({
       items
         .map((item) => ({ item, song: songsById.get(item.song_id) }))
         .filter(
-          (x): x is { item: PracticeSong; song: Song } =>
-            !!x.song && !!x.song.audio_path
+          (x): x is { item: PracticeSong; song: Song } => !!x.song && playable(x.song)
         ),
-    [items, songsById]
+    [items, songsById, playable]
   );
 
   const [query, setQuery] = useState("");
@@ -262,7 +292,9 @@ export function PracticePlayer({
 
   async function selectSong(song: Song) {
     const engine = engineRef.current;
-    if (!engine || !song.audio_path) return;
+    // A song with no online master is still playable when THIS device holds the
+    // file (⭐#1 step 7) — the local-source read below is the one that finds it.
+    if (!engine || !(song.audio_path || localSongIds.has(song.id))) return;
     engine.unlock(); // sync, inside the tap — unlocks audio on iOS Safari
     if (song.id === currentId) {
       engine.toggle();
@@ -277,7 +309,17 @@ export function PracticePlayer({
       // download once (and the cache keeps it for next time).
       const local = await getLocalSource(song.id);
       if (token !== selectTokenRef.current) return; // a newer tap took over
-      const blob = local?.blob ?? (await getSongBlob(song.audio_path));
+      // No master AND no local bytes left. This is the narrow window after the
+      // upload queue flushed: the override is gone, the file IS online now, but
+      // the `songs` snapshot this page was rendered from still says null — so we
+      // have no key to fetch it with. Say so instead of leaving a dead tap.
+      if (!local && !song.audio_path) {
+        toast.info("ไฟล์เพิ่งอัปขึ้นคลังแล้ว", {
+          description: "รีเฟรชหน้านี้อีกครั้งเพื่อเล่นจากคลัง",
+        });
+        return;
+      }
+      const blob = local?.blob ?? (await getSongBlob(song.audio_path!));
       if (token !== selectTokenRef.current) return;
       await engine.load(blob); // decode happens here, inside the spinner
       if (token !== selectTokenRef.current) return;
