@@ -8,6 +8,7 @@ import { createClient } from "@/lib/supabase/client";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { privateChannel, runOrderTopic } from "@/lib/realtime";
 import {
   formatClockOfDay,
   formatCountdown,
@@ -102,9 +103,9 @@ export function EventRunStatusCard({
   refetchRef.current = refetch;
 
   useEffect(() => {
-    const ch = supabase.channel(
-      `runorder:${tenantId}:${eventDate ?? "x"}:${encodeURIComponent(eventName)}`,
-      { config: { broadcast: { self: false } } }
+    const ch = privateChannel(
+      supabase,
+      runOrderTopic(tenantId, eventDate, eventName)
     );
     ch.on("broadcast", { event: "changed" }, () => refetchRef.current());
     // Broadcast is the ONLY way this board learned anything — and a broadcast

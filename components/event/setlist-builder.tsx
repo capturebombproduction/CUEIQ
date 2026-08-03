@@ -48,6 +48,7 @@ import {
   DialogClose,
 } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
+import { liveTopic, privateChannel } from "@/lib/realtime";
 import {
   SETLIST_KIND_LABELS,
   SETLIST_KIND_SHORT,
@@ -520,9 +521,7 @@ export function SetlistBuilder({
   const [liveItemId, setLiveItemId] = useState<string | null>(null);
   useEffect(() => {
     const supabase = createClient();
-    const ch = supabase.channel(`live:${eventId}`, {
-      config: { broadcast: { self: false } },
-    });
+    const ch = privateChannel(supabase, liveTopic(eventId));
     // a running Live Mode broadcasts its state; lock the on-air row (only while begun)
     ch.on("broadcast", { event: "state" }, ({ payload }) => {
       if (!payload) return;

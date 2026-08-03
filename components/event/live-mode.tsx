@@ -55,6 +55,7 @@ import { Badge } from "@/components/ui/badge";
 import { LiveStatusStrip } from "@/components/event/live-status-strip";
 import { AudioOutputPicker, AUDIO_SINK_KEY, loadAudioSink } from "@/components/event/audio-output-picker";
 import { cn } from "@/lib/utils";
+import { liveTopic, privateChannel, songsTopic } from "@/lib/realtime";
 import {
   SETLIST_KIND_SHORT,
   type SetlistItem,
@@ -1027,9 +1028,7 @@ export function LiveMode({
   // realtime sync
   useEffect(() => {
     const supabase = createClient();
-    const ch = supabase.channel(`live:${eventId}`, {
-      config: { broadcast: { self: false } },
-    });
+    const ch = privateChannel(supabase, liveTopic(eventId));
     ch.on("broadcast", { event: "state" }, ({ payload }) => {
       if (!payload || payload.sender === meId.current) return;
       setSyncSettled(true); // heard live show state — the first sync has landed
@@ -1197,7 +1196,7 @@ export function LiveMode({
     // live across devices, no reload. (broadcast, not postgres_changes — RLS
     // postgres changes don't deliver with the publishable key.) The on-air track
     // is locked by the download effect, so a mid-show change can't cut the live song.
-    const songCh = supabase.channel(`songs:${groupId}`);
+    const songCh = privateChannel(supabase, songsTopic(groupId));
     songCh.on("broadcast", { event: "changed" }, () => refetchRef.current());
     songCh.subscribe();
 

@@ -27,6 +27,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { useConfirm } from "@/components/ui/confirm-dialog";
 import { cn } from "@/lib/utils";
+import { privateChannel, runOrderTopic } from "@/lib/realtime";
 import {
   formatClockOfDay,
   formatCountdown,
@@ -254,9 +255,9 @@ export function EventLiveCaller({
   refetchRef.current = refetch;
 
   useEffect(() => {
-    const ch = supabase.channel(
-      `runorder:${tenantId}:${eventDate ?? "x"}:${encodeURIComponent(eventName)}`,
-      { config: { broadcast: { self: false } } }
+    const ch = privateChannel(
+      supabase,
+      runOrderTopic(tenantId, eventDate, eventName)
     );
     ch.on("broadcast", { event: "changed" }, ({ payload }) => {
       if (payload?.sender !== meId.current) refetchRef.current();

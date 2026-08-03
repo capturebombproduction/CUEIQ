@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useConfirm } from "@/components/ui/confirm-dialog";
 import { captureElementToImage } from "@/lib/export-image";
+import { privateChannel, runOrderTopic } from "@/lib/realtime";
 
 export type RunSequence = {
   id: string;
@@ -94,9 +95,9 @@ export function RunOrderBuilder({
       : String(Math.random())
   );
   useEffect(() => {
-    const ch = supabase.channel(
-      `runorder:${tenantId}:${eventDate ?? "x"}:${encodeURIComponent(eventName)}`,
-      { config: { broadcast: { self: false } } }
+    const ch = privateChannel(
+      supabase,
+      runOrderTopic(tenantId, eventDate, eventName)
     );
     ch.subscribe();
     channelRef.current = ch;

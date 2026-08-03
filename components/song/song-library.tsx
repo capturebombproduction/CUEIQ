@@ -78,6 +78,7 @@ import {
 } from "@/lib/types";
 import { canApprove, canEditGroup, type Perms } from "@/lib/permissions";
 import { useConfirm } from "@/components/ui/confirm-dialog";
+import { privateChannel, songsTopic } from "@/lib/realtime";
 
 const NONE = "__none__";
 const COPYRIGHT_KEYS = Object.keys(COPYRIGHT_META) as CopyrightStatus[];
@@ -448,7 +449,7 @@ export function SongLibrary({
   // Tell any open Live Mode (same band) that a song's audio changed, so it
   // re-resolves in real time. Group-scoped broadcast → reaches every device.
   function broadcastSongsChanged(groupId: string) {
-    const ch = supabase.channel(`songs:${groupId}`);
+    const ch = privateChannel(supabase, songsTopic(groupId));
     ch.subscribe((status) => {
       if (status === "SUBSCRIBED") {
         ch.send({ type: "broadcast", event: "changed", payload: {} });
