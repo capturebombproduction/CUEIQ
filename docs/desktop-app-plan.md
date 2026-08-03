@@ -24,8 +24,10 @@
 - **Same Supabase (auth/data) + R2 (audio)** → desktop and web share one backend, so
   "sync with the old app" is automatic: edit on desktop → web sees it (realtime), and
   vice-versa. No custom sync protocol for the online path.
-- **Local-first**: reuse the IndexedDB stores (song-cache / audio-store / event-store /
-  show-run-outbox) + deviceId. Offline reads local; reconnect replays the outbox; the
+- **Local-first**: reuse the IndexedDB stores (song-cache / audio-store /
+  show-run-outbox) + deviceId. (`event-store` was listed here too and is GONE — it
+  turned out to be write-only; the desktop opens a show from its own read-cache,
+  `desktop/src/data/event-bundle.ts`.) Offline reads local; reconnect replays the outbox; the
   existing realtime broadcast triggers other devices.
 
 ## Reuse map (what carries over verbatim / near-verbatim)
@@ -33,7 +35,7 @@
 - UI: `components/ui/*` (Button/Input/Card/Badge/...) — pure, reused via `@` alias.
 - Logic/lib: `lib/supabase/client.ts`, `lib/username`, `lib/utils`, `lib/types`,
   `lib/time`, `lib/permissions`, audio (`lib/audio-*`, `lib/song-cache`, `lib/audio-store`),
-  `lib/event-store`, `lib/show-run-outbox`, `lib/device-id`, `lib/show-readiness`,
+  `lib/show-run-outbox`, `lib/device-id`, `lib/show-readiness`,
   `lib/show-authority`, `lib/bpm-detect`, metronome.
 - Big client component `components/event/live-mode.tsx` — already prop-driven; drives the Show Runner.
 - The offline-first work (readiness preflight, outbox, authority, status strip) all carries over.

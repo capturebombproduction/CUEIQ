@@ -8,7 +8,6 @@ import { ArrowLeft } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { LiveMode } from "@/components/event/live-mode";
 import { ShowReadinessCheck } from "@/components/event/show-readiness-check";
-import { EventSnapshotWriter } from "@/components/event/event-snapshot-writer";
 import { canLiveEdit, canViewGroup } from "@/lib/permissions";
 import {
   resolveAudioTargets,
@@ -81,17 +80,6 @@ export function LivePage() {
         </Button>
       </div>
       <ShowReadinessCheck eventId={event.id} targets={audioTargets} localOnly={localOnly} />
-      {/* Persist this show on-device so it can cold-boot offline later. */}
-      <EventSnapshotWriter
-        eventId={event.id}
-        groupId={event.group_id}
-        eventName={event.name}
-        items={bundle.setlist}
-        songAudio={songAudio}
-        canEdit={canEdit}
-        lastRunSeconds={event.last_run_seconds ?? null}
-        lastRunAt={event.last_run_at ?? null}
-      />
       <LiveMode
         eventId={event.id}
         groupId={event.group_id}

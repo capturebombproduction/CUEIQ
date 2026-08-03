@@ -13,7 +13,24 @@ import {
   clearSongCache,
   type SongCacheSummary,
 } from "@/lib/song-cache";
-import { clearEventSnapshots } from "@/lib/event-store";
+
+/**
+ * Drop the `cueiq-events` IndexedDB left behind by the show-data snapshot store,
+ * which was deleted once it turned out to be write-only: it was written on every
+ * live-page load and never read back by anything (the desktop opens a show from
+ * its own read-cache, and the web's offline cold-boot was removed in bd7858a).
+ * Existing installs still hold the database, so "ล้างทั้งหมด" sweeps it up.
+ */
+function dropLegacySnapshotDb(): Promise<void> {
+  return new Promise((resolve) => {
+    try {
+      const req = indexedDB.deleteDatabase("cueiq-events");
+      req.onsuccess = req.onerror = req.onblocked = () => resolve();
+    } catch {
+      resolve();
+    }
+  });
+}
 
 function fmtSize(bytes: number): string {
   const mb = bytes / (1024 * 1024);
@@ -122,12 +139,12 @@ export function DeviceStorage({
 
   const clearAll = async () => {
     setBusy(true);
-    // Full wipe = audio caches + the saved show-data snapshots (offline cold-boot
-    // data); the snapshots are tiny but a "ล้างทั้งหมด" should leave nothing behind.
+    // Full wipe = the audio caches, plus the legacy snapshot database older
+    // installs still carry — a "ล้างทั้งหมด" should leave nothing behind.
     await Promise.all([
       clearAllAudio().catch(() => {}),
       clearSongCache().catch(() => {}),
-      clearEventSnapshots().catch(() => {}),
+      dropLegacySnapshotDb(),
     ]);
     setBusy(false);
     refresh();

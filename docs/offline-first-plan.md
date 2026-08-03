@@ -1,13 +1,27 @@
 # CueIQ — Offline-First (Local-First) Plan
 
+> ## ⚠️ อ่านก่อน — ส่วนที่เปลี่ยนไปแล้ว (แก้ 2026-08-04)
+>
+> **การบูตออฟไลน์ย้ายไปอยู่ที่ CueIQ Desktop แล้ว เว็บไม่ทำอีกต่อไป.** `bd7858a`
+> (2026-06-25) ลบ web offline cold-boot ทิ้งทั้งชุด เพราะ prod เว็บ "ช้ามาก":
+> `app/live-shell` + live-shell-client, การ prefetch ทั้งคลังตอนเปิดแอป, และ
+> `sw.js` เหลือแค่ Push (ลบ cache เก่าทิ้ง). แล้ว `lib/event-store.ts` +
+> `EventSnapshotWriter` ก็ถูกลบตามในรอบ 7 หลังพบว่าเขียนอย่างเดียว ไม่เคยมีใครอ่านกลับ —
+> desktop เปิดโชว์จาก read-cache ของตัวเอง (`desktop/src/data/event-bundle.ts`).
+>
+> **ดังนั้นอย่าเชื่อ §12 ข้อ 3 และอย่าให้พี่ทดสอบ airplane-mode บนเว็บ — มันจะพังแน่นอน
+> เพราะฟีเจอร์นั้นถูกลบไปแล้ว.** การทดสอบโหมดเครื่องบินที่ยังค้างอยู่คือ **บน `.exe`**
+> ไม่ใช่บนเบราว์เซอร์. ประวัติด้านล่างเก็บไว้เพื่อดูเหตุผลของการตัดสินใจ ไม่ใช่สภาพปัจจุบัน —
+> สภาพปัจจุบันอ่านที่ memory `cueiq-handoff-2026-06-23b`.
+>
 > สถานะ: **§11-B + P1 + core P2 SHIPPED** (2026-06-25) — preflight readiness, offline cold-boot, show-run outbox, status strip, persisted show-main authority all deployed + Vercel-verified on prod. Migration `0035` applied.
 > ⏳ **NEXT is พี่'s:** airplane-mode test (cold-boot) + 2-device test (handoff/authority). The remainder (audio-host hard lock · strict push-handoff · rank-override on active main · song newer-wins import · version recovery · P4 peer) is GATED on that real-device testing + the zero-tolerance-audio rule.
 > ต่อยอดจาก Single Audio Source (`511a26a`) + offline suite ที่มีอยู่
 >
 > **Done so far (all additive / online-safe / Vercel state:success):**
 > - §11-B `b1846d8` — Show Readiness Check preflight (lib/show-readiness.ts + components/event/show-readiness-check.tsx): songs-on-device · storage pinned · free space · battery · net + inline prep/pin.
-> - P1 `829be48` — offline cold-boot: lib/event-store.ts snapshot + EventSnapshotWriter + app/live-shell + live-shell-client + sw.js v5 (precache shell, serve for uncached offline /events/<id>/live). Verified /live-shell 200, sw.js v5.
-> - P1 polish `d0ac208` — event-page pre-stage (EventSnapshotWriter w/ canLiveEdit) + clear-all wipes snapshots + lib/device-id.ts.
+> - ~~P1 `829be48` — offline cold-boot: lib/event-store.ts snapshot + EventSnapshotWriter + app/live-shell + live-shell-client + sw.js v5.~~ **ถูกลบแล้ว (`bd7858a` + รอบ 7) — ดูกรอบเตือนด้านบน**
+> - ~~P1 polish `d0ac208` — event-page pre-stage (EventSnapshotWriter w/ canLiveEdit) + clear-all wipes snapshots~~ + lib/device-id.ts (ตัวนี้ยังอยู่)
 > - P2 outbox `6116064` — lib/show-run-outbox.ts (queue offline last-run writes) + OutboxFlusher in (app) layout + live-mode endShow/clearLastRun via persistLastRun.
 > - P2 status `f16dd0b` — components/event/live-status-strip.tsx (Show Main · Audio Host · online · pending-sync + device label).
 > - P2 migration `3118daa` — 0035_show_authority (applied to prod, rls=true, 4 policies).
@@ -21,8 +35,9 @@
 
 ## 2. สถานะปัจจุบัน (มีแล้ว — อย่าสร้างซ้ำ)
 - **เสียงออฟไลน์**: blob ใน IndexedDB — `lib/song-cache.ts` (key by R2 path) + `lib/audio-store.ts` (per-event `eventId::itemId`). Live/Practice เล่นจาก blob → ไม่พึ่ง presigned URL
-- **prefetch**: `components/event/{library-prefetch,auto-prefetch}.tsx`, `lib/audio-prefetch.ts`; จัดการพื้นที่ `components/event/device-storage.tsx`
-- **service worker** `public/sw.js` (v4): app shell + หน้า (network-first → cached render) + count sounds; **ไม่แตะ Supabase** (auth/realtime/storage)
+- **prefetch**: `lib/audio-prefetch.ts` + ปุ่ม “เตรียมทุกงาน” ใน `components/event/events-list.tsx` (**desktop เท่านั้น** — เว็บเล่นแบบ on-demand); จัดการพื้นที่ `components/event/device-storage.tsx`
+  (~~`components/event/{library-prefetch,auto-prefetch}.tsx`~~ ลบใน `bd7858a` — การ prefetch ทั้งคลังตอนเปิดแอปคือสาเหตุที่เว็บช้า)
+- **service worker** `public/sw.js`: **Push อย่างเดียว** ตั้งแต่ `bd7858a` (ลบ offline cache ทิ้ง + ลบ cache เก่าของเครื่องที่ติดตั้งไว้แล้ว); **ไม่แตะ Supabase** (auth/realtime/storage)
 - `components/offline-banner.tsx`, crash snapshot ของ live state ใน localStorage
 - **Single Audio Source** (`live-mode.tsx`): เครื่องเสียงเป็นเจ้าของ playback position; viewer ตามแค่ discrete (track + play/pause)
 
@@ -115,8 +130,11 @@
 - **Rollout**: feature-flag/ทยอยเปิดบน prod ที่ใช้จริง + ไม่ทำ data เดิมพัง + test checklist (2 เครื่อง + ปิดเน็ตจริง)
 
 ## 12. เริ่มยังไง (สำหรับ session ใหม่)
-1. อ่าน doc นี้ + memory `cueiq-offline-first-plan`
+> ⚠️ ข้อ 3 ด้านล่างคือ **ประวัติ ไม่ใช่คำสั่ง** — ฟีเจอร์ที่มันบอกให้ทดสอบถูกลบไปแล้ว
+> ดูกรอบเตือนบนสุดของไฟล์ก่อนทำตามข้อไหนก็ตาม
+
+1. อ่าน memory `cueiq-handoff-2026-06-23b` (**อันนั้นคือสภาพปัจจุบัน**) แล้วค่อยอ่าน doc นี้ + memory `cueiq-offline-first-plan`
 2. ~~§11-B~~ **DONE `b1846d8`** — `storage.persist()` (มี global ใน sw-register อยู่แล้ว) + preflight readiness (ShowReadinessCheck บน live page)
-3. ~~P1~~ **DONE `829be48`** — event-store snapshot + EventSnapshotWriter + live-shell + sw.js v5. (a)(b)(c) ครบ. **(d) ทดสอบ single-device standalone ปิดเน็ตจริง = รอพี่ test airplane-mode** (โหลด live page online 1 ครั้งให้ snapshot+audio ลงเครื่อง → ปิดเน็ต → เปิด live ใหม่ → ต้องบูตจาก shell ได้)
-4. **NEXT = P2** (Local authority + write): `deviceId` · Show Main claim + push hand-off · Audio Host lock · show-run local outbox · sync (main-wins). **confirm scope กับพี่ก่อน** + น่าจะมี **DB migration** (= confirm-first) + ต้อง **2-device test**. แล้ว P3 ตาม §8
+3. ~~P1 — event-store snapshot + EventSnapshotWriter + live-shell + sw.js v5~~ **ถูกลบแล้ว.** การทดสอบโหมดเครื่องบินที่ยังค้าง = **บน `CueIQ-…-Windows.exe`** ไม่ใช่บนเว็บ: เปิดแอปตอนออนไลน์ 1 ครั้ง (แวะเปิดคลังเพลงด้วย) → ปิดโปรแกรม → ตัดเน็ต → เปิดใหม่ → dashboard + งานที่ cache ไว้ต้องขึ้น → สร้าง/แก้งาน+setlist ออฟไลน์ → ต่อเน็ต → ป้าย “ค้างซิงค์” ต้องหาย
+4. ~~NEXT = P2~~ **DONE** (`daaa81d` + `6116064` + `f16dd0b` + `3118daa`): deviceId · Show Main claim · show-run outbox · status strip. ที่ยัง**ไม่ได้**ทำคือ audio-host hard lock · strict push-handoff · rank-override on active main · P4 peer — ยังคาที่ real-device testing เหมือนเดิม
 5. อย่าลืม: เสียง = zero-tolerance, อย่า hot-build, ทดสอบ 2 เครื่องจริงก่อน deploy
