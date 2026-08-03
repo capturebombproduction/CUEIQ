@@ -31,6 +31,12 @@ if (!app.requestSingleInstanceLock()) {
 
 const DEV_URL = process.env.CUEIQ_ELECTRON_DEV_URL || ""; // e.g. http://localhost:5273
 const SMOKE = process.env.CUEIQ_SMOKE === "1"; // headless launch self-test
+// Where the self-test writes its verdict. stdout is NOT usable for this: electron
+// is a GUI-subsystem binary on Windows, so a packaged .exe launched from CI has no
+// console attached and every console.log vanishes. A file is the only channel that
+// works on all three platforms — and CI asserting on a file it must find is also
+// what turns "the app crashed on boot" into a failed build instead of silence.
+const SMOKE_OUT = process.env.CUEIQ_SMOKE_OUT || "";
 const INDEX_HTML = path.join(__dirname, "..", "dist", "index.html");
 
 /** The audio proxy exists solely to move presigned R2 (https) URLs past browser
@@ -180,6 +186,7 @@ function initAutoUpdate() {
 }
 
 async function createWindow() {
+  let loadError = null; // self-test only — see the SMOKE block at the end
   const win = new BrowserWindow({
     width: 1280,
     height: 860,
@@ -228,24 +235,54 @@ async function createWindow() {
     if (choice === 1) event.preventDefault();
   });
 
-  if (DEV_URL) {
-    await win.loadURL(DEV_URL);
+  const load = () => (DEV_URL ? win.loadURL(DEV_URL) : win.loadFile(INDEX_HTML));
+  if (!SMOKE) {
+    await load();
   } else {
-    await win.loadFile(INDEX_HTML);
+    // Under the self-test a FAILED load is the headline result, not a crash: left
+    // to reject, this function just stops and the hidden window sits there until
+    // CI's timeout kills it three minutes later with nothing to say. Catch it, so
+    // the verdict below reports "could not load" in seconds.
+    try {
+      await load();
+    } catch (e) {
+      loadError = String(e);
+    }
   }
 
   if (SMOKE) {
-    // Headless self-test: confirm the renderer actually booted from disk.
+    // Headless self-test: confirm the renderer actually booted from disk. This is
+    // the ONE check that runs the thing we ship — `vite build` proves the bundle
+    // compiles, not that the packaged app opens. A file:// path that resolves in
+    // dev and 404s once packaged, a preload that throws, a renderer that white-
+    // screens: all of them build green and only show up when someone double-clicks
+    // the installer. Which, until now, nobody did before publishing it.
+    let verdict = { ok: false, error: loadError ?? "no result" };
     try {
+      if (loadError) throw new Error(loadError);
       await new Promise((r) => setTimeout(r, 1500));
       const info = await win.webContents.executeJavaScript(
         "JSON.stringify({ title: document.title, hash: location.hash, len: document.body.innerText.length, hasRoot: !!document.getElementById('root')?.children.length })"
       );
+      const parsed = JSON.parse(info);
+      // A window that loaded but rendered NOTHING is the failure worth catching.
+      verdict = { ok: !!parsed.hasRoot, ...parsed };
       console.log("SMOKE_RESULT " + info);
     } catch (e) {
+      verdict = { ok: false, error: String(e) };
       console.log("SMOKE_ERROR " + String(e));
     } finally {
-      app.quit();
+      if (SMOKE_OUT) {
+        try {
+          fs.writeFileSync(SMOKE_OUT, JSON.stringify(verdict));
+        } catch {
+          /* the caller's assertion on a missing file is the fallback */
+        }
+      }
+      // app.exit, not app.quit: quit always exits 0, and it would also run the
+      // window's confirm-before-closing handler. The file above is the real
+      // verdict either way — this is belt and braces for a human running it.
+      app.exit(verdict.ok ? 0 : 1);
     }
   }
 }

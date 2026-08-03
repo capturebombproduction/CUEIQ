@@ -34,7 +34,33 @@ on:
       - "v*"
 
 jobs:
+  # A `v*` tag that does NOT match desktop/package.json is the quietest way to ship
+  # nothing: electron-builder stamps latest.yml from package.json, so a Release
+  # tagged v0.1.5 built from a 0.1.4 package.json publishes a feed that says 0.1.4,
+  # every installed copy compares it to its own 0.1.4 and decides it is up to date.
+  # No error anywhere — main.cjs swallows updater failures on purpose so a venue
+  # never sees one. Fail here instead, in ten seconds, before a 20-minute matrix.
+  guard:
+    if: ${{ startsWith(github.ref, 'refs/tags/v') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tag must match desktop/package.json
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME#v}"
+          pkg=$(node -p "require('./desktop/package.json').version")
+          echo "tag=$tag  package.json=$pkg"
+          if [ "$tag" != "$pkg" ]; then
+            echo "::error::Tag v$tag does not match desktop/package.json ($pkg). The published update feed would announce $pkg, so no installed copy would update. Bump desktop/package.json (root + packages[\"\"] in the lockfile only) and re-tag."
+            exit 1
+          fi
+
   build:
+    # `always()` keeps a manual dispatch (no tag → guard skipped) building.
+    needs: guard
+    if: ${{ always() && needs.guard.result != 'failure' }}
     strategy:
       fail-fast: false
       matrix:
@@ -84,6 +110,39 @@ jobs:
             exit 1
           }
 
+      # Launch what we are about to publish. Every other gate reasons about source:
+      # tsc reads types, `vite build` proves the bundle compiles. None of them opens
+      # the app. A file:// path that resolves in dev and 404s once packaged, a
+      # preload that throws, a renderer that white-screens — all build green, and
+      # until now the first person to find out was พี่, days later, at a venue.
+      # main.cjs's CUEIQ_SMOKE path boots the packaged renderer hidden, checks the
+      # React root actually rendered, writes its verdict to a FILE (a GUI-subsystem
+      # .exe has no console to print to) and exits non-zero if it did not.
+      - name: Smoke-launch the packaged app
+        if: matrix.label == 'win-exe'
+        shell: bash
+        timeout-minutes: 3
+        env:
+          CUEIQ_SMOKE: "1"
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/smoke.json"
+          rm -f "$out"
+          CUEIQ_SMOKE_OUT="$out" ./desktop/release/win-unpacked/CueIQ.exe || true
+          # A GUI-subsystem .exe can hand the shell back before it is done, so wait
+          # for the verdict rather than assuming the launch above blocked.
+          for _ in $(seq 1 30); do [ -f "$out" ] && break; sleep 1; done
+          test -f "$out" || {
+            echo "::error::The packaged app never reported — it crashed or hung on boot."
+            exit 1
+          }
+          cat "$out"
+          OUT="$out" node -e "
+            const v = JSON.parse(require('fs').readFileSync(process.env.OUT, 'utf8'));
+            if (!v.ok) { console.error('::error::Packaged app booted to nothing: ' + JSON.stringify(v)); process.exit(1); }
+            console.log('packaged app rendered ok:', JSON.stringify(v));
+          "
+
       # The .exe alone is not enough for auto-update: electron-updater reads
       # latest.yml (version + sha512) and uses the .blockmap for differential
       # downloads. Ship all three.
@@ -105,7 +164,10 @@ jobs:
   # can't serve one.
   publish:
     needs: build
-    if: ${{ always() && startsWith(github.ref, 'refs/tags/v') }}
+    # `always()` so one failed matrix leg still ships the other, but NOT when build
+    # was skipped outright — that only happens when the version guard rejected the
+    # tag, and publishing an empty Release on top of that would bury the reason.
+    if: ${{ always() && startsWith(github.ref, 'refs/tags/v') && needs.build.result != 'skipped' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
