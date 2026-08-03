@@ -6,15 +6,22 @@ import { FileSpreadsheet } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { Button } from "@/components/ui/button";
 import type { ExportData } from "@/lib/export-excel";
-import type { MicAssignment, ScheduleItem, SetlistItem } from "@/lib/types";
+import type { Member, MicAssignment, ScheduleItem, SetlistItem } from "@/lib/types";
 
-export function ExportButton({ eventId }: { eventId: string }) {
+export function ExportButton({
+  eventId,
+  groupId,
+}: {
+  eventId: string;
+  /** The event's band — `members` is group-scoped, not event-scoped. */
+  groupId: string;
+}) {
   const [loading, setLoading] = useState(false);
 
   async function onExport() {
     setLoading(true);
     const supabase = createClient();
-    const [evRes, schRes, setRes, micRes] = await Promise.all([
+    const [evRes, schRes, setRes, micRes, memRes, lineRes] = await Promise.all([
       supabase
         .from("events")
         .select(
@@ -38,6 +45,15 @@ export function ExportButton({ eventId }: { eventId: string }) {
         .eq("event_id", eventId)
         .order("mic_number", { ascending: true })
         .order("order_index", { ascending: true }),
+      supabase
+        .from("members")
+        .select("*")
+        .eq("group_id", groupId)
+        .order("sort_order", { ascending: true }),
+      supabase
+        .from("event_members")
+        .select("member_id")
+        .eq("event_id", eventId),
     ]);
     setLoading(false);
 
@@ -50,8 +66,16 @@ export function ExportButton({ eventId }: { eventId: string }) {
     // Sheet with headers and zero rows while we toast success. Fail the whole
     // export instead. An empty-but-successful read (or rows hidden by RLS) still
     // exports as before.
-    const readErr = schRes.error ?? setRes.error ?? micRes.error;
-    if (readErr || !schRes.data || !setRes.data || !micRes.data) {
+    const readErr =
+      schRes.error ?? setRes.error ?? micRes.error ?? memRes.error ?? lineRes.error;
+    if (
+      readErr ||
+      !schRes.data ||
+      !setRes.data ||
+      !micRes.data ||
+      !memRes.data ||
+      !lineRes.data
+    ) {
       toast.error("ดึงข้อมูลไม่ครบ — ไม่ได้สร้างไฟล์", {
         description: readErr?.message ?? "เน็ตอาจไม่เสถียร ลองใหม่อีกครั้ง",
       });
@@ -63,6 +87,8 @@ export function ExportButton({ eventId }: { eventId: string }) {
         schedule: schRes.data as ScheduleItem[],
         setlist: setRes.data as SetlistItem[],
         micMap: micRes.data as MicAssignment[],
+        members: memRes.data as Member[],
+        lineup: (lineRes.data as { member_id: string }[]).map((r) => r.member_id),
       };
       // Lazy-load SheetJS only when the user actually exports.
       const { downloadRunSheet } = await import("@/lib/export-excel");

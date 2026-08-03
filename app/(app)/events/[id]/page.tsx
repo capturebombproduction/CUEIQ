@@ -184,7 +184,7 @@ export default async function EventPage({
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
-            <ExportButton eventId={event.id} />
+            <ExportButton eventId={event.id} groupId={event.group_id} />
             {editable && (
               <Button asChild variant="outline">
                 <Link href={`/events/${event.id}/edit`}>
