@@ -5,116 +5,59 @@
 import { useEffect, useState } from "react";
 import { Link, Navigate, useParams } from "react-router-dom";
 import { ListOrdered, Radio } from "lucide-react";
-import { createClient } from "@/lib/supabase/client";
 import { canApprove } from "@/lib/permissions";
 import { Button } from "@/components/ui/button";
-import {
-  RunOrderBuilder,
-  type RunSequence,
-  type RunBandEvent,
-} from "@/components/event/run-order-builder";
+import { Card, CardContent } from "@/components/ui/card";
+import { RefreshButton } from "@/components/refresh-button";
+import { RunOrderBuilder } from "@/components/event/run-order-builder";
 import { useWorkspace } from "~/data/workspace-context";
-
-type Assembled = {
-  name: string;
-  date: string | null;
-  seqs: RunSequence[];
-  bandEvents: RunBandEvent[];
-};
+import { loadRunOrderBuild, type RunOrderBuild } from "~/data/run-order";
 
 export function RunOrderPage() {
   const { id } = useParams<{ id: string }>();
   const { loading, ws } = useWorkspace();
-  const [data, setData] = useState<Assembled | null | undefined>(undefined);
+  const [data, setData] = useState<RunOrderBuild | null | undefined>(undefined);
+  // A failed read used to be indistinguishable from a deleted event, and both
+  // bounced to /overview — so at a venue the builder just vanished with no reason.
+  const [loadError, setLoadError] = useState(false);
+  const [offlineCopy, setOfflineCopy] = useState(false);
 
   useEffect(() => {
     if (!ws?.membership || !id) return;
     let alive = true;
-    const tid = ws.membership.tenant_id;
     const groupName = new Map(ws.groups.map((g) => [g.id, g.name]));
-    const sb = createClient();
-    (async () => {
-      const { data: ev } = await sb
-        .from("events")
-        .select("id, name, event_date")
-        .eq("id", id)
-        .single();
-      if (!ev) {
-        if (alive) setData(null);
-        return;
+    loadRunOrderBuild(ws.membership.tenant_id, id, groupName).then((res) => {
+      if (!alive) return;
+      if (res.status === "ok") {
+        setLoadError(false);
+        setOfflineCopy(res.fromCache);
+        setData(res.data);
+      } else if (res.status === "gone") {
+        setData(null);
+      } else {
+        setLoadError(true);
       }
-      let fq = sb
-        .from("events")
-        .select("id, group_id")
-        .eq("tenant_id", tid)
-        .eq("name", ev.name)
-        .eq("is_template", false)
-        .eq("is_practice", false);
-      fq = ev.event_date ? fq.eq("event_date", ev.event_date) : fq.is("event_date", null);
-      const { data: festEvents } = await fq;
-      const ids = (festEvents ?? []).map((e) => e.id);
-      // Ordered by start_time so a band's slots arrive in the order it actually plays —
-      // the builder seeds the running order straight off this list.
-      const { data: stages } = ids.length
-        ? await sb
-            .from("schedule_items")
-            .select("event_id, start_time, end_time")
-            .eq("tenant_id", tid)
-            .eq("kind", "stage")
-            .in("event_id", ids)
-            .order("start_time", { ascending: true })
-        : { data: [] as { event_id: string; start_time: string | null; end_time: string | null }[] };
-      // A band can hold SEVERAL stage slots on one festival day — mig 0036 caps only
-      // 'photo' at one row per event. A Map keyed by event_id kept whichever row the
-      // query returned last, so a band booked twice reached the running order once
-      // (often at the wrong time) and the live caller never announced the other slot.
-      // Key a LIST instead (same assembly as the web page).
-      const stagesBy = new Map<string, { start_time: string | null; end_time: string | null }[]>();
-      for (const s of stages ?? []) {
-        const slot = s as { start_time: string | null; end_time: string | null };
-        const list = stagesBy.get(s.event_id as string);
-        if (list) list.push(slot);
-        else stagesBy.set(s.event_id as string, [slot]);
-      }
-      // One entry PER STAGE SLOT, all carrying the band's event id (= linked_event_id).
-      // An event with no stage row still gets one slot-less entry so the builder's link
-      // dropdown can still reach it.
-      const bandEvents: RunBandEvent[] = (festEvents ?? []).flatMap((e) => {
-        const base = {
-          id: e.id as string,
-          group_name: groupName.get(e.group_id as string) ?? "—",
-        };
-        const slots = stagesBy.get(e.id as string);
-        return slots?.length
-          ? slots.map((s) => ({ ...base, stage_start: s.start_time, stage_end: s.end_time }))
-          : [{ ...base, stage_start: null, stage_end: null }];
-      });
-      let rq = sb
-        .from("run_sequence")
-        .select("*")
-        .eq("tenant_id", tid)
-        .eq("event_name", ev.name)
-        .order("sort_order", { ascending: true });
-      rq = ev.event_date ? rq.eq("event_date", ev.event_date) : rq.is("event_date", null);
-      const { data: seqs } = await rq;
-      if (alive)
-        setData({
-          name: ev.name as string,
-          date: (ev.event_date as string | null) ?? null,
-          seqs: (seqs ?? []) as RunSequence[],
-          bandEvents,
-        });
-    })().catch(() => alive && setData(null));
+    });
     return () => {
       alive = false;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ws?.membership?.tenant_id, id]);
 
-  if (loading || data === undefined) {
+  if (loading || (data === undefined && !loadError)) {
     return <p className="py-16 text-center text-sm text-muted-foreground">กำลังโหลด…</p>;
   }
   if (!ws?.membership || !canApprove(ws.perms)) return <Navigate to="/dashboard" replace />;
+  if (data === undefined) {
+    return (
+      <Card>
+        <CardContent className="flex flex-col items-center gap-3 py-16 text-center text-sm text-muted-foreground">
+          <p>โหลดลำดับงานไม่สำเร็จ — อาจออฟไลน์อยู่หรือเน็ตมีปัญหา ลองใหม่เมื่อเน็ตกลับมา</p>
+          <RefreshButton label="ลองใหม่" />
+        </CardContent>
+      </Card>
+    );
+  }
   if (!data) return <Navigate to="/overview" replace />;
 
   return (
@@ -138,6 +81,11 @@ export function RunOrderPage() {
           {data.date ? ` · ${data.date}` : ""} — ลำดับงานทั้งงาน (สำหรับสตาฟคุมคิว)
         </p>
       </div>
+      {offlineCopy && (
+        <p className="rounded-lg border border-dashed px-3 py-2 text-sm text-muted-foreground">
+          ออฟไลน์ — นี่คือลำดับงานที่เครื่องนี้เก็บไว้ล่าสุด ดูได้แต่ยังแก้ไม่ได้จนกว่าเน็ตจะกลับมา
+        </p>
+      )}
       <RunOrderBuilder
         tenantId={ws.membership.tenant_id}
         eventName={data.name}

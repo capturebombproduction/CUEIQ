@@ -9,8 +9,10 @@ import { Card, CardContent } from "@/components/ui/card";
 import { createClient } from "@/lib/supabase/client";
 import { canApprove } from "@/lib/permissions";
 import { StaffContactsManager } from "@/components/admin/staff-contacts";
+import { hasLiveSession } from "@/lib/auth-session";
 import type { StaffContact } from "@/lib/types";
 import { useWorkspace } from "~/data/workspace-context";
+import { isOffline, readCache, writeCache } from "~/data/cache";
 
 export function Crew() {
   const { ws } = useWorkspace();
@@ -20,21 +22,47 @@ export function Crew() {
   useEffect(() => {
     if (!ws?.membership) return;
     let alive = true;
+    const tid = ws.membership.tenant_id;
+    // Read-cached like the rest of the desktop. This directory is not decorative:
+    // it is stamped into the Overview "บันทึกเป็นรูป" export, which is the sheet
+    // staff pass around at a venue — the exact place with no network.
+    const cacheKey = `crew:${tid}`;
+    const serveCached = (): boolean => {
+      const cached = readCache<StaffContact[]>(cacheKey);
+      if (!alive || !cached) return false;
+      setLoadError(false);
+      setStaff(cached);
+      return true;
+    };
+    if (isOffline()) {
+      if (!serveCached()) setLoadError(true);
+      return;
+    }
     createClient()
       .from("staff_contacts")
       .select("*")
-      .eq("tenant_id", ws.membership.tenant_id)
+      .eq("tenant_id", tid)
       .order("sort_order", { ascending: true })
-      .then(({ data, error }) => {
+      .then(async ({ data, error }) => {
         if (!alive) return;
         // postgrest resolves offline/network failures as { data: null, error } —
         // don't render an empty crew list for a failed read.
         if (error) {
-          setLoadError(true);
+          if (!serveCached()) setLoadError(true);
           return;
         }
+        const rows = (data ?? []) as StaffContact[];
+        // An empty answer we can't prove carried our token is an anon RLS refusal,
+        // not an empty crew — caching it would wipe this device's copy.
+        if (rows.length === 0 && !(await hasLiveSession())) {
+          if (!alive) return;
+          if (!serveCached()) setLoadError(true);
+          return;
+        }
+        if (!alive) return;
         setLoadError(false);
-        setStaff((data ?? []) as StaffContact[]);
+        setStaff(rows);
+        writeCache(cacheKey, rows);
       });
     return () => {
       alive = false;

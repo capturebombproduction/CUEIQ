@@ -16,9 +16,17 @@ type State = {
   bundle: EventBundle | null;
   markersBySong: Record<string, SongMarker[]>;
   practiceList: PracticeSong[];
+  /** A read came back as an error, so what's below is INCOMPLETE, not empty. */
+  partial: boolean;
 };
 
-const EMPTY: State = { loading: false, bundle: null, markersBySong: {}, practiceList: [] };
+const EMPTY: State = {
+  loading: false,
+  bundle: null,
+  markersBySong: {},
+  practiceList: [],
+  partial: false,
+};
 
 export function PracticeRoom() {
   const { id } = useParams<{ id: string }>();
@@ -36,7 +44,7 @@ export function PracticeRoom() {
         return;
       }
       const sb = createClient();
-      const [{ data: markerRows }, { data: practiceRows }] = await Promise.all([
+      const [markerRes, practiceRes] = await Promise.all([
         sb
           .from("song_markers")
           .select("*")
@@ -49,15 +57,22 @@ export function PracticeRoom() {
           .order("sort_order", { ascending: true }),
       ]);
       const markersBySong: Record<string, SongMarker[]> = {};
-      for (const m of (markerRows ?? []) as SongMarker[]) {
+      for (const m of (markerRes.data ?? []) as SongMarker[]) {
         (markersBySong[m.song_id] ??= []).push(m);
       }
+      // The last place on the desktop still coercing a FAILED read to []. The
+      // bundle above can come off disk, so this room opens with no network — and
+      // then both reads fail and the member sees an empty practice list and none
+      // of their markers. Nothing is actually lost (both are per-row writes, and
+      // re-adding a song hits the unique constraint), but "ลิสต์ว่าง" and "โหลดไม่ได้"
+      // are different sentences and only one of them is true. Say which.
       if (alive)
         setState({
           loading: false,
           bundle,
           markersBySong,
-          practiceList: (practiceRows ?? []) as PracticeSong[],
+          practiceList: (practiceRes.data ?? []) as PracticeSong[],
+          partial: !!markerRes.error || !!practiceRes.error,
         });
     })().catch(() => alive && setState(EMPTY));
     return () => {
@@ -94,6 +109,12 @@ export function PracticeRoom() {
           </Link>
         </Button>
       </div>
+      {state.partial && (
+        <p className="rounded-lg border border-dashed px-3 py-2 text-sm text-muted-foreground">
+          โหลดลิสต์ซ้อม/มาร์กเกอร์ไม่สำเร็จ — อาจออฟไลน์อยู่ ที่เห็นอาจไม่ครบ ยังไม่มีอะไรหาย
+          กดรีเฟรชอีกครั้งเมื่อเน็ตกลับมา
+        </p>
+      )}
       <PracticeMode
         roomName={bundle.event.name}
         eventId={bundle.event.id}

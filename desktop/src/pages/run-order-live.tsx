@@ -7,68 +7,35 @@ import { Link, Navigate, useParams } from "react-router-dom";
 import { ArrowLeft, Radio } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { RefreshButton } from "@/components/refresh-button";
-import { createClient } from "@/lib/supabase/client";
 import { canApprove } from "@/lib/permissions";
-import {
-  EventLiveCaller,
-  type RunSeqLive,
-} from "@/components/event/event-live-caller";
+import { EventLiveCaller } from "@/components/event/event-live-caller";
 import { useWorkspace } from "~/data/workspace-context";
-
-type Assembled = { name: string; date: string | null; seqs: RunSeqLive[] };
+import { loadRunOrderLive, type RunOrderLive } from "~/data/run-order";
 
 export function RunOrderLivePage() {
   const { id } = useParams<{ id: string }>();
   const { loading, ws } = useWorkspace();
   // undefined = still loading (or the read failed, see loadError); null = no such event.
-  const [data, setData] = useState<Assembled | null | undefined>(undefined);
+  const [data, setData] = useState<RunOrderLive | null | undefined>(undefined);
   const [loadError, setLoadError] = useState(false);
+  // Served from this device's disk, i.e. the board may have moved on since.
+  const [offlineCopy, setOfflineCopy] = useState(false);
 
   useEffect(() => {
     if (!ws?.membership || !id) return;
     let alive = true;
-    const tid = ws.membership.tenant_id;
-    const sb = createClient();
-    (async () => {
-      // maybeSingle (not single) so "no such event" comes back as data:null/error:null
-      // and a failed read as an error — offline both look like "no row", and bouncing
-      // the show-caller to a blank Overview mid-festival reads as "งานนี้ถูกลบ".
-      const { data: ev, error: evErr } = await sb
-        .from("events")
-        .select("id, name, event_date")
-        .eq("id", id)
-        .maybeSingle();
-      if (evErr) {
-        if (alive) setLoadError(true);
-        return;
-      }
-      if (!ev) {
-        if (alive) setData(null);
-        return;
-      }
-      let rq = sb
-        .from("run_sequence")
-        .select("*")
-        .eq("tenant_id", tid)
-        .eq("event_name", ev.name)
-        .order("sort_order", { ascending: true });
-      rq = ev.event_date ? rq.eq("event_date", ev.event_date) : rq.is("event_date", null);
-      const { data: seqs, error: seqErr } = await rq;
-      // An empty running order is legitimate (not built yet); a failed one is not —
-      // don't hand the caller an empty board he'd read as "ยังไม่มีคิว".
-      if (seqErr) {
-        if (alive) setLoadError(true);
-        return;
-      }
-      if (alive) {
+    loadRunOrderLive(ws.membership.tenant_id, id).then((res) => {
+      if (!alive) return;
+      if (res.status === "ok") {
         setLoadError(false);
-        setData({
-          name: ev.name as string,
-          date: (ev.event_date as string | null) ?? null,
-          seqs: (seqs ?? []) as RunSeqLive[],
-        });
+        setOfflineCopy(res.fromCache);
+        setData(res.data);
+      } else if (res.status === "gone") {
+        setData(null);
+      } else {
+        setLoadError(true);
       }
-    })().catch(() => alive && setLoadError(true));
+    });
     return () => {
       alive = false;
     };
@@ -111,6 +78,14 @@ export function RunOrderLivePage() {
           {data.date ? ` · ${data.date}` : ""} — สำหรับสตาฟคุมคิวสด ทั้งงาน
         </p>
       </div>
+      {offlineCopy && (
+        // Say it plainly: this is what the board looked like the last time this
+        // machine could reach the server, and การกดคิวยังต้องใช้เน็ต. A stale board
+        // that looks live is worse than one that admits it.
+        <p className="rounded-lg border border-dashed px-3 py-2 text-sm text-muted-foreground">
+          ออฟไลน์ — นี่คือคิวที่เครื่องนี้เก็บไว้ล่าสุด อาจไม่ตรงกับหน้างานตอนนี้ และยังกดคุมคิวไม่ได้จนกว่าเน็ตจะกลับมา
+        </p>
+      )}
       <EventLiveCaller
         tenantId={ws.membership.tenant_id}
         eventName={data.name}
