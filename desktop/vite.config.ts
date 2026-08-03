@@ -1,6 +1,9 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import { fileURLToPath, URL } from "node:url";
+import { createRequire } from "node:module";
+
+const { version: desktopVersion } = createRequire(import.meta.url)("./package.json");
 
 // The desktop renderer reuses the web app's components + lib straight from the repo
 // root via the same "@/..." alias, so the look + logic stay identical. The shared
@@ -41,8 +44,13 @@ export default defineConfig({
     // site-header). Define them so pulling one into a desktop route substitutes a
     // real value instead of leaving a bare `process`, which the Electron renderer
     // doesn't have — that would throw at module eval and white-screen the app.
+    // …and now that the desktop actually captures errors and takes feedback, this
+    // is the field that says WHICH build a report came from. A bare "desktop" was
+    // untriageable — installs in the field span several versions and auto-update
+    // is opt-in per prompt, so "desktop-0.1.4" vs "desktop-0.1.5" is the whole
+    // answer to "is this already fixed?".
     "process.env.NEXT_PUBLIC_COMMIT": JSON.stringify(
-      process.env.NEXT_PUBLIC_COMMIT ?? "desktop"
+      process.env.NEXT_PUBLIC_COMMIT ?? `desktop-${desktopVersion}`
     ),
     // Web Push needs a service worker, which file:// can't register — an empty key
     // just makes the bell report "unsupported". Overridable from the env anyway.

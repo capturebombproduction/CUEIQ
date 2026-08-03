@@ -137,7 +137,13 @@ export function EventWorkspace({
   useEffect(() => {
     if (!editable || event.is_template || syncing.current) return;
     let next: GroupStatus | null = null;
-    if (status === "draft" && completeness.complete) next = "pending_review";
+    // "In Progress" is offered in the status dropdown but nothing ever moved an
+    // event out of it: only draft auto-advanced, so an event parked there stayed
+    // there however complete it got, and never reached an approver. (One real
+    // production event has been sitting in it.) It means the same thing draft does
+    // — being worked on — so it advances the same way, and self-heals on open.
+    if ((status === "draft" || status === "in_progress") && completeness.complete)
+      next = "pending_review";
     else if (status === "pending_review" && !completeness.complete) next = "draft";
     if (!next) return;
     syncing.current = true;

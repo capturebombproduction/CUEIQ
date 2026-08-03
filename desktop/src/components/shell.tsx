@@ -14,6 +14,8 @@ import { SignOutButton } from "@/components/sign-out-button";
 import { OfflineBanner } from "@/components/offline-banner";
 import { OutboxFlusher } from "@/components/outbox-flusher";
 import { ConfirmProvider } from "@/components/ui/confirm-dialog";
+import { ErrorMonitor, AppErrorBoundary } from "@/components/error-monitor";
+import { FeedbackButton } from "@/components/feedback-button";
 import { ROLE_SHORT, type Role } from "@/lib/types";
 import { isLabelWideUser, type Perms } from "@/lib/permissions";
 import { MgmtSyncStatus } from "~/components/mgmt-sync-status";
@@ -79,9 +81,17 @@ export function Shell() {
   const name = ws.user?.name ?? null;
   const role = ws.membership?.role ?? null;
   const shownRole = roleLabel(role, ws.perms);
+  const userId = ws.user?.id ?? null;
+  const tenantId = ws.membership?.tenant_id ?? null;
 
   return (
     <div className="min-h-screen bg-muted/30">
+      {/* The web app has captured its own client errors and carried a แจ้งปัญหา
+          button since round 2; the desktop shipped with NEITHER — and the desktop
+          is the copy that goes to the venue, so the one place a real bug happens
+          was the one place nothing recorded it and nobody could report it without
+          leaving the room. Same three shared components, same tables. */}
+      {userId && <ErrorMonitor userId={userId} tenantId={tenantId} />}
       <OfflineBanner />
       <OutboxFlusher />
       <header className="no-print sticky top-0 z-40 border-b bg-background/80 backdrop-blur supports-[backdrop-filter]:bg-background/60">
@@ -131,10 +141,21 @@ export function Shell() {
         </div>
       </header>
       <main className="container py-6">
-        <ConfirmProvider>
-          <Outlet />
-        </ConfirmProvider>
+        {userId ? (
+          // A render crash used to leave the desktop on a blank window with no
+          // reload and nothing logged — mid-show, on the machine wired to the PA.
+          <AppErrorBoundary userId={userId} tenantId={tenantId}>
+            <ConfirmProvider>
+              <Outlet />
+            </ConfirmProvider>
+          </AppErrorBoundary>
+        ) : (
+          <ConfirmProvider>
+            <Outlet />
+          </ConfirmProvider>
+        )}
       </main>
+      {userId && <FeedbackButton userId={userId} tenantId={tenantId} floating />}
     </div>
   );
 }

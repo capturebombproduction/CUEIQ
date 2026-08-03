@@ -852,6 +852,14 @@ export function LiveMode({
   const [showEnded, setShowEnded] = useState(false);
   const showEndedRef = useRef(showEnded);
   showEndedRef.current = showEnded;
+  /** Flip it on the REF as well as in state. Every caller changes it and
+   *  broadcasts in the same tick, and statePayload reads the ref — a React state
+   *  update is still the old value by then, so a fresh เริ่มโชว์ would announce
+   *  "the show is over" to every viewer the instant it started. */
+  function markShowEnded(v: boolean) {
+    showEndedRef.current = v;
+    setShowEnded(v);
+  }
   const wakeLockRef = useRef<WakeLockSentinel | null>(null);
   useEffect(() => {
     if (!state.begun || showEnded) {
@@ -1104,6 +1112,10 @@ export function LiveMode({
         currentIndex: payload.currentIndex,
         mode: payload.mode ?? "manual",
       });
+      // Follow the controller's จบโชว์ / a fresh เริ่มโชว์, so a viewer's screen is
+      // allowed to sleep once the show is over instead of staying lit all night.
+      // Absent on an older client → falsy → today's behaviour.
+      markShowEnded(!!payload.ended);
       // audio intent — what should be SOUNDING (skew-corrected anchor). Drives the
       // viewer audio-sync effect; also mirrored into committedRef so this device has
       // a sane "playing track" if it later takes control.
@@ -1140,6 +1152,7 @@ export function LiveMode({
             fromController: isControllerRef.current,
             controllerSince: controllerSinceRef.current,
             currentItemId: curId,
+            ended: showEndedRef.current,
             ...af,
           },
         });
@@ -1290,11 +1303,22 @@ export function LiveMode({
       // when we claimed control — lets a competing controller settle the race deterministically
       controllerSince: controllerSinceRef.current,
       currentItemId: itemsRef.current[s.currentIndex]?.id ?? null,
+      // จบโชว์ was LOCAL ONLY: it releases the operator's wake lock and leaves
+      // every viewer phone in the band holding its screen awake — `begun` stays
+      // true on purpose so the show can be reopened with its clock frozen, and
+      // that is exactly the lifetime the lock follows. So the band went home with
+      // eight phones that never slept. It rides the broadcast now.
+      ended: showEndedRef.current,
       ...audioFields(s),
     };
   }
 
   function apply(next: LiveState, broadcast = true) {
+    // Anything that puts the show back into motion un-ends it. จบโชว์ only pauses
+    // (begun stays true), so the operator can simply press play again — and
+    // without this the whole band's screens would stay asleep through the encore.
+    // Before the broadcast below, so the payload agrees with the wake lock.
+    if (next.running && showEndedRef.current) markShowEnded(false);
     // Maintain the committed sounding item (for the audio-intent broadcast):
     // running → the current item is what's sounding; reset (not begun) → clear.
     // Every other !running case (Manual cue / pause) deliberately keeps it so the
@@ -1631,6 +1655,8 @@ export function LiveMode({
       event: "lastrun",
       payload: { record: rec },
     });
+    // BEFORE the apply below, so the broadcast it sends already carries it.
+    markShowEnded(true); // let every screen sleep again — the show is over
     // pause so the accumulated clock stops (does NOT reset the show)
     if (s.running) {
       const frozenItem = s.itemStartedAt
@@ -1640,8 +1666,15 @@ export function LiveMode({
       audioRef.current?.pause();
       audioRef2.current?.pause();
       setAudioPlaying(false);
+    } else if (isControllerRef.current) {
+      // Ending an already-paused show changes no LiveState, so nothing would be
+      // sent at all and the viewers' screens would stay awake regardless. Say it.
+      channelRef.current?.send({
+        type: "broadcast",
+        event: "state",
+        payload: statePayload(s),
+      });
     }
-    setShowEnded(true); // let the screen sleep again — the show is over
     toast.success(`บันทึกเวลาโชว์ล่าสุด ${formatDuration(seconds)} แล้ว`);
   }
 
@@ -2143,7 +2176,7 @@ export function LiveMode({
     // running elsewhere, and starting now would hijack/reset it to item 0.
     // (Guards the Space shortcut; the START button is also disabled until then.)
     if (!syncSettled) return;
-    setShowEnded(false);
+    markShowEnded(false);
     primeSecondaryAudio(); // must happen inside this tap — see the helper
     const ts = Date.now();
     controllerSinceRef.current = ts; // this device began the show → it is the controller as of now
@@ -2354,7 +2387,7 @@ export function LiveMode({
     setAudioPlaying(false);
     setAudioCurrent(0);
     setAudioDuration(0);
-    setShowEnded(false); // a reset show is a fresh one — it may be run again
+    markShowEnded(false); // a reset show is a fresh one — it may be run again
     apply({ ...INITIAL, mode: state.mode }); // keep chosen mode after reset
   }
 
