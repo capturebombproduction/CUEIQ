@@ -7,9 +7,15 @@ import { Music2, Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { EventsList } from "@/components/event/events-list";
-import { canCreateAnyEvent, canEditGroup, viewableGroups } from "@/lib/permissions";
+import {
+  canCreateAnyEvent,
+  canEditGroup,
+  canViewLibrary,
+  viewableGroups,
+} from "@/lib/permissions";
 import { useWorkspace } from "~/data/workspace-context";
 import { loadEventsList, type EventWithGroup } from "~/data/events-list";
+import { warmSongLibrary } from "~/data/song-library";
 
 export function Dashboard() {
   const { ws } = useWorkspace();
@@ -30,6 +36,15 @@ export function Dashboard() {
     loadEventsList(ws.membership.tenant_id, viewableGroupIds).then((data) => {
       if (alive) setEvents(data);
     });
+    // Warm คลังเพลง's read-cache while there is still a network. That page is the
+    // only door to the offline audio-upload queue, and it used to be the only
+    // thing that ever filled its own cache — so a fresh install that logged in
+    // and drove to the venue found the door shut. The dashboard is where every
+    // session starts, so the cache is filled by the time it matters. Silent and
+    // best-effort: nothing here is allowed to affect what the dashboard shows.
+    if (canViewLibrary(ws.perms)) {
+      warmSongLibrary(ws.membership.tenant_id, viewableGroupIds);
+    }
     return () => {
       alive = false;
     };
