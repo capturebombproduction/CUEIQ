@@ -345,6 +345,13 @@ export function LiveMode({
           committedRef.current = snap.committed ?? { id: null, anchor: null };
           resumedRunRef.current = true;
           setState(snap.state as LiveState);
+          // Restore "the show already ended" too. จบโชว์ leaves begun:true, so a
+          // device that reloads afterwards used to come back believing the show
+          // was still on — and since `ended` now travels between devices, it
+          // would answer the next sync-request with fromController:true,
+          // ended:false and re-light the wake lock on every phone that had
+          // already gone to sleep, with no controller left to correct it.
+          if (snap.ended) markShowEnded(true);
           toast.message("กู้คืนสถานะโชว์ที่ค้างไว้", {
             description: "เวลาเดินต่อจากเดิม — กดรีเซ็ตถ้าจะเริ่มใหม่",
           });
@@ -366,6 +373,10 @@ export function LiveMode({
           JSON.stringify({
             state: s,
             committed: committedRef.current,
+            // Not part of LiveState (it is per-device, never applied), but it has
+            // to survive a reload or the restored device tells everyone else the
+            // show is back on — see the restore above.
+            ended: showEndedRef.current,
             savedAt: Date.now(),
           })
         );
@@ -382,6 +393,11 @@ export function LiveMode({
     if (!liveRestoredRef.current) return;
     const id = setTimeout(() => writeLiveSnapshotRef.current(), 500);
     return () => clearTimeout(id);
+    // `showEnded` is NOT a dep (it is declared far below, so naming it here is a
+    // TDZ error) and it doesn't need to be: writeLiveSnapshot reads the flag off
+    // its ref, so every path that flips it ALSO changes LiveState and re-runs
+    // this. The one exception — จบโชว์ on an already-paused show — flushes by
+    // hand in endShow().
   }, [state, eventId]);
 
   // Both persists above are debounced, and a phone can outrun the debounce: iOS
@@ -1666,14 +1682,18 @@ export function LiveMode({
       audioRef.current?.pause();
       audioRef2.current?.pause();
       setAudioPlaying(false);
-    } else if (isControllerRef.current) {
-      // Ending an already-paused show changes no LiveState, so nothing would be
-      // sent at all and the viewers' screens would stay awake regardless. Say it.
-      channelRef.current?.send({
-        type: "broadcast",
-        event: "state",
-        payload: statePayload(s),
-      });
+    } else {
+      // Ending an already-paused show changes no LiveState, so neither the
+      // broadcast nor the snapshot would happen on their own — and without the
+      // snapshot this device forgets the show ended the moment it reloads.
+      writeLiveSnapshotRef.current();
+      if (isControllerRef.current) {
+        channelRef.current?.send({
+          type: "broadcast",
+          event: "state",
+          payload: statePayload(s),
+        });
+      }
     }
     toast.success(`บันทึกเวลาโชว์ล่าสุด ${formatDuration(seconds)} แล้ว`);
   }

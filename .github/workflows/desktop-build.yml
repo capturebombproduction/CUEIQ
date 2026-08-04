@@ -147,7 +147,16 @@ jobs:
       # latest.yml (version + sha512) and uses the .blockmap for differential
       # downloads. Ship all three.
       - name: Upload installer
-        if: always() # upload whatever built even if the other matrix leg failed
+        # NOT always(). This leg's own earlier steps are the gates — the update-feed
+        # check and the smoke launch above — and uploading past a failed one made
+        # both of them decorative: publish runs on `always()` (so a broken Mac leg
+        # can't withhold the Windows update) and only refuses when the artifacts
+        # are MISSING, so an .exe that CI just proved renders nothing would have
+        # been uploaded, collected, and offered to every installed copy by
+        # electron-updater. Failing this leg now leaves nothing to collect, and the
+        # existing presence assertion in `Collect release files` does the refusing.
+        # The other matrix leg is a separate job and is unaffected either way.
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: CueIQ-${{ matrix.label }}
