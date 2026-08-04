@@ -83,7 +83,8 @@ export function RunOrderLivePage() {
         // machine could reach the server, and การกดคิวยังต้องใช้เน็ต. A stale board
         // that looks live is worse than one that admits it.
         <p className="rounded-lg border border-dashed px-3 py-2 text-sm text-muted-foreground">
-          ออฟไลน์ — นี่คือคิวที่เครื่องนี้เก็บไว้ล่าสุด อาจไม่ตรงกับหน้างานตอนนี้ และยังกดคุมคิวไม่ได้จนกว่าเน็ตจะกลับมา
+          ออฟไลน์ — นี่คือคิวที่เครื่องนี้เก็บไว้ล่าสุด อาจไม่ตรงกับที่เครื่องอื่นเห็น
+          คุมคิวต่อได้ตามปกติ ทุกอย่างที่กดจะถูกเก็บไว้และซิงค์ให้เมื่อเน็ตกลับมา
         </p>
       )}
       <EventLiveCaller

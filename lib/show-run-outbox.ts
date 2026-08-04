@@ -38,10 +38,18 @@ function openDB(): Promise<IDBDatabase> {
       reject(new Error("IndexedDB unavailable"));
       return;
     }
-    const req = indexedDB.open(DB_NAME, 1);
+    // ⚠️ VERSION 2, and it must stay in lock-step with lib/run-order-outbox.ts,
+    // which shares this database. Opening an existing v2 database at version 1
+    // throws VersionError — so the moment that file bumped the version, an
+    // unchanged open(…, 1) here would have failed EVERY offline last-run write on
+    // any machine that had already touched the running-order queue. Both files
+    // create BOTH stores for the same reason: a fresh install opens straight at
+    // the highest version and runs onupgradeneeded exactly once.
+    const req = indexedDB.open(DB_NAME, 2);
     req.onupgradeneeded = () => {
       const db = req.result;
       if (!db.objectStoreNames.contains(STORE)) db.createObjectStore(STORE);
+      if (!db.objectStoreNames.contains("runseq")) db.createObjectStore("runseq");
     };
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);

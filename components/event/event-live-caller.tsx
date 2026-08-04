@@ -28,6 +28,15 @@ import { Badge } from "@/components/ui/badge";
 import { useConfirm } from "@/components/ui/confirm-dialog";
 import { cn } from "@/lib/utils";
 import { privateChannel, runOrderTopic } from "@/lib/realtime";
+import { isQueueableWriteError } from "@/lib/mgmt-outbox";
+import {
+  discardRunSeqOp,
+  enqueueRunSeq,
+  listRunSeqOps,
+  RUNSEQ_OUTBOX_EVENT,
+  RUNSEQ_QUEUED_MESSAGE,
+  type RunSeqOp,
+} from "@/lib/run-order-outbox";
 import {
   formatClockOfDay,
   formatCountdown,
@@ -157,6 +166,29 @@ export function EventLiveCaller({
     const id = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(id);
   }, []);
+
+  // Presses this device made with no network. A board that silently holds unsent
+  // moves looks identical to one that is in sync — and at a festival that is the
+  // difference between "we are fine" and "nobody downstream knows we ran late".
+  const [queued, setQueued] = useState<RunSeqOp[]>([]);
+  useEffect(() => {
+    let alive = true;
+    const refresh = () => {
+      listRunSeqOps().then((ops) => {
+        if (alive) setQueued(ops);
+      });
+    };
+    refresh();
+    // the outbox fires this after every queue change, including the flush that
+    // empties it, so the chip disappears the moment the moves have landed
+    window.addEventListener(RUNSEQ_OUTBOX_EVENT, refresh);
+    return () => {
+      alive = false;
+      window.removeEventListener(RUNSEQ_OUTBOX_EVENT, refresh);
+    };
+  }, []);
+  const parked = queued.filter((o) => o.conflict);
+  const waiting = queued.filter((o) => !o.conflict);
 
   const ordered = useMemo(
     () => [...rows].sort((a, b) => a.sort_order - b.sort_order),
@@ -341,7 +373,48 @@ export function EventLiveCaller({
     id: string;
     partial: Partial<RunSeqLive>;
     expect?: Partial<RunSeqLive>;
+    /** Thai label for the offline queue's chip / conflict list. */
+    label?: string;
   };
+
+  /**
+   * The write didn't go out because there is no network. Keep the operator's press
+   * — the show is happening whether or not the wifi is — and replay it later.
+   *
+   * Returns false for a REAL rejection (RLS, a constraint), which must still
+   * surface: queueing those would retry a doomed write forever.
+   */
+  async function queueOffline(
+    updates: CallerUpdate[],
+    message: string | null | undefined
+  ): Promise<boolean> {
+    const onLine = typeof navigator === "undefined" || navigator.onLine !== false;
+    if (!isQueueableWriteError(message, onLine)) return false;
+    const festival = `${eventName}${eventDate ? ` · ${eventDate}` : ""}`;
+    const at = Date.now();
+    for (const u of updates) {
+      await enqueueRunSeq({
+        rowId: u.id,
+        festival,
+        // Only the caller's own columns ride the queue — never the plan, which
+        // belongs to the builder and must not be replayed over.
+        patch: {
+          status: u.partial.status,
+          actual_start: u.partial.actual_start,
+          actual_end: u.partial.actual_end,
+          offset_min: u.partial.offset_min,
+          buffer_seconds: u.partial.buffer_seconds,
+        },
+        expect: {
+          status: u.expect?.status,
+          offset_min: u.expect?.offset_min,
+        },
+        label: u.label ?? rows.find((r) => r.id === u.id)?.title ?? "ลำดับในคิว",
+        queuedAt: at,
+      });
+    }
+    return true;
+  }
 
   // Optimistically apply, persist each changed row, then tell other devices.
   // Resolves false when nothing landed cleanly (error OR a precondition lost the
@@ -377,6 +450,16 @@ export function EventLiveCaller({
       (_, i) => !results[i].error && (results[i].data?.length ?? 0) === 0
     );
     if (err) {
+      // No network is not a failure on this screen — the festival is running and
+      // the caller's press is the record of it. Queue it, KEEP the optimistic
+      // board, and let the outbox replay it (lib/run-order-outbox.ts). Refetching
+      // here instead would have wiped the operator's own press off the board, in
+      // front of them, at a venue where they can do nothing about it.
+      if (await queueOffline(updates, err.message)) {
+        toast.success(RUNSEQ_QUEUED_MESSAGE, { id: "runseq-offline-queued" });
+        bcast();
+        return true;
+      }
       toast.error("บันทึกไม่สำเร็จ", { description: err.message });
       // pull the board back to server truth so the optimistic rows don't linger
       refetchRef.current();
@@ -666,6 +749,56 @@ export function EventLiveCaller({
 
   return (
     <div className="space-y-4">
+      {/* Unsent presses. A board holding moves nobody else has seen looks exactly
+          like one that is in sync, and at a festival that gap is the difference
+          between "we are on time" and "nobody downstream knows we ran late". */}
+      {waiting.length > 0 && (
+        <div className="rounded-lg border border-amber-500/50 bg-amber-500/10 px-3 py-2 text-sm">
+          <span className="font-semibold text-amber-700 dark:text-amber-400">
+            ค้างซิงค์ {waiting.length} รายการ
+          </span>{" "}
+          <span className="text-muted-foreground">
+            — คิวบนเครื่องนี้เดินต่อตามที่กดไว้ เครื่องอื่นจะยังไม่เห็นจนกว่าเน็ตจะกลับมา
+          </span>
+        </div>
+      )}
+
+      {/* Parked: someone else drove the board while this device was offline. We do
+          not overwrite them and we do not throw this away — a human decides. */}
+      {parked.length > 0 && (
+        <div className="space-y-2 rounded-lg border border-destructive/50 bg-destructive/10 px-3 py-2 text-sm">
+          <p className="font-semibold text-destructive">
+            คิวถูกเปลี่ยนจากเครื่องอื่นระหว่างที่เครื่องนี้ออฟไลน์ ({parked.length})
+          </p>
+          <p className="text-muted-foreground">
+            สิ่งที่กดไว้บนเครื่องนี้ยังไม่ถูกบันทึก เพราะจะไปทับของคนอื่น —
+            ดูบอร์ดด้านล่างว่าตรงกับหน้างานไหม ถ้าตรงแล้วกดทิ้งได้
+          </p>
+          <ul className="space-y-1">
+            {parked.map((o) => (
+              <li key={o.rowId} className="flex flex-wrap items-center gap-2">
+                <span className="font-medium text-foreground">{o.label}</span>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={async () => {
+                    const ok = await confirm({
+                      title: "ทิ้งสิ่งที่กดไว้ตอนออฟไลน์?",
+                      description: `“${o.label}” จะถูกทิ้ง และใช้คิวที่อยู่บนเซิร์ฟเวอร์แทน`,
+                      confirmText: "ทิ้ง",
+                    });
+                    if (ok) await discardRunSeqOp(o.rowId);
+                  }}
+                >
+                  ทิ้งอันนี้
+                </Button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       {/* Top bar: wall clock + overall drift */}
       <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border bg-card p-4">
         <div className="flex items-center gap-3">
