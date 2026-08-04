@@ -49,6 +49,7 @@ import {
 } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
 import { liveTopic, privateChannel } from "@/lib/realtime";
+import { noRowsMessage, wroteNothing } from "@/lib/write-guard";
 import {
   SETLIST_KIND_LABELS,
   SETLIST_KIND_SHORT,
@@ -693,15 +694,27 @@ export function SetlistBuilder({
   }
 
   async function persist(id: string, partial: Partial<SetlistItem>) {
-    const { error } = await supabase
+    const { data, error } = await supabase
       .from("setlist_items")
       .update(partial)
-      .eq("id", id);
+      .eq("id", id)
+      .select("id");
     if (error) {
       const next = items.map((it) => (it.id === id ? { ...it, ...partial } : it));
       if (await queueOffline(next, error.message)) return;
       toast.error("บันทึกไม่สำเร็จ", { description: error.message });
-    } else notifyLive();
+      return;
+    }
+    // No error and no row = the write reached the server and changed nothing
+    // (sent as anon after a failed token refresh, or the row is gone). Every edit
+    // in this builder autosaves on blur, so staying silent here means a whole
+    // session of durations, reordering and mic slots sits on screen looking saved
+    // and is simply not there — discovered at the venue. See lib/write-guard.ts.
+    if (wroteNothing(data)) {
+      toast.error("ยังไม่ได้บันทึก", { description: await noRowsMessage() });
+      return;
+    }
+    notifyLive();
   }
 
   function update(id: string, partial: Partial<SetlistItem>) {

@@ -53,9 +53,19 @@ export function ShareButton({
       return;
     }
     const supabase = createClient();
+    // Clear the expiry in the SAME write that revokes the token. It used to be
+    // cleared only in local state, so the row kept its old share_expires_at: turn
+    // sharing back on and the brand-new link inherits a window that may already
+    // have lapsed. The venue then opens it and gets "ลิงก์ไม่ถูกต้องหรือถูกปิดการ
+    // แชร์แล้ว" while this dialog cheerfully says "ไม่มีวันหมดอายุ" — and the
+    // obvious remedy, regenerating the link, produces another dead one.
     const { error } = await supabase
       .from("events")
-      .update({ share_token: next })
+      .update(
+        enabled
+          ? { share_token: next }
+          : { share_token: next, share_expires_at: null }
+      )
       .eq("id", eventId);
     setBusy(false);
     if (error) {

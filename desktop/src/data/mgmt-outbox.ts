@@ -536,7 +536,18 @@ async function applyAudioUploadOp(
         uploadEventAudio(op.path, local.blob, op.contentType || local.blob.type),
         new Promise<never>((_, reject) =>
           setTimeout(
-            () => reject(new Error("หมดเวลาอัปโหลดไฟล์เสียง (เครือข่ายไม่ตอบสนอง)")),
+            // The ASCII "timeout" is not decoration — the classifier below is a
+            // regex over the MESSAGE (lib/mgmt-outbox.ts isQueueableWriteError),
+            // and it is ASCII-only. A purely Thai message therefore read as a
+            // PERMANENT rejection: an 88 MB master that simply needed longer than
+            // ten minutes on house wifi got parked as a conflict and dropped from
+            // the queue, and that song's audio then never synced again — not at a
+            // hotel, not on the next launch. It is the transient failure of all
+            // transient failures, so say so in a language the classifier reads.
+            () =>
+              reject(
+                new Error("timeout — หมดเวลาอัปโหลดไฟล์เสียง (เครือข่ายไม่ตอบสนอง)")
+              ),
             AUDIO_UPLOAD_TIMEOUT_MS
           )
         ),

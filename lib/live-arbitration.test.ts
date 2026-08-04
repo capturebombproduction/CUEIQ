@@ -8,12 +8,28 @@ function settle(
   mine: number | null,
   theirs: number | null,
   aId = "aaa",
-  bId = "bbb"
+  bId = "bbb",
+  aBegun = false,
+  bBegun = false
 ): { aYields: boolean; bYields: boolean } {
   return {
-    aYields: shouldYieldControl({ mine, theirs, myId: aId, theirId: bId }),
+    aYields: shouldYieldControl({
+      mine,
+      theirs,
+      myId: aId,
+      theirId: bId,
+      mineBegun: aBegun,
+      theirsBegun: bBegun,
+    }),
     // the same exchange seen from the other device: the claims swap with the ids
-    bYields: shouldYieldControl({ mine: theirs, theirs: mine, myId: bId, theirId: aId }),
+    bYields: shouldYieldControl({
+      mine: theirs,
+      theirs: mine,
+      myId: bId,
+      theirId: aId,
+      mineBegun: bBegun,
+      theirsBegun: aBegun,
+    }),
   };
 }
 
@@ -59,6 +75,59 @@ describe("shouldYieldControl", () => {
   it("reaches the same verdict whichever id sorts first", () => {
     expect(settle(null, null, "zzz", "aaa").aYields).toBe(false);
     expect(settle(null, null, "aaa", "zzz").aYields).toBe(true);
+  });
+
+  // The critical one. A phone that merely OPENED the live page holds the default
+  // controller flag with a null claim — and so does a PA that reloaded mid-show.
+  // Deciding that by comparing two random uuids meant the phone won half the time,
+  // re-asserted its own empty INITIAL state as the authority, and stopped the
+  // music on the machine wired to the PA.
+  it("a device RUNNING a show never yields to one that has nothing, either id order", () => {
+    for (const [aId, bId] of [
+      ["aaa", "zzz"],
+      ["zzz", "aaa"],
+    ] as const) {
+      const { aYields, bYields } = settle(null, null, aId, bId, true, false);
+      expect(aYields, "the running show yielded").toBe(false);
+      expect(bYields, "the idle page kept control").toBe(true);
+    }
+  });
+
+  // …and it outranks a claim too: a device that pressed ขอควบคุม on a page where
+  // no show is running must not be able to take one off a machine mid-song.
+  it("a running show outranks even a real claim held by an idle device", () => {
+    const { aYields, bYields } = settle(null, 9999, "aaa", "bbb", true, false);
+    expect(aYields).toBe(false);
+    expect(bYields).toBe(true);
+  });
+
+  it("when both are running, the old claim rules decide as before", () => {
+    expect(settle(null, 1000, "aaa", "bbb", true, true).aYields).toBe(true);
+    expect(settle(2000, 1000, "aaa", "bbb", true, true).aYields).toBe(false);
+  });
+
+  // A peer on an older build sends no `begun`, so both flags read false and the
+  // pair must behave exactly as it did before this rule existed.
+  it("stays inert when neither side reports a running show", () => {
+    expect(settle(null, null, "aaa", "zzz").aYields).toBe(true);
+    expect(settle(null, 1000).aYields).toBe(true);
+  });
+
+  it("still leaves exactly one controller across every begun/claim combination", () => {
+    const stamps = [null, 1000, 2000] as const;
+    for (const mine of stamps) {
+      for (const theirs of stamps) {
+        for (const aBegun of [false, true]) {
+          for (const bBegun of [false, true]) {
+            const { aYields, bYields } = settle(mine, theirs, "aaa", "bbb", aBegun, bBegun);
+            expect(
+              aYields !== bYields,
+              `both ${aYields ? "yielded" : "kept control"} for mine=${mine} theirs=${theirs} aBegun=${aBegun} bBegun=${bBegun}`
+            ).toBe(true);
+          }
+        }
+      }
+    }
   });
 });
 

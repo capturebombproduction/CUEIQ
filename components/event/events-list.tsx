@@ -21,6 +21,7 @@ import { DuplicateEventButton } from "@/components/event/duplicate-event-button"
 import { DeleteEventButton } from "@/components/event/delete-event-button";
 import { DeviceStorage } from "@/components/event/device-storage";
 import { createClient } from "@/lib/supabase/client";
+import { hasLiveSession } from "@/lib/auth-session";
 import {
   getReadiness,
   prefetchEventAudio,
@@ -340,6 +341,20 @@ export function EventsList({
       // A partial fetch would make targetsByEvent incomplete → a later bulk
       // "prepare all" would prune good cache as orphans. Skip on any query error.
       if (itemsRes.error || songsRes.error) return;
+      // …and an EMPTY answer with no error is the same danger wearing a disguise:
+      // supabase-js falls back to the anon key when getSession() returns null (an
+      // expired token whose refresh failed — the ordinary state in the minute
+      // after a venue reconnect), and RLS answers that with zero rows. Every
+      // "เพลง 3/12" badge would vanish and "เตรียมทุกงาน" would report nothing
+      // left to fetch, so the dashboard tells the operator every show is ready
+      // when it may hold no audio at all. Leave the last good badges alone.
+      if (
+        (itemsRes.data ?? []).length === 0 &&
+        (songsRes.data ?? []).length === 0 &&
+        !(await hasLiveSession())
+      ) {
+        return;
+      }
       const songAudio: SongAudioMap = Object.fromEntries(
         (songsRes.data ?? []).map((s) => [
           s.id,

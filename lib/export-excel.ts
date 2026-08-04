@@ -213,9 +213,15 @@ export function buildRunSheetWorkbook(data: ExportData): XLSX.WorkBook {
     ...runRows,
     ...hardOutLine,
   ]);
+  // A and B are wider than the table alone would need because the HEADER block
+  // above the table shares them: the labels (วันที่ / เริ่มโชว์ / ธีมชุด / ไลน์อัพ)
+  // sit in A and their values in B. At wch 4/7 Excel clipped "2026-08-09" to
+  // "2026-0" and cut the Thai labels short — recoverable by dragging a column on
+  // screen, unrecoverable once the sheet is printed and pinned to a board, which
+  // is exactly what this file exists to produce.
   runSheet["!cols"] = [
-    { wch: 4 },
-    { wch: 7 },
+    { wch: 10 },
+    { wch: 12 },
     { wch: 28 },
     { wch: 7 },
     { wch: 7 },

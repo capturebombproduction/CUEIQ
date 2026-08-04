@@ -12,6 +12,7 @@
 // (see lib/show-authority.ts for why a relative import would break under file://).
 import { createClient } from "@/lib/supabase/client";
 import { settleOnAbort } from "@/lib/idb-tx";
+import { wroteNothing } from "@/lib/write-guard";
 
 const DB_NAME = "cueiq-outbox";
 const STORE = "ops";
@@ -141,14 +142,23 @@ export async function pendingCount(): Promise<number> {
 async function apply(op: ShowRunOp): Promise<void> {
   const supabase = createClient();
   if (op.kind === "event_last_run") {
-    const { error } = await supabase
+    const { data, error } = await supabase
       .from("events")
       .update({
         last_run_seconds: op.seconds,
         last_run_at: op.at != null ? new Date(op.at).toISOString() : null,
       })
-      .eq("id", op.eventId);
+      .eq("id", op.eventId)
+      .select("id");
     if (error) throw error;
+    // ⚠️ The .select() is load-bearing, not decoration. Without it a replay sent
+    // as ANON — an expired token whose refresh failed, which is the normal state
+    // in the first minute after a venue reconnect — comes back 204 / error:null,
+    // flushOutbox reads that as success, and removeOp() DESTROYS the only copy of
+    // an offline show's run time. The live snapshot is long gone by then, so the
+    // number the operator watched all night is simply unrecoverable. Throwing
+    // leaves the op queued for the next attempt, which is what it was queued for.
+    if (wroteNothing(data)) throw new Error("write matched no row (not signed in?)");
   }
 }
 

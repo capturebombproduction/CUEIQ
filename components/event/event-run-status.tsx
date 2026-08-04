@@ -5,6 +5,7 @@ import Link from "next/link";
 import type { RealtimeChannel } from "@supabase/supabase-js";
 import { Radio, Clock, CheckCircle2, ExternalLink } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
+import { hasLiveSession } from "@/lib/auth-session";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -96,9 +97,21 @@ export function EventRunStatusCard({
       .eq("event_name", eventName)
       .order("sort_order", { ascending: true });
     q = eventDate ? q.eq("event_date", eventDate) : q.is("event_date", null);
-    const { data } = await q;
-    if (data) setRows(data as RunSeqLive[]);
+    const { data, error } = await q;
+    if (error || !data) return; // a failed read is not an empty board — keep what we have
+    // ...and neither is an EMPTY one we can't prove carried our token. This card
+    // refetches on reconnect and on unlocking a phone — precisely when a token
+    // refresh has just failed and supabase-js falls back to the anon key, which
+    // RLS answers with zero rows and no error. Rendering that would tell a band
+    // mid-festival "วงนี้ยังไม่ถูกผูกกับลำดับในคิวงาน" and drop their countdown.
+    if (data.length === 0 && rowsRef.current.length > 0 && !(await hasLiveSession())) {
+      return;
+    }
+    setRows(data as RunSeqLive[]);
   }
+  // live mirror of rows for refetch(), which must know whether it has anything to lose
+  const rowsRef = useRef(rows);
+  rowsRef.current = rows;
   const refetchRef = useRef(refetch);
   refetchRef.current = refetch;
 

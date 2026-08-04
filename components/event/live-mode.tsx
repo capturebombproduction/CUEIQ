@@ -232,6 +232,9 @@ export function LiveMode({
   // actually makes sound (e.g. plugged into the PA)? A remote/control device sets
   // this OFF so it stays silent without muting the PA device. Default ON.
   const [soundOutput, setSoundOutput] = useState(true);
+  // Set just before an ARBITRATION mute so the persist effect below can tell a
+  // verdict apart from the operator flipping the switch. Cleared as it is read.
+  const mutedByStepDownRef = useRef(false);
   // Per-device OUTPUT ROUTING (desktop): pin the show audio to a chosen output
   // device via setSinkId ("" = system default = today's behavior), so a Bluetooth
   // headset / HDMI screen connecting mid-show can't silently steal the PA feed.
@@ -594,6 +597,16 @@ export function LiveMode({
   useEffect(() => {
     if (audioRef.current) audioRef.current.muted = !soundOutput;
     if (audioRef2.current) audioRef2.current.muted = !soundOutput;
+    // Persist the OPERATOR'S choice only. Stepping down to a viewer also mutes
+    // this device (เครื่องเสียงคุมคนเดียว) — but that is an arbitration verdict
+    // about one moment, not a preference, and writing it here made it outlive the
+    // show: a tablet that once joined a running show came back as the PA at the
+    // NEXT gig with sound off, showing a green "เสียงพร้อมครบ" while the room
+    // stayed silent. A verdict is remembered for this page, never for the device.
+    if (mutedByStepDownRef.current) {
+      mutedByStepDownRef.current = false;
+      return;
+    }
     try {
       localStorage.setItem("cueiq:soundOutput", soundOutput ? "1" : "0");
     } catch {
@@ -1085,6 +1098,12 @@ export function LiveMode({
           theirs,
           myId: meId.current,
           theirId: String(payload.sender ?? ""),
+          // A RUNNING show outranks the id coin-flip. Without this, a phone that
+          // had merely opened the page could win the tie against a PA that had
+          // reloaded mid-show, re-assert its own empty INITIAL state as the
+          // authority, and stop the music. See lib/live-arbitration.ts.
+          mineBegun: stateRef.current.begun,
+          theirsBegun: !!payload.begun,
         });
         if (!iYield) {
           // I hold the stronger claim → keep control and re-assert so the OTHER device
@@ -1115,6 +1134,8 @@ export function LiveMode({
             mountedAt: mountedAtRef.current,
           })
         ) {
+          // A verdict, not a preference — don't let it be written to disk.
+          mutedByStepDownRef.current = true;
           setSoundOutput(false);
         }
       }
@@ -3415,7 +3436,14 @@ export function LiveMode({
               {formatDuration(lastRun.seconds)}
               <span className="ml-2 text-[11px] font-normal text-muted-foreground">
                 ·{" "}
+                {/* timeZone pinned on purpose. lastRun is seeded from props in a
+                    useState initialiser, so this renders during SSR too — and the
+                    server is UTC, which printed a 21:30 finish as 14:30 (and the
+                    wrong DAY for anything before 07:00) until hydration replaced
+                    it. Every show this label runs is in Thailand, so Bangkok is
+                    the right answer on both sides and the mismatch disappears. */}
                 {new Date(lastRun.at).toLocaleString("th-TH", {
+                  timeZone: "Asia/Bangkok",
                   day: "2-digit",
                   month: "short",
                   hour: "2-digit",

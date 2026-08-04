@@ -725,16 +725,21 @@ export function EventLiveCaller({
     liveRow?.actual_start != null
       ? Math.max(0, (now - Date.parse(liveRow.actual_start)) / 1000)
       : 0;
-  const livePlannedDur =
-    liveRow &&
-    parseClockToSeconds(liveRow.planned_start) != null &&
-    parseClockToSeconds(liveRow.planned_end) != null
-      ? Math.max(
-          0,
-          parseClockToSeconds(liveRow.planned_end)! -
-            parseClockToSeconds(liveRow.planned_start)!
-        )
-      : null;
+  // A slot that ENDS after midnight (23:40 → 00:10 — the headliner's closing set,
+  // every time) has planned_end EARLIER than planned_start as a clock-of-day, so a
+  // plain subtraction is negative and Math.max(0, …) flattened it to a planned
+  // length of ZERO. The NOW card then showed red "เกิน" counting up from the first
+  // second of that band's set, and every downstream projection worked from a slot
+  // the board believed took no time at all. Fold it forward a day instead, exactly
+  // like the drift math above does.
+  const livePlannedDur = (() => {
+    if (!liveRow) return null;
+    const s = parseClockToSeconds(liveRow.planned_start);
+    const e = parseClockToSeconds(liveRow.planned_end);
+    if (s == null || e == null) return null;
+    const raw = e - s;
+    return raw >= 0 ? raw : raw + 86400;
+  })();
   const liveRemaining =
     livePlannedDur != null ? livePlannedDur - liveElapsed : null;
 

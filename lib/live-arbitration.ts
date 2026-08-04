@@ -26,6 +26,10 @@ export interface ControllerClaim {
   myId: string;
   /** The other device's broadcast id. */
   theirId: string;
+  /** Is a show actually RUNNING on this device (LiveState.begun)? */
+  mineBegun?: boolean;
+  /** Is one running on theirs? */
+  theirsBegun?: boolean;
 }
 
 /**
@@ -34,16 +38,41 @@ export interface ControllerClaim {
  * controller — never two, never none.
  *
  * Order of the rules:
+ *  0. A device with a RUNNING SHOW beats one with nothing. See below — this rule
+ *     was missing, and its absence could stop a show mid-song.
  *  1. A real claim always beats no claim.
  *  2. Between two real claims the MORE RECENT wins — an intentional ขอควบคุม
  *     refreshes its stamp, and taking control is meant to work.
  *  3. Anything still tied (both unclaimed, or the same millisecond) is settled by
  *     id: the HIGHER id keeps control. Arbitrary, but identical on both devices,
  *     which is the only property that matters — and it is the direction the
- *     same-millisecond case already shipped with, so only the both-null case
- *     changes behaviour here.
+ *     same-millisecond case already shipped with.
+ *
+ * ⚠️ WHY RULE 0 EXISTS. Every live page opens as isController=true with a NULL
+ * claim, and a device that reloaded mid-show also holds begun=true with a NULL
+ * claim (nothing restores a stamp). So when a band member merely OPENED the live
+ * page while the PA had reloaded at some point, both sides were {mine:null,
+ * theirs:null} and the winner was decided by comparing two random uuids — a coin
+ * flip. Half the time the phone won, and the "I keep control" branch re-broadcasts
+ * ITS state, which for a page that never started anything is INITIAL. The PA then
+ * adopts begun:false / currentIndex:0: the audio pauses mid-track, the accumulated
+ * clock is gone, and 500ms later the crash-recovery snapshot is deleted because
+ * begun is false, so even a reload cannot get the run back. Nobody touched a
+ * control. Whether a show is RUNNING is the one fact that outranks a coin flip.
+ *
+ * Both flags default to false, which keeps the rule inert for any caller that
+ * doesn't pass them (and for a peer on an older build whose payload has no
+ * `begun`) — such a pair falls through to exactly the previous behaviour.
  */
-export function shouldYieldControl({ mine, theirs, myId, theirId }: ControllerClaim): boolean {
+export function shouldYieldControl({
+  mine,
+  theirs,
+  myId,
+  theirId,
+  mineBegun = false,
+  theirsBegun = false,
+}: ControllerClaim): boolean {
+  if (mineBegun !== theirsBegun) return theirsBegun;
   if (mine == null && theirs == null) return theirId > myId;
   if (mine == null) return true;
   if (theirs == null) return false;

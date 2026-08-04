@@ -20,6 +20,7 @@ import {
   type NewMgmtOp,
 } from "@/lib/mgmt-outbox";
 import type { EventRow } from "@/lib/types";
+import { noRowsMessage, wroteNothing } from "@/lib/write-guard";
 
 /** Shared toast copy for any management write that got queued for later sync. */
 export const OFFLINE_QUEUED_MESSAGE =
@@ -113,10 +114,18 @@ export async function saveEventWrite(args: {
       if (queueSink && isQueueableWriteError(error?.message, onLine)) return queueWrite(args);
       return { ok: false, message: error?.message };
     }
-    const { error } = await supabase
+    const { data, error } = await supabase
       .from("events")
       .update(args.payload)
-      .eq("id", args.eventId!);
+      .eq("id", args.eventId!)
+      .select("id");
+    // A write that reported no error but touched NO ROW did not happen — the
+    // request went out as anon (expired token, failed refresh) and RLS filtered it
+    // to nothing, or the event is gone. Reporting ok here is how an edit gets a
+    // green "บันทึกแล้ว" and lands nowhere. See lib/write-guard.ts.
+    if (!error && wroteNothing(data)) {
+      return { ok: false, message: await noRowsMessage() };
+    }
     if (!error) return { ok: true, id: args.eventId!, queued: false };
     if (queueSink && isQueueableWriteError(error.message, onLine)) return queueWrite(args);
     return { ok: false, message: error.message };
