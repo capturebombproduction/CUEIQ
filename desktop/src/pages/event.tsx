@@ -1,16 +1,21 @@
 // Desktop event detail — mirrors app/(app)/events/[id]/page.tsx (read view).
 // Reuses EventWorkspace verbatim (Summary tab + the code-split editors), driven
-// by a client-fetched bundle. Heavier peripherals (export / approval / device
-// prep / festival run-order) are deferred to a later milestone.
+// by a client-fetched bundle — plus the same action bar the web has: Export
+// Excel, resubmit-after-rejection, and the copyright warning/triage. Those were
+// deferred at M2 and stayed deferred long after the desktop became the copy that
+// actually goes to the venue, which is exactly where the run sheet is needed.
 import { useEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { ArrowLeft, CalendarDays, MapPin, Music2, Pencil, AlarmClock } from "lucide-react";
+import { ArrowLeft, CalendarDays, MapPin, Music2, Pencil, AlarmClock, AlertTriangle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { StatusBadge } from "@/components/status-badge";
 import { EventWorkspace } from "@/components/event/event-workspace";
+import { ApprovalControl } from "@/components/event/approval-control";
+import { ExportButton } from "@/components/event/export-button";
+import { EventCopyrightPanel } from "@/components/event/event-copyright-panel";
 import type { RunSeqLive } from "@/components/event/event-live-caller";
 import { createClient } from "@/lib/supabase/client";
-import { canEditGroup, canViewGroup } from "@/lib/permissions";
+import { canApprove, canEditGroup, canViewGroup } from "@/lib/permissions";
 import { eventCompleteness } from "@/lib/completeness";
 import { EVENT_TYPES, type EventType, type GroupStatus } from "@/lib/types";
 import { shortClock, deadlineInfo } from "@/lib/time";
@@ -190,6 +195,25 @@ export function EventPage() {
   // Editing is not gated by approval — edit any time, any status (approval is just a
   // staff completeness badge). Matches the web event page.
   const editable = canEdit;
+  const canResubmit = canEdit && completeness.complete;
+
+  // Songs in THIS setlist whose copyright was rejected — a warning for the band's
+  // Ar, and the approver's triage list. Same derivation as the web event page.
+  const usedSongIds = new Set(
+    bundle.setlist.map((s) => s.song_id).filter(Boolean) as string[]
+  );
+  const rejectedSongs = bundle.songs.filter(
+    (s) => usedSongIds.has(s.id) && s.copyright_status === "rejected"
+  );
+  const setlistLibrarySongs = bundle.songs
+    .filter((s) => usedSongIds.has(s.id))
+    .map((s) => ({
+      id: s.id,
+      title: s.title,
+      copyright_status: s.copyright_status,
+    }));
+  const showCopyrightPanel =
+    !!ws && canApprove(ws.perms) && setlistLibrarySongs.length > 0;
 
   return (
     <div className="space-y-6">
@@ -247,17 +271,59 @@ export function EventPage() {
             </div>
           </div>
 
-          {editable && (
-            <div className="flex flex-wrap items-center gap-2">
+          {/* Same action bar as the web event page. The desktop is the copy that
+              goes to the VENUE, and it could not produce the run sheet venue staff
+              hold, nor resubmit a rejected show — both lived only in the browser. */}
+          <div className="flex flex-wrap items-center gap-2">
+            <ExportButton
+              eventId={event.id}
+              groupId={event.group_id}
+              // From the bundle already on screen (and on disk), so the run sheet
+              // can be produced with no network — at the venue, which is where it
+              // is actually wanted.
+              data={{
+                event,
+                schedule: bundle.schedule,
+                setlist: bundle.setlist,
+                micMap: bundle.micMap,
+                members: bundle.members,
+                lineup: bundle.lineup,
+              }}
+            />
+            {editable && (
               <Button asChild variant="outline">
                 <Link to={`/events/${event.id}/edit`}>
                   <Pencil className="h-4 w-4" /> แก้ไข
                 </Link>
               </Button>
-            </div>
-          )}
+            )}
+            <ApprovalControl
+              eventId={event.id}
+              status={event.status as GroupStatus}
+              canResubmit={canResubmit}
+            />
+          </div>
         </div>
       </div>
+
+      {rejectedSongs.length > 0 && (
+        <div className="no-print rounded-lg border border-destructive/50 bg-destructive/10 p-3">
+          <div className="flex items-center gap-2 font-semibold text-destructive">
+            <AlertTriangle className="h-5 w-5 shrink-0" />
+            เพลงในงานนี้ถูกปฏิเสธลิขสิทธิ์ ({rejectedSongs.length})
+          </div>
+          <ul className="ml-7 mt-1.5 list-disc space-y-0.5 text-sm text-muted-foreground">
+            {rejectedSongs.map((s) => (
+              <li key={s.id}>
+                <span className="font-medium text-foreground">{s.title}</span> —
+                ควรเปลี่ยนเพลงหรือตรวจสอบลิขสิทธิ์ก่อนแสดง
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {showCopyrightPanel && <EventCopyrightPanel songs={setlistLibrarySongs} />}
 
       <EventWorkspace
         event={event}

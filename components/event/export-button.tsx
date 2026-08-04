@@ -11,14 +11,45 @@ import type { Member, MicAssignment, ScheduleItem, SetlistItem } from "@/lib/typ
 export function ExportButton({
   eventId,
   groupId,
+  data: local,
 }: {
   eventId: string;
   /** The event's band — `members` is group-scoped, not event-scoped. */
   groupId: string;
+  /**
+   * Everything the workbook needs, already in hand. The desktop passes its cached
+   * event bundle — the exact data the page is showing — so the run sheet can be
+   * produced AT THE VENUE with no network, which is the one place it is wanted.
+   * Omitted on the web, where the page is server-rendered and re-reading is both
+   * cheap and fresher than anything the client is holding.
+   */
+  data?: ExportData;
 }) {
   const [loading, setLoading] = useState(false);
 
+  async function emit(data: ExportData) {
+    // Lazy-load SheetJS only when the user actually exports. It writes through a
+    // blob + <a download>, which is the same path the JPG export already uses
+    // under Electron — no node/fs branch is in the browser build.
+    const { downloadRunSheet } = await import("@/lib/export-excel");
+    downloadRunSheet(data);
+    toast.success("ดาวน์โหลด Excel แล้ว 📄");
+  }
+
   async function onExport() {
+    if (local) {
+      setLoading(true);
+      try {
+        await emit(local);
+      } catch (e) {
+        toast.error("Export ไม่สำเร็จ", {
+          description: e instanceof Error ? e.message : String(e),
+        });
+      } finally {
+        setLoading(false);
+      }
+      return;
+    }
     setLoading(true);
     const supabase = createClient();
     const [evRes, schRes, setRes, micRes, memRes, lineRes] = await Promise.all([
@@ -82,18 +113,14 @@ export function ExportButton({
       return;
     }
     try {
-      const data: ExportData = {
+      await emit({
         event: evRes.data as ExportData["event"],
         schedule: schRes.data as ScheduleItem[],
         setlist: setRes.data as SetlistItem[],
         micMap: micRes.data as MicAssignment[],
         members: memRes.data as Member[],
         lineup: (lineRes.data as { member_id: string }[]).map((r) => r.member_id),
-      };
-      // Lazy-load SheetJS only when the user actually exports.
-      const { downloadRunSheet } = await import("@/lib/export-excel");
-      downloadRunSheet(data);
-      toast.success("ดาวน์โหลด Excel แล้ว 📄");
+      });
     } catch (e) {
       toast.error("Export ไม่สำเร็จ", {
         description: e instanceof Error ? e.message : String(e),
