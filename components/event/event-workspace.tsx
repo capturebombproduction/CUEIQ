@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
-import { ClipboardList, Check, Loader2 } from "lucide-react";
+import { AlertTriangle, Check, ClipboardList, Loader2 } from "lucide-react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { RefreshButton } from "@/components/refresh-button";
@@ -41,6 +41,7 @@ const LineupEditor = dynamic(
 import { createClient } from "@/lib/supabase/client";
 import { notify } from "@/lib/notify-client";
 import { type CompletenessResult } from "@/lib/completeness";
+import { wroteNothing } from "@/lib/write-guard";
 import {
   EVENT_TYPES,
   type EventRow,
@@ -149,11 +150,17 @@ export function EventWorkspace({
     syncing.current = true;
     const target = next;
     (async () => {
-      const { error } = await createClient()
+      const { data, error } = await createClient()
         .from("events")
         .update({ status: target })
-        .eq("id", eventId);
-      if (error) {
+        .eq("id", eventId)
+        .select("id");
+      // Same class as lib/write-guard.ts: no error and no row means the request
+      // reached the server and changed nothing (sent as anon after a failed token
+      // refresh, or blocked by 0037's guard). Announcing "ส่งขออนุมัติให้อัตโนมัติ"
+      // for that is how a show sits in draft while the band believes an approver
+      // has it. Un-latch so a later render retries instead.
+      if (error || wroteNothing(data)) {
         syncing.current = false; // RLS or transient — let a later render retry
         return;
       }
@@ -286,6 +293,33 @@ export function EventWorkspace({
 
   return (
     <div className="w-full space-y-4">
+      {/* An APPROVED show that has since lost something required. The auto-effect
+          above only walks draft/in_progress → pending_review → draft, so once a
+          show is approved nothing re-checks it — and editing is deliberately never
+          gated on approval ("วงควรแก้เมื่อไหร่ก็ได้"). So an Ar can delete an STB
+          row to re-enter it, get interrupted, and the event keeps its green
+          Approved badge with a hole in it. Nobody inside the app notices; the crew
+          at the venue does. Deliberately says so rather than un-approving on its
+          own: reversing a staff decision without asking is its own kind of wrong. */}
+      {!completeness.complete &&
+        !event.is_template &&
+        (status === "approved" || status === "overdue") && (
+          <div className="no-print rounded-lg border border-destructive/50 bg-destructive/10 p-3">
+            <div className="flex items-center gap-2 font-semibold text-destructive">
+              <AlertTriangle className="h-5 w-5 shrink-0" />
+              งานนี้อนุมัติไปแล้ว แต่ตอนนี้ข้อมูลไม่ครบ ({completeness.missing.length})
+            </div>
+            <ul className="ml-7 mt-1.5 list-disc space-y-0.5 text-sm text-muted-foreground">
+              {completeness.missing.map((m) => (
+                <li key={m.key}>{m.label}</li>
+              ))}
+            </ul>
+            <p className="ml-7 mt-1.5 text-sm text-muted-foreground">
+              เติมให้ครบก่อนวันงาน หรือแจ้งทีมค่ายให้ตรวจอีกครั้ง
+            </p>
+          </div>
+        )}
+
       {/* Big Summary button (default view) + refresh */}
       <div className="no-print flex flex-wrap items-center gap-2">
         <Button
