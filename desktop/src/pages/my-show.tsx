@@ -166,6 +166,10 @@ export function MyShow() {
   const [state, setState] = useState<ShowState>(INITIAL);
   const stateRef = useRef(state);
   stateRef.current = state;
+  // จบโชว์ deliberately leaves `begun` true (clock frozen, run recorded — not a
+  // reset), so anything keyed on `begun` alone needs this second flag to know
+  // the show is actually over. Same shape as live-mode.tsx's `showEnded`.
+  const [showEnded, setShowEnded] = useState(false);
   const [now, setNow] = useState(() => Date.now());
   const [editing, setEditing] = useState(false);
   const [adding, setAdding] = useState(false);
@@ -295,6 +299,53 @@ export function MyShow() {
     return () => clearInterval(id);
   }, []);
 
+  // Tell the operator WHICH track died silently — reported once per track (the
+  // media "error" event and the play() rejection normally both fire for the
+  // same file); cleared once the show moves on to another track. Port of
+  // live-mode's reportAudioFault.
+  const audioFaultRef = useRef<string | null>(null);
+  function reportAudioFault(itemId: string | null) {
+    if (!itemId || audioFaultRef.current === itemId) return;
+    audioFaultRef.current = itemId;
+    const title = itemsRef.current.find((it) => it.id === itemId)?.title || "รายการนี้";
+    toast.error(`เล่นไฟล์เสียงไม่สำเร็จ: ${title}`, {
+      description: "เครื่องนี้จะไม่มีเสียงในรายการนี้ (โชว์ยังเดินต่อ) — ลองเลือกไฟล์ใหม่",
+    });
+  }
+  const reportAudioFaultRef = useRef(reportAudioFault);
+  reportAudioFaultRef.current = reportAudioFault;
+
+  // A play() rejection is not always a failure: NotAllowedError = the autoplay
+  // policy (the "แตะเพื่อเล่นเสียงต่อ" banner is the affordance for that, so it
+  // stays silent here) and AbortError = our own pause / src-swap interrupting a
+  // pending play, which happens on every track change and overlap. Anything
+  // else is a real media failure. Port of live-mode's onPlayRejected.
+  function onPlayRejected(itemId: string | null, err: unknown, sounding = true) {
+    const name = (err as { name?: string } | null)?.name;
+    if (name === "AbortError") return;
+    if (name === "NotAllowedError") {
+      if (!sounding) return;
+      // needsAudioResume (the "แตะเพื่อเล่นเสียงต่อ" banner) is gated on
+      // !audioPlaying, but every play site below sets that flag true
+      // SYNCHRONOUSLY, before the promise settles. Telling the truth here is
+      // what turns a silently-dead show back into one tap, instead of a lit
+      // countdown with no sound and nothing on screen to press.
+      setAudioPlaying(false);
+      return;
+    }
+    reportAudioFault(itemId);
+  }
+  const onPlayRejectedRef = useRef(onPlayRejected);
+  onPlayRejectedRef.current = onPlayRejected;
+
+  // the fault describes ONE track — drop it once the show is sounding another
+  // one, so a stale toast doesn't sit over the rest of the run
+  useEffect(() => {
+    if (audioFaultRef.current && audioFaultRef.current !== playingId) {
+      audioFaultRef.current = null;
+    }
+  }, [playingId]);
+
   // two audio elements — create once (mirrors live-mode)
   useEffect(() => {
     const make = () => {
@@ -307,6 +358,13 @@ export function MyShow() {
           setAudioPlaying(false);
         }
       });
+      a.addEventListener("error", () => {
+        // The loaded file can't be played at all (dangling blob, undecodable
+        // bytes, missing codec). Only the element that's meant to be SOUNDING
+        // counts — an idle one being reloaded or cleared isn't a fault.
+        if (a !== audioRef.current || !playingIdRef.current) return;
+        reportAudioFaultRef.current(playingIdRef.current);
+      });
       a.addEventListener("timeupdate", () => {
         if (a !== audioRef.current) return;
         setAudioCurrent(a.currentTime);
@@ -314,6 +372,28 @@ export function MyShow() {
       });
       a.addEventListener("loadedmetadata", () => {
         if (a === audioRef.current) setAudioDuration(a.duration);
+      });
+      // Sound is a fact about the element, not about what we asked it to do.
+      // These two make audioPlaying follow reality, so the "แตะเพื่อเล่นเสียงต่อ"
+      // rescue can appear for anything that stops the audio without going
+      // through us.
+      a.addEventListener("playing", () => {
+        if (a === audioRef.current) setAudioPlaying(true);
+      });
+      a.addEventListener("pause", () => {
+        // Every app-initiated stop passes through here too — playItemAudio
+        // pauses before swapping src, for instance — so judging immediately
+        // would flash the banner on every track change. Re-check on the next
+        // macrotask instead: by then a real track change has already started
+        // playing again (a.paused === false) and self-suppresses, while an
+        // outside interruption (a call, the lock screen, a headphone button)
+        // is still paused and is exactly what we want to surface. Deliberate
+        // stops set the flag themselves, so agreeing is a no-op.
+        setTimeout(() => {
+          if (a !== audioRef.current || !a.paused || a.ended) return;
+          if (!playingIdRef.current || endedItemIdRef.current === playingIdRef.current) return;
+          setAudioPlaying(false);
+        }, 400);
       });
       return a;
     };
@@ -459,6 +539,28 @@ export function MyShow() {
     };
   }, [state.running]);
 
+  // Belt-and-braces alongside the wake lock above: navigator.wakeLock is a
+  // browser-spec API riding Electron's file:// origin, which nothing guarantees
+  // behaves like a real tab. Under Electron, also hold the OS-level power save
+  // blocker (desktop/electron/main.cjs) so a long MC-talk / set-change gap with no
+  // audio can't let Windows sleep the display. No-op in a plain browser.
+  // Keyed on `begun`, not `running` (which live-mode.tsx also does): the whole
+  // point is the long gap with no audio — an MC talking, a set change, a manual
+  // cue waiting for the operator's go — and in every one of those the show is
+  // begun while running is false. Keying it on `running` would release the
+  // blocker during exactly the stretches it exists to cover.
+  // Also gated on `!showEnded`: จบโชว์ leaves `begun` true on purpose (clock
+  // frozen, run recorded), so without this the blocker would otherwise hold
+  // the display awake until รีเซ็ต, navigate-away, or quit.
+  useEffect(() => {
+    window.cueiqNative?.setShowRunning(state.begun && !showEnded).catch(() => {});
+  }, [state.begun, showEnded]);
+  useEffect(() => {
+    return () => {
+      window.cueiqNative?.setShowRunning(false).catch(() => {});
+    };
+  }, []);
+
   // ---- audio helpers (single device — the sounding track is always local) -----
   /** Swap primary/secondary elements; the scrubber follows the new primary. */
   function swapAudio() {
@@ -485,7 +587,7 @@ export function MyShow() {
       audio.pause();
       audio.src = url;
       audio.currentTime = 0;
-      audio.play().catch(() => {});
+      audio.play().catch((err) => onPlayRejected(it.id, err));
       setPlayingId(it.id);
       setAudioPlaying(true);
     } else {
@@ -509,7 +611,7 @@ export function MyShow() {
     incoming.src = url;
     incoming.currentTime = Math.max(0, fromOffset);
     incoming.volume = Math.min(1, Math.max(0, (volumesRef.current[itemId] ?? 100) / 100));
-    incoming.play().catch(() => {});
+    incoming.play().catch((err) => onPlayRejected(itemId, err));
     swapAudio(); // incoming → primary (scrubber follows it); outgoing → secondary
     setPlayingId(itemId);
     setAudioPlaying(true);
@@ -604,6 +706,7 @@ export function MyShow() {
 
   function start() {
     const ts = Date.now();
+    setShowEnded(false);
     setState({
       running: true,
       begun: true,
@@ -643,7 +746,7 @@ export function MyShow() {
         const url = urls[cur.id];
         if (playingId === cur.id) {
           if (url) {
-            audio.play().catch(() => {});
+            audio.play().catch((err) => onPlayRejected(cur.id, err));
             setAudioPlaying(true);
           }
         } else if (cur.kind === "song" && url) {
@@ -653,7 +756,7 @@ export function MyShow() {
             audio.src = url;
             audio.currentTime = Math.max(0, offset);
             setPlayingId(cur.id);
-            audio.play().catch(() => {});
+            audio.play().catch((err) => onPlayRejected(cur.id, err));
             setAudioPlaying(true);
           }
         } else {
@@ -772,7 +875,7 @@ export function MyShow() {
           audio.currentTime = Math.max(0, offset);
           setPlayingId(cur.id);
         }
-        audio.play().catch(() => {});
+        audio.play().catch((err) => onPlayRejected(cur.id, err));
         setAudioPlaying(true);
       }
     } else {
@@ -803,6 +906,7 @@ export function MyShow() {
     setAudioPlaying(false);
     setAudioCurrent(0);
     setAudioDuration(0);
+    setShowEnded(false); // a reset show is a fresh one — it may be run again
     setState({ ...INITIAL, mode: state.mode });
   }
 
@@ -812,6 +916,7 @@ export function MyShow() {
     const rec = { seconds, at: Date.now() };
     setLastRun(rec);
     setSoloLastRun(rec).catch(() => {});
+    setShowEnded(true); // let the display sleep again — the show is over
     if (s.running) {
       const frozen = s.itemStartedAt
         ? (Date.now() - s.itemStartedAt) / 1000
@@ -880,8 +985,11 @@ export function MyShow() {
         sec.src = url;
         sec.currentTime = 0;
         sec.volume = Math.min(1, Math.max(0, (volumesRef.current[nxt.id] ?? 100) / 100));
-        sec.play().catch(() => {});
         overlapNextIdRef.current = nxt.id; // promoted to primary on advance
+        sec.play().catch((err) => {
+          if (overlapNextIdRef.current === nxt.id) overlapNextIdRef.current = null;
+          onPlayRejectedRef.current(nxt.id, err, false); // the current track is still sounding
+        });
       }
     }
   }, [now, state, items, urls]);
@@ -951,7 +1059,7 @@ export function MyShow() {
     audio
       .play()
       .then(() => setAudioPlaying(true))
-      .catch(() => {});
+      .catch((err) => onPlayRejected(cur.id, err));
   }
 
   // keyboard: Space start/run-pause · →/N next · ← back (Manual)

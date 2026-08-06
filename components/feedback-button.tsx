@@ -5,6 +5,7 @@ import { MessageSquarePlus, Loader2, Bug, Lightbulb, MessageCircle } from "lucid
 import { toast } from "sonner";
 import { createClient } from "@/lib/supabase/client";
 import { APP_VERSION } from "@/lib/app-version";
+import { isQueueableWriteError } from "@/lib/mgmt-outbox";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
@@ -82,7 +83,21 @@ export function FeedbackButton({
       setCategory("bug");
       setOpen(false);
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : "ส่งไม่สำเร็จ");
+      // A venue with no signal is this button's NORMAL habitat (see the doc
+      // comment above) — a bare "TypeError: Failed to fetch" toast title reads
+      // as gibberish to a band member and the report is then just lost. Detect
+      // the network case the same way the outbox call sites do and give it a
+      // Thai headline; the typed text stays in the box either way (only the
+      // success path above clears it), so nothing is lost to retype later.
+      const msg = e instanceof Error ? e.message : null;
+      const onLine = typeof navigator === "undefined" || navigator.onLine !== false;
+      if (isQueueableWriteError(msg, onLine)) {
+        toast.error("ออฟไลน์อยู่ — ส่งไม่สำเร็จ", {
+          description: "ข้อความยังอยู่ในกล่อง ลองส่งอีกครั้งเมื่อเน็ตกลับมา",
+        });
+      } else {
+        toast.error("ส่งไม่สำเร็จ", { description: msg ?? undefined });
+      }
     } finally {
       setBusy(false);
     }

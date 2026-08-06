@@ -217,7 +217,20 @@ export async function tryQueueAudioUpload(args: {
   // gigabyte of stems.
   if (args.file.size > MAX_QUEUED_AUDIO_BYTES) return false;
   try {
-    await setLocalSource(args.songId, args.file, args.fileName);
+    // args.file is often a picked File, not copied bytes — a bare reference to a
+    // path on disk that plays nothing once that source is moved/unplugged (see
+    // song-cache.ts's cacheSongBlob for the twin of this fix). This is the ONLY
+    // copy of the audio while the upload sits queued (⭐#1 step 7), so copy the
+    // bytes now rather than let a persisted File silently rot. Best-effort: if the
+    // source can't be read anymore, fall back to today's behaviour rather than
+    // failing the offline upload entirely.
+    let toStore: Blob = args.file;
+    try {
+      toStore = new Blob([await args.file.arrayBuffer()], { type: args.file.type });
+    } catch {
+      /* unreadable source — keep args.file as-is */
+    }
+    await setLocalSource(args.songId, toStore, args.fileName);
   } catch {
     return false; // no room / IndexedDB unavailable — nothing to promise
   }

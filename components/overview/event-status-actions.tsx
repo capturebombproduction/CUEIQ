@@ -5,6 +5,7 @@ import { Check, X, Loader2, ChevronDown } from "lucide-react";
 import { toast } from "sonner";
 import { createClient } from "@/lib/supabase/client";
 import { notify } from "@/lib/notify-client";
+import { wroteNothing, noRowsMessage } from "@/lib/write-guard";
 import { StatusBadge } from "@/components/status-badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -41,13 +42,18 @@ export function EventStatusActions({
     setBusy(true);
     const prev = status;
     setStatus(next);
-    const { error } = await createClient()
+    const { data, error } = await createClient()
       .from("events")
       .update({ status: next })
-      .eq("id", eventId);
+      .eq("id", eventId)
+      .select("id");
     setBusy(false);
     if (error) {
       toast.error("เปลี่ยนสถานะไม่สำเร็จ", { description: error.message });
+      setStatus(prev);
+    } else if (wroteNothing(data)) {
+      // 0 rows with no error = the write never landed — don't tell the band it did.
+      toast.error(await noRowsMessage());
       setStatus(prev);
     } else {
       toast.success(next === "approved" ? "อนุมัติแล้ว" : "ปฏิเสธแล้ว");

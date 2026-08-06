@@ -1,7 +1,7 @@
 {
   "name": "cueiq-desktop",
   "private": true,
-  "version": "0.1.7",
+  "version": "0.1.8",
   "type": "module",
   "description": "CueIQ Desktop — installable offline-first show runner (Electron + Vite). Syncs with the web app via the same Supabase.",
   "author": "Capture Bomb",
@@ -81,7 +81,7 @@
     "lucide-react": "^1.21.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
-    "react-router-dom": "^7.1.1",
+    "react-router-dom": "^7.18.2",
     "sonner": "^2.0.7",
     "soundtouchjs": "^0.3.0",
     "tailwind-merge": "^3.6.0",

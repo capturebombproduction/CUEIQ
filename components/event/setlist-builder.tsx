@@ -515,6 +515,12 @@ export function SetlistBuilder({
   // add-in-flight: ref blocks re-entry immediately, state disables the buttons
   const insertingRef = useRef(false);
   const [inserting, setInserting] = useState(false);
+  // Ids minted client-side (newLocalRowId) for a row that only exists in the
+  // offline outbox so far — its row has no server counterpart until the flush
+  // lands, so a direct UPDATE by this id legitimately matches 0 rows. Batch
+  // writes below must not read that as a failed write. Reconciling with the
+  // server (reconcileFromServer) drops an id once its row shows up there.
+  const localOnlyIds = useRef<Set<string>>(new Set());
 
   // Live Mode sync: join the show channel so we can (a) tell a running Live Mode to
   // refetch when the setlist changes, and (b) learn which item is on air and lock it.
@@ -580,6 +586,7 @@ export function SetlistBuilder({
         const minted = rows.map((r) => mintLocalItem(r.sort_order, { ...r }));
         if (await queueOffline(minted, error.message)) {
           old.forEach((it) => deleteAudio(eventId, it.id).catch(() => {}));
+          minted.forEach((m) => localOnlyIds.current.add(m.id));
           setItems([...minted].sort((a, b) => a.sort_order - b.sort_order));
           return;
         }
@@ -637,7 +644,13 @@ export function SetlistBuilder({
               .select("*")
               .eq("event_id", eventId)
               .order("sort_order", { ascending: true });
-            if (current) setItems(current as SetlistItem[]);
+            if (current) {
+              // These rows are now authoritative — any that were still marked
+              // local-only have a server counterpart, so a future batch write
+              // hitting them for real is no longer a legitimate 0-row match.
+              current.forEach((it) => localOnlyIds.current.delete(it.id));
+              setItems(current as SetlistItem[]);
+            }
             throw new Error(
               "ลบเซ็ตลิสต์เดิมไม่สำเร็จ — ตอนนี้อาจมีรายการซ้ำอยู่ กรุณาตรวจสอบและลบรายการที่ซ้ำออก"
             );
@@ -717,6 +730,32 @@ export function SetlistBuilder({
     notifyLive();
   }
 
+  // A batch reorder write is N independent UPDATEs (Promise.all) — they can land
+  // partially. When some but not all of them missed, the screen must not assert
+  // either "pre-edit" or "post-edit" order (both are now guesses); re-read the
+  // server so it matches whatever actually landed. Keeps any row that's still
+  // local-only (not yet flushed from the offline outbox) visible even though the
+  // refetch itself can't see it, and drops it from localOnlyIds once it can.
+  async function reconcileFromServer(optimistic: SetlistItem[]) {
+    const { data } = await supabase
+      .from("setlist_items")
+      .select("*")
+      .eq("event_id", eventId)
+      .order("sort_order", { ascending: true });
+    if (!data) return;
+    const server = data as SetlistItem[];
+    const serverIds = new Set(server.map((it) => it.id));
+    serverIds.forEach((id) => localOnlyIds.current.delete(id));
+    const stillLocal = optimistic.filter(
+      (it) => localOnlyIds.current.has(it.id) && !serverIds.has(it.id)
+    );
+    setItems([...server, ...stillLocal].sort((a, b) => a.sort_order - b.sort_order));
+    // Reached only when SOME of the batch's writes landed — the DB now holds a
+    // new order. A running Live Mode needs to know regardless of who called us,
+    // so broadcast here rather than trust every call site to remember it.
+    notifyLive();
+  }
+
   function update(id: string, partial: Partial<SetlistItem>) {
     setLocal(id, partial);
     persist(id, partial);
@@ -730,7 +769,11 @@ export function SetlistBuilder({
   // startSec is this row's clock-of-day start (already includes its buffer_before).
   function fillRemaining(itemId: string, startSec: number, bufferAfter: number) {
     if (hardOutSec == null) return;
-    const dur = Math.round(hardOutSec - Math.max(0, bufferAfter || 0) - startSec);
+    // timing.hardOutSec is hardOutSec folded past midnight when the show starts
+    // before it (23:00 show, 00:30 hard out) — startSec is already a folded
+    // clock-of-day value from computeSetlistTimes, so subtracting the raw
+    // (unfolded) hardOutSec here would go negative and refuse a valid fill.
+    const dur = Math.round(timing.hardOutSec! - Math.max(0, bufferAfter || 0) - startSec);
     if (dur <= 0) {
       toast.error("เวลาไม่พอ — รายการก่อนหน้าใช้เวลาเกิน Hard Out แล้ว", {
         description: "ลองลดความยาวรายการอื่นก่อน",
@@ -816,6 +859,7 @@ export function SetlistBuilder({
       if (error || !data) {
         const local = mintLocalItem(sort, extra);
         if (await queueOffline([...items, local], error?.message)) {
+          localOnlyIds.current.add(local.id);
           setItems((prev) => [...prev, local]);
           return true;
         }
@@ -880,7 +924,11 @@ export function SetlistBuilder({
     });
     if (!ok) return;
     setItems((prev) => prev.filter((it) => it.id !== id));
-    const { error } = await supabase.from("setlist_items").delete().eq("id", id);
+    const { data, error } = await supabase
+      .from("setlist_items")
+      .delete()
+      .eq("id", id)
+      .select("id");
     if (error) {
       if (await queueOffline(snapshot.filter((it) => it.id !== id), error.message)) {
         deleteAudio(eventId, id).catch(() => {}); // local cache
@@ -889,13 +937,20 @@ export function SetlistBuilder({
       }
       toast.error("ลบไม่สำเร็จ", { description: error.message });
       setItems(snapshot);
-    } else {
-      deleteAudio(eventId, id).catch(() => {}); // local cache
-      // don't delete a library song's file when removing a linked row (library owns it)
-      if (removed?.audio_path && !removed.song_id)
-        removeEventAudio(removed.audio_path).catch(() => {}); // legacy ad-hoc only
-      notifyLive();
+      return;
     }
+    // No error and no row = sent as anon after a failed token refresh — the row
+    // (and its audio) is still there on the server. See lib/write-guard.ts.
+    if (wroteNothing(data)) {
+      toast.error("ยังไม่ได้ลบ", { description: await noRowsMessage() });
+      setItems(snapshot);
+      return;
+    }
+    deleteAudio(eventId, id).catch(() => {}); // local cache
+    // don't delete a library song's file when removing a linked row (library owns it)
+    if (removed?.audio_path && !removed.song_id)
+      removeEventAudio(removed.audio_path).catch(() => {}); // legacy ad-hoc only
+    notifyLive();
   }
 
   /** Persist a full renumber: optimistic set, write every changed row, roll back on failure. */
@@ -914,6 +969,7 @@ export function SetlistBuilder({
           .from("setlist_items")
           .update({ sort_order: it.sort_order })
           .eq("id", it.id)
+          .select("id")
       )
     );
     const failed = results.find((r) => r.error);
@@ -921,9 +977,62 @@ export function SetlistBuilder({
       if (await queueOffline(renumbered, failed.error.message)) return;
       toast.error(failMsg, { description: failed.error.message });
       setItems(prev);
-    } else {
-      notifyLive();
+      return;
     }
+    // The results themselves settle whether a row is still local-only, so trust
+    // them over the set: the outbox flush re-uses the client-minted id, so once
+    // it lands the row IS on the server under that same id and nothing was
+    // clearing the flag — every later reorder was then judged as "wrote nothing
+    // real" and reported unsaved while it had in fact saved.
+    results.forEach((r, i) => {
+      if (!wroteNothing(r.data)) localOnlyIds.current.delete(changed[i].id);
+    });
+    // A 0-row result on a row that only exists in the offline outbox so far
+    // (localOnlyIds) is expected, not a failure — skip those when judging the
+    // batch. `changed` and `results` stay index-aligned (both come from the
+    // same .map), so results[i] corresponds to changed[i].
+    const attempted = changed.filter((it) => !localOnlyIds.current.has(it.id));
+    const missed = results.filter(
+      (r, i) => !localOnlyIds.current.has(changed[i].id) && wroteNothing(r.data)
+    );
+    if (!attempted.length) {
+      // EVERY changed row is local-only — there was no real write to land or
+      // miss (an UPDATE against a client-minted id that doesn't exist on the
+      // server yet returns 0 rows with no error, same as `wroteNothing`, so it
+      // never hit the offline queue either — queueOffline only triggers on an
+      // actual error). The new order exists only in this tab's optimistic
+      // state: on web these rows can't exist without a server counterpart, so
+      // this is desktop-only; the queued insert behind them will still flush
+      // with whatever order it was queued at, not this one. Say that plainly
+      // instead of a success toast, and don't tell Live Mode to pull an order
+      // the server never received.
+      toast.error(failMsg, {
+        description:
+          "รายการที่ย้ายยังไม่มีอยู่จริงในเซิร์ฟเวอร์ (รอซิงค์จากคิวออฟไลน์) — ลำดับนี้ยังไม่ถูกบันทึก จัดลำดับอีกครั้งหลังซิงค์เสร็จ",
+      });
+      return;
+    }
+    if (missed.length === attempted.length) {
+      // No error and no row on any real write = sent as anon after a failed
+      // token refresh — the server order is unchanged, so asserting the
+      // pre-edit order back is safe (nothing landed to disagree with).
+      toast.error(failMsg, { description: await noRowsMessage() });
+      setItems(prev);
+      return;
+    }
+    if (missed.length) {
+      // These are independent UPDATEs (Promise.all) — they can land partially.
+      // Asserting `prev` here would put the screen on the pre-edit order while
+      // some rows already committed to the new one — DB and screen would
+      // disagree, with the screen looking authoritative. Keep the optimistic
+      // order in view and reconcile with whatever the server actually holds.
+      toast.error(failMsg, {
+        description: `บางรายการไม่ได้บันทึก — ${await noRowsMessage()}`,
+      });
+      await reconcileFromServer(renumbered);
+      return;
+    }
+    notifyLive();
   }
 
   async function move(index: number, dir: -1 | 1) {
@@ -954,17 +1063,69 @@ export function SetlistBuilder({
       supabase
         .from("setlist_items")
         .update({ sort_order: b.sort_order })
-        .eq("id", a.id),
+        .eq("id", a.id)
+        .select("id"),
       supabase
         .from("setlist_items")
         .update({ sort_order: a.sort_order })
-        .eq("id", b.id),
+        .eq("id", b.id)
+        .select("id"),
     ]);
     const failed = results.find((r) => r.error);
     if (failed?.error) {
       if (await queueOffline(next, failed.error.message)) return;
       toast.error("สลับลำดับไม่สำเร็จ", { description: failed.error.message });
       setItems(items);
+      return;
+    }
+    // A 0-row result on a row that only exists in the offline outbox so far
+    // (localOnlyIds) is expected, not a failure — skip it when judging the pair.
+    const rowIds = [a.id, b.id];
+    // ...but a row that DID write is on the server now, whatever the set says:
+    // the flush re-uses the client-minted id, so the flag has to be cleared from
+    // the evidence or every later swap is misjudged (see persistOrder).
+    results.forEach((r, i) => {
+      if (!wroteNothing(r.data)) localOnlyIds.current.delete(rowIds[i]);
+    });
+    const attempted = rowIds.filter((id) => !localOnlyIds.current.has(id));
+    const missed = results.filter(
+      (r, i) => !localOnlyIds.current.has(rowIds[i]) && wroteNothing(r.data)
+    );
+    if (!attempted.length) {
+      // BOTH swapped rows are local-only — there was no real write to land or
+      // miss (an UPDATE against a client-minted id that doesn't exist on the
+      // server yet returns 0 rows with no error, same as `wroteNothing`, so it
+      // never hit the offline queue either — queueOffline only triggers on an
+      // actual error). The swap exists only in this tab's optimistic state: on
+      // web these rows can't exist without a server counterpart, so this is
+      // desktop-only; the queued insert behind them will still flush with
+      // whatever order it was queued at, not this one. Say that plainly
+      // instead of a success toast, and don't tell Live Mode to pull an order
+      // the server never received.
+      toast.error("สลับลำดับไม่สำเร็จ", {
+        description:
+          "รายการที่สลับยังไม่มีอยู่จริงในเซิร์ฟเวอร์ (รอซิงค์จากคิวออฟไลน์) — ลำดับนี้ยังไม่ถูกบันทึก จัดลำดับอีกครั้งหลังซิงค์เสร็จ",
+      });
+      return;
+    }
+    if (missed.length === attempted.length) {
+      // No error and no row on either real write = sent as anon after a failed
+      // token refresh — the server order is unchanged, so asserting the
+      // pre-swap order back is safe (nothing landed to disagree with).
+      toast.error("สลับลำดับไม่สำเร็จ", { description: await noRowsMessage() });
+      setItems(items);
+      return;
+    }
+    if (missed.length) {
+      // These are two independent UPDATEs (Promise.all) — one can land while the
+      // other misses. Asserting `items` here would put the screen back on the
+      // pre-swap order while one row already committed to the new one — DB and
+      // screen would disagree, with the screen looking authoritative. Keep the
+      // optimistic order in view and reconcile with what the server actually holds.
+      toast.error("สลับลำดับได้ไม่ครบ", {
+        description: `บางรายการไม่ได้บันทึก — ${await noRowsMessage()}`,
+      });
+      await reconcileFromServer(next);
       return;
     }
     notifyLive();
@@ -1020,7 +1181,7 @@ export function SetlistBuilder({
           ) : (
             <Badge variant="success" className="gap-1 px-3 py-1.5 text-sm">
               <CheckCircle2 className="h-4 w-4" /> อยู่ในเวลา · เหลือ{" "}
-              {formatDuration(Math.max(0, hardOutSec - timing.endSec))}
+              {formatDuration(Math.max(0, timing.hardOutSec! - timing.endSec))}
             </Badge>
           ))}
       </div>

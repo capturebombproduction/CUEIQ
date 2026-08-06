@@ -453,7 +453,7 @@ export function EventSummary({
                 ) : (
                   <Badge variant="success" className="gap-1">
                     <CheckCircle2 className="h-3.5 w-3.5" /> Remaining{" "}
-                    {formatDuration(Math.max(0, hardOutSec - timing.endSec))}
+                    {formatDuration(Math.max(0, timing.hardOutSec! - timing.endSec))}
                   </Badge>
                 ))}
             </div>

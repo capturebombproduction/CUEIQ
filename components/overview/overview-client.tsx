@@ -28,7 +28,7 @@ import { PhotoTimeCell } from "@/components/overview/photo-time-cell";
 import { StatusBadge } from "@/components/status-badge";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { shortClock, deadlineInfo } from "@/lib/time";
+import { shortClock, deadlineInfo, bkkTodayKey } from "@/lib/time";
 import { captureElementToImage } from "@/lib/export-image";
 import type { GroupStatus, StaffContact } from "@/lib/types";
 
@@ -1088,7 +1088,7 @@ export function OverviewClient({
     setExporting(true);
     try {
       const filename = `schedule-${
-        dateActive ? dateFilter : new Date().toISOString().slice(0, 10)
+        dateActive ? dateFilter : bkkTodayKey()
       }.jpg`;
       const how = await captureElementToImage(el, {
         filename,
@@ -1403,7 +1403,7 @@ export function OverviewClient({
             </div>
           )}
           <p className="text-[10px] text-muted-foreground">
-            สร้างจาก CueIQ · {fmtDate(new Date().toISOString().slice(0, 10))}
+            สร้างจาก CueIQ · {fmtDate(bkkTodayKey())}
           </p>
         </div>
       </div>

@@ -70,10 +70,26 @@ export async function cacheSongBlob(
   blob: Blob,
   name?: string | null
 ): Promise<void> {
+  // A File is only a reference to a path on disk, not copied bytes: Chromium
+  // persists a File in IndexedDB as that reference, so a moved / re-exported /
+  // unplugged-USB source leaves a record that still lists and still mints an
+  // object URL but plays nothing at showtime (the read side, audio-prefetch.ts,
+  // now distrusts exactly this). Copy the bytes here so nothing durable in this
+  // shared cache is ever a bare reference, regardless of which caller wrote it.
+  // Best-effort: an unreadable source (already gone) falls back to storing the
+  // File as-is rather than losing the "at least something" today's behaviour gives.
+  let toStore = blob;
+  if (typeof File !== "undefined" && blob instanceof File) {
+    try {
+      toStore = new Blob([await blob.arrayBuffer()], { type: blob.type });
+    } catch {
+      toStore = blob;
+    }
+  }
   const db = await openDB();
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE, "readwrite");
-    const rec: SongRecord = { blob, name: name ?? null, cachedAt: Date.now() };
+    const rec: SongRecord = { blob: toStore, name: name ?? null, cachedAt: Date.now() };
     tx.objectStore(STORE).put(rec, path);
     tx.oncomplete = () => {
       db.close();

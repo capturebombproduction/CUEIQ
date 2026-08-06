@@ -8,7 +8,7 @@ import { createClient } from "@/lib/supabase/client";
 import { applyPendingChildren, materializeEventRow } from "@/lib/mgmt-outbox";
 import { hasCache, isOffline, readCache, readCacheKeys, writeCache } from "~/data/cache";
 import { hasLiveSession } from "@/lib/auth-session";
-import { pendingMgmtOps } from "~/data/mgmt-outbox";
+import { listMgmtConflicts, pendingMgmtOps } from "~/data/mgmt-outbox";
 import type { WorkspaceData } from "~/data/workspace";
 import type {
   EventRow,
@@ -190,6 +190,25 @@ export function isEventBundleCached(eventId: string): boolean {
 }
 
 /**
+ * Does the offline management outbox still hold a pending op for this event?
+ * Exists for lib/show-run-outbox.ts's eventIsGone(): a show run entirely offline
+ * on an event created offline (saveEventWrite's queued `event.create`, see
+ * lib/mgmt-outbox.ts newEventId) has no server row yet — a show-run write racing
+ * ahead of that create must not read "no such row" as "the row was deleted" and
+ * drop the night's run time. pendingMgmtOps() already resolves to [] on any
+ * failure, so this never throws.
+ */
+export async function hasPendingEventOp(eventId: string): Promise<boolean> {
+  if ((await pendingMgmtOps()).some((op) => op.id === eventId)) return true;
+  // PARKED counts too. A create that could not be replayed is moved out of the
+  // ops store and into conflicts, and a conflict means "waiting for a human to
+  // look at it" — never "deleted". Reading only the ops store would let the show
+  // run time queued against that event be dropped the moment its create parked,
+  // which is the opposite of what parking is for.
+  return (await listMgmtConflicts()).some(({ rec }) => rec.op.id === eventId);
+}
+
+/**
  * Pull one event's bundle down and leave it in the read-cache. Offline readiness is
  * DATA + BYTES: a device with every audio file but no cached bundle still opens the
  * show as "ไม่พบงานนี้ หรือไม่มีสิทธิ์เข้าถึง" at the venue — the audio on disk is
@@ -205,15 +224,16 @@ export async function warmEventBundle(eventId: string): Promise<boolean> {
   return isEventBundleCached(eventId);
 }
 
-// Bridge to the SHARED dashboard (components/event/events-list.tsx). That component
-// is compiled into the WEB build too, where the "~" alias doesn't resolve, so it
-// cannot import this module — hand it the two functions on `window` instead. This
-// file is statically imported by the desktop App, so the bridge exists before any
-// route renders; nothing publishes it in a browser, where the dashboard reads
-// `undefined` and keeps its byte-only behaviour.
+// Bridge to SHARED code: components/event/events-list.tsx (the dashboard) and
+// lib/show-run-outbox.ts (eventIsGone). Both are compiled into the WEB build too,
+// where the "~" alias doesn't resolve, so neither can import this module — hand
+// them the functions on `window` instead. This file is statically imported by the
+// desktop App, so the bridge exists before any route renders; nothing publishes it
+// in a browser, where callers read `undefined` and keep their byte-only behaviour.
 if (typeof window !== "undefined") {
   (window as unknown as { cueiqEventCache?: unknown }).cueiqEventCache = {
     isCached: isEventBundleCached,
     warm: warmEventBundle,
+    hasPendingOp: hasPendingEventOp,
   };
 }

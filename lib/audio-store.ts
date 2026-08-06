@@ -116,7 +116,11 @@ export async function listCachedEntries(
     const store = tx.objectStore(STORE);
     const prefix = `${eventId}${SEP}`;
     const out: Record<string, CachedEntry> = {};
-    const req = store.openCursor();
+    // Bounded to this event's keys so a readiness check (called once per upcoming
+    // event on every dashboard open/focus/online) doesn't walk and materialize
+    // every blob record in the whole store. startsWith below stays as a
+    // belt-and-braces filter, not the only guard.
+    const req = store.openCursor(IDBKeyRange.bound(prefix, prefix + "￿"));
     req.onsuccess = () => {
       const cursor = req.result;
       if (cursor) {

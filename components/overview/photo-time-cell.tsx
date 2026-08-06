@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { createClient } from "@/lib/supabase/client";
+import { noRowsMessage, wroteNothing } from "@/lib/write-guard";
 
 /**
  * Inline photo-time editor used on /overview. Lets an approver (label staff) or
@@ -67,11 +68,15 @@ export function PhotoTimeCell({
     try {
       let savedItemId = itemId;
       if (itemId) {
-        const { error } = await supabase
+        const { data, error } = await supabase
           .from("schedule_items")
           .update({ start_time: nextStart, end_time: nextEnd })
-          .eq("id", itemId);
+          .eq("id", itemId)
+          .select("id");
         if (error) throw error;
+        // No error and no row = sent anon after a failed token refresh, or the row
+        // is gone — the time shown never reached the DB. See lib/write-guard.ts.
+        if (wroteNothing(data)) throw new Error(await noRowsMessage());
       } else if (nextStart || nextEnd) {
         const { data, error } = await supabase
           .from("schedule_items")
@@ -99,11 +104,13 @@ export function PhotoTimeCell({
             .limit(1)
             .single();
           if (findErr || !existing) throw error;
-          const { error: updErr } = await supabase
+          const { data: updData, error: updErr } = await supabase
             .from("schedule_items")
             .update({ start_time: nextStart, end_time: nextEnd })
-            .eq("id", existing.id);
+            .eq("id", existing.id)
+            .select("id");
           if (updErr) throw updErr;
+          if (wroteNothing(updData)) throw new Error(await noRowsMessage());
           savedItemId = existing.id as string;
         } else {
           savedItemId = data.id as string;

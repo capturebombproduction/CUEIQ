@@ -73,14 +73,25 @@ async function readPaged<T>(
   select: (
     from: number,
     to: number
-  ) => PromiseLike<{ data: unknown; error: { message: string } | null }>
+  ) => PromiseLike<{
+    data: unknown;
+    error: { message: string } | null;
+    count?: number | null;
+  }>
 ): Promise<Res<T>> {
   const rows: T[] = [];
   for (let page = 0; page < MAX_PAGES; page++) {
-    const { data, error } = await select(rows.length, rows.length + PAGE_SIZE - 1);
+    const { data, error, count } = await select(rows.length, rows.length + PAGE_SIZE - 1);
     if (error) return { data: null, error };
     const batch = (data ?? []) as T[];
     rows.push(...batch);
+    // Every read below asks for an exact count, so we know when we have the whole
+    // set from the FIRST response. Ending only on an empty page (the shape this
+    // had) is just as correct but costs one extra round trip PER READ, every time
+    // this board is opened — with eight reads across two phases that is real
+    // latency on the page the label lives in. The empty-page rule stays as the
+    // fallback for a response that carries no count, and as the no-progress stop.
+    if (typeof count === "number" && rows.length >= count) return { data: rows, error: null };
     if (batch.length === 0) return { data: rows, error: null };
   }
   return {
@@ -97,7 +108,11 @@ async function readForEvents<T>(
     ids: string[],
     from: number,
     to: number
-  ) => PromiseLike<{ data: unknown; error: { message: string } | null }>
+  ) => PromiseLike<{
+    data: unknown;
+    error: { message: string } | null;
+    count?: number | null;
+  }>
 ): Promise<Res<T>> {
   const rows: T[] = [];
   for (let i = 0; i < eventIds.length; i += ID_CHUNK) {
@@ -141,7 +156,7 @@ export function Overview() {
         readPaged<EventRow>("events", (from, to) =>
           sb
             .from("events")
-            .select("*")
+            .select("*", { count: "exact" })
             .eq("tenant_id", tid)
             .in("group_id", ids)
             .eq("is_template", false)
@@ -153,7 +168,7 @@ export function Overview() {
         readPaged<Member>("members", (from, to) =>
           sb
             .from("members")
-            .select("*")
+            .select("*", { count: "exact" })
             .eq("tenant_id", tid)
             .in("group_id", ids)
             .order("sort_order", { ascending: true })
@@ -163,7 +178,7 @@ export function Overview() {
         readPaged<{ id: string; copyright_status: string }>("songs", (from, to) =>
           sb
             .from("songs")
-            .select("id, copyright_status")
+            .select("id, copyright_status", { count: "exact" })
             .eq("tenant_id", tid)
             .order("id", { ascending: true })
             .range(from, to)
@@ -171,7 +186,7 @@ export function Overview() {
         readPaged<StaffContact>("staff_contacts", (from, to) =>
           sb
             .from("staff_contacts")
-            .select("*")
+            .select("*", { count: "exact" })
             .eq("tenant_id", tid)
             .order("sort_order", { ascending: true })
             .order("id", { ascending: true })
@@ -209,7 +224,10 @@ export function Overview() {
       const hasUndated = eventRows.some((e) => !e.event_date);
       const readRunOrders = async (): Promise<Res<RoRow>> => {
         const base = () =>
-          sb.from("run_sequence").select("event_name, event_date").eq("tenant_id", tid);
+          sb
+            .from("run_sequence")
+            .select("event_name, event_date", { count: "exact" })
+            .eq("tenant_id", tid);
         const parts: Res<RoRow>[] = [];
         if (dateLo) {
           parts.push(
@@ -237,7 +255,9 @@ export function Overview() {
         readForEvents<SchedRow>("schedule_items", eventIds, (evIds, from, to) =>
           sb
             .from("schedule_items")
-            .select("id, event_id, kind, start_time, end_time, sort_order")
+            .select("id, event_id, kind, start_time, end_time, sort_order", {
+              count: "exact",
+            })
             .eq("tenant_id", tid)
             .in("event_id", evIds)
             .order("id", { ascending: true })
@@ -246,7 +266,7 @@ export function Overview() {
         readForEvents<SlRow>("setlist_items", eventIds, (evIds, from, to) =>
           sb
             .from("setlist_items")
-            .select("event_id, song_id, kind, mic_slots")
+            .select("event_id, song_id, kind, mic_slots", { count: "exact" })
             .eq("tenant_id", tid)
             .in("event_id", evIds)
             .order("id", { ascending: true })
@@ -256,7 +276,7 @@ export function Overview() {
         readForEvents<{ event_id: string }>("mic_assignments", eventIds, (evIds, from, to) =>
           sb
             .from("mic_assignments")
-            .select("event_id")
+            .select("event_id", { count: "exact" })
             .eq("tenant_id", tid)
             .in("event_id", evIds)
             .order("id", { ascending: true })

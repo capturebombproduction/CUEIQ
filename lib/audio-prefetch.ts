@@ -8,9 +8,16 @@
 // has a NEW path. We compare the cached path against the event's current path —
 // a mismatch re-downloads the newer file (overwriting/deleting the stale blob),
 // and a cached item no longer in the setlist is dropped.
+//
+// Library-centric, so the same master recurs across multiple events (a song's
+// setlist items all resolve to one path, see audio-targets.ts). The actual byte
+// transfer therefore goes through the SHARED path-keyed cache in song-cache.ts
+// first — one download serves every event that plays the song — and only the
+// per-event `${eventId}::${itemId}` store below is written once per event.
 
 import { downloadEventAudio } from "./audio-remote";
 import { saveAudio, deleteAudio, listCachedEntries, type CachedEntry } from "./audio-store";
+import { getCachedSongBlob, cacheSongBlob } from "./song-cache";
 import type { PrefetchTarget } from "./audio-targets";
 
 export type { PrefetchTarget } from "./audio-targets";
@@ -142,8 +149,23 @@ export async function prefetchEventAudio(
     if (isCancelled?.()) break;
     onProgress?.({ total, done: fetched, failed, currentName: t.name });
     try {
-      const blob = await downloadEventAudio(t.path, { signal });
+      // Read-through the SHARED path-keyed cache (lib/song-cache.ts) before hitting
+      // R2: the same master recurs across every event that plays it, so a device
+      // preparing several upcoming shows of one band must not re-download (and
+      // re-store) the same file once per event. A miss here downloads once and
+      // write-throughs the shared cache for the next event's เตรียมเพลง to hit.
+      //
+      // A hit can still be a picked File rather than copied bytes — song-cache.ts's
+      // write side now copies on the way in, but records written before that fix
+      // (or from a source that couldn't be read at write time) may still hold a
+      // bare reference. That mints an object URL fine but plays silence once the
+      // source is moved/unplugged, and this readiness check is exactly the thing
+      // supposed to catch that before showtime — so a File here is a miss, not a hit.
+      const shared = await getCachedSongBlob(t.path);
+      const trustedShared = shared && !(shared instanceof File) ? shared : null;
+      const blob = trustedShared ?? (await downloadEventAudio(t.path, { signal }));
       if (isCancelled?.()) break;
+      if (!trustedShared) cacheSongBlob(t.path, blob).catch(() => {}); // best-effort; never fail the prepare over this
       await saveAudio(eventId, t.itemId, blob, t.name, t.path);
       fetched++;
     } catch {

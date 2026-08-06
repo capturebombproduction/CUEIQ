@@ -41,6 +41,7 @@ import {
   tryQueueAudioUpload,
 } from "@/lib/mgmt-write";
 import { formatDuration, parseDurationToSeconds } from "@/lib/time";
+import { wroteNothing, noRowsMessage } from "@/lib/write-guard";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -213,15 +214,23 @@ export function SongLibrary({
       // leave everything intact and retry on the next open. R2 files only go
       // after the rows are confirmed gone, so a failed delete never leaves a
       // surviving row pointing at a missing file.
-      const { error } = await supabase
+      // ...and "confirmed gone" has to mean rows came back, not merely that no
+      // error did. This sweep runs on every library open, so it also runs during
+      // the anon minute after a reconnect, where the DELETE is RLS-filtered to
+      // zero rows with error:null — and the loop below would then delete masters
+      // from R2 for rows that are still there, pointing at files that no longer
+      // exist. Retrying next open is free; deleting the bytes is not.
+      const { data, error } = await supabase
         .from("songs")
         .delete()
-        .in("id", expired.map((s) => s.id));
-      if (error) return;
+        .in("id", expired.map((s) => s.id))
+        .select("id");
+      if (error || wroteNothing(data)) return;
+      const deleted = new Set((data ?? []).map((r) => (r as { id: string }).id));
       for (const s of expired) {
-        if (s.audio_path) removeEventAudio(s.audio_path).catch(() => {});
+        if (s.audio_path && deleted.has(s.id)) removeEventAudio(s.audio_path).catch(() => {});
       }
-      setSongs((prev) => prev.filter((s) => !isExpired(s)));
+      setSongs((prev) => prev.filter((s) => !(isExpired(s) && deleted.has(s.id))));
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -412,9 +421,21 @@ export function SongLibrary({
     if (!ok) return;
     const snapshot = songs;
     setSongs((prev) => prev.filter((s) => s.id !== song.id));
-    const { error } = await supabase.from("songs").delete().eq("id", song.id);
+    const { data, error } = await supabase
+      .from("songs")
+      .delete()
+      .eq("id", song.id)
+      .select("id");
     if (error) {
       toast.error("ลบไม่สำเร็จ", { description: error.message });
+      setSongs(snapshot);
+      return;
+    }
+    // No error and no row = the delete never landed (anon after a failed token
+    // refresh, or the row is already gone) — deleting the R2 object anyway would
+    // orphan a song that's still live. See lib/write-guard.ts.
+    if (wroteNothing(data)) {
+      toast.error("ลบไม่สำเร็จ", { description: await noRowsMessage() });
       setSongs(snapshot);
       return;
     }
@@ -428,12 +449,16 @@ export function SongLibrary({
     setSongs((prev) =>
       prev.map((s) => (s.id === song.id ? { ...s, copyright_status: status } : s))
     );
-    const { error } = await supabase
+    const { data, error } = await supabase
       .from("songs")
       .update({ copyright_status: status })
-      .eq("id", song.id);
-    if (error) {
-      toast.error("เปลี่ยนสถานะไม่สำเร็จ", { description: error.message });
+      .eq("id", song.id)
+      .select("id");
+    if (error || wroteNothing(data)) {
+      toast.error(
+        "เปลี่ยนสถานะไม่สำเร็จ",
+        { description: error ? error.message : await noRowsMessage() }
+      );
       setSongs((prev) =>
         prev.map((s) =>
           s.id === song.id ? { ...s, copyright_status: song.copyright_status } : s
@@ -471,11 +496,19 @@ export function SongLibrary({
     try {
       await uploadEventAudio(path, file, file.type);
       uploaded = true;
-      const { error } = await supabase
+      const { data, error } = await supabase
         .from("songs")
         .update({ audio_path: path, audio_name: file.name, audio_expires_at: null })
-        .eq("id", song.id);
+        .eq("id", song.id)
+        .select("id");
       if (error) throw error;
+      // No error and no row = the update never landed (anon after a failed token
+      // refresh, or the row is gone) — the DB still points at prevPath, so deleting
+      // it below would leave the song pointing at nothing. See lib/write-guard.ts.
+      if (wroteNothing(data)) {
+        toast.error("อัปโหลดไม่สำเร็จ", { description: await noRowsMessage() });
+        return null;
+      }
       setSongs((prev) =>
         prev.map((s) =>
           s.id === song.id
@@ -585,11 +618,19 @@ export function SongLibrary({
     setAudioBusy((b) => ({ ...b, [song.id]: "del" }));
     const path = song.audio_path;
     try {
-      const { error } = await supabase
+      const { data, error } = await supabase
         .from("songs")
         .update({ audio_path: null, audio_name: null, audio_expires_at: null })
-        .eq("id", song.id);
+        .eq("id", song.id)
+        .select("id");
       if (error) throw error;
+      // No error and no row = the update never landed (anon after a failed token
+      // refresh, or the row is gone) — the DB still points at `path`, so deleting
+      // it below would leave the song pointing at nothing. See lib/write-guard.ts.
+      if (wroteNothing(data)) {
+        toast.error("ลบไฟล์ไม่สำเร็จ", { description: await noRowsMessage() });
+        return;
+      }
       setSongs((prev) =>
         prev.map((s) =>
           s.id === song.id

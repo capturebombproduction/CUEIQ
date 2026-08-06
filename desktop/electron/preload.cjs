@@ -13,4 +13,7 @@ contextBridge.exposeInMainWorld("cueiqNative", {
     ipcRenderer.invoke("cueiq:put-audio", url, bytes, contentType),
   // Native file picker → { name, bytes } | null.
   pickAudioFile: () => ipcRenderer.invoke("cueiq:pick-audio-file"),
+  // Tell main a show has started/ended running, so it can hold the display awake
+  // (electron powerSaveBlocker) for the duration — see desktop/electron/main.cjs.
+  setShowRunning: (running) => ipcRenderer.invoke("cueiq:set-show-running", running),
 });

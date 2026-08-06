@@ -4,6 +4,7 @@ import { useState, type KeyboardEvent } from "react";
 import { toast } from "sonner";
 import { ChevronUp, ChevronDown, Plus, Trash2, Users } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
+import { noRowsMessage, wroteNothing } from "@/lib/write-guard";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -31,11 +32,21 @@ export function StaffContactsManager({
     setRows((prev) => prev.map((r) => (r.id === id ? { ...r, ...partial } : r)));
   }
   async function persist(id: string, partial: Partial<StaffContact>) {
-    const { error } = await supabase
+    const { data, error } = await supabase
       .from("staff_contacts")
       .update(partial)
-      .eq("id", id);
-    if (error) toast.error("บันทึกไม่สำเร็จ", { description: error.message });
+      .eq("id", id)
+      .select("id");
+    if (error) {
+      toast.error("บันทึกไม่สำเร็จ", { description: error.message });
+      return;
+    }
+    // No error and no row = the write reached the server and changed nothing (sent
+    // anon after a failed token refresh, or the row is gone). This directory feeds
+    // the printed run sheet's contact block. See lib/write-guard.ts.
+    if (wroteNothing(data)) {
+      toast.error("ยังไม่ได้บันทึก", { description: await noRowsMessage() });
+    }
   }
   // Enter saves the field (it blurs, firing the onBlur persist) so a typed value
   // never hangs unsaved if the admin leaves the page without clicking away.
@@ -60,6 +71,7 @@ export function StaffContactsManager({
   }
 
   async function moveRow(id: string, dir: 1 | -1) {
+    const snapshot = rows;
     const sorted = [...rows].sort((a, b) => a.sort_order - b.sort_order);
     const idx = sorted.findIndex((r) => r.id === id);
     const other = sorted[idx + dir];
@@ -73,10 +85,22 @@ export function StaffContactsManager({
         return r;
       })
     );
-    await Promise.all([
-      supabase.from("staff_contacts").update({ sort_order: other.sort_order }).eq("id", a.id),
-      supabase.from("staff_contacts").update({ sort_order: a.sort_order }).eq("id", other.id),
+    const results = await Promise.all([
+      supabase.from("staff_contacts").update({ sort_order: other.sort_order }).eq("id", a.id).select("id"),
+      supabase.from("staff_contacts").update({ sort_order: a.sort_order }).eq("id", other.id).select("id"),
     ]);
+    const failed = results.find((r) => r.error);
+    if (failed?.error) {
+      toast.error("สลับลำดับไม่สำเร็จ", { description: failed.error.message });
+      setRows(snapshot);
+      return;
+    }
+    // No error but zero rows on either write = sent anon after a failed token
+    // refresh — the swap never reached the DB. See lib/write-guard.ts.
+    if (results.some((r) => wroteNothing(r.data))) {
+      toast.error("ยังไม่ได้บันทึก", { description: await noRowsMessage() });
+      setRows(snapshot);
+    }
   }
 
   async function removeRow(id: string) {

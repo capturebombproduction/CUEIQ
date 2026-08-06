@@ -6,6 +6,7 @@ import { Bell, Check, BellRing, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { createClient } from "@/lib/supabase/client";
 import { Button } from "@/components/ui/button";
+import { applicationServerKeyMatches } from "@/lib/push-key-match";
 import { cn, safeInternalPath } from "@/lib/utils";
 
 interface NotifRow {
@@ -108,9 +109,30 @@ export function NotificationBell({
       const reg = await navigator.serviceWorker.getRegistration();
       if (!reg) return setPushState("unsupported");
       const sub = await reg.pushManager.getSubscription();
+      if (
+        sub &&
+        !applicationServerKeyMatches(
+          sub.options.applicationServerKey,
+          urlBase64ToUint8Array(VAPID_PUBLIC)
+        )
+      ) {
+        // Bound to a VAPID key the server has since rotated away from — this
+        // subscription looks alive (permission stays "granted") but push can
+        // never land on it again. Drop it so the enable button reappears and
+        // mints a fresh one against the current key.
+        await sub.unsubscribe().catch(() => {});
+        try {
+          await supabase.from("push_subscriptions").delete().eq("endpoint", sub.endpoint);
+        } catch {
+          // best-effort — if the row survives, the server prunes it as "gone"
+          // on its next send attempt (lib/push.ts treats the rotation's 403 as gone)
+        }
+        setPushState("default");
+        return;
+      }
       setPushState(sub ? "on" : "default");
     })().catch(() => setPushState("unsupported"));
-  }, []);
+  }, [supabase]);
 
   // On sign-out (any path — the bell lives in the header, so it sees the auth
   // event) release this device's push subscription: otherwise on a shared device

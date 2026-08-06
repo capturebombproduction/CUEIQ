@@ -30,8 +30,10 @@ import { cn } from "@/lib/utils";
 import { privateChannel, runOrderTopic } from "@/lib/realtime";
 import { isQueueableWriteError } from "@/lib/mgmt-outbox";
 import {
+  applyRunSeqOverlay,
   discardRunSeqOp,
   enqueueRunSeq,
+  flushRunSeqOutbox,
   listRunSeqOps,
   RUNSEQ_OUTBOX_EVENT,
   RUNSEQ_QUEUED_MESSAGE,
@@ -173,9 +175,20 @@ export function EventLiveCaller({
   const [queued, setQueued] = useState<RunSeqOp[]>([]);
   useEffect(() => {
     let alive = true;
+    let lastCount = -1;
     const refresh = () => {
       listRunSeqOps().then((ops) => {
-        if (alive) setQueued(ops);
+        if (!alive) return;
+        setQueued(ops);
+        // The queue SHRANK, so a flush just landed (or parked) presses the server
+        // had never seen. Re-read the board: on a clean flush this confirms server
+        // truth and picks up whatever the other devices did meanwhile; on a park it
+        // is the only way the operator gets to see what the server actually holds
+        // before deciding. Safe now that the overlay re-applies anything still
+        // queued — before it, this refetch is exactly what would have wiped the
+        // operator's own presses off the screen.
+        if (lastCount >= 0 && ops.length < lastCount) refetchRef.current();
+        lastCount = ops.length;
       });
     };
     refresh();
@@ -190,9 +203,21 @@ export function EventLiveCaller({
   const parked = queued.filter((o) => o.conflict);
   const waiting = queued.filter((o) => !o.conflict);
 
+  // Server rows are only the truth for presses the server has SEEN. Anything
+  // still in the queue happened on this device and nowhere else, so it is laid
+  // back over every set of rows the board renders — whatever their source.
+  //
+  // Three separate ways the board used to lose those presses, all closed here:
+  // a reconnect refetch resolving before the flush replayed anything (both fire
+  // on 'online', and one SELECT beats N round trips every time); the desktop
+  // remounting from its read cache after a restart at the venue; and any refetch
+  // a broadcast triggers while the queue is still full.
   const ordered = useMemo(
-    () => [...rows].sort((a, b) => a.sort_order - b.sort_order),
-    [rows]
+    () =>
+      [...applyRunSeqOverlay(rows, waiting)].sort(
+        (a, b) => a.sort_order - b.sort_order
+      ),
+    [rows, waiting]
   );
   const liveRow = ordered.find((r) => r.status === "live") ?? null;
   const doneRows = ordered.filter((r) => r.status === "done");
@@ -386,10 +411,14 @@ export function EventLiveCaller({
    */
   async function queueOffline(
     updates: CallerUpdate[],
-    message: string | null | undefined
+    message: string | null | undefined,
+    // Set when the press must be queued regardless of WHY — see apply()'s
+    // already-queued branch. There was no network error to classify: the press is
+    // simply not something the server can be asked about yet.
+    force = false
   ): Promise<boolean> {
     const onLine = typeof navigator === "undefined" || navigator.onLine !== false;
-    if (!isQueueableWriteError(message, onLine)) return false;
+    if (!force && !isQueueableWriteError(message, onLine)) return false;
     const festival = `${eventName}${eventDate ? ` · ${eventDate}` : ""}`;
     const at = Date.now();
     for (const u of updates) {
@@ -405,32 +434,109 @@ export function EventLiveCaller({
           offset_min: u.partial.offset_min,
           buffer_seconds: u.partial.buffer_seconds,
         },
+        // Carry EVERY precondition the online write used, not just the two the
+        // status buttons set. ดึง buffer's drains are conditional on the
+        // buffer_seconds they read (see takeBuffer) — replaying them guarded only
+        // by status='pending' would write a stale absolute value straight over a
+        // buffer another controller had already spent.
         expect: {
           status: u.expect?.status,
           offset_min: u.expect?.offset_min,
+          buffer_seconds: u.expect?.buffer_seconds,
         },
         label: u.label ?? rows.find((r) => r.id === u.id)?.title ?? "ลำดับในคิว",
         queuedAt: at,
+        topic: runOrderTopic(tenantId, eventDate, eventName),
       });
     }
     return true;
   }
 
-  // Optimistically apply, persist each changed row, then tell other devices.
-  // Resolves false when nothing landed cleanly (error OR a precondition lost the
-  // race) — in that case the board is refetched back to server truth.
-  async function apply(updates: CallerUpdate[]): Promise<boolean> {
-    if (!canControl || updates.length === 0) return false;
+  /**
+   * Optimistically apply, persist each changed row, then tell other devices.
+   *
+   * Three outcomes, and callers that chain writes MUST tell them apart:
+   *  • "committed" — the server holds it.
+   *  • "queued"    — kept on this device, replays later. The press is safe, but
+   *                  nothing downstream may assume the server agrees yet: ดึง
+   *                  buffer drains and รีเซ็ต's ledger clear both corrupted the
+   *                  plan when a boolean let them read this as committed.
+   *  • "failed"    — nothing landed; the board was pulled back to server truth.
+   */
+  type ApplyResult = "committed" | "queued" | "failed";
+  async function apply(updates: CallerUpdate[]): Promise<ApplyResult> {
+    if (!canControl || updates.length === 0) return "failed";
     // invalidate any snapshot already in flight — it predates this write
     refetchSeqRef.current++;
-    writesInFlightRef.current++;
     setRows((prev) =>
       prev.map((r) => {
         const u = updates.find((x) => x.id === r.id);
         return u ? { ...r, ...u.partial } : r;
       })
     );
+    // The gate goes up HERE, before anything is awaited — not just around the
+    // UPDATE. The clear-the-way flush below announces per op, the caller refetches
+    // when the queue shrinks, and with the gate still down that SELECT went out
+    // BEFORE our own write and then landed on top of it: the operator watched
+    // their press disappear from the one screen the festival is called from.
+    // Every exit from here on must release it.
+    writesInFlightRef.current++;
     setBusy(true);
+    const release = () => {
+      writesInFlightRef.current--;
+      setBusy(false);
+      // a refetch was deferred by the gate — pull it now that we are settled
+      if (missedRefetchRef.current) refetchRef.current();
+    };
+
+    // A row with a press still in the queue CANNOT be written directly, even with
+    // the network back. Every press is a compare-and-swap, and the state this one
+    // branched from is the state the QUEUE created — which the server has never
+    // seen. Sending it would match zero rows while a sibling write in the same
+    // press lands, and the board would end up with two rows live at once: the
+    // queued op sets B live later, the direct write already set C live.
+    //
+    // Queueing it instead is not a fallback, it is the correct semantics: mergeOp
+    // folds this press into the existing op, keeping the FIRST precondition (the
+    // last server state anyone actually observed) and the LATEST value of each
+    // column. The whole sequence then replays as one coherent write.
+    let queuedRowIds = new Set(waiting.map((o) => o.rowId));
+    if (updates.some((u) => queuedRowIds.has(u.id))) {
+      // Try to clear the way first. Otherwise a queue that failed its one
+      // reconnect attempt (the flush refuses to judge anything without a proven
+      // session, and 'online' fires inside the anon minute) would make every
+      // later press queue too — the board would go local-only for the rest of
+      // the festival while the network was perfectly fine.
+      if (typeof navigator === "undefined" || navigator.onLine !== false) {
+        // BOUNDED: doFlush is one round trip per queued op with no timeout, and
+        // on a venue link that has associated but has no upstream each of them
+        // hangs. Unbounded, a queue of five would hold the operator's press in
+        // memory for minutes — unsaved, unqueued, and lost if the machine goes
+        // down. Past the deadline we simply queue this press, which is what the
+        // slow path was going to conclude anyway.
+        await Promise.race([
+          flushRunSeqOutbox().catch(() => undefined),
+          new Promise((r) => setTimeout(r, 4000)),
+        ]);
+        queuedRowIds = new Set(
+          (await listRunSeqOps()).filter((o) => !o.conflict).map((o) => o.rowId)
+        );
+      }
+    }
+    if (updates.some((u) => queuedRowIds.has(u.id))) {
+      // finally, not a plain call: a throw anywhere in here would leave the write
+      // gate up for the rest of the session, and with it every refetch deferred —
+      // the board would quietly stop taking updates from the other devices.
+      try {
+        await queueOffline(updates, null, true);
+        toast.success(RUNSEQ_QUEUED_MESSAGE, { id: "runseq-offline-queued" });
+        bcast();
+      } finally {
+        release();
+      }
+      return "queued";
+    }
+
     const results = await Promise.all(
       updates.map((u) => {
         let q = supabase.from("run_sequence").update(u.partial).eq("id", u.id);
@@ -455,10 +561,16 @@ export function EventLiveCaller({
       // board, and let the outbox replay it (lib/run-order-outbox.ts). Refetching
       // here instead would have wiped the operator's own press off the board, in
       // front of them, at a venue where they can do nothing about it.
-      if (await queueOffline(updates, err.message)) {
+      //
+      // Only the writes that actually failed: "จบ + ต่อไป" sends two independent
+      // requests, and when the network dies between them one has already landed.
+      // Queueing that one too would replay it against a precondition it consumed
+      // itself, and park the operator's own successful press as a conflict.
+      const failed = updates.filter((_, i) => results[i].error);
+      if (await queueOffline(failed, err.message)) {
         toast.success(RUNSEQ_QUEUED_MESSAGE, { id: "runseq-offline-queued" });
         bcast();
-        return true;
+        return "queued";
       }
       toast.error("บันทึกไม่สำเร็จ", { description: err.message });
       // pull the board back to server truth so the optimistic rows don't linger
@@ -476,7 +588,7 @@ export function EventLiveCaller({
       refetchRef.current();
     }
     bcast();
-    return !err && losers.length === 0;
+    return !err && losers.length === 0 ? "committed" : "failed";
   }
 
   // A 0-row update means one of two very different things: another controller got
@@ -523,8 +635,11 @@ export function EventLiveCaller({
         },
       ]);
       // Fire-and-forget AFTER the write lands so the route's anti-spoof (it re-checks
-      // run_sequence has a live row) passes. Notifies the whole label the show is on.
-      if (ok && firstStart) notify("run_order_live", { eventId });
+      // run_sequence has a live row) passes — which is also why a merely QUEUED
+      // start must not notify: the server has no live row yet, so the route would
+      // refuse it anyway, and the label would be told a show started that the
+      // server cannot see.
+      if (ok === "committed" && firstStart) notify("run_order_live", { eventId });
     } finally {
       inFlightRef.current = false;
     }
@@ -637,7 +752,7 @@ export function EventLiveCaller({
         expect: { status: "live", offset_min: liveRow.offset_min },
       },
     ]);
-    if (!shifted) return; // apply() already reported it + pulled the board back
+    if (shifted === "failed") return; // apply() already reported it + pulled the board back
     // drain the absorbed minutes from the pending rows' buffers, front to back
     const drains: CallerUpdate[] = [];
     const ledger = readBufferLedger();
@@ -657,7 +772,23 @@ export function EventLiveCaller({
     }
     if (drains.length > 0) {
       writeBufferLedger(ledger); // record before writing: a half-landed drain is still restorable
-      if (!(await apply(drains))) return;
+      // The drift and the drains are one plan change and must land together. If
+      // the drift only QUEUED, the pending rows carry no queued op of their own,
+      // so a plain apply() would write them STRAIGHT to the server: the slack
+      // would be spent while the lateness it was spent on stayed on the board,
+      // and every other device would read a day that is later than it looks.
+      // Queue them alongside so the whole change replays as one.
+      if (shifted === "queued") {
+        await queueOffline(drains, null, true);
+        setRows((prev) =>
+          prev.map((r) => {
+            const d = drains.find((x) => x.id === r.id);
+            return d ? { ...r, ...d.partial } : r;
+          })
+        );
+      } else if ((await apply(drains)) === "failed") {
+        return;
+      }
     }
     toast.success(`ดึง buffer ${absorb} นาที — ร่นคิวให้ทันขึ้น`);
   }
@@ -688,9 +819,20 @@ export function EventLiveCaller({
             ? { buffer_seconds: ledger[r.id] }
             : {}),
         },
+        // Reset is the one press that clears the whole board, so it is the one
+        // that must never replay blind. Queued with no precondition it becomes
+        // "make every row pending, whatever is there now" — and a dry run done
+        // backstage on dead wifi would, hours later, erase the real show another
+        // device had already driven half way through. With the rows we saw as
+        // the precondition, a board that moved on parks for a human instead.
+        expect: { status: r.status, offset_min: r.offset_min },
       }))
     );
-    if (done) writeBufferLedger(null);
+    // ONLY once the restore is really on the server. The queued reset now carries
+    // a precondition, so it can PARK — and if the ledger were already gone there
+    // would be nothing left to hand those minutes back with: buffer_seconds keeps
+    // no history server-side and the app has no undo.
+    if (done === "committed") writeBufferLedger(null);
   }
 
   // Save the run-time report (planned vs actual, late/early, over/under per slot) as

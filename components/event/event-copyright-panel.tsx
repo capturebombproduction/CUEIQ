@@ -5,6 +5,7 @@ import { ShieldCheck, Check, Ban } from "lucide-react";
 import { toast } from "sonner";
 import { createClient } from "@/lib/supabase/client";
 import { notify } from "@/lib/notify-client";
+import { wroteNothing, noRowsMessage } from "@/lib/write-guard";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { COPYRIGHT_META, type CopyrightStatus } from "@/lib/types";
@@ -37,12 +38,19 @@ export function EventCopyrightPanel({
     setSongs((prev) =>
       prev.map((s) => (s.id === song.id ? { ...s, copyright_status: status } : s))
     );
-    const { error } = await supabase
+    const { data, error } = await supabase
       .from("songs")
       .update({ copyright_status: status })
-      .eq("id", song.id);
-    if (error) {
-      toast.error("เปลี่ยนสถานะไม่สำเร็จ", { description: error.message });
+      .eq("id", song.id)
+      .select("id");
+    // No error and no row = the flip never landed (anon after a failed token
+    // refresh, or the song was already re-triaged elsewhere) — notify() would then
+    // tell the band a status that never actually changed. See lib/write-guard.ts.
+    if (error || wroteNothing(data)) {
+      toast.error(
+        "เปลี่ยนสถานะไม่สำเร็จ",
+        { description: error ? error.message : await noRowsMessage() }
+      );
       setSongs((prev) =>
         prev.map((s) =>
           s.id === song.id ? { ...s, copyright_status: song.copyright_status } : s

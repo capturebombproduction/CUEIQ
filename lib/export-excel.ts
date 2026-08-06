@@ -202,7 +202,7 @@ export function buildRunSheetWorkbook(data: ExportData): XLSX.WorkBook {
             timing.isOver
               ? `เกิน ${formatDuration(timing.overBy)}`
               : `อยู่ในเวลา เหลือ ${formatDuration(
-                  Math.max(0, hardOutSec - timing.endSec)
+                  Math.max(0, timing.hardOutSec! - timing.endSec)
                 )}`,
           ],
         ];

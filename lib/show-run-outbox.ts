@@ -13,6 +13,7 @@
 import { createClient } from "@/lib/supabase/client";
 import { settleOnAbort } from "@/lib/idb-tx";
 import { wroteNothing } from "@/lib/write-guard";
+import { hasLiveSession } from "@/lib/auth-session";
 
 const DB_NAME = "cueiq-outbox";
 const STORE = "ops";
@@ -139,6 +140,14 @@ export async function pendingCount(): Promise<number> {
   }
 }
 
+/** Thrown by apply() specifically for the "matched no row" case, so flushOutbox
+ *  can tell it apart from a network/server error without string-sniffing. */
+class WroteNothingError extends Error {
+  constructor() {
+    super("write matched no row (not signed in, or the event is gone)");
+  }
+}
+
 async function apply(op: ShowRunOp): Promise<void> {
   const supabase = createClient();
   if (op.kind === "event_last_run") {
@@ -158,14 +167,67 @@ async function apply(op: ShowRunOp): Promise<void> {
     // an offline show's run time. The live snapshot is long gone by then, so the
     // number the operator watched all night is simply unrecoverable. Throwing
     // leaves the op queued for the next attempt, which is what it was queued for.
-    if (wroteNothing(data)) throw new Error("write matched no row (not signed in?)");
+    if (wroteNothing(data)) throw new WroteNothingError();
   }
 }
 
 /**
- * Replay every queued op. Stops at the first failure (still offline / server
- * error) and leaves the rest queued for the next attempt. Returns counts. Safe to
- * call repeatedly (idempotent: each op overwrites the same field).
+ * Bridge to the desktop-only management outbox, published on `window` by
+ * desktop/src/data/event-bundle.ts. This file is shared with the web build (see
+ * the "@/lib/supabase/client" note at the top), which never registers the
+ * bridge — same reason components/event/events-list.tsx reaches the read-cache
+ * this way instead of importing "~/data/*" directly. Undefined in a browser is
+ * also the CORRECT answer there, not just a safe fallback: the web has no
+ * offline event.create (saveEventWrite only queues on desktop), so a web
+ * eventId can never be "the server doesn't have it yet, but a device does".
+ */
+type EventCacheBridge = { hasPendingOp?: (eventId: string) => Promise<boolean> };
+function pendingMgmtOpBridge(): EventCacheBridge | undefined {
+  if (typeof window === "undefined") return undefined;
+  return (window as unknown as { cueiqEventCache?: EventCacheBridge }).cueiqEventCache;
+}
+
+/** True only when the events row is demonstrably gone — a probe error (still
+ *  offline, RLS hiccup, whatever) is "couldn't tell", not "it's gone", so it
+ *  answers false and the op stays queued rather than being dropped on a guess.
+ *  Same for an event that hasn't been created on the server YET: the desktop
+ *  lets a whole show run on an event that exists only as a queued offline
+ *  `event.create` (see the bridge above) — "no such row" there means "not
+ *  created yet", never "deleted", and must not cost the night's run time. */
+async function eventIsGone(eventId: string): Promise<boolean> {
+  try {
+    const bridge = pendingMgmtOpBridge();
+    if (bridge?.hasPendingOp && (await bridge.hasPendingOp(eventId))) return false;
+    const supabase = createClient();
+    const { data, error } = await supabase
+      .from("events")
+      .select("id")
+      .eq("id", eventId)
+      .maybeSingle();
+    if (error) return false;
+    return !data;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Replay every queued op. Each op is keyed by (kind, eventId), so ops are
+ * independent of each other — a failure on one event's last-run write carries
+ * no information about any other event's. So a failure is skipped, not fatal:
+ * the loop moves on and gives every other queued event its own chance, instead
+ * of one bad op at the front of the list jamming everything behind it.
+ *
+ * "Failure" itself splits two ways once a write matches no row (see
+ * write-guard.ts): with no live session it's the anon-fallback case — purely
+ * transient, leave it queued. With a live session it can mean the event row
+ * was deleted (another admin removed the show, or this is a stale tab) — an
+ * UPDATE can never resurrect a deleted row, so that op would fail identically
+ * forever. Probing for that and dropping it is what keeps a single permanently
+ * unmatchable op from sitting in the queue until the end of time.
+ *
+ * Returns counts. Safe to call repeatedly (idempotent: each op overwrites the
+ * same field).
  */
 export async function flushOutbox(): Promise<{ flushed: number; remaining: number }> {
   let ops: { key: string; rec: QueuedOp }[];
@@ -180,11 +242,20 @@ export async function flushOutbox(): Promise<{ flushed: number; remaining: numbe
       await apply(rec.op);
       await removeOp(key);
       flushed++;
-    } catch {
-      break; // network/server still failing — try again later
+    } catch (err) {
+      if (err instanceof WroteNothingError && (await hasLiveSession())) {
+        if (await eventIsGone(rec.op.eventId)) {
+          await removeOp(key); // dropped, not flushed — nothing left to retry
+          continue;
+        }
+      }
+      // still offline / server error / row exists but write was refused — leave
+      // this one queued and let the rest of the events still get their turn.
+      continue;
     }
   }
-  return { flushed, remaining: ops.length - flushed };
+  const remaining = (await listOps()).length;
+  return { flushed, remaining };
 }
 
 /**
@@ -199,14 +270,18 @@ export async function persistLastRun(
 ): Promise<void> {
   try {
     const supabase = createClient();
-    const { error } = await supabase
+    const { data, error } = await supabase
       .from("events")
       .update({
         last_run_seconds: seconds,
         last_run_at: at != null ? new Date(at).toISOString() : null,
       })
-      .eq("id", eventId);
-    if (!error) return;
+      .eq("id", eventId)
+      .select("id");
+    // Same anon-fallback hole as apply() above: a 204/error:null with no row
+    // touched must NOT be read as success, or จบโชว์ reports a save that never
+    // happened and nothing is queued to retry it. Fall through to enqueue().
+    if (!error && !wroteNothing(data)) return;
   } catch {
     /* network failure → fall through to queue */
   }

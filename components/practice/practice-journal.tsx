@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Loader2,
   Trash2,
@@ -12,6 +12,8 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { createClient } from "@/lib/supabase/client";
+import { hasLiveSession } from "@/lib/auth-session";
+import { wroteNothing, noRowsMessage } from "@/lib/write-guard";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { useConfirm } from "@/components/ui/confirm-dialog";
@@ -77,6 +79,15 @@ export function PracticeJournal({
   const [attendance, setAttendance] = useState<PracticeAttendance[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
+  // latest state for load()'s "did this refetch just go blank" check below — load()
+  // is a stable useCallback (deps: eventId/today only) so reading logs/runs/attendance
+  // directly would see whatever they were the render load() was created in, not now
+  const logsRef = useRef(logs);
+  logsRef.current = logs;
+  const runsRef = useRef(runs);
+  runsRef.current = runs;
+  const attendanceRef = useRef(attendance);
+  attendanceRef.current = attendance;
 
   // compose form
   const [category, setCategory] = useState<PracticeCategory>("note");
@@ -121,6 +132,21 @@ export function PracticeJournal({
       setLoadError(true);
       setLoading(false);
       return;
+    }
+    // `data: [], error: null` on all three is also what RLS answers an ANON
+    // request with, and supabase-js falls back to the anon key for the minute
+    // after a failed token refresh — the same minute a venue reconnect or a
+    // backgrounded tab waking up lands in. This refetch runs on every
+    // refreshSignal bump, so blanking a journal that already had homework, run
+    // history or attendance in it (over a fake "nothing here") is a real loss,
+    // not a redraw.
+    const wentBlank =
+      ((lRes.data?.length ?? 0) === 0 && logsRef.current.length > 0) ||
+      ((rRes.data?.length ?? 0) === 0 && runsRef.current.length > 0) ||
+      ((aRes.data?.length ?? 0) === 0 && attendanceRef.current.length > 0);
+    if (wentBlank && !(await hasLiveSession())) {
+      setLoading(false);
+      return; // keep what's already on screen
     }
     setLoadError(false);
     setLogs((lRes.data ?? []) as PracticeLog[]);
@@ -176,19 +202,19 @@ export function PracticeJournal({
       .update({ done: next, updated_at: new Date().toISOString() })
       .eq("id", log.id)
       .select("id");
-    if (error || !data || data.length === 0) {
+    if (error) {
       setLogs((prev) => prev.map((l) => (l.id === log.id ? { ...l, done: !next } : l)));
-      // 0 rows has THREE causes, not one: no permission, the row was deleted, or the
-      // request went out UNSIGNED (supabase-js silently falls back to the anon key
-      // for ~a minute after a failed token refresh — exactly the window a venue
-      // reconnect lands in, see NO_ROW_HINT in components/event/run-order-builder.tsx).
-      // Naming only the permission cause tells a member their own homework is not
-      // theirs to tick, which is both wrong and discouraging.
-      toast.error(
-        error
-          ? "อัปเดตไม่สำเร็จ"
-          : "ติ๊กไม่สำเร็จ — อาจไม่มีสิทธิ์ รายการถูกลบไปแล้ว หรือยังยืนยันบัญชีไม่ได้ ลองใหม่อีกครั้ง"
-      );
+      toast.error("อัปเดตไม่สำเร็จ", { description: error.message });
+      return;
+    }
+    // 0 rows has THREE causes, not one: no permission, the row was deleted, or the
+    // request went out UNSIGNED (supabase-js silently falls back to the anon key
+    // for ~a minute after a failed token refresh — exactly the window a venue
+    // reconnect lands in). Naming only the permission cause tells a member their
+    // own homework is not theirs to tick, which is both wrong and discouraging.
+    if (wroteNothing(data)) {
+      setLogs((prev) => prev.map((l) => (l.id === log.id ? { ...l, done: !next } : l)));
+      toast.error("ยังไม่ได้ติ๊ก", { description: await noRowsMessage() });
     }
   }
 
@@ -208,9 +234,14 @@ export function PracticeJournal({
       .delete()
       .eq("id", id)
       .select("id");
-    if (error || !data || data.length === 0) {
+    if (error) {
       setLogs(snapshot); // put it back
-      toast.error(error ? "ลบไม่สำเร็จ" : "ลบบันทึกนี้ไม่ได้ — ไม่มีสิทธิ์ลบ");
+      toast.error("ลบไม่สำเร็จ", { description: error.message });
+      return;
+    }
+    if (wroteNothing(data)) {
+      setLogs(snapshot); // put it back
+      toast.error("ลบไม่สำเร็จ", { description: await noRowsMessage() });
     }
   }
 
@@ -236,22 +267,32 @@ export function PracticeJournal({
       ];
     });
     const supabase = createClient();
-    const { error } = await supabase.from("practice_attendance").upsert(
-      {
-        tenant_id: tenantId,
-        group_id: groupId,
-        event_id: eventId,
-        log_date: today,
-        member_id: memberId,
-        present,
-      },
-      { onConflict: "event_id,log_date,member_id" }
-    );
+    const { data, error } = await supabase
+      .from("practice_attendance")
+      .upsert(
+        {
+          tenant_id: tenantId,
+          group_id: groupId,
+          event_id: eventId,
+          log_date: today,
+          member_id: memberId,
+          present,
+        },
+        { onConflict: "event_id,log_date,member_id" }
+      )
+      .select("id");
     // never leave a tick on screen that never reached the server — an Ar would
     // believe they took attendance
     if (error) {
       setAttendance(snapshot);
       toast.error("เช็คชื่อไม่สำเร็จ", { description: error.message });
+      return;
+    }
+    // an upsert that lands on the UPDATE branch (member already marked today) can
+    // touch 0 rows the same way any other guarded write here can
+    if (wroteNothing(data)) {
+      setAttendance(snapshot);
+      toast.error("เช็คชื่อไม่สำเร็จ", { description: await noRowsMessage() });
     }
   }
 

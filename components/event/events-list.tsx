@@ -35,7 +35,7 @@ import {
   type EventType,
   type GroupStatus,
 } from "@/lib/types";
-import { shortClock, deadlineInfo, formatDuration } from "@/lib/time";
+import { shortClock, deadlineInfo, formatDuration, bkkTodayKey } from "@/lib/time";
 import { cn } from "@/lib/utils";
 
 type EventWithGroup = EventRow & {
@@ -64,17 +64,20 @@ function formatDate(date: string | null): string {
   });
 }
 
+// Pinned to Asia/Bangkok — this component is server-rendered (see
+// app/(app)/dashboard/page.tsx), and Vercel runs UTC, so the runtime's local
+// date would put yesterday's show under "Upcoming" for the first 7 hours of
+// every Bangkok day.
 function todayKey(): string {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(
-    d.getDate()
-  ).padStart(2, "0")}`;
+  return bkkTodayKey();
 }
 
 function daysUntil(dateStr: string): number {
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  const d = new Date(`${dateStr}T00:00:00`);
+  // Diff the "YYYY-MM-DD" keys as UTC midnights (not device-local midnight)
+  // so the result only depends on the calendar days involved, matching
+  // todayKey()'s Bangkok-pinned key regardless of where this runs.
+  const today = new Date(`${todayKey()}T00:00:00Z`);
+  const d = new Date(`${dateStr}T00:00:00Z`);
   return Math.round((d.getTime() - today.getTime()) / 86400000);
 }
 

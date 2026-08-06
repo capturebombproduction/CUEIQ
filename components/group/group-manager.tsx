@@ -6,6 +6,7 @@ import { Plus, Trash2, Users } from "lucide-react";
 import { BulkAddMembers } from "@/components/group/bulk-add-members";
 import { createClient } from "@/lib/supabase/client";
 import { removeEventAudio } from "@/lib/audio-remote";
+import { noRowsMessage, wroteNothing } from "@/lib/write-guard";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
@@ -73,8 +74,20 @@ export function GroupManager({
     setGroups((prev) => prev.map((g) => (g.id === id ? { ...g, ...partial } : g)));
   }
   async function persistGroup(id: string, partial: Partial<Group>) {
-    const { error } = await supabase.from("groups").update(partial).eq("id", id);
-    if (error) toast.error("บันทึกไม่สำเร็จ", { description: error.message });
+    const { data, error } = await supabase
+      .from("groups")
+      .update(partial)
+      .eq("id", id)
+      .select("id");
+    if (error) {
+      toast.error("บันทึกไม่สำเร็จ", { description: error.message });
+      return;
+    }
+    // No error and no row = the write reached the server and changed nothing (sent
+    // anon after a failed token refresh, or the row is gone). See lib/write-guard.ts.
+    if (wroteNothing(data)) {
+      toast.error("ยังไม่ได้บันทึก", { description: await noRowsMessage() });
+    }
   }
 
   async function deleteGroup(g: Group) {
@@ -216,8 +229,20 @@ export function GroupManager({
     );
   }
   async function persistMember(id: string, partial: Partial<Member>) {
-    const { error } = await supabase.from("members").update(partial).eq("id", id);
-    if (error) toast.error("บันทึกไม่สำเร็จ", { description: error.message });
+    const { data, error } = await supabase
+      .from("members")
+      .update(partial)
+      .eq("id", id)
+      .select("id");
+    if (error) {
+      toast.error("บันทึกไม่สำเร็จ", { description: error.message });
+      return;
+    }
+    // No error and no row = the write reached the server and changed nothing (sent
+    // anon after a failed token refresh, or the row is gone). See lib/write-guard.ts.
+    if (wroteNothing(data)) {
+      toast.error("ยังไม่ได้บันทึก", { description: await noRowsMessage() });
+    }
   }
 
   async function deleteMember(id: string) {

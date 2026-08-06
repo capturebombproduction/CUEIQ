@@ -31,7 +31,19 @@ export interface PushSub {
 
 /**
  * Send one push. Returns "gone" for an expired/unsubscribed endpoint (404/410)
- * so the caller can prune it; "error" for anything else (never throws).
+ * only, so the caller can prune it; "error" for anything else (never throws).
+ *
+ * 403/400 must NEVER be treated as "gone". Those codes are provider-side, not
+ * per-endpoint: Apple returns 403 for BadJwtToken / ExpiredProviderToken (e.g.
+ * server clock skew, or a rejected sub claim — see the mailto fallback above,
+ * which is non-routable and can itself be the rejected claim), and FCM returns
+ * 400 for a malformed Authorization header. Both fire identically for every
+ * subscription in the database at once, so mapping them to "gone" would let a
+ * single VAPID misconfiguration prune every user's push subscription in one
+ * cron run, forcing everyone to re-enable push by hand. Key-rotation pruning
+ * is instead handled per-device via applicationServerKey comparison in
+ * components/notifications/notification-bell.tsx, which is the correct place
+ * for it. Surface 403/400 as "error" so the failure is logged, not swallowed.
  */
 export async function sendPush(
   sub: PushSub,

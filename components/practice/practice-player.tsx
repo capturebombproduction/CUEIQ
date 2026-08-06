@@ -27,6 +27,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { createClient } from "@/lib/supabase/client";
+import { wroteNothing, noRowsMessage } from "@/lib/write-guard";
 import { getSongBlob } from "@/lib/song-cache";
 import { getLocalSource, listLocalSourceIds } from "@/lib/local-source";
 import { MGMT_OUTBOX_EVENT } from "@/lib/mgmt-outbox";
@@ -411,9 +412,21 @@ export function PracticePlayer({
       ...prev,
       [songId]: (prev[songId] ?? []).filter((m) => m.id !== id),
     }));
-    const { error } = await createClient().from("song_markers").delete().eq("id", id);
+    const { data, error } = await createClient()
+      .from("song_markers")
+      .delete()
+      .eq("id", id)
+      .select("id");
     if (error) {
       toast.error("ลบท่อนไม่สำเร็จ", { description: error.message });
+      setMarkers((prev) => ({ ...prev, [songId]: snapshot })); // revert
+      return;
+    }
+    // 0 rows = the delete reached the server and removed nothing (RLS mismatch or
+    // an anon-key fallback after a stale session) — the mark is still on the server,
+    // so it must not stay gone on screen
+    if (wroteNothing(data)) {
+      toast.error("ลบท่อนไม่สำเร็จ", { description: await noRowsMessage() });
       setMarkers((prev) => ({ ...prev, [songId]: snapshot })); // revert
       return;
     }
@@ -437,12 +450,19 @@ export function PracticePlayer({
     // Delete by SONG, not by the ids we happen to be holding: the in-memory list
     // can be behind the server, and an id-list delete would report success while
     // leaving those rows behind (they'd reappear on the next load).
-    const { error } = await createClient()
+    const { data, error } = await createClient()
       .from("song_markers")
       .delete()
-      .eq("song_id", songId);
+      .eq("song_id", songId)
+      .select("id");
     if (error) {
       toast.error("ล้างท่อนไม่สำเร็จ", { description: error.message });
+      setMarkers((prev) => ({ ...prev, [songId]: list })); // revert
+      return;
+    }
+    // same anon-fallback / RLS-mismatch ambiguity as every other guarded delete here
+    if (wroteNothing(data)) {
+      toast.error("ล้างท่อนไม่สำเร็จ", { description: await noRowsMessage() });
       setMarkers((prev) => ({ ...prev, [songId]: list })); // revert
       return;
     }
@@ -520,12 +540,21 @@ export function PracticePlayer({
     });
     if (!ok) return;
     setItems((prev) => prev.filter((i) => i.id !== itemId));
-    const { error } = await createClient()
+    const { data, error } = await createClient()
       .from("practice_songs")
       .delete()
-      .eq("id", itemId);
+      .eq("id", itemId)
+      .select("id");
     if (error) {
       toast.error("เอาเพลงออกไม่สำเร็จ", { description: error.message });
+      setItems(snapshot);
+      return;
+    }
+    // 0 rows = removed nothing on the server (RLS mismatch or a stale-session anon
+    // fallback) — the song is still in everyone else's list, so it must not vanish
+    // from just this screen
+    if (wroteNothing(data)) {
+      toast.error("เอาเพลงออกไม่สำเร็จ", { description: await noRowsMessage() });
       setItems(snapshot);
     }
   }

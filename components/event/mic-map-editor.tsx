@@ -1,11 +1,12 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Plus, Trash2, ChevronUp, ChevronDown, Mic2 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { newLocalRowId } from "@/lib/mgmt-outbox";
 import { OFFLINE_QUEUED_MESSAGE, tryQueueChildList } from "@/lib/mgmt-write";
+import { noRowsMessage, wroteNothing } from "@/lib/write-guard";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useConfirm } from "@/components/ui/confirm-dialog";
@@ -38,6 +39,12 @@ export function MicMapEditor({
   const supabase = createClient();
   const confirm = useConfirm();
   const [mics, setMics] = useState<MicAssignment[]>(initialMics);
+  // In-flight guard for addMic/addHolder: a double-tap on the iPads the bands
+  // actually use would compute the same max(...)+1 twice → two rows with an
+  // identical mic_number/order_index, which then makes ▲▼ reorder a silent
+  // DB no-op that reverts on reload. Never drop the second tap silently.
+  const insertingRef = useRef(false);
+  const [inserting, setInserting] = useState(false);
 
   // Group holders by mic number (rotation order within each).
   const groups = useMemo(() => {
@@ -77,14 +84,21 @@ export function MicMapEditor({
   }
 
   async function persist(id: string, partial: Partial<MicAssignment>) {
-    const { error } = await supabase
+    const { data, error } = await supabase
       .from("mic_assignments")
       .update(partial)
-      .eq("id", id);
+      .eq("id", id)
+      .select("id");
     if (error) {
       const next = mics.map((m) => (m.id === id ? { ...m, ...partial } : m));
       if (await queueOffline(next, error.message)) return;
       toast.error("บันทึกไม่สำเร็จ", { description: error.message });
+      return;
+    }
+    // No error and no row = the write reached the server and changed nothing (sent
+    // anon after a failed token refresh, or the row is gone). See lib/write-guard.ts.
+    if (wroteNothing(data)) {
+      toast.error("ยังไม่ได้บันทึก", { description: await noRowsMessage() });
     }
   }
 
@@ -102,56 +116,82 @@ export function MicMapEditor({
   }
 
   async function addMic() {
-    const nextNum = groups.length ? Math.max(...groups.map((g) => g.num)) + 1 : 1;
-    const { data, error } = await supabase
-      .from("mic_assignments")
-      .insert({
-        tenant_id: tenantId,
-        event_id: eventId,
-        mic_number: nextNum,
-        holder_name: "",
-        order_index: 1,
-      })
-      .select("*")
-      .single();
-    if (error || !data) {
-      const local = mintLocalMic(nextNum, "", 1);
-      if (await queueOffline([...mics, local], error?.message)) {
-        setMics((prev) => [...prev, local]);
-        return;
-      }
-      toast.error("เพิ่มไมค์ไม่สำเร็จ", { description: error?.message });
+    if (insertingRef.current) {
+      toast.info("กำลังเพิ่มไมค์ก่อนหน้า — รอสักครู่แล้วกดใหม่", {
+        id: "mic-inserting",
+      });
       return;
     }
-    setMics((prev) => [...prev, data as MicAssignment]);
+    insertingRef.current = true;
+    setInserting(true);
+    try {
+      const nextNum = groups.length ? Math.max(...groups.map((g) => g.num)) + 1 : 1;
+      const { data, error } = await supabase
+        .from("mic_assignments")
+        .insert({
+          tenant_id: tenantId,
+          event_id: eventId,
+          mic_number: nextNum,
+          holder_name: "",
+          order_index: 1,
+        })
+        .select("*")
+        .single();
+      if (error || !data) {
+        const local = mintLocalMic(nextNum, "", 1);
+        if (await queueOffline([...mics, local], error?.message)) {
+          setMics((prev) => [...prev, local]);
+          return;
+        }
+        toast.error("เพิ่มไมค์ไม่สำเร็จ", { description: error?.message });
+        return;
+      }
+      setMics((prev) => [...prev, data as MicAssignment]);
+    } finally {
+      insertingRef.current = false;
+      setInserting(false);
+    }
   }
 
   async function addHolder(micNumber: number, name = "") {
-    const inGroup = mics.filter((m) => m.mic_number === micNumber);
-    const order = inGroup.length
-      ? Math.max(...inGroup.map((m) => m.order_index)) + 1
-      : 1;
-    const { data, error } = await supabase
-      .from("mic_assignments")
-      .insert({
-        tenant_id: tenantId,
-        event_id: eventId,
-        mic_number: micNumber,
-        holder_name: name,
-        order_index: order,
-      })
-      .select("*")
-      .single();
-    if (error || !data) {
-      const local = mintLocalMic(micNumber, name, order);
-      if (await queueOffline([...mics, local], error?.message)) {
-        setMics((prev) => [...prev, local]);
-        return;
-      }
-      toast.error("เพิ่มคนไม่สำเร็จ", { description: error?.message });
+    if (insertingRef.current) {
+      toast.info("กำลังเพิ่มรายการก่อนหน้า — รอสักครู่แล้วกดใหม่", {
+        id: "mic-inserting",
+      });
       return;
     }
-    setMics((prev) => [...prev, data as MicAssignment]);
+    insertingRef.current = true;
+    setInserting(true);
+    try {
+      const inGroup = mics.filter((m) => m.mic_number === micNumber);
+      const order = inGroup.length
+        ? Math.max(...inGroup.map((m) => m.order_index)) + 1
+        : 1;
+      const { data, error } = await supabase
+        .from("mic_assignments")
+        .insert({
+          tenant_id: tenantId,
+          event_id: eventId,
+          mic_number: micNumber,
+          holder_name: name,
+          order_index: order,
+        })
+        .select("*")
+        .single();
+      if (error || !data) {
+        const local = mintLocalMic(micNumber, name, order);
+        if (await queueOffline([...mics, local], error?.message)) {
+          setMics((prev) => [...prev, local]);
+          return;
+        }
+        toast.error("เพิ่มคนไม่สำเร็จ", { description: error?.message });
+        return;
+      }
+      setMics((prev) => [...prev, data as MicAssignment]);
+    } finally {
+      insertingRef.current = false;
+      setInserting(false);
+    }
   }
 
   async function removeHolder(id: string) {
@@ -222,11 +262,23 @@ export function MicMapEditor({
       .update({ mic_number: newNum })
       .eq("event_id", eventId)
       .eq("mic_number", oldNum)
-      .then(async ({ error }) => {
+      .select("id")
+      .then(async ({ data, error }) => {
         if (error) {
           if (await queueOffline(next, error.message)) return;
           toast.error("เปลี่ยนเบอร์ไมค์ไม่สำเร็จ", { description: error.message });
           // real rejection — put only these rows back on oldNum (re-keys the input)
+          setMics((prev) =>
+            prev.map((m) =>
+              movedIds.has(m.id) ? { ...m, mic_number: oldNum } : m
+            )
+          );
+          return;
+        }
+        // No error but zero rows = sent anon after a failed token refresh — the
+        // mic-number change never reached the DB. See lib/write-guard.ts.
+        if (wroteNothing(data)) {
+          toast.error("ยังไม่ได้บันทึก", { description: await noRowsMessage() });
           setMics((prev) =>
             prev.map((m) =>
               movedIds.has(m.id) ? { ...m, mic_number: oldNum } : m
@@ -244,6 +296,38 @@ export function MicMapEditor({
     if (target < 0 || target >= group.holders.length) return;
     const a = group.holders[index];
     const b = group.holders[target];
+    if (a.order_index === b.order_index) {
+      // Duplicate order_index (e.g. holders added concurrently from two devices):
+      // swapping equal values is a DB no-op that silently reverts on reload —
+      // renumber the whole group 1..n with the two holders exchanged instead.
+      const reordered = [...group.holders];
+      reordered[index] = b;
+      reordered[target] = a;
+      const renumbered = reordered.map((h, i) => ({ ...h, order_index: i + 1 }));
+      const next = mics.map((m) => renumbered.find((h) => h.id === m.id) ?? m);
+      setMics(next);
+      const results = await Promise.all(
+        renumbered.map((h) =>
+          supabase
+            .from("mic_assignments")
+            .update({ order_index: h.order_index })
+            .eq("id", h.id)
+            .select("id")
+        )
+      );
+      const failed = results.find((r) => r.error);
+      if (failed?.error) {
+        if (await queueOffline(next, failed.error.message)) return;
+        toast.error("สลับลำดับไม่สำเร็จ", { description: failed.error.message });
+        setMics(mics);
+        return;
+      }
+      if (results.some((r) => wroteNothing(r.data))) {
+        toast.error("ยังไม่ได้บันทึก", { description: await noRowsMessage() });
+        setMics(mics);
+      }
+      return;
+    }
     const next = mics.map((m) => {
       if (m.id === a.id) return { ...m, order_index: b.order_index };
       if (m.id === b.id) return { ...m, order_index: a.order_index };
@@ -254,16 +338,25 @@ export function MicMapEditor({
       supabase
         .from("mic_assignments")
         .update({ order_index: b.order_index })
-        .eq("id", a.id),
+        .eq("id", a.id)
+        .select("id"),
       supabase
         .from("mic_assignments")
         .update({ order_index: a.order_index })
-        .eq("id", b.id),
+        .eq("id", b.id)
+        .select("id"),
     ]);
     const failed = results.find((r) => r.error);
     if (failed?.error) {
       if (await queueOffline(next, failed.error.message)) return;
       toast.error("สลับลำดับไม่สำเร็จ", { description: failed.error.message });
+      setMics(mics);
+      return;
+    }
+    // No error but zero rows on either write = sent anon after a failed token
+    // refresh — the swap never reached the DB. See lib/write-guard.ts.
+    if (results.some((r) => wroteNothing(r.data))) {
+      toast.error("ยังไม่ได้บันทึก", { description: await noRowsMessage() });
       setMics(mics);
     }
   }
@@ -395,6 +488,7 @@ export function MicMapEditor({
                     type="button"
                     variant="ghost"
                     size="sm"
+                    disabled={inserting}
                     onClick={() => addHolder(g.num)}
                   >
                     <Plus className="h-4 w-4" /> เพิ่มคน (วนไมค์)
@@ -409,6 +503,7 @@ export function MicMapEditor({
               type="button"
               variant="outline"
               className="w-full"
+              disabled={inserting}
               onClick={addMic}
             >
               <Plus className="h-4 w-4" /> เพิ่มไมค์

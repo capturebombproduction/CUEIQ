@@ -7,7 +7,7 @@
 // never has to be whitelisted on the R2 bucket) and open the native file picker for
 // local-file ingest. Auth stays in the renderer: main only ever sees a presigned
 // URL the renderer already minted, so no R2/Supabase secret is bundled in the app.
-const { app, BrowserWindow, ipcMain, dialog, net, shell } = require("electron");
+const { app, BrowserWindow, ipcMain, dialog, net, shell, powerSaveBlocker } = require("electron");
 const path = require("node:path");
 const fs = require("node:fs");
 const { pathToFileURL } = require("node:url");
@@ -39,16 +39,34 @@ const SMOKE = process.env.CUEIQ_SMOKE === "1"; // headless launch self-test
 const SMOKE_OUT = process.env.CUEIQ_SMOKE_OUT || "";
 const INDEX_HTML = path.join(__dirname, "..", "dist", "index.html");
 
-/** The audio proxy exists solely to move presigned R2 (https) URLs past browser
- * CORS — refuse anything else so it can never be steered at file:// or app IPC. */
-function assertHttpsUrl(url) {
-  if (new URL(url).protocol !== "https:") throw new Error("blocked non-https URL");
+// Every R2 S3-compatible endpoint lives under this suffix (lib/r2.ts builds it as
+// `https://${accountId}.r2.cloudflarestorage.com`). The account id itself is a
+// server-only secret (never shipped to the desktop bundle — see vite.config.ts,
+// which injects the Supabase/web-origin config but nothing R2-shaped), so the
+// exact host isn't available at build time; this suffix is the tightest check
+// possible without it.
+const R2_HOSTNAME_SUFFIX = ".r2.cloudflarestorage.com";
+
+/** The audio proxy exists solely to move presigned R2 bytes past browser CORS.
+ * Without a host pin this is an open proxy: window.cueiqNative.fetchAudio/putAudio
+ * (preload.cjs) takes a bare URL from the renderer, so any injected renderer
+ * script could GET or PUT an arbitrary https URL through the main process with no
+ * CORS — silently exfiltrating the band's masters (or a session token pasted into
+ * a "url"). Pin it to the one host every legitimate call ever targets. */
+function assertR2Url(url) {
+  const parsed = new URL(url);
+  if (parsed.protocol !== "https:") throw new Error("blocked non-https URL");
+  if (!parsed.hostname.endsWith(R2_HOSTNAME_SUFFIX)) {
+    throw new Error("blocked non-R2 host: " + parsed.hostname);
+  }
 }
 
 /** GET a presigned R2 URL's bytes in the main process (no CORS). */
 async function fetchAudioBytes(url) {
-  assertHttpsUrl(url);
-  const res = await net.fetch(url);
+  assertR2Url(url);
+  // redirect: "error" — net.fetch follows redirects by default, and a redirect
+  // is exactly how a pinned host could hand the request off to somewhere else.
+  const res = await net.fetch(url, { redirect: "error" });
   if (!res.ok) throw new Error(`download failed (${res.status})`);
   // An ArrayBuffer rides Electron's structured-clone IPC as a transferable (not
   // JSON), and is a valid BlobPart on the renderer side.
@@ -57,11 +75,12 @@ async function fetchAudioBytes(url) {
 
 /** PUT bytes to a presigned R2 URL in the main process (no CORS). */
 async function putAudioBytes(url, bytes, contentType) {
-  assertHttpsUrl(url);
+  assertR2Url(url);
   const res = await net.fetch(url, {
     method: "PUT",
     body: Buffer.from(bytes),
     headers: contentType ? { "Content-Type": contentType } : undefined,
+    redirect: "error", // see fetchAudioBytes — never let a redirect leave the pinned host
   });
   if (!res.ok) throw new Error(`upload failed (${res.status})`);
 }
@@ -82,12 +101,36 @@ async function pickAudioFile() {
   return { name: path.basename(filePath), bytes };
 }
 
+// The PA machine is the one thing at a venue nobody is looking at during a long
+// no-audio gap (MC talk, set change) — Windows will happily sleep the display or
+// suspend the system. The renderer already asks for navigator.wakeLock, but that's
+// a browser-spec API riding a file:// origin Electron never promised to honor the
+// same way a real tab does; this is the same protection enforced at the OS level,
+// which is why it's worth having both. Idempotent both ways so callers don't have
+// to track whether it's already on/off.
+let powerSaveBlockerId = null;
+
+function startShowPowerSaveBlocker() {
+  if (powerSaveBlockerId !== null && powerSaveBlocker.isStarted(powerSaveBlockerId)) return;
+  powerSaveBlockerId = powerSaveBlocker.start("prevent-display-sleep");
+}
+
+function stopShowPowerSaveBlocker() {
+  if (powerSaveBlockerId === null) return;
+  if (powerSaveBlocker.isStarted(powerSaveBlockerId)) powerSaveBlocker.stop(powerSaveBlockerId);
+  powerSaveBlockerId = null;
+}
+
 function registerIpc() {
   ipcMain.handle("cueiq:fetch-audio", (_e, url) => fetchAudioBytes(url));
   ipcMain.handle("cueiq:put-audio", (_e, url, bytes, contentType) =>
     putAudioBytes(url, bytes, contentType)
   );
   ipcMain.handle("cueiq:pick-audio-file", () => pickAudioFile());
+  // Renderer tells us when a show starts/ends running; see the SPA's live paths.
+  ipcMain.handle("cueiq:set-show-running", (_e, running) =>
+    running ? startShowPowerSaveBlocker() : stopShowPowerSaveBlocker()
+  );
 }
 
 /** Remembers the one version the operator said "ไว้ก่อน" to, so declining is not
@@ -236,6 +279,116 @@ async function createWindow() {
   });
 
   const load = () => (DEV_URL ? win.loadURL(DEV_URL) : win.loadFile(INDEX_HTML));
+
+  // Renderer-loss recovery (crash reload and the renderer's own AppErrorBoundary
+  // location.reload()) must come back on the page the show was actually running
+  // on, not /dashboard. getURL() survives renderer death —
+  // it's tracked by the webContents itself, not the dead document — so it still
+  // has the last-committed hash (e.g. "#/events/<id>/run-order/live") to restore.
+  // Falls back to a fresh load() when there's nothing usable (first load never
+  // committed, or the URL somehow isn't our own app).
+  const reloadToLastKnownUrl = () => {
+    // The window can be gone by the time a crash handler runs (quit racing the
+    // crash), and every call below throws synchronously on a destroyed window —
+    // which in a main-process event handler means an uncaught exception, i.e.
+    // taking the whole app down while recovering from a crash.
+    if (win.isDestroyed()) return Promise.resolve();
+    const current = win.webContents.getURL();
+    if (current && current.startsWith(appUrl)) {
+      // NOT loadURL(current): every route in this HashRouter SPA is "the same
+      // URL, differing only by fragment" from Chromium's point of view, which it
+      // classifies as a SAME-DOCUMENT navigation — no document actually reloads,
+      // so a crashed renderer never comes back. reload() is unconditionally
+      // cross-document and preserves the current hash on its own. It returns
+      // void (not a Promise), so wrap it to keep callers' .catch() chains valid.
+      win.webContents.reload();
+      return Promise.resolve();
+    }
+    return load();
+  };
+
+  // The show power-save-blocker is started by the renderer (see set-show-running
+  // above) and only ever stopped by an explicit renderer call or window-all-closed
+  // — a React cleanup effect never runs when the document itself is torn down. Every
+  // path that reloads/replaces the renderer document must release it here from the
+  // main side, or display-sleep stays blocked for the rest of the app's life. The
+  // freshly booted renderer re-asserts it on mount if the restored show is running.
+  // isInPlace excludes normal in-app HashRouter navigation (no document reload).
+  win.webContents.on("did-start-navigation", (_e, _url, isInPlace, isMainFrame) => {
+    if (isMainFrame && !isInPlace) stopShowPowerSaveBlocker();
+  });
+
+  // A dead renderer leaves a blank dark rectangle — no window navigate, no console,
+  // and AppErrorBoundary (src/main.tsx) can't catch a process that no longer exists
+  // to throw into it. The realistic vector here is OOM: Live Mode holds several
+  // 27–88 MB WAV blobs plus their decoded audio all at once. Reload by default —
+  // the SPA persists a running show's snapshot (see the beforeunload guard above)
+  // and restores it, so a reload recovers the show instead of just the window.
+  // "clean-exit"/"killed" are excluded: those are OUR OWN app.quit()/process kill,
+  // not a crash, and reloading then would fight a deliberate shutdown.
+  let recentReloads = [];
+  const MAX_RELOADS_PER_WINDOW = 3;
+  const RELOAD_WINDOW_MS = 60_000;
+  win.webContents.on("render-process-gone", (_e, details) => {
+    if (details.reason === "clean-exit" || details.reason === "killed") return;
+    stopShowPowerSaveBlocker(); // the document that was holding it is gone either way
+    const now = Date.now();
+    recentReloads = recentReloads.filter((t) => now - t < RELOAD_WINDOW_MS);
+    if (recentReloads.length >= MAX_RELOADS_PER_WINDOW) {
+      // Reloading into whatever keeps killing the renderer would just loop forever
+      // — stop and tell the operator instead of flashing the window indefinitely.
+      dialog.showMessageBox(win, {
+        type: "error",
+        title: "CueIQ ค้างซ้ำ",
+        message: `แอปพังซ้ำหลายครั้งติดกัน (${details.reason})`,
+        detail: "ปิดโปรแกรมแล้วเปิดใหม่ด้วยตนเอง — ถ้าเปิด Quick Show ได้ ใช้คุมโชว์ต่อแบบไม่ต้องใช้เน็ต",
+      });
+      return;
+    }
+    recentReloads.push(now);
+    console.log("RENDER_PROCESS_GONE " + details.reason + " — reloading");
+    reloadToLastKnownUrl().catch((e) =>
+      console.log("RENDER_PROCESS_GONE_RELOAD_FAIL " + String(e))
+    );
+  });
+
+  // "Unresponsive" (renderer blocked on the main thread — e.g. decoding a big WAV)
+  // is not dead yet, so this is informational only — no reload button. A parentless
+  // dialog still gets Windows' focus (parentless only skips DISABLING the main
+  // window — it doesn't stop the OS activating the new top-level window), so the
+  // operator's own cue keys (e.g. → then Space, exactly what gets pressed mid-show)
+  // land on whatever the dialog's default button is. A single dismiss button means
+  // there's nothing destructive for a stray keystroke to trigger.
+  //
+  // ⚠️ Nothing here recovers a renderer that never comes back: Chromium only
+  // EMITS "unresponsive", it does not kill the process, and render-process-gone
+  // fires on a crash/OOM/kill — not on a wedged main thread. So the message says
+  // what is actually true (restart it yourself, or run the show from Quick Show)
+  // rather than promising a self-heal that will not arrive mid-show.
+  let unresponsiveDialogOpen = false;
+  win.webContents.on("unresponsive", () => {
+    if (unresponsiveDialogOpen) return; // don't stack a prompt per hang tick
+    unresponsiveDialogOpen = true;
+    dialog
+      .showMessageBox({
+        type: "warning",
+        buttons: ["รับทราบ"],
+        defaultId: 0,
+        cancelId: 0,
+        title: "CueIQ ไม่ตอบสนอง",
+        message: "แอปไม่ตอบสนองชั่วคราว",
+        detail:
+          "ถ้ากำลังโหลด/ประมวลผลไฟล์เสียงใหญ่ รอสักครู่มักกลับมาเอง — ถ้าค้างนานจริง ให้ปิดโปรแกรมแล้วเปิดใหม่ (โชว์ที่ค้างไว้จะกลับมาต่อ) หรือใช้ Quick Show คุมโชว์ต่อแบบไม่ต้องใช้เน็ต",
+      })
+      .then(() => {
+        unresponsiveDialogOpen = false;
+      })
+      .catch((e) => {
+        unresponsiveDialogOpen = false;
+        console.log("UNRESPONSIVE_PROMPT_FAIL " + String(e));
+      });
+  });
+
   if (!SMOKE) {
     await load();
   } else {
@@ -300,5 +453,6 @@ app.whenReady().then(() => {
 });
 
 app.on("window-all-closed", () => {
+  stopShowPowerSaveBlocker(); // no window left to run a show from
   if (process.platform !== "darwin") app.quit();
 });

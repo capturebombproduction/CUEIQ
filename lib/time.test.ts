@@ -176,4 +176,37 @@ describe("computeSetlistTimes — the run-sheet engine", () => {
     expect(r.totalSeconds).toBe(0);
     expect(r.isOver).toBe(false);
   });
+
+  it("compares same-day hard out with no folding", () => {
+    const start = 18 * 3600; // 18:00
+    const hardOut = 22 * 3600; // 22:00, same day
+    const r = computeSetlistTimes([item(3600), item(3600)], start, hardOut);
+    expect(r.hardOutSec).toBe(hardOut);
+    expect(r.isOver).toBe(false);
+    expect(r.rows[1].overHardOut).toBe(false);
+  });
+
+  it("folds a past-midnight hard out forward when the set stays inside it", () => {
+    // 23:00 show, 00:30 hard-out (a normal festival headliner close) — hardOutSec
+    // is smaller than showStartSec in raw clock terms, which must NOT read as
+    // already-over from the first row.
+    const start = 23 * 3600; // 23:00
+    const hardOut = 30 * 60; // 00:30
+    const r = computeSetlistTimes([item(3600)], start, hardOut); // 23:00-00:00
+    expect(r.hardOutSec).toBe(hardOut + 86400);
+    expect(r.isOver).toBe(false);
+    expect(r.overBy).toBe(0);
+    expect(r.rows[0].overHardOut).toBe(false);
+  });
+
+  it("still flags a genuinely exceeded past-midnight hard out", () => {
+    const start = 23 * 3600; // 23:00
+    const hardOut = 30 * 60; // 00:30
+    const r = computeSetlistTimes([item(5400)], start, hardOut); // 23:00-00:30, exactly on the line
+    expect(r.rows[0].overHardOut).toBe(false);
+    const over = computeSetlistTimes([item(5401)], start, hardOut); // one second past 00:30
+    expect(over.isOver).toBe(true);
+    expect(over.overBy).toBe(1);
+    expect(over.rows[0].overHardOut).toBe(true);
+  });
 });

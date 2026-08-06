@@ -4,6 +4,7 @@ import { useState } from "react";
 import { Share2, Copy, Check, Link2Off, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { createClient } from "@/lib/supabase/client";
+import { wroteNothing, noRowsMessage } from "@/lib/write-guard";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -59,17 +60,29 @@ export function ShareButton({
     // have lapsed. The venue then opens it and gets "ลิงก์ไม่ถูกต้องหรือถูกปิดการ
     // แชร์แล้ว" while this dialog cheerfully says "ไม่มีวันหมดอายุ" — and the
     // obvious remedy, regenerating the link, produces another dead one.
-    const { error } = await supabase
+    const { data, error } = await supabase
       .from("events")
       .update(
         enabled
           ? { share_token: next }
           : { share_token: next, share_expires_at: null }
       )
-      .eq("id", eventId);
+      .eq("id", eventId)
+      .select("id");
     setBusy(false);
     if (error) {
       toast.error("ทำรายการไม่สำเร็จ", { description: error.message });
+      return;
+    }
+    // A revoke that only LOOKS successful is the dangerous direction here: the
+    // public /share/<token> page needs no login and serves the full run sheet,
+    // mic map and schedule, so if this write actually touched zero rows (anon
+    // after a failed token refresh — see lib/write-guard.ts) the old token stays
+    // live on the row forever while the UI happily says it's closed.
+    if (wroteNothing(data)) {
+      toast.error(enabled ? "สร้างลิงก์ไม่สำเร็จ" : "ปิดลิงก์ไม่สำเร็จ", {
+        description: await noRowsMessage(),
+      });
       return;
     }
     setToken(next);
@@ -80,13 +93,18 @@ export function ShareButton({
   async function setExpiry(days: number | null) {
     const next = days == null ? null : new Date(Date.now() + days * 86400000).toISOString();
     setBusy(true);
-    const { error } = await createClient()
+    const { data, error } = await createClient()
       .from("events")
       .update({ share_expires_at: next })
-      .eq("id", eventId);
+      .eq("id", eventId)
+      .select("id");
     setBusy(false);
     if (error) {
       toast.error("ตั้งวันหมดอายุไม่สำเร็จ", { description: error.message });
+      return;
+    }
+    if (wroteNothing(data)) {
+      toast.error("ยังไม่ได้ตั้งวันหมดอายุ", { description: await noRowsMessage() });
       return;
     }
     setExpiresAt(next);

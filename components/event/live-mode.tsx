@@ -41,9 +41,13 @@ import { setLiveShowActive } from "@/lib/live-guard";
 import { getDeviceId, deviceLabel } from "@/lib/device-id";
 import {
   claimAuthority,
+  getAuthority,
   heartbeatAuthority,
+  isGhost,
   releaseAuthority,
+  type AuthorityRow,
 } from "@/lib/show-authority";
+import { noRowsMessage, wroteNothing } from "@/lib/write-guard";
 import {
   buildSongAudioPath,
   uploadEventAudio,
@@ -348,6 +352,20 @@ export function LiveMode({
           committedRef.current = snap.committed ?? { id: null, anchor: null };
           resumedRunRef.current = true;
           setState(snap.state as LiveState);
+          // Come back as the ROLE this device had, not as a fresh default.
+          // Viewers write snapshots too (any device in a running show does), and
+          // restoring one used to hand every reloaded phone `isController = true`
+          // with a null claim — so a band member whose screen had slept woke up as
+          // a second controller and, on the next tick, broadcast its own stale
+          // auto-advance over the PA's track. Restoring the claim as well makes the
+          // arbitration deterministic afterwards instead of a coin flip.
+          if (snap.isController === false) {
+            isControllerRef.current = false;
+            setIsController(false);
+          }
+          if (typeof snap.controllerSince === "number") {
+            controllerSinceRef.current = snap.controllerSince;
+          }
           // Restore "the show already ended" too. จบโชว์ leaves begun:true, so a
           // device that reloads afterwards used to come back believing the show
           // was still on — and since `ended` now travels between devices, it
@@ -380,6 +398,10 @@ export function LiveMode({
             // to survive a reload or the restored device tells everyone else the
             // show is back on — see the restore above.
             ended: showEndedRef.current,
+            // Per-device too, and for the same reason: a reload must not promote a
+            // viewer to controller (see the restore).
+            isController: isControllerRef.current,
+            controllerSince: controllerSinceRef.current,
             savedAt: Date.now(),
           })
         );
@@ -401,7 +423,11 @@ export function LiveMode({
     // its ref, so every path that flips it ALSO changes LiveState and re-runs
     // this. The one exception — จบโชว์ on an already-paused show — flushes by
     // hand in endShow().
-  }, [state, eventId]);
+    //
+    // `isController` IS a dep: the snapshot now carries the device's role, and a
+    // step-down that arrives without any state change would otherwise leave a
+    // snapshot on disk still claiming this device drives the show.
+  }, [state, isController, eventId]);
 
   // Both persists above are debounced, and a phone can outrun the debounce: iOS
   // Safari never acts on `beforeunload`, so a pull-to-refresh or a tab close within
@@ -617,13 +643,24 @@ export function LiveMode({
   // Lock the SOUND device into Live Mode while a show is live: leaving would cut the
   // audio. Block in-app navigation (back / header nav / logo) + warn on refresh/close.
   // To leave, turn off "เสียงออกเครื่องนี้" first (then edit on a remote with sound off).
+  //
+  // The CONTROLLER is guarded too, sound or no sound. Driving a show from a muted
+  // phone while the PA plays the file is a supported setup (see the remote-control
+  // help text below), and on that phone none of this was armed: one stray tap on
+  // the logo navigated away instantly, and because auto-advance is controller-only,
+  // the running track finished and the show simply stopped with nobody driving it.
   useEffect(() => {
-    if (!(soundOutput && state.begun)) return;
+    if (!(state.begun && (soundOutput || isController))) return;
     // Tell out-of-tree actions (the header Sign-out button) that a sounding show is
     // live here, so they confirm before cutting it — the click/beforeunload guards
     // below can't see a programmatic sign-out navigation.
     setLiveShowActive(true);
     const livePath = `/events/${eventId}/live`;
+    // Say what THIS device actually loses by leaving — a muted controller's audio
+    // is not what stops, the show is.
+    const leaveWarning = soundOutput
+      ? "ออกจาก Live Mode ตอนนี้? เสียงที่กำลังเล่นบนเครื่องนี้จะหยุด"
+      : "เครื่องนี้กำลังคุมโชว์อยู่ — ออกแล้วจะไม่มีเครื่องคุมโชว์ ออกเลยไหม?";
     const onClick = (e: MouseEvent) => {
       const a = (e.target as HTMLElement)?.closest?.("a[href]") as HTMLAnchorElement | null;
       if (a && !(a.getAttribute("href") ?? "").includes(livePath)) {
@@ -634,11 +671,7 @@ export function LiveMode({
         // href works as-is on web (/path) and desktop (#/path under HashRouter).
         e.preventDefault();
         e.stopPropagation();
-        if (
-          window.confirm(
-            "ออกจาก Live Mode ตอนนี้? เสียงที่กำลังเล่นบนเครื่องนี้จะหยุด"
-          )
-        ) {
+        if (window.confirm(leaveWarning)) {
           window.location.href = href;
         }
       }
@@ -654,7 +687,7 @@ export function LiveMode({
       document.removeEventListener("click", onClick, true);
       window.removeEventListener("beforeunload", onBeforeUnload);
     };
-  }, [soundOutput, state.begun, eventId]);
+  }, [soundOutput, isController, state.begun, eventId]);
 
   // promote the overlapping secondary element to primary (after a negative-buffer
   // pre-roll) and refresh the scrubber from it.
@@ -766,6 +799,11 @@ export function LiveMode({
     return null;
   }
 
+  // Rows the on-air lock skipped, and the counter that asks the download effect to
+  // look at them again once the track they belong to is no longer sounding.
+  const deferredOnAirRef = useRef<Set<string>>(new Set());
+  const [onAirRetry, setOnAirRetry] = useState(0);
+
   // What the download effect actually depends on: which item wants which file.
   // refetchItems() mints a BRAND-NEW items array on every refetch (tab focus,
   // "setlist-changed", library broadcast), so keying the effect on `items` restarted
@@ -804,7 +842,22 @@ export function LiveMode({
         if (!version) continue;
         // LOCK the on-air file: never re-download or revoke the track that's
         // currently sounding (a mid-show library re-upload won't cut the live song).
-        if (it.id === playingIdRef.current && audioUrlsRef.current[it.id]) continue;
+        // Remember what the lock deferred: the signature already changed to the new
+        // file, so without this the row is skipped for the rest of the session and a
+        // repeat/encore of that song plays the REPLACED master with every indicator
+        // green. The effect below re-runs this loop once the track leaves the air.
+        if (it.id === playingIdRef.current && audioUrlsRef.current[it.id]) {
+          // Only a row that actually wants DIFFERENT bytes is deferred. Recording
+          // every sounding row here made the signature's other triggers — a
+          // reorder, an unrelated upload — leave a member behind, so the next
+          // track change bumped the retry and re-ran the whole loop for nothing,
+          // which on venue wifi means restarting an in-flight master download.
+          if (cachedPathRef.current[it.id] !== version) {
+            deferredOnAirRef.current.add(it.id);
+          }
+          continue;
+        }
+        deferredOnAirRef.current.delete(it.id);
         // already holding this exact version locally? skip.
         if (cachedPathRef.current[it.id] === version && audioUrlsRef.current[it.id]) continue;
         setAudioBusy((prev) => ({ ...prev, [it.id]: "down" }));
@@ -867,7 +920,17 @@ export function LiveMode({
     // `items` is read inside but deliberately NOT a dep — see audioSig above (a
     // refetch that changed no audio must not restart an in-flight download).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [audioSig, eventId, localsRead]);
+  }, [audioSig, eventId, localsRead, onAirRetry]);
+
+  // A row whose new file the on-air lock deferred is stuck: its signature already
+  // changed, so nothing re-triggers the download. Once that row stops being the
+  // sounding one, ask for the loop again — this is the only path that picks up a
+  // master replaced while its own song was playing.
+  useEffect(() => {
+    if (deferredOnAirRef.current.size === 0) return;
+    if (playingId && deferredOnAirRef.current.has(playingId)) return; // still on air
+    setOnAirRetry((n) => n + 1);
+  }, [playingId]);
 
   // Wake Lock — keep the screen on for as long as the operator is IN the show.
   // Keyed on `begun`, not `running`: the run clock stops between every Manual cue
@@ -894,6 +957,11 @@ export function LiveMode({
     if (!state.begun || showEnded) {
       wakeLockRef.current?.release().catch(() => {});
       wakeLockRef.current = null;
+      // Under Electron the screen lock is not enough: Windows' own power plan can
+      // still sleep the machine during a long silent stretch (MC talk, set change)
+      // on the very desktop that is running the show. Web builds have no bridge
+      // and simply skip this.
+      window.cueiqNative?.setShowRunning(false).catch(() => {});
       return;
     }
     navigator.wakeLock
@@ -906,9 +974,11 @@ export function LiveMode({
         wakeLockRef.current = wl;
       })
       .catch(() => {});
+    window.cueiqNative?.setShowRunning(true).catch(() => {});
     return () => {
       wakeLockRef.current?.release().catch(() => {});
       wakeLockRef.current = null;
+      window.cueiqNative?.setShowRunning(false).catch(() => {});
     };
   }, [state.begun, showEnded]);
 
@@ -1139,6 +1209,18 @@ export function LiveMode({
           setSoundOutput(false);
         }
       }
+      // Picking up a show that was already running, with no claim of our own, makes
+      // this device a VIEWER — even when the state came from another viewer's
+      // sync-reply, which is the one path into here that never runs the arbitration
+      // above. Without this a device that merely opened the page adopted `begun` and
+      // kept its default isController=true, becoming a second controller nobody
+      // elected; from there its own auto-advance ticks go out over the PA's track.
+      const adoptingRunningShow =
+        !stateRef.current.begun && (payload.begun ?? payload.startedAt != null);
+      if (adoptingRunningShow && controllerSinceRef.current === null) {
+        isControllerRef.current = false;
+        setIsController(false);
+      }
       setState({
         running: payload.running,
         begun: payload.begun ?? payload.startedAt != null,
@@ -1225,6 +1307,16 @@ export function LiveMode({
           event: "sync-request",
           payload: { sender: meId.current },
         });
+        // ...and re-read the SETLIST, which the sync-request does not carry. A
+        // broadcast reaches only whoever is joined at that instant, so every
+        // 'setlist-changed' sent during a blip is gone for good — and the device
+        // that stays VISIBLE through a blip is precisely the PA desktop at the
+        // venue, whose visibilitychange refetch therefore never fires. It then
+        // runs the rest of the show on a stale order while looking perfectly
+        // healthy. refetch defers against in-flight writes and the download effect
+        // locks the on-air track, so this is safe mid-show — the same reasoning
+        // the visibilitychange refetch already relies on.
+        refetchRef.current();
         // no reply within the window → no show running elsewhere → START allowed
         if (settleTimer) clearTimeout(settleTimer);
         settleTimer = setTimeout(() => setSyncSettled(true), 2000);
@@ -1284,11 +1376,18 @@ export function LiveMode({
     const onWake = () => {
       if (document.visibilityState === "visible") ask();
     };
+    // Reconnecting asks for the show state AND re-reads the setlist, for the same
+    // reason as the SUBSCRIBED handler: a device that never went hidden has no
+    // other trigger to heal the broadcasts it missed while the network was down.
+    const onOnline = () => {
+      ask();
+      refetchRef.current();
+    };
     document.addEventListener("visibilitychange", onWake);
-    window.addEventListener("online", ask);
+    window.addEventListener("online", onOnline);
     return () => {
       document.removeEventListener("visibilitychange", onWake);
-      window.removeEventListener("online", ask);
+      window.removeEventListener("online", onOnline);
     };
   }, []);
 
@@ -1399,6 +1498,10 @@ export function LiveMode({
   const writesInFlightRef = useRef(0);
   const missedRefetchRef = useRef(false);
   const writeEpochRef = useRef(0); // bumped by each local reorder (moveItem / reorderTo)
+  // itemId → sort_order for a reorder made with NO network, i.e. an order that
+  // exists only here. Server rows are older than it until the replay below lands,
+  // so every refetch lays it back on top; cleared the moment a reorder is acked.
+  const pendingOrderRef = useRef<Record<string, number> | null>(null);
   // `depth` only bounds the self-replay below; every other caller omits it.
   async function refetchItems(depth = 0): Promise<void> {
     if (writesInFlightRef.current > 0) {
@@ -1469,9 +1572,18 @@ export function LiveMode({
       }
       songAudioRef.current = map;
     }
-    const newItems = (itemsRes.data as SetlistItem[]).map((it) =>
+    let newItems = (itemsRes.data as SetlistItem[]).map((it) =>
       resolveItemAudio(it, songAudioRef.current)
     );
+    // A reorder this device made offline has not reached the server, so these rows
+    // carry the order it replaced. Re-apply it rather than reverting the running
+    // show to an order the operator already moved away from.
+    const pend = pendingOrderRef.current;
+    if (pend) {
+      newItems = newItems
+        .map((it) => (pend[it.id] != null ? { ...it, sort_order: pend[it.id] } : it))
+        .sort((a, b) => a.sort_order - b.sort_order);
+    }
     const s = stateRef.current;
     const curId = itemsRef.current[s.currentIndex]?.id;
     setItems(newItems);
@@ -1502,6 +1614,27 @@ export function LiveMode({
     document.addEventListener("visibilitychange", onVis);
     return () => document.removeEventListener("visibilitychange", onVis);
   }, []);
+
+  // Send an offline reorder once the network is back — the toast told the operator
+  // the other devices would catch up "จนกว่าเน็ตจะกลับ", and nothing used to make
+  // that true: the failed writes were never retried, so the venue ran the rest of
+  // the show with this device on one order and everyone else on another.
+  // ⚠️ THERE IS DELIBERATELY NO BACKGROUND REPLAY OF AN OFFLINE REORDER.
+  //
+  // One was written and taken back out. Retrying those sort_order writes on the
+  // 'online' event lands them in the one minute supabase-js sends the anon key,
+  // so they came back 0-row-no-error and the order parked forever with nothing
+  // left to re-fire it; adding a timer to fix that put an UNBOUNDED write on a
+  // repeating schedule, and at a venue "associated to the AP with no route out"
+  // that write never settles — pinning writesInFlight and killing every setlist
+  // refetch for the rest of the show. A mid-show reorder is rare; a Live Mode
+  // that stops seeing the setlist is not survivable.
+  //
+  // What IS kept is the part that matters: pendingOrderRef holds the order this
+  // device is running on so no refetch can revert it mid-show, and the next
+  // reorder made WITH a network writes the whole order out (see moveItem /
+  // reorderTo) and clears it. The toast says exactly that, so nothing is
+  // promised that this code does not do.
 
   // Claim control of the show on this device. Broadcasting our current state tells
   // the previous controller to step down (it'll see our message and become a viewer).
@@ -1541,6 +1674,9 @@ export function LiveMode({
       payload: { sender: meId.current },
     });
   }
+  // The offline-reorder replay is registered once, so it reaches this through a ref.
+  const bcastSetlistChangedRef = useRef(bcastSetlistChanged);
+  bcastSetlistChangedRef.current = bcastSetlistChanged;
 
   // Toggle "loop the BGM" for an item (Manual only — must be set before Auto runs).
   // The audio loops to fill the item's time and Live Mode fades it out to end on
@@ -1609,22 +1745,31 @@ export function LiveMode({
       }
     }
     const supabase = createClient();
-    const res = await Promise.all([
-      supabase
-        .from("setlist_items")
-        .update({ sort_order: b.sort_order })
-        .eq("id", a.id)
-        .select("id"),
-      supabase
-        .from("setlist_items")
-        .update({ sort_order: a.sort_order })
-        .eq("id", b.id)
-        .select("id"),
-    ]).finally(() => {
+    // Normally a swap writes only its two rows. But while an offline order is
+    // still held, those two rows are the only ones the server would learn about
+    // and the rest of that order would stay invisible forever — so once there is
+    // a network again, the first reorder writes the WHOLE order out and hands the
+    // venue a single consistent list.
+    const covering = !!pendingOrderRef.current;
+    const res = await (covering
+      ? writeFullOrder(supabase, reordered)
+      : Promise.all([
+          supabase
+            .from("setlist_items")
+            .update({ sort_order: b.sort_order })
+            .eq("id", a.id)
+            .select("id"),
+          supabase
+            .from("setlist_items")
+            .update({ sort_order: a.sort_order })
+            .eq("id", b.id)
+            .select("id"),
+        ])
+    ).finally(() => {
       // clear the gate even if the round-trip threw, or refetches stay deferred
       writesInFlightRef.current--;
     });
-    if (!reorderLanded(res)) return;
+    if (!reorderLanded(res, reordered, covering)) return;
     bcastSetlistChanged();
     // a refetch landed while we were writing — pull it now that we're settled
     if (missedRefetchRef.current) refetchRef.current();
@@ -1647,14 +1792,39 @@ export function LiveMode({
    * can't even reach.
    */
   function reorderLanded(
-    results: { error: { message: string } | null; data: unknown[] | null }[]
+    results: { error: { message: string } | null; data: unknown[] | null }[],
+    ordered?: SetlistItem[],
+    // True when this write was writeFullOrder, i.e. it sent EVERY current row.
+    // Passed explicitly rather than inferred from the ids, because a held order
+    // can name a song that has since been removed from the setlist — that id can
+    // never appear in a later write, so an id-membership test would be
+    // permanently unsatisfiable and the stale order would be stamped back over
+    // every refetch for the rest of the show.
+    covering = false
   ): boolean {
     const err = results.find((r) => r.error)?.error;
     const missed = results.some((r) => !r.error && (r.data?.length ?? 0) === 0);
-    if (!err && !missed) return true;
+    if (!err && !missed) {
+      // A plain ▲/▼ writes only its two rows, so it must NOT clear a held offline
+      // order — the rest of that order is still unknown to the server, and the
+      // next refetch would put the old one back mid-show. Only a covering write
+      // (or having nothing held) settles it.
+      if (covering || !pendingOrderRef.current) pendingOrderRef.current = null;
+      return true;
+    }
     if (err && isOffline()) {
+      // Hold the order this device is running on, so the next refetch cannot
+      // quietly put the old one back mid-show — a reconnect used to do exactly
+      // that, and in Auto the show then advanced to a different song than the one
+      // on screen.
+      if (ordered) {
+        pendingOrderRef.current = Object.fromEntries(
+          ordered.map((it) => [it.id, it.sort_order])
+        );
+      }
       toast.warning("ออฟไลน์ — สลับลำดับแล้วเฉพาะเครื่องนี้", {
-        description: "โชว์เดินตามลำดับใหม่ที่นี่ แต่เครื่องอื่นยังเห็นลำดับเดิมจนกว่าเน็ตจะกลับ",
+        description:
+          "โชว์เดินตามลำดับใหม่ที่นี่ เครื่องอื่นยังเห็นลำดับเดิม — สลับอีกครั้งตอนเน็ตกลับมาเพื่อส่งลำดับนี้ให้ทุกเครื่อง",
         id: "reorder-offline",
       });
       return false; // nothing to broadcast, nothing to re-pull
@@ -1671,6 +1841,23 @@ export function LiveMode({
   /** navigator says there's no network — a normal state for this screen, not an error. */
   function isOffline(): boolean {
     return typeof navigator !== "undefined" && navigator.onLine === false;
+  }
+
+  /** Write every row's sort_order — used when an offline order is still held, so
+   *  one covering write replaces it everywhere instead of leaking two rows of it. */
+  function writeFullOrder(
+    supabase: ReturnType<typeof createClient>,
+    ordered: SetlistItem[]
+  ) {
+    return Promise.all(
+      ordered.map((it) =>
+        supabase
+          .from("setlist_items")
+          .update({ sort_order: it.sort_order })
+          .eq("id", it.id)
+          .select("id")
+      )
+    );
   }
 
   // "จบโชว์" — freeze the accumulated clock + SAVE it as the last-show record (kept
@@ -1754,21 +1941,29 @@ export function LiveMode({
       }
     }
     const supabase = createClient();
-    const res = await Promise.all(
-      renumbered
-        .filter((it) => orig.find((o) => o.id === it.id)?.sort_order !== it.sort_order)
-        .map((it) =>
-          supabase
-            .from("setlist_items")
-            .update({ sort_order: it.sort_order })
-            .eq("id", it.id)
-            .select("id")
+    // The delta filter compares against the LOCAL list, which while an offline
+    // order is held is not what the server has — so the rows it skips are exactly
+    // the ones the server still needs. Write the whole order in that case (see
+    // writeFullOrder).
+    const covering = !!pendingOrderRef.current;
+    const res = await (covering
+      ? writeFullOrder(supabase, renumbered)
+      : Promise.all(
+          renumbered
+            .filter((it) => orig.find((o) => o.id === it.id)?.sort_order !== it.sort_order)
+            .map((it) =>
+              supabase
+                .from("setlist_items")
+                .update({ sort_order: it.sort_order })
+                .eq("id", it.id)
+                .select("id")
+            )
         )
     ).finally(() => {
       // clear the gate even if the round-trip threw, or refetches stay deferred
       writesInFlightRef.current--;
     });
-    if (!reorderLanded(res)) return;
+    if (!reorderLanded(res, renumbered, covering)) return;
     bcastSetlistChanged();
     // a refetch landed while we were writing — pull it now that we're settled
     if (missedRefetchRef.current) refetchRef.current();
@@ -1830,10 +2025,19 @@ export function LiveMode({
       const songId = (song as { id: string }).id;
       const path = buildSongAudioPath(item.tenant_id, groupId, songId, file.name);
       await uploadEventAudio(path, file, file.type);
-      await supabase
+      // This is the one write in the function whose result was never looked at —
+      // not even for an error. The bytes are already on R2 by now and a long WAV
+      // upload is exactly how a token expires mid-flight, so a 0-row anon write
+      // here leaves the library song with audio_path NULL while THIS device plays
+      // happily from its own object URL: the PA on another machine finds no audio
+      // and the row is silent at showtime.
+      const { data: pathRows, error: pathErr } = await supabase
         .from("songs")
         .update({ audio_path: path, audio_name: file.name })
-        .eq("id", songId);
+        .eq("id", songId)
+        .select("id");
+      if (pathErr) throw pathErr;
+      if (wroteNothing(pathRows)) throw new Error(await noRowsMessage());
       const { error: linkErr } = await supabase
         .from("setlist_items")
         .update({ song_id: songId })
@@ -2075,13 +2279,17 @@ export function LiveMode({
 
   // Play an item's audio if a file is loaded; otherwise stop current playback.
   function playItemAudio(itemId: string) {
-    const url = audioUrls[itemId];
+    // Through the refs, not the render closure: START now awaits the authority
+    // probe before it plays, so a download that finished during that wait would
+    // otherwise be invisible here and the show would open on "no audio" for a
+    // file that is sitting on disk.
+    const url = audioUrlsRef.current[itemId];
     const audio = audioRef.current;
     if (!audio) return;
     if (url) {
       endedItemRef.current = null;
       // already playing this exact item (e.g. started early via negative buffer) — don't restart
-      if (playingId === itemId && !audio.paused) {
+      if (playingIdRef.current === itemId && !audio.paused) {
         setAudioPlaying(true);
         return;
       }
@@ -2135,23 +2343,34 @@ export function LiveMode({
   const SILENT_WAV =
     "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAgD4AAAB9AAACABAAZGF0YQAAAAA=";
   const secondaryPrimedRef = useRef(false);
-  function primeSecondaryAudio() {
-    const b = audioRef2.current;
-    if (!b || secondaryPrimedRef.current || b.src) return;
-    secondaryPrimedRef.current = true;
+  const primedRefs = useRef(new WeakSet<HTMLAudioElement>());
+  function primeElement(el: HTMLAudioElement | null) {
+    if (!el || primedRefs.current.has(el) || el.src) return;
+    primedRefs.current.add(el);
     try {
-      b.src = SILENT_WAV;
-      b.play()
+      el.src = SILENT_WAV;
+      el.play()
         .then(() => {
-          b.pause();
-          if (b.src === SILENT_WAV) b.removeAttribute("src");
+          el.pause();
+          if (el.src === SILENT_WAV) el.removeAttribute("src");
         })
         .catch(() => {
-          if (b.src === SILENT_WAV) b.removeAttribute("src");
+          if (el.src === SILENT_WAV) el.removeAttribute("src");
         });
     } catch {
       /* nothing here may ever affect the show */
     }
+  }
+  function primeSecondaryAudio() {
+    if (secondaryPrimedRef.current) return;
+    secondaryPrimedRef.current = true;
+    primeElement(audioRef2.current);
+    // The PRIMARY element used to be unlocked for free, because START played the
+    // first track on it inside the operator's own tap. START now waits on the
+    // authority probe first, so by the time the track plays the gesture is over
+    // and WebKit — which grants permission per ELEMENT — refuses it: an iPad
+    // driving the show would go silent on song one. Prime both, in the tap.
+    primeElement(audioRef.current);
   }
 
   // Crossfade path (OPT-IN via the toggle; default = playItemAudio's hard cut):
@@ -2212,27 +2431,99 @@ export function LiveMode({
   }
 
   // show-level controls
-  function start() {
+  /**
+   * Is another device holding SHOW-MAIN right now?
+   *
+   * syncSettled only proves that nobody ANSWERED within a couple of seconds, and a
+   * controller phone in a pocket with a suspended socket cannot answer. That
+   * silence used to read as "no show is running": START lit up, and pressing it
+   * stamped a newer claim that the real controller then yielded to — adopting item
+   * 0 and a fresh clock, and going silent. show_authority is the persisted mirror
+   * of exactly that fact, and a suspended device's row is still fresh (the ghost
+   * threshold is 90s), so ask it before overwriting someone's running show.
+   *
+   * Best-effort like every other authority call: offline resolves to [] and the
+   * show starts as it always has.
+   */
+  async function otherDeviceHoldsShow(): Promise<string | null> {
+    // BOUNDED. The venue failure this app is built for is not "offline" — it is
+    // "associated to the AP with no route out", where navigator.onLine is still
+    // true and a fetch simply never settles (supabase's client sets no timeout).
+    // An unbounded await here would make START do nothing at all, with no spinner
+    // and no error, at the top of the show. Not knowing is the same answer as
+    // nobody holding it: best-effort has to mean bounded, not just caught.
+    const rows = await Promise.race([
+      getAuthority(eventId),
+      new Promise<AuthorityRow[]>((r) => setTimeout(() => r([]), 1500)),
+    ]);
+    const main = rows.find(
+      (r) =>
+        r.kind === "show_main" &&
+        r.device_id !== deviceIdRef.current &&
+        !isGhost(r)
+    );
+    return main ? (main.device_label ?? "เครื่องอื่น") : null;
+  }
+
+  // START is now asynchronous (the authority probe above), and `begun` is set at
+  // the END of it — so for the whole round trip the button stays enabled and the
+  // Space handler still sees begun=false. A double-tap, or Space auto-repeat on a
+  // held key, would run start() twice: the second one stamps a fresh startedAt and
+  // replays item 0, audibly restarting the show seconds after it began.
+  const startingRef = useRef(false);
+  const [starting, setStarting] = useState(false);
+
+  async function start() {
     // First sync still pending — we don't yet know whether a show is already
     // running elsewhere, and starting now would hijack/reset it to item 0.
     // (Guards the Space shortcut; the START button is also disabled until then.)
-    if (!syncSettled) return;
+    if (!syncSettled || startingRef.current || stateRef.current.begun) return;
+    startingRef.current = true;
+    setStarting(true);
+    try {
+      primeSecondaryAudio(); // must happen inside this tap, before any await — see the helper
+      const holder = await otherDeviceHoldsShow();
+      if (
+        holder &&
+        !window.confirm(
+          `ดูเหมือนโชว์กำลังรันอยู่บนเครื่อง “${holder}” — เริ่มใหม่ที่นี่จะรีเซ็ตโชว์นั้นกลับไปเพลงแรกและปิดเสียงเครื่องนั้น ยืนยันจะเริ่มไหม?`
+        )
+      ) {
+        return;
+      }
+      // Re-read after the await: a controller elsewhere may have started the show
+      // while this probe was in flight, and adopting it is not the same as
+      // starting one.
+      if (stateRef.current.begun) return;
+      startShow();
+    } finally {
+      startingRef.current = false;
+      setStarting(false);
+    }
+  }
+
+  function startShow() {
     markShowEnded(false);
-    primeSecondaryAudio(); // must happen inside this tap — see the helper
     const ts = Date.now();
     controllerSinceRef.current = ts; // this device began the show → it is the controller as of now
-    if (state.mode === "auto") {
-      // Auto: begin running + play first track immediately (run clock starts now)
-      apply({ running: true, begun: true, startedAt: ts, itemStartedAt: ts, itemElapsedAtPause: null, currentIndex: 0, mode: "auto" });
-      const first = items[0];
-      if (first) playItemAudio(first.id);
-    } else {
-      // Manual: the FIRST song plays + its countdown runs right away (a natural
-      // "go"). Accumulated starts now. Subsequent items are manual (cue + play).
-      apply({ running: true, begun: true, startedAt: ts, itemStartedAt: ts, itemElapsedAtPause: null, currentIndex: 0, mode: "manual" });
-      const first = items[0];
-      if (first) playItemAudio(first.id);
-    }
+    // Read through the refs, not the render closure: start() now awaits the
+    // authority probe first, so a mode change or a setlist refetch can have landed
+    // in between.
+    const mode = stateRef.current.mode;
+    const first = itemsRef.current[0];
+    apply({
+      running: true,
+      begun: true,
+      startedAt: ts,
+      itemStartedAt: ts,
+      itemElapsedAtPause: null,
+      currentIndex: 0,
+      // Auto begins running the script immediately; Manual still plays the FIRST
+      // song and runs its countdown right away (a natural "go"), then waits for
+      // the operator on every item after it.
+      mode,
+    });
+    if (first) playItemAudio(first.id);
   }
   function setMode(mode: ShowMode) {
     // Switching to Auto resumes the script: run the countdown and (re)play the
@@ -2506,7 +2797,7 @@ export function LiveMode({
     const n = itemsRef.current.length;
     if (e.code === "Space") {
       e.preventDefault();
-      if (!s.begun) start();
+      if (!s.begun) void start();
       else toggleShowRun();
     } else if (e.key === "ArrowRight" || e.key === "n" || e.key === "N") {
       if (s.begun && s.mode === "manual" && s.currentIndex < n - 1) {
@@ -3325,10 +3616,16 @@ export function LiveMode({
             size="xl"
             className="w-full"
             onClick={start}
-            disabled={!isController || !syncSettled}
+            disabled={!isController || !syncSettled || starting}
             title={!syncSettled ? "กำลังซิงค์สถานะโชว์กับเครื่องอื่น…" : undefined}
           >
-            {syncSettled ? (
+            {starting ? (
+              // The authority probe is in flight (bounded to 1.5s). Saying so beats
+              // a button that looks alive and does nothing on a half-dead link.
+              <>
+                <Loader2 className="h-5 w-5 animate-spin" /> กำลังเริ่ม…
+              </>
+            ) : syncSettled ? (
               <>
                 <Play className="h-5 w-5" /> START SHOW
               </>

@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { Trash2, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { createClient } from "@/lib/supabase/client";
+import { wroteNothing, noRowsMessage } from "@/lib/write-guard";
 import { Button } from "@/components/ui/button";
 import { useConfirm } from "@/components/ui/confirm-dialog";
 
@@ -38,8 +39,20 @@ export function DeletePracticeRoomButton({
     if (!ok) return;
     setBusy(true);
     try {
-      const { error } = await createClient().from("events").delete().eq("id", roomId);
+      const { data, error } = await createClient()
+        .from("events")
+        .delete()
+        .eq("id", roomId)
+        .select("id");
       if (error) throw error;
+      // 0 rows = the delete reached the server and removed nothing — RLS mismatch
+      // or an anon-key fallback after a stale session, not a room that's actually
+      // gone. This wipes a band's whole training history; it must not say so
+      // unless a row really left the table. See lib/write-guard.ts.
+      if (wroteNothing(data)) {
+        toast.error("ลบห้องซ้อมไม่สำเร็จ", { description: await noRowsMessage() });
+        return;
+      }
       toast.success("ลบห้องซ้อมแล้ว");
       router.refresh();
     } catch (err) {

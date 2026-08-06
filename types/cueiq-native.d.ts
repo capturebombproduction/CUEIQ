@@ -10,6 +10,7 @@ interface CueiqNative {
   fetchAudio: (url: string) => Promise<ArrayBuffer>;
   putAudio: (url: string, bytes: Uint8Array, contentType?: string) => Promise<void>;
   pickAudioFile: () => Promise<{ name: string; bytes: Uint8Array } | null>;
+  setShowRunning: (running: boolean) => Promise<void>;
 }
 
 interface Window {

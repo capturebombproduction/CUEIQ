@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { createClient } from "@/lib/supabase/client";
+import { wroteNothing, noRowsMessage } from "@/lib/write-guard";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import type { Song } from "@/lib/types";
@@ -596,9 +597,20 @@ export function Metronome({
   async function saveBpm() {
     if (!song || !canManage) return;
     const supabase = createClient();
-    const { error } = await supabase.from("songs").update({ bpm }).eq("id", song.id);
+    const { data, error } = await supabase
+      .from("songs")
+      .update({ bpm })
+      .eq("id", song.id)
+      .select("id");
     if (error) {
       toast.error("บันทึก BPM ไม่สำเร็จ", { description: error.message });
+      return;
+    }
+    // 0 rows = the update reached the server and changed nothing (anon-key
+    // fallback after a stale session, or the song is gone) — don't tell the Ar
+    // the library now has this BPM when it doesn't. See lib/write-guard.ts.
+    if (wroteNothing(data)) {
+      toast.error("บันทึก BPM ไม่สำเร็จ", { description: await noRowsMessage() });
       return;
     }
     onBpmSaved?.(song.id, bpm);

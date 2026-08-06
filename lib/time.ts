@@ -136,6 +136,7 @@ export interface SetlistTiming {
   rows: RowTiming[];
   totalSeconds: number; // sum of all block lengths
   endSec: number; // clock-of-day at end of show
+  hardOutSec: number | null; // folded past midnight when it's before showStartSec; null if unset
   overBy: number; // seconds past hard-out (0 if within)
   isOver: boolean;
 }
@@ -149,6 +150,13 @@ export function computeSetlistTimes(
   showStartSec = 0,
   hardOutSec: number | null = null
 ): SetlistTiming {
+  // A hard-out earlier in the clock than the show start (23:00 show, 00:30 hard
+  // out) is past midnight, not already blown — fold it forward a day, same idiom
+  // as event-live-caller's drift math. Without this every row compares against
+  // a hardOutSec that's smaller than the show's own start, so overHardOut is true
+  // from the first row and the whole table renders as already over.
+  const foldedHardOutSec =
+    hardOutSec != null && hardOutSec < showStartSec ? hardOutSec + 86400 : hardOutSec;
   let cursor = showStartSec;
   let prevStartSec = showStartSec;
   const rows: RowTiming[] = items.map((it, i) => {
@@ -177,7 +185,7 @@ export function computeSetlistTimes(
       slotEndSec,
       blockSeconds: bb + dur + ba,
       accumulatedSec: cursor - showStartSec,
-      overHardOut: hardOutSec != null ? slotEndSec > hardOutSec : false,
+      overHardOut: foldedHardOutSec != null ? slotEndSec > foldedHardOutSec : false,
     };
   });
 
@@ -186,7 +194,21 @@ export function computeSetlistTimes(
     rows,
     totalSeconds,
     endSec: cursor,
-    overBy: hardOutSec != null ? Math.max(0, cursor - hardOutSec) : 0,
-    isOver: hardOutSec != null && cursor > hardOutSec,
+    hardOutSec: foldedHardOutSec,
+    overBy: foldedHardOutSec != null ? Math.max(0, cursor - foldedHardOutSec) : 0,
+    isOver: foldedHardOutSec != null && cursor > foldedHardOutSec,
   };
+}
+
+/**
+ * Today's date as "YYYY-MM-DD" pinned to Asia/Bangkok. CueIQ is a
+ * Thailand-only label; using the runtime's local date breaks on Vercel
+ * (UTC) between 00:00-06:59 Bangkok time — "today" would still read as
+ * yesterday there, showing yesterday's show as upcoming / stamping
+ * exports with the wrong date.
+ */
+export function bkkTodayKey(date = new Date()): string {
+  return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Bangkok" }).format(
+    date
+  );
 }

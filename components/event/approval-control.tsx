@@ -6,6 +6,7 @@ import { Send, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { createClient } from "@/lib/supabase/client";
 import { notify } from "@/lib/notify-client";
+import { wroteNothing, noRowsMessage } from "@/lib/write-guard";
 import { Button } from "@/components/ui/button";
 import type { GroupStatus } from "@/lib/types";
 
@@ -32,13 +33,19 @@ export function ApprovalControl({
 
   async function setStatus(next: GroupStatus, msg: string) {
     setBusy(true);
-    const { error } = await createClient()
+    const { data, error } = await createClient()
       .from("events")
       .update({ status: next })
-      .eq("id", eventId);
+      .eq("id", eventId)
+      .select("id");
     setBusy(false);
     if (error) {
       toast.error("เปลี่ยนสถานะไม่สำเร็จ", { description: error.message });
+      return;
+    }
+    if (wroteNothing(data)) {
+      // 0 rows with no error = never resubmitted — don't page the approvers over it.
+      toast.error(await noRowsMessage());
       return;
     }
     toast.success(msg);

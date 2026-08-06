@@ -35,6 +35,7 @@ import {
   type AudioUploadOp,
 } from "@/lib/audio-upload-queue";
 import { removeEventAudio, uploadEventAudio } from "@/lib/audio-remote";
+import { privateChannel, songsTopic } from "@/lib/realtime";
 import { clearLocalSource, getLocalSource } from "@/lib/local-source";
 import { cacheSongBlob } from "@/lib/song-cache";
 import { hasLiveSession } from "@/lib/auth-session";
@@ -477,6 +478,58 @@ async function applyChildListOp(
 const AUDIO_UPLOAD_TIMEOUT_MS = 10 * 60_000;
 
 /**
+ * Tell any open Live Mode (same band) that a song's audio changed, so it
+ * re-resolves in real time — the same broadcast the ONLINE library replace does
+ * (components/song/song-library.tsx's broadcastSongsChanged). The flush and
+ * force-replay paths below land the identical replace+delete but, unlike the
+ * online path, had no channel to broadcast on: a device with Live Mode open kept
+ * the stale audio_path whose object removeEventAudio(op.basePath) had just
+ * deleted, and the presign 404s the next time that song is cued.
+ *
+ * createClient() is a module-level SINGLETON (that's the point of the desktop
+ * localStorage-backed client), and RealtimeClient.channel(topic) hands back an
+ * EXISTING channel for that topic instead of opening a second one. Live Mode
+ * holds exactly this topic for as long as it's mounted, so naively calling
+ * subscribe() here would join a channel that's ALREADY SUBSCRIBED — and
+ * RealtimeChannel.subscribe() only runs its join callback (where the send()
+ * below lives) when the channel is CLOSED. On an open channel it is a same-tick
+ * no-op: the "SUBSCRIBED" branch never fires and the broadcast silently vanishes
+ * with no error anywhere. So: reuse an already-open channel directly, and only
+ * create+subscribe+tear down a channel of our own when none exists yet. A
+ * channel we created is removed on every terminal status, not just SUBSCRIBED —
+ * an errored/timed-out join still holds the topic and must not leak it for the
+ * rest of the session.
+ */
+function broadcastAudioChanged(groupId: string): void {
+  const supabase = createClient();
+  const topic = songsTopic(groupId);
+  // RealtimeClient stores channels under a "realtime:" prefixed topic — see
+  // RealtimeClient.channel() in @supabase/realtime-js.
+  const existing = supabase.getChannels().find((c) => c.topic === `realtime:${topic}`);
+  if (existing) {
+    // Someone else (Live Mode) owns this channel's lifecycle — send on it as-is
+    // and never remove a channel we didn't create.
+    existing.send({ type: "broadcast", event: "changed", payload: {} });
+    return;
+  }
+  const ch = privateChannel(supabase, topic);
+  ch.subscribe((status) => {
+    if (status === "SUBSCRIBED") {
+      ch.send({ type: "broadcast", event: "changed", payload: {} });
+      setTimeout(() => supabase.removeChannel(ch), 600);
+    } else if (
+      status === "CHANNEL_ERROR" ||
+      status === "TIMED_OUT" ||
+      status === "CLOSED"
+    ) {
+      // Never reached SUBSCRIBED (or the socket dropped it) — remove it here or
+      // this channel, and the topic it holds, leaks for the rest of the session.
+      supabase.removeChannel(ch);
+    }
+  });
+}
+
+/**
  * ⭐#1 step 6 — push an audio file that was picked while this device was offline.
  *
  * The bytes are the song's LOCAL SOURCE (lib/local-source.ts): the same blob this
@@ -578,6 +631,9 @@ async function applyAudioUploadOp(
       await requireLiveSession();
       return { conflict: "เพลงนี้ถูกลบไปแล้วบนออนไลน์ — อัปไฟล์ขึ้นไม่ได้" };
     }
+    // Real replace just landed (not the "applied" pass-through below, which means
+    // a previous flush already did this) — same trigger the online path fires on.
+    broadcastAudioChanged(op.groupId);
   }
   // Landed (or was already landed by a half-finished flush). Best-effort tail —
   // none of it may fail the op, which the server has now accepted.

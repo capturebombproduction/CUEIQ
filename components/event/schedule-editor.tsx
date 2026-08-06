@@ -6,6 +6,7 @@ import { GripVertical, Trash2, Plus, Clock, ChevronUp, ChevronDown } from "lucid
 import { createClient } from "@/lib/supabase/client";
 import { newLocalRowId } from "@/lib/mgmt-outbox";
 import { OFFLINE_QUEUED_MESSAGE, tryQueueChildList } from "@/lib/mgmt-write";
+import { noRowsMessage, wroteNothing } from "@/lib/write-guard";
 import { shortClock } from "@/lib/time";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -95,16 +96,25 @@ export function ScheduleEditor({
   };
 
   async function persist(id: string, partial: Partial<ScheduleItem>) {
-    const { error } = await supabase
+    const { data, error } = await supabase
       .from("schedule_items")
       .update(partial)
-      .eq("id", id);
+      .eq("id", id)
+      .select("id");
     if (error) {
       const next = items.map((it) => (it.id === id ? { ...it, ...partial } : it));
       if (await queueOffline(next, error.message)) return;
       if (error.code === "23505")
         toast.error(DUP_PHOTO.title, { description: DUP_PHOTO.description });
       else toast.error("Save failed", { description: error.message });
+      return;
+    }
+    // No error and no row = the write reached the server and changed nothing (sent
+    // anon after a failed token refresh, or the row is gone). Every field here
+    // autosaves on blur, so staying silent means the call sheet sits on screen
+    // looking saved and is simply not there. See lib/write-guard.ts.
+    if (wroteNothing(data)) {
+      toast.error("ยังไม่ได้บันทึก", { description: await noRowsMessage() });
     }
   }
 
@@ -166,13 +176,21 @@ export function ScheduleEditor({
     if (!ok) return;
     const snapshot = items;
     setItems((prev) => prev.filter((it) => it.id !== id));
-    const { error } = await supabase
+    const { data, error } = await supabase
       .from("schedule_items")
       .delete()
-      .eq("id", id);
+      .eq("id", id)
+      .select("id");
     if (error) {
       if (await queueOffline(snapshot.filter((it) => it.id !== id), error.message)) return;
       toast.error("Delete failed", { description: error.message });
+      setItems(snapshot);
+      return;
+    }
+    // No error and no row = nothing was actually deleted (anon write) — the row
+    // still exists server-side even though it just vanished from this screen.
+    if (wroteNothing(data)) {
+      toast.error("ยังไม่ได้บันทึก", { description: await noRowsMessage() });
       setItems(snapshot);
     }
   }
@@ -195,17 +213,26 @@ export function ScheduleEditor({
     // the next ▲ a no-op forever. One at a time; the buttons gate on this.
     setBusy(true);
     try {
-      const { error } = await Promise.all(
+      const results = await Promise.all(
         changed.map((it) =>
           supabase
             .from("schedule_items")
             .update({ sort_order: it.sort_order })
             .eq("id", it.id)
+            .select("id")
         )
-      ).then((results) => results.find((r) => r.error) ?? { error: null });
-      if (error) {
-        if (await queueOffline(renumbered, error.message)) return;
-        toast.error("Reorder failed", { description: error.message });
+      );
+      const failed = results.find((r) => r.error);
+      if (failed?.error) {
+        if (await queueOffline(renumbered, failed.error.message)) return;
+        toast.error("Reorder failed", { description: failed.error.message });
+        setItems(before);
+        return;
+      }
+      // No error but zero rows on any of these writes = the batch was sent anon
+      // after a failed token refresh — the new order never reached the DB.
+      if (results.some((r) => wroteNothing(r.data))) {
+        toast.error("ยังไม่ได้บันทึก", { description: await noRowsMessage() });
         setItems(before);
       }
     } finally {
