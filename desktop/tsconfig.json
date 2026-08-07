@@ -16,6 +16,21 @@
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true,
     "baseUrl": ".",
+    // include is ["src"], so the shared jsdom setup file (../test/setup/dom.ts, where
+    // `import "@testing-library/jest-dom/vitest"` lives) is outside this program and
+    // its matcher augmentation never loads — every toBeInTheDocument in a desktop
+    // test then fails `tsc --noEmit`, which is a CI job. Naming the types here loads
+    // the augmentation without every future test author having to remember an import.
+    // Listing "types" at all opts OUT of auto-including @types/*, so vite/client
+    // (import.meta.env, ?inline asset imports) and node (the renderer reads
+    // process.env.NEXT_PUBLIC_*, which vite substitutes at build time) have to be
+    // named too — leaving either out turns this fix into eleven new errors.
+    "types": ["vite/client", "node", "@testing-library/jest-dom/vitest"],
+    // The offline smoke's seed generator is a plain .mjs (it runs under bare node in
+    // CI, before anything is built). allowJs lets the test that keeps it agreeing
+    // with stored-session.ts infer its types from the source instead of a
+    // hand-written .d.mts that could drift from it silently.
+    "allowJs": true,
     "paths": {
       "@/lib/supabase/client": ["./src/shims/supabase-client.ts"],
       "@/lib/count-samples": ["./src/shims/count-samples.ts"],

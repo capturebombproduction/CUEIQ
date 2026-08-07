@@ -12,6 +12,17 @@ const path = require("node:path");
 const fs = require("node:fs");
 const { pathToFileURL } = require("node:url");
 
+// ⚠️ ORDERING: this block must stay ABOVE requestSingleInstanceLock and above every
+// `app.whenReady()` path. Chromium reads command-line switches when the network
+// service starts, and the instance lock is a file inside userData — a switch
+// appended later is silently ignored, which is the quiet kind of wrong this whole
+// self-test exists to stop. Killing DNS process-wide is the one layer that reaches
+// the MAIN process's net.fetch as well as the renderer; the per-session layers in
+// cutTheNetworkForSmoke cannot.
+if (process.env.CUEIQ_SMOKE === "1" && process.env.CUEIQ_SMOKE_OFFLINE === "1") {
+  app.commandLine.appendSwitch("host-resolver-rules", "MAP * ~NOTFOUND");
+}
+
 // Single instance ONLY: two instances would share the same userData profile, and
 // Chromium's LevelDB (localStorage session + every offline IndexedDB store — mgmt
 // outbox, song cache, Quick Show) is not safe under concurrent access. A second
@@ -37,6 +48,30 @@ const SMOKE = process.env.CUEIQ_SMOKE === "1"; // headless launch self-test
 // works on all three platforms — and CI asserting on a file it must find is also
 // what turns "the app crashed on boot" into a failed build instead of silence.
 const SMOKE_OUT = process.env.CUEIQ_SMOKE_OUT || "";
+// ── The airplane test, run by a machine ──────────────────────────────────────
+// The original self-test boots with NO ACCOUNT and the NETWORK UP, which is the
+// exact opposite of the only condition that has ever cost us a show: a laptop
+// cold-booting at a venue with no internet, hours after it was last online.
+// (That condition is how the @supabase/ssr cookie bug reached พี่ — every query
+// silently ran as anon under file://, and nothing in CI could have seen it.)
+//
+// Three env vars turn the same self-test into that condition:
+//   CUEIQ_SMOKE_SEED_FILE  a JSON file of localStorage entries, planted BEFORE the
+//                          app's own boot code runs (see plantSmokeSeed).
+//   CUEIQ_SMOKE_OFFLINE=1  cut the network for the renderer AND the main process.
+//   CUEIQ_SMOKE_EXPECT     "signed-in" | "signed-out" — what the boot must reach.
+//                          Empty keeps the old "did anything render" behaviour.
+const SMOKE_SEED_FILE = process.env.CUEIQ_SMOKE_SEED_FILE || "";
+const SMOKE_OFFLINE = process.env.CUEIQ_SMOKE_OFFLINE === "1";
+const SMOKE_EXPECT = process.env.CUEIQ_SMOKE_EXPECT || "";
+// What the seeded cache should surface once it is read back. Kept as env rather
+// than baked in here so main.cjs stays generic and the fixture owns its own values
+// (desktop/scripts/make-smoke-seed.mjs exports both).
+const SMOKE_EXPECT_TENANT = process.env.CUEIQ_SMOKE_EXPECT_TENANT || "";
+const SMOKE_EXPECT_EVENTS = process.env.CUEIQ_SMOKE_EXPECT_EVENTS || "";
+// Route to open on, without a hash (e.g. "/my-show"). The self-test has no input
+// driver, so a scenario about a specific screen has to start there.
+const SMOKE_HASH = process.env.CUEIQ_SMOKE_HASH || "";
 const INDEX_HTML = path.join(__dirname, "..", "dist", "index.html");
 
 // Every R2 S3-compatible endpoint lives under this suffix (lib/r2.ts builds it as
@@ -61,8 +96,17 @@ function assertR2Url(url) {
   }
 }
 
+/** The offline self-test cuts the RENDERER's network through the session (see
+ *  cutTheNetworkForSmoke). This is the other half: the audio proxy runs in the main
+ *  process on Node's net stack, so without this a "no network" boot could still
+ *  reach R2 and the test would be proving the wrong machine's connectivity. */
+function assertNotOfflineSmoke() {
+  if (SMOKE_OFFLINE) throw new Error("offline smoke: the main-process network is cut");
+}
+
 /** GET a presigned R2 URL's bytes in the main process (no CORS). */
 async function fetchAudioBytes(url) {
+  assertNotOfflineSmoke();
   assertR2Url(url);
   // redirect: "error" — net.fetch follows redirects by default, and a redirect
   // is exactly how a pinned host could hand the request off to somewhere else.
@@ -75,6 +119,7 @@ async function fetchAudioBytes(url) {
 
 /** PUT bytes to a presigned R2 URL in the main process (no CORS). */
 async function putAudioBytes(url, bytes, contentType) {
+  assertNotOfflineSmoke();
   assertR2Url(url);
   const res = await net.fetch(url, {
     method: "PUT",
@@ -228,6 +273,257 @@ function initAutoUpdate() {
     .catch((e) => console.log("AUTOUPDATE_CHECK_FAIL " + String(e)));
 }
 
+// ─── self-test helpers (CUEIQ_SMOKE only) ────────────────────────────────────
+
+/** Make "no network" real, and REPORTABLE.
+ *
+ *  Two layers on purpose. webRequest cancellation is the deterministic one — a
+ *  cancelled request fails instantly, where emulated-offline can sit in Chromium's
+ *  retry logic and turn a 20-second test into a 3-minute CI timeout — and it is
+ *  also the only layer that can say WHAT the app tried to reach, which is the
+ *  difference between "it booted" and "it booted without touching the network".
+ *  enableNetworkEmulation backs it up for anything that never reaches webRequest.
+ *  The main process's own net.fetch is cut separately (assertNotOfflineSmoke). */
+function blockNetworkRequestsForSmoke(win, attempted) {
+  const ses = win.webContents.session;
+  // ⚠️ NEVER "<all_urls>" or "*://*/*" here: the app's own document and bundle are
+  // file:// URLs, and cancelling those blanks the window — a test that then reports
+  // "rendered nothing" for a reason that has nothing to do with the app.
+  ses.webRequest.onBeforeRequest(
+    { urls: ["http://*/*", "https://*/*", "ws://*/*", "wss://*/*"] },
+    (details, callback) => {
+      let host;
+      try {
+        host = new URL(details.url).host;
+      } catch {
+        host = String(details.url).slice(0, 80);
+      }
+      // Deduped and capped: supabase-js retries a failing refresh several times,
+      // and an unbounded list would bloat the verdict file with one host repeated.
+      if (host && !attempted.includes(host) && attempted.length < 25) attempted.push(host);
+      callback({ cancel: true });
+    }
+  );
+  ses.enableNetworkEmulation({ offline: true });
+}
+
+/** The layer that actually matters most, and the one the first cut of this missed.
+ *
+ *  NEITHER host-resolver-rules nor the two session-level blocks above flips
+ *  `navigator.onLine` — and navigator.onLine is what the WHOLE APP keys on:
+ *  cache.ts's isOffline() gates the cache-first branch in workspace.ts,
+ *  events-list.ts, event-bundle.ts and run-order.ts, and it drives OfflineBanner.
+ *  Without this an "airplane" smoke silently exercises the BLACK-HOLED-WIFI path
+ *  instead: the app believes it is online, issues every read, and waits. Not
+ *  hypothetical — that is exactly what the first run of this test did, and the hang
+ *  it produced turned out to be a real unbounded await in
+ *  desktop/src/data/workspace.ts. Network.emulateNetworkConditions is what DevTools'
+ *  own Offline switch uses, and it does flip the flag.
+ *
+ *  ⚠️ MUST be called AFTER the first load. The debugger needs a live renderer to
+ *  attach to; called before one exists it does not throw, it simply never answers —
+ *  which showed up as a 90-second watchdog verdict with no cause attached. */
+async function emulateOfflineViaCdp(win) {
+  const dbg = win.webContents.debugger;
+  if (!dbg.isAttached()) dbg.attach("1.3");
+  await dbg.sendCommand("Network.enable");
+  await dbg.sendCommand("Network.emulateNetworkConditions", {
+    offline: true,
+    latency: 0,
+    downloadThroughput: -1,
+    uploadThroughput: -1,
+  });
+
+  // …and the emulation DOES NOT SURVIVE THE RELOAD. Measured, not assumed: right
+  // after the command above navigator.onLine is false, and after the seeding reload
+  // it is true again — so the boot actually under test would run believing it is
+  // online, which is the black-holed-wifi path wearing the airplane test's name.
+  //
+  // Page.addScriptToEvaluateOnNewDocument is the deterministic fix: Chromium runs it
+  // before ANY script in each new document, so the app's very first read already
+  // sees offline. Re-sending emulateNetworkConditions on did-finish-load would be a
+  // race against the app's own boot effect — the 2am-flake shape.
+  //
+  // This patches the browser's SIGNAL, not its behaviour: the bytes are stopped by
+  // host-resolver-rules, the webRequest blocker and the session emulation, and both
+  // self-probes have to reject before the verdict can be ok. A real offline machine
+  // reports exactly this, and cache.ts's isOffline() — which gates the cache-first
+  // branch in workspace.ts, events-list.ts, event-bundle.ts and run-order.ts — is
+  // the thing the whole test exists to exercise.
+  await dbg.sendCommand("Page.enable");
+  await dbg.sendCommand("Page.addScriptToEvaluateOnNewDocument", {
+    source:
+      "Object.defineProperty(navigator, 'onLine', { get: () => false, configurable: true });",
+  });
+}
+
+/** Reload and wait for the new document. Shared by the seeding path (which must
+ *  reload so the app's own boot code sees the planted storage) and by the unseeded
+ *  offline path (which must reload so boot happens with navigator.onLine already
+ *  false). */
+function reloadAndWait(win, whatFor) {
+  return new Promise((resolve, reject) => {
+    const onLoaded = () => {
+      clearTimeout(timer);
+      resolve();
+    };
+    const timer = setTimeout(() => {
+      win.webContents.off("did-finish-load", onLoaded);
+      reject(new Error(`the reload ${whatFor} never finished loading`));
+    }, 20_000);
+    win.webContents.once("did-finish-load", onLoaded);
+    win.webContents.reload();
+  });
+}
+
+/** The claim "the network was cut" has to be PROVEN, not configured — a cut that
+ *  silently stopped working would turn this whole test green forever while proving
+ *  nothing. Probe from both processes: the renderer has the webRequest blocker and
+ *  the CDP emulation, the main process has neither and relies on the session-level
+ *  emulation, so they can fail independently.
+ *
+ *  net.fetch DIRECTLY, not through fetchAudioBytes: that path would be refused by
+ *  assertR2Url's host pin and would therefore "reject" just as convincingly with the
+ *  network fully up. */
+async function proveTheNetworkIsCut(win) {
+  const url = (process.env.NEXT_PUBLIC_SUPABASE_URL || "https://example.invalid") + "/auth/v1/health";
+  const probe = async (run) => {
+    try {
+      await run();
+      return "resolved"; // the cut leaked
+    } catch {
+      return "rejected"; // as intended
+    }
+  };
+  return {
+    main: await probe(() => net.fetch(url, { redirect: "error" })),
+    renderer: await probe(() =>
+      win.webContents.executeJavaScript(
+        `fetch(${JSON.stringify(url)}, { cache: "no-store" }).then(() => "resolved")`
+      )
+    ),
+  };
+}
+
+/** Plant localStorage entries so the app's own boot code reads them.
+ *
+ *  There is no API to write a renderer's localStorage from main, and file:// has
+ *  no same-origin page to borrow — so the sequence is load, write, RELOAD. The
+ *  first load's side effects (a Supabase client, an auth listener) die with the
+ *  document; only the second boot is the one under test. That reload is also what
+ *  makes this a genuine COLD boot against pre-existing storage, which is the state
+ *  a laptop is actually in when it is opened at a venue. */
+async function plantSmokeSeed(win) {
+  const entries = JSON.parse(fs.readFileSync(SMOKE_SEED_FILE, "utf8"));
+  // Handed over as a JSON string that the page parses, rather than inlined as a
+  // JS object literal. Same result, one less way to break: a seed value is
+  // arbitrary text, and inlining it makes the page's parser responsible for it.
+  const payload = JSON.stringify(JSON.stringify(entries));
+  const planted = await win.webContents.executeJavaScript(
+    `(() => { const e = JSON.parse(${payload});
+      for (const k of Object.keys(e)) window.localStorage.setItem(k, e[k]);
+      return Object.keys(e).length; })()`
+  );
+  await reloadAndWait(win, "after seeding");
+  return planted;
+}
+
+/** What the renderer is actually showing. Deliberately structural, not textual:
+ *  the HashRouter's route and the presence of a password field say which screen
+ *  the boot reached without pinning the test to any Thai string. */
+const SMOKE_PROBE = `JSON.stringify({
+  title: document.title,
+  hash: location.hash,
+  len: document.body.innerText.length,
+  hasRoot: !!document.getElementById('root')?.children.length,
+  loginVisible: !!document.querySelector('input[type=password]'),
+  screen: document.querySelector('[data-cueiq-screen]')?.getAttribute('data-cueiq-screen') || null,
+  tenantName: document.querySelector('[data-cueiq-tenant]')?.getAttribute('data-cueiq-tenant') || null,
+  eventRows: Number(document.querySelector('[data-cueiq-events]')?.getAttribute('data-cueiq-events') ?? -1),
+  onLine: navigator.onLine,
+})`;
+
+/** A screen the app has ARRIVED at, as opposed to one it is passing through. Only
+ *  "boot" and "shell-fallback"'s loading half are transient, and polling has to
+ *  keep going through them or the test samples a spinner and calls it an answer. */
+const TERMINAL_SCREENS = ["login", "shell", "quick-show", "app-error"];
+
+/** Did this boot land where it was told to? "" means the old, weaker question:
+ *  did anything render at all. */
+function smokeExpectationMet(p) {
+  if (!p.hasRoot) return false;
+  if (SMOKE_EXPECT === "signed-in") {
+    // Three independent halves, because each alone has a way of being satisfied by
+    // a failure: the router reached the authenticated tree (#/dashboard, not
+    // #/login), the SHELL rendered rather than its fallback (signed in and showing
+    // nothing is not the same as signed in and usable — that difference is one Thai
+    // word on screen and a whole show in practice), and no password field is up.
+    if (!(p.screen === "shell" && p.hash.startsWith("#/dashboard") && !p.loginVisible)) return false;
+    // …and, when a cache was seeded, that the app actually READ it. An exact event
+    // count, never "> 0": the cache key is derived from the account's viewable
+    // groups, so a scope mismatch yields a perfectly healthy screen with no shows
+    // on it, which is the failure a lower bound would wave through.
+    if (SMOKE_EXPECT_TENANT && p.tenantName !== SMOKE_EXPECT_TENANT) return false;
+    if (SMOKE_EXPECT_EVENTS && String(p.eventRows) !== SMOKE_EXPECT_EVENTS) return false;
+    return true;
+  }
+  if (SMOKE_EXPECT === "signed-out") {
+    return p.screen === "login" && p.hash.startsWith("#/login") && p.loginVisible;
+  }
+  if (SMOKE_EXPECT === "quick-show") {
+    return p.screen === "quick-show";
+  }
+  return true;
+}
+
+/** Write the verdict and stop. Idempotent: whichever path gets here first wins, so
+ *  a watchdog cannot overwrite a real answer and a real answer cannot be followed
+ *  by a watchdog's.
+ *
+ *  Every failure mode in this file must funnel through here. "The packaged app
+ *  never reported" is the single worst thing this test can say — it names no cause,
+ *  and it is what a throw anywhere in window setup produced before the whenReady
+ *  catch and the watchdog below existed. */
+let smokeVerdictWritten = false;
+/** How far the self-test got. A watchdog verdict that only says "no verdict" names
+ *  no cause and sends whoever reads it back to bisecting by hand; this makes the
+ *  hang point part of the report. */
+let smokeStage = "init";
+function smokeAt(stage) {
+  smokeStage = stage;
+}
+function writeSmokeVerdict(verdict) {
+  if (smokeVerdictWritten) return;
+  smokeVerdictWritten = true;
+  verdict = { ...verdict, stage: smokeStage };
+  console.log((verdict.ok ? "SMOKE_RESULT " : "SMOKE_ERROR ") + JSON.stringify(verdict));
+  if (SMOKE_OUT) {
+    try {
+      fs.writeFileSync(SMOKE_OUT, JSON.stringify(verdict));
+    } catch {
+      /* the caller's assertion on a missing file is the fallback */
+    }
+  }
+  // app.exit, not app.quit: quit always exits 0, and it would also run the window's
+  // confirm-before-closing handler. The file above is the real verdict either way —
+  // this is belt and braces for a human running it.
+  app.exit(verdict.ok ? 0 : 1);
+}
+
+/** Poll rather than sleep: the answer usually arrives in well under a second, and
+ *  a fixed sleep is either slower than it needs to be or shorter than the slowest
+ *  CI runner — the two ways a smoke test becomes flaky. */
+async function pollUntilSettled(win, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  let last = null;
+  for (;;) {
+    last = JSON.parse(await win.webContents.executeJavaScript(SMOKE_PROBE));
+    if (smokeExpectationMet(last)) return last;
+    if (Date.now() >= deadline) return last;
+    await new Promise((r) => setTimeout(r, 250));
+  }
+}
+
 async function createWindow() {
   let loadError = null; // self-test only — see the SMOKE block at the end
   const win = new BrowserWindow({
@@ -241,8 +537,34 @@ async function createWindow() {
       nodeIntegration: false,
       // We dodge CORS via the main process, NOT by weakening the renderer.
       webSecurity: true,
+      // The self-test's window is never shown (`show: !SMOKE`), and Chromium
+      // throttles timers in hidden renderers — which would stretch the very 5s boot
+      // timeout the offline test is measuring. Left on, this is the check that
+      // passes on a fast afternoon runner and fails on a loaded one at 2am.
+      ...(SMOKE ? { backgroundThrottling: false } : {}),
     },
   });
+
+  // Self-test bookkeeping. Installed BEFORE the first load so nothing that happens
+  // during boot — the very window the test is about — goes unobserved.
+  const smokeAttemptedHosts = [];
+  const smokeConsoleErrors = [];
+  if (SMOKE) {
+    smokeAt("window-created");
+    // Session-level only here; the CDP half waits until a renderer exists (below).
+    if (SMOKE_OFFLINE) blockNetworkRequestsForSmoke(win, smokeAttemptedHosts);
+    win.webContents.on("console-message", (...args) => {
+      // Electron moved this event's signature: it used to be
+      // (event, level:number, message, line, sourceId) and is now (details) with
+      // string levels. Read both rather than pin the test to an Electron version.
+      const details = args[0] || {};
+      const level = typeof args[1] === "undefined" ? details.level : args[1];
+      const message = typeof args[2] === "undefined" ? details.message : args[2];
+      const isError = level === "error" || level === 3;
+      if (!isError || smokeConsoleErrors.length >= 20) return;
+      smokeConsoleErrors.push(String(message).slice(0, 300));
+    });
+  }
 
   // Open target=_blank / external links in the system browser, not a new window.
   win.webContents.setWindowOpenHandler(({ url }) => {
@@ -278,7 +600,10 @@ async function createWindow() {
     if (choice === 1) event.preventDefault();
   });
 
-  const load = () => (DEV_URL ? win.loadURL(DEV_URL) : win.loadFile(INDEX_HTML));
+  const load = () =>
+    DEV_URL
+      ? win.loadURL(DEV_URL + (SMOKE_HASH ? `#${SMOKE_HASH}` : ""))
+      : win.loadFile(INDEX_HTML, SMOKE_HASH ? { hash: SMOKE_HASH } : undefined);
 
   // Renderer-loss recovery (crash reload and the renderer's own AppErrorBoundary
   // location.reload()) must come back on the page the show was actually running
@@ -397,7 +722,9 @@ async function createWindow() {
     // CI's timeout kills it three minutes later with nothing to say. Catch it, so
     // the verdict below reports "could not load" in seconds.
     try {
+      smokeAt("loading");
       await load();
+      smokeAt("loaded");
     } catch (e) {
       loadError = String(e);
     }
@@ -410,42 +737,104 @@ async function createWindow() {
     // dev and 404s once packaged, a preload that throws, a renderer that white-
     // screens: all of them build green and only show up when someone double-clicks
     // the installer. Which, until now, nobody did before publishing it.
-    let verdict = { ok: false, error: loadError ?? "no result" };
+    const context = {
+      mode: SMOKE_SEED_FILE ? "seeded" : "cold",
+      offline: SMOKE_OFFLINE,
+      expect: SMOKE_EXPECT || "anything-rendered",
+      // A stale win-unpacked next to a bumped package.json would otherwise pass for
+      // the tag being released.
+      appVersion: app.getVersion(),
+      // Reported so a typo in the profile switch cannot silently share the real
+      // %APPDATA%\CueIQ profile — which would make "cold boot" a claim about
+      // whatever the last run left behind.
+      userDataPath: app.getPath("userData"),
+    };
+    let verdict = { ok: false, ...context, error: loadError ?? "no result" };
     try {
       if (loadError) throw new Error(loadError);
-      await new Promise((r) => setTimeout(r, 1500));
-      const info = await win.webContents.executeJavaScript(
-        "JSON.stringify({ title: document.title, hash: location.hash, len: document.body.innerText.length, hasRoot: !!document.getElementById('root')?.children.length })"
-      );
-      const parsed = JSON.parse(info);
-      // A window that loaded but rendered NOTHING is the failure worth catching.
-      verdict = { ok: !!parsed.hasRoot, ...parsed };
-      console.log("SMOKE_RESULT " + info);
-    } catch (e) {
-      verdict = { ok: false, error: String(e) };
-      console.log("SMOKE_ERROR " + String(e));
-    } finally {
-      if (SMOKE_OUT) {
-        try {
-          fs.writeFileSync(SMOKE_OUT, JSON.stringify(verdict));
-        } catch {
-          /* the caller's assertion on a missing file is the fallback */
-        }
+      // Now that a renderer exists, flip navigator.onLine — BEFORE the reload
+      // below, so the boot actually under test begins already offline.
+      let onLineAfterCut = null;
+      if (SMOKE_OFFLINE) {
+        smokeAt("cdp-offline");
+        await emulateOfflineViaCdp(win);
+        onLineAfterCut = await win.webContents.executeJavaScript("navigator.onLine");
       }
-      // app.exit, not app.quit: quit always exits 0, and it would also run the
-      // window's confirm-before-closing handler. The file above is the real
-      // verdict either way — this is belt and braces for a human running it.
-      app.exit(verdict.ok ? 0 : 1);
+
+      let planted = 0;
+      if (SMOKE_SEED_FILE) {
+        smokeAt("seeding");
+        planted = await plantSmokeSeed(win);
+        smokeAt("seeded");
+      } else if (SMOKE_OFFLINE) {
+        // No seed to plant, but the first load happened before the flag flipped, so
+        // this boot has to be redone for the test to mean what it says.
+        smokeAt("reloading-offline");
+        await reloadAndWait(win, "into the offline boot");
+      }
+      // 25s: an offline boot spends its first seconds inside supabase-js's retrying
+      // token refresh and then App.tsx's 5s BOOT_SESSION_TIMEOUT_MS before it can
+      // reach the offline pass. Polling means the usual case still finishes in well
+      // under a second — only a genuine failure waits out the deadline.
+      smokeAt("polling");
+      const probe = await pollUntilSettled(win, 25_000);
+      smokeAt("polled");
+      // Prove the cut rather than assume it. Without this the whole offline test
+      // stays green the day one of the three mechanisms stops taking effect, and it
+      // would be testing an ordinary online boot while claiming otherwise.
+      smokeAt("net-probe");
+      const netProbe = SMOKE_OFFLINE ? await proveTheNetworkIsCut(win) : null;
+      smokeAt("verdict");
+      const cutHeld = !netProbe || (netProbe.main === "rejected" && netProbe.renderer === "rejected");
+      verdict = {
+        ok: smokeExpectationMet(probe) && cutHeld,
+        ...context,
+        planted,
+        ...probe,
+        onLineAfterCut,
+        netProbe,
+        ...(cutHeld ? {} : { failReason: "the network cut did not hold" }),
+        // Empty is the claim worth making on an offline boot: the app reached a
+        // usable screen without asking the network for anything.
+        attemptedHosts: smokeAttemptedHosts,
+        consoleErrors: smokeConsoleErrors,
+      };
+    } catch (e) {
+      verdict = {
+        ok: false,
+        ...context,
+        error: String(e),
+        attemptedHosts: smokeAttemptedHosts,
+        consoleErrors: smokeConsoleErrors,
+      };
+    } finally {
+      writeSmokeVerdict(verdict);
     }
   }
 }
 
 app.whenReady().then(() => {
   registerIpc();
+  // Under the self-test, ANY throw during window setup used to end as silence: the
+  // promise rejected, nothing was written, and CI reported "the packaged app never
+  // reported — it crashed or hung on boot" for what was a one-line mistake in the
+  // test scaffolding itself. Two backstops, both funnelling into writeSmokeVerdict:
+  // catch the rejection, and time-box the whole run in case something never settles
+  // rather than throwing (a debugger attach, a load that hangs).
+  if (SMOKE) {
+    const watchdog = setTimeout(() => {
+      writeSmokeVerdict({ ok: false, failReason: "watchdog: no verdict within 90s" });
+    }, 90_000);
+    // Do not hold the process open on the watchdog alone.
+    if (typeof watchdog.unref === "function") watchdog.unref();
+  }
   // Deliberately NOT awaited: the update prompt is parentless, so it needs no
   // window — and awaiting the page load would let a failed load take both the
   // updater and the activate handler down with it.
-  createWindow();
+  createWindow().catch((e) => {
+    if (SMOKE) writeSmokeVerdict({ ok: false, failReason: "createWindow threw", error: String(e) });
+    else console.log("CREATE_WINDOW_FAIL " + String(e));
+  });
   initAutoUpdate();
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();

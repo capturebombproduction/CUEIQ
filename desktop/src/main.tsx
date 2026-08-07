@@ -80,7 +80,11 @@ class AppErrorBoundary extends React.Component<
     const { error } = this.state;
     if (!error) return this.props.children;
     return (
-      <div className="grid min-h-screen place-items-center bg-muted/30 p-4">
+      // data-cueiq-screen — see the note on App.tsx's BootScreen.
+      <div
+        data-cueiq-screen="app-error"
+        className="grid min-h-screen place-items-center bg-muted/30 p-4"
+      >
         <div className="w-full max-w-md space-y-4 text-center">
           <h1 className="text-xl font-bold text-destructive">แอปทำงานผิดพลาด</h1>
           <p className="text-sm text-muted-foreground">

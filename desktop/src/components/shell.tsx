@@ -37,7 +37,15 @@ function roleLabel(role: Role | null | undefined, perms?: Perms): string | null 
  *  Quick Show — the one runner that needs neither network nor login. */
 function ShellFallback({ failed, onRetry }: { failed: boolean; onRetry: () => void }) {
   return (
-    <div className="grid min-h-screen place-items-center bg-muted/30 p-4">
+    // data-cueiq-screen — see the note on App.tsx's BootScreen. THIS one carries the
+    // round's sharpest distinction: "shell" means the offline cache was honoured and
+    // the app is usable, "shell-fallback" means signed in and showing nothing. They
+    // are one Thai word apart on screen and a whole show apart in practice.
+    <div
+      data-cueiq-screen="shell-fallback"
+      data-cueiq-failed={failed ? "1" : "0"}
+      className="grid min-h-screen place-items-center bg-muted/30 p-4"
+    >
       <div className="w-full max-w-sm space-y-6">
         <div className="text-center">
           <h1 className="text-3xl font-bold tracking-tight text-primary">CueIQ</h1>
@@ -85,7 +93,16 @@ export function Shell() {
   const tenantId = ws.membership?.tenant_id ?? null;
 
   return (
-    <div className="min-h-screen bg-muted/30">
+    // data-cueiq-tenant is the offline self-test's proof that the workspace came
+    // from the CACHE and not from empty(): loadWorkspace never returns null, so the
+    // Shell renders either way and "we reached the shell" alone says nothing about
+    // whether the band's data survived the drive to the venue. A name here means it
+    // did.
+    <div
+      data-cueiq-screen="shell"
+      data-cueiq-tenant={ws.tenant?.name ?? ""}
+      className="min-h-screen bg-muted/30"
+    >
       {/* The web app has captured its own client errors and carried a แจ้งปัญหา
           button since round 2; the desktop shipped with NEITHER — and the desktop
           is the copy that goes to the venue, so the one place a real bug happens

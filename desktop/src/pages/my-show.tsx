@@ -1310,7 +1310,10 @@ export function MyShow() {
 
   // ---- render -------------------------------------------------------------------
   return (
-    <div className="min-h-screen bg-muted/30">
+    // data-cueiq-screen — see the note on App.tsx's BootScreen. Quick Show is the
+    // break-glass runner every other screen's fallback link points at, so the
+    // packaged self-test checks it can be reached with no account and no network.
+    <div data-cueiq-screen="quick-show" className="min-h-screen bg-muted/30">
       <div className="mx-auto max-w-2xl space-y-4 p-4 sm:p-6 lg:max-w-5xl">
         <input
           ref={addInputRef}

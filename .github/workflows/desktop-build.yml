@@ -145,33 +145,27 @@ jobs:
       # the app. A file:// path that resolves in dev and 404s once packaged, a
       # preload that throws, a renderer that white-screens — all build green, and
       # until now the first person to find out was พี่, days later, at a venue.
-      # main.cjs's CUEIQ_SMOKE path boots the packaged renderer hidden, checks the
-      # React root actually rendered, writes its verdict to a FILE (a GUI-subsystem
-      # .exe has no console to print to) and exits non-zero if it did not.
-      - name: Smoke-launch the packaged app
+      #
+      # ⚠️ THIS STEP USED TO BOOT WITH NO ACCOUNT AND THE NETWORK UP and assert that
+      # #root had children — a bar the login screen clears, i.e. the exact opposite
+      # of the condition that costs shows. It now runs three scenarios, and the one
+      # that matters is "airplane": an expired session planted in localStorage, DNS
+      # dead, renderer requests cancelled, navigator.onLine false — and the app must
+      # still reach the signed-in dashboard showing the CACHED band and the exact
+      # number of CACHED shows. That is พี่'s airplane test, run by a machine.
+      # Writing it found a real bug on its first run (an unbounded getUser() await
+      # in desktop/src/data/workspace.ts that parked the Shell on its spinner).
+      #
+      # The runner also cross-checks the control and airplane boots against each
+      # other: every way the seed can silently fail to arrive ends as a signed-OUT
+      # app, which is what the control scenario expects — so two boots landing on
+      # the same screen fails the job whatever that screen is. See
+      # desktop/scripts/run-smoke.mjs, which runs identically on a dev machine.
+      - name: Smoke-launch the packaged app (cold, airplane, Quick Show)
         if: matrix.label == 'win-exe'
         shell: bash
-        timeout-minutes: 3
-        env:
-          CUEIQ_SMOKE: "1"
-        run: |
-          set -euo pipefail
-          out="$RUNNER_TEMP/smoke.json"
-          rm -f "$out"
-          CUEIQ_SMOKE_OUT="$out" ./desktop/release/win-unpacked/CueIQ.exe || true
-          # A GUI-subsystem .exe can hand the shell back before it is done, so wait
-          # for the verdict rather than assuming the launch above blocked.
-          for _ in $(seq 1 30); do [ -f "$out" ] && break; sleep 1; done
-          test -f "$out" || {
-            echo "::error::The packaged app never reported — it crashed or hung on boot."
-            exit 1
-          }
-          cat "$out"
-          OUT="$out" node -e "
-            const v = JSON.parse(require('fs').readFileSync(process.env.OUT, 'utf8'));
-            if (!v.ok) { console.error('::error::Packaged app booted to nothing: ' + JSON.stringify(v)); process.exit(1); }
-            console.log('packaged app rendered ok:', JSON.stringify(v));
-          "
+        timeout-minutes: 10
+        run: node desktop/scripts/run-smoke.mjs --exe ./desktop/release/win-unpacked/CueIQ.exe
 
       # The .exe alone is not enough for auto-update: electron-updater reads
       # latest.yml (version + sha512) and uses the .blockmap for differential

@@ -107,7 +107,15 @@ function Protected({ authed, children }: { authed: boolean; children: React.Reac
  *  be able to retry or reach Quick Show — the runner that needs neither. */
 function BootScreen() {
   return (
-    <div className="grid min-h-screen place-items-center bg-muted/30 p-4">
+    // data-cueiq-screen: the packaged app's self-test has to tell six screens apart
+    // from the main process, and four of them are a centered card with a Thai
+    // "กำลังโหลด…" in it. Matching display text would pin CI to copy AND push Thai
+    // through a workflow file; this is one stable token per screen. See
+    // desktop/electron/main.cjs's smoke block and desktop/scripts/run-smoke.mjs.
+    <div
+      data-cueiq-screen="boot"
+      className="grid min-h-screen place-items-center bg-muted/30 p-4"
+    >
       <div className="w-full max-w-sm space-y-6">
         <div className="text-center">
           <h1 className="text-3xl font-bold tracking-tight text-primary">CueIQ</h1>

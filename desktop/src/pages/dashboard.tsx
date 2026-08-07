@@ -64,7 +64,14 @@ export function Dashboard() {
   const canCreate = canCreateAnyEvent(ws.perms);
 
   return (
-    <div className="space-y-6">
+    // data-cueiq-events: how many shows this account can actually see right now.
+    // The packaged app's offline self-test asserts it EQUALS the number it seeded
+    // into the cache — "> 0" would pass on a cache-key mismatch, and the key
+    // (~/data/events-list.ts: `events:<tenant>:<sorted group ids>`) is derived from
+    // permissions, so a scope change silently empties the dashboard offline while
+    // everything else on screen still looks correct. -1 while the read is in flight,
+    // so "still loading" can never be mistaken for "no shows".
+    <div className="space-y-6" data-cueiq-events={events === null ? -1 : events.length}>
       <div className="flex items-end justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">All Events</h1>
