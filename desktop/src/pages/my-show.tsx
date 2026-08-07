@@ -474,6 +474,14 @@ export function MyShow() {
           const s = snap.state as ShowState;
           s.currentIndex = Math.min(s.currentIndex, Math.max(0, itemsRef.current.length - 1));
           setState(s);
+          // Restore "the show already ended" too — the same fix, for the same
+          // reason, as components/event/live-mode.tsx's restore. จบโชว์ leaves
+          // begun:true on purpose, so a relaunch afterwards used to come back
+          // with begun:true / showEnded:false and re-arm the Electron power-save
+          // blocker (it is gated on `state.begun && !showEnded`) for a show that
+          // is over — holding the venue laptop's display awake until รีเซ็ต,
+          // navigate-away or quit.
+          if (snap.ended) setShowEnded(true);
           toast.message("กู้คืนสถานะโชว์ที่ค้างไว้", {
             description: "เวลาเดินต่อจากเดิม — กดรีเซ็ตถ้าจะเริ่มใหม่",
           });
@@ -491,7 +499,13 @@ export function MyShow() {
         if (state.begun) {
           localStorage.setItem(
             LIVE_SNAPSHOT_KEY,
-            JSON.stringify({ state, savedAt: Date.now() })
+            // `ended` is not part of ShowState (จบโชว์ is not a state change —
+            // begun stays true), but it HAS to survive a relaunch or the restore
+            // above brings the show back as still-on. It is also why `showEnded`
+            // is a dep: ending an already-paused show changes no ShowState at
+            // all, so without it this effect would never re-run and the machine
+            // would forget the show ended the moment it restarted.
+            JSON.stringify({ state, ended: showEnded, savedAt: Date.now() })
           );
         } else {
           localStorage.removeItem(LIVE_SNAPSHOT_KEY);
@@ -501,7 +515,7 @@ export function MyShow() {
       }
     }, 500);
     return () => clearTimeout(id);
-  }, [state]);
+  }, [state, showEnded]);
 
   // wake lock while running (+ re-acquire on tab return) — same as Live Mode
   const wakeLockRef = useRef<WakeLockSentinel | null>(null);
@@ -538,6 +552,17 @@ export function MyShow() {
       wakeLockRef.current = null;
     };
   }, [state.running]);
+
+  // Anything that puts the show back INTO motion un-ends it — the counterpart to
+  // the "จบโชว์ lets the display sleep" rule below, and the same one live-mode.tsx
+  // applies centrally in apply(). จบโชว์ is a freeze, not a reset, so the operator
+  // can simply press รันโชว์ again for an encore; without this the show would run
+  // with `showEnded` still true and the display blocker (and the snapshot) would
+  // stay off right through it. A guard, deliberately, rather than another branch
+  // in each of the four callers that can set running.
+  useEffect(() => {
+    if (state.running && showEnded) setShowEnded(false);
+  }, [state.running, showEnded]);
 
   // Belt-and-braces alongside the wake lock above: navigator.wakeLock is a
   // browser-spec API riding Electron's file:// origin, which nothing guarantees

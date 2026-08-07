@@ -18,6 +18,37 @@ export type EventWithGroup = EventRow & {
   groups: { name: string; color: string | null; exempt_from_deadline: boolean } | null;
 };
 
+/** How long the dashboard list may wait on Supabase before serving the cache.
+ *
+ *  isOffline() only catches the network the OS knows is gone. The venue case that
+ *  actually happens is the other one: wifi JOINED, navigator.onLine TRUE, TCP
+ *  connects and nothing ever answers. The await below had no bound of its own, so
+ *  the dashboard sat on "กำลังโหลดงาน…" for ever with this exact list already in
+ *  localStorage — the same hang ~/data/workspace.ts fixes one layer up, and it is
+ *  worth fixing in both places because either one alone still parks the screen.
+ *
+ *  Matches WORKSPACE_READ_TIMEOUT_MS: a working-but-slow hotspot should still get
+ *  to deliver FRESH data rather than be written off as dead. Anything slower falls
+ *  through to the cache, which is what the ลองใหม่ button then retries from. */
+export const EVENTS_LIST_TIMEOUT_MS = 8000;
+
+/** Resolves to `null` if `p` has not settled within `ms`. The in-flight request is
+ *  deliberately NOT cancelled — a late answer can still warm the cache for the next
+ *  screen; we simply stop waiting on it. (Mirrors ~/data/workspace.ts.) */
+function withTimeout<T>(p: PromiseLike<T>, ms: number): Promise<T | null> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  return Promise.race<T | null>([
+    p,
+    new Promise<null>((resolve) => {
+      timer = setTimeout(() => resolve(null), ms);
+    }),
+  ]).finally(() => {
+    // Without this the pending timer keeps a handle alive for its full duration
+    // after every fast, successful load.
+    if (timer !== undefined) clearTimeout(timer);
+  });
+}
+
 /** Overlay pending offline writes; synthesized creates get full display fields. */
 async function withPendingOverlay(rows: EventWithGroup[]): Promise<EventWithGroup[]> {
   const ops = await pendingMgmtOps();
@@ -57,20 +88,25 @@ export async function loadEventsList(
   const supabase = createClient();
   let res;
   try {
-    res = await supabase
-      .from("events")
-      .select("*, groups(name, color, exempt_from_deadline)")
-      .eq("tenant_id", tenantId)
-      .in("group_id", viewableGroupIds)
-      .eq("is_template", false)
-      .eq("is_practice", false)
-      .order("event_date", { ascending: false, nullsFirst: false })
-      .order("created_at", { ascending: false });
+    // A request that NEVER answers is the same situation as one that fails, so it
+    // takes the same branch: withTimeout hands back null and we serve the cache.
+    res = await withTimeout(
+      supabase
+        .from("events")
+        .select("*, groups(name, color, exempt_from_deadline)")
+        .eq("tenant_id", tenantId)
+        .in("group_id", viewableGroupIds)
+        .eq("is_template", false)
+        .eq("is_practice", false)
+        .order("event_date", { ascending: false, nullsFirst: false })
+        .order("created_at", { ascending: false }),
+      EVENTS_LIST_TIMEOUT_MS
+    );
   } catch {
     return withPendingOverlay(readCache<EventWithGroup[]>(cacheKey) ?? []);
   }
 
-  if (res.error) return withPendingOverlay(readCache<EventWithGroup[]>(cacheKey) ?? []);
+  if (!res || res.error) return withPendingOverlay(readCache<EventWithGroup[]>(cacheKey) ?? []);
 
   const events = (res.data ?? []) as EventWithGroup[];
   // An EMPTY result is the one answer we can't take at face value: a request that
@@ -81,7 +117,12 @@ export async function loadEventsList(
   // network, the whole dashboard is blank, which is precisely the failure the
   // read-cache exists to prevent. Cheap to prove, so prove it (a real empty list
   // still caches: the check only runs when there is nothing to lose).
-  if (events.length === 0 && !(await hasLiveSession())) {
+  // …and bound this one too. getSession() can itself attempt a token refresh over
+  // the same dead network, so an empty answer arriving just before the wifi went
+  // black-holed would otherwise park the dashboard here instead of one await up.
+  // A timeout is "we could not prove the request carried our token", which is
+  // exactly the case this guard already treats as too dangerous to cache.
+  if (events.length === 0 && (await withTimeout(hasLiveSession(), EVENTS_LIST_TIMEOUT_MS)) !== true) {
     return withPendingOverlay(readCache<EventWithGroup[]>(cacheKey) ?? []);
   }
   writeCache(cacheKey, events);

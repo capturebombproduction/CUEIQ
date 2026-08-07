@@ -42,6 +42,35 @@ export type RunOrderResult<T> =
 const liveKey = (eventId: string) => `runlive:${eventId}`;
 const buildKey = (eventId: string) => `runbuild:${eventId}`;
 
+/** How long ONE read here may wait on Supabase before the cached board is served.
+ *
+ *  The try/catch below already routes a FAILURE to served(cached()). A HANG never
+ *  gets there: isOffline() is false on a venue wifi that is JOINED but black-holed
+ *  (navigator.onLine TRUE, TCP connects, nothing ever answers), so every await ran
+ *  unbounded and คุมคิว Live sat on its spinner with the running order — the one
+ *  thing a whole festival reads — already in localStorage. Same shape as the two
+ *  loaders round 11 already bounded, same budget (WORKSPACE_READ_TIMEOUT_MS): slow
+ *  still gets to deliver FRESH data; never-answering falls through to the cache. */
+export const RUN_ORDER_TIMEOUT_MS = 8000;
+
+/** Resolves to `null` if `p` has not settled within `ms`. The in-flight request is
+ *  deliberately NOT cancelled — a late answer can still warm the cache for the next
+ *  screen; we simply stop waiting on it. (Mirrors ~/data/workspace.ts, which owns
+ *  the canonical comment; kept local because that copy is not exported.) */
+function withTimeout<T>(p: PromiseLike<T>, ms: number): Promise<T | null> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  return Promise.race<T | null>([
+    p,
+    new Promise<null>((resolve) => {
+      timer = setTimeout(() => resolve(null), ms);
+    }),
+  ]).finally(() => {
+    // Without this the pending timer keeps a handle alive for its full duration
+    // after every fast, successful load.
+    if (timer !== undefined) clearTimeout(timer);
+  });
+}
+
 function served<T>(cached: T | null): RunOrderResult<T> {
   return cached ? { status: "ok", data: cached, fromCache: true } : { status: "error" };
 }
@@ -53,16 +82,25 @@ async function loadFestivalEvent(
   | { ok: true; name: string; date: string | null }
   | { ok: false; gone: boolean }
 > {
-  const { data, error } = await createClient()
-    .from("events")
-    .select("id, name, event_date")
-    .eq("id", eventId)
-    .maybeSingle();
-  if (error) return { ok: false, gone: false };
+  // A request that never answers is the same situation as one that errored: we
+  // could not find out. Both mean "not gone" — only a read that SUCCEEDED and
+  // found nothing may bounce a show-caller off a live board.
+  const res = await withTimeout(
+    createClient()
+      .from("events")
+      .select("id, name, event_date")
+      .eq("id", eventId)
+      .maybeSingle(),
+    RUN_ORDER_TIMEOUT_MS
+  );
+  if (!res || res.error) return { ok: false, gone: false };
+  const { data } = res;
   if (!data) {
     // No row has two very different meanings: actually deleted, or RLS answering
     // an anon request (a token refresh that failed a minute ago) with nothing.
-    return { ok: false, gone: await hasLiveSession() };
+    // getSession() can attempt a refresh over the same dead network, so bound it:
+    // a timeout is "could not prove the session is live", which is not "deleted".
+    return { ok: false, gone: (await withTimeout(hasLiveSession(), RUN_ORDER_TIMEOUT_MS)) === true };
   }
   return {
     ok: true,
@@ -90,7 +128,10 @@ async function fetchSequence(tenantId: string, name: string, date: string | null
  */
 async function emptyIsSuspect(rows: unknown[], cached: unknown | null): Promise<boolean> {
   if (rows.length > 0 || !cached) return false;
-  return !(await hasLiveSession());
+  // Bounded for the same reason as every other await in this file: a getSession()
+  // that never answers must not park the board. Anything but a proven-live session
+  // — false OR a timeout — leaves the empty answer suspect, which is the safe side.
+  return (await withTimeout(hasLiveSession(), RUN_ORDER_TIMEOUT_MS)) !== true;
 }
 
 export async function loadRunOrderLive(
@@ -102,9 +143,12 @@ export async function loadRunOrderLive(
   try {
     const ev = await loadFestivalEvent(eventId);
     if (!ev.ok) return ev.gone ? { status: "gone" } : served(cached());
-    const { data, error } = await fetchSequence(tenantId, ev.name, ev.date);
-    if (error) return served(cached());
-    const seqs = (data ?? []) as RunSeqLive[];
+    const seqRes = await withTimeout(
+      fetchSequence(tenantId, ev.name, ev.date),
+      RUN_ORDER_TIMEOUT_MS
+    );
+    if (!seqRes || seqRes.error) return served(cached());
+    const seqs = (seqRes.data ?? []) as RunSeqLive[];
     if (await emptyIsSuspect(seqs, cached())) return served(cached());
     const out: RunOrderLive = { name: ev.name, date: ev.date, seqs };
     writeCache(liveKey(eventId), out);
@@ -135,23 +179,26 @@ export async function loadRunOrderBuild(
       .eq("is_template", false)
       .eq("is_practice", false);
     fq = ev.date ? fq.eq("event_date", ev.date) : fq.is("event_date", null);
-    const festRes = await fq;
-    if (festRes.error) return served(cached());
+    const festRes = await withTimeout(fq, RUN_ORDER_TIMEOUT_MS);
+    if (!festRes || festRes.error) return served(cached());
     const festEvents = festRes.data ?? [];
     const ids = festEvents.map((e) => e.id as string);
 
     // Ordered by start_time so a band's slots arrive in the order it actually
     // plays — the builder seeds the running order straight off this list.
     const stageRes = ids.length
-      ? await sb
-          .from("schedule_items")
-          .select("event_id, start_time, end_time")
-          .eq("tenant_id", tenantId)
-          .eq("kind", "stage")
-          .in("event_id", ids)
-          .order("start_time", { ascending: true })
+      ? await withTimeout(
+          sb
+            .from("schedule_items")
+            .select("event_id, start_time, end_time")
+            .eq("tenant_id", tenantId)
+            .eq("kind", "stage")
+            .in("event_id", ids)
+            .order("start_time", { ascending: true }),
+          RUN_ORDER_TIMEOUT_MS
+        )
       : { data: [], error: null };
-    if (stageRes.error) return served(cached());
+    if (!stageRes || stageRes.error) return served(cached());
 
     // A band can hold SEVERAL stage slots on one festival day (mig 0036 caps only
     // 'photo' at one row per event), so key a LIST — a Map of single rows dropped
@@ -179,8 +226,11 @@ export async function loadRunOrderBuild(
         : [{ ...base, stage_start: null, stage_end: null }];
     });
 
-    const seqRes = await fetchSequence(tenantId, ev.name, ev.date);
-    if (seqRes.error) return served(cached());
+    const seqRes = await withTimeout(
+      fetchSequence(tenantId, ev.name, ev.date),
+      RUN_ORDER_TIMEOUT_MS
+    );
+    if (!seqRes || seqRes.error) return served(cached());
     const seqs = (seqRes.data ?? []) as RunSequence[];
     if (await emptyIsSuspect(seqs, cached())) return served(cached());
 

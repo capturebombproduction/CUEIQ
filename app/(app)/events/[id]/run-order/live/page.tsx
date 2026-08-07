@@ -4,6 +4,7 @@ import { ArrowLeft, Radio } from "lucide-react";
 import { getEventRow, getWorkspace } from "@/lib/queries";
 import { canApprove } from "@/lib/permissions";
 import { createClient } from "@/lib/supabase/server";
+import { assertReadsSucceeded } from "@/lib/read-guard";
 import {
   EventLiveCaller,
   type RunSeqLive,
@@ -52,7 +53,16 @@ export default async function RunOrderLivePage({
     .eq("event_name", ev.name)
     .order("sort_order", { ascending: true });
   rq = ev.event_date ? rq.eq("event_date", ev.event_date) : rq.is("event_date", null);
-  const { data: seqs } = await rq;
+  const seqRes = await rq;
+  // The event read above refuses to call a failed read a missing show; this one
+  // must refuse to call a failed read an empty running order. A FAILED READ IS NOT
+  // A ZERO COUNT (lib/read-guard.ts). ~19 phones open this route within seconds of
+  // each other when staff press เริ่ม, so the one that draws a pooler hiccup was
+  // being shown "ยังไม่มีลำดับงาน" for a festival that is running in front of it —
+  // and an approver on that phone drives the show from a blank board. A retryable
+  // error card is the honest answer; the order is still there.
+  assertReadsSucceeded("RunOrderLivePage", { "ลำดับคิวงาน": seqRes });
+  const seqs = seqRes.data ?? [];
 
   const canControl = canApprove(ws.perms);
 
@@ -90,7 +100,7 @@ export default async function RunOrderLivePage({
         eventName={ev.name}
         eventDate={ev.event_date}
         eventId={ev.id}
-        initial={(seqs ?? []) as RunSeqLive[]}
+        initial={seqs as RunSeqLive[]}
         canControl={canControl}
       />
     </div>

@@ -19,13 +19,41 @@
 import fs from "node:fs";
 import { pathToFileURL } from "node:url";
 
-/** Default project ref, matching desktop/vite.config.ts's baked-in Supabase URL.
- *  The ref only decides whether supabase-js ITSELF recognises the entry: with the
- *  real ref it finds the session, tries to refresh, fails on the cut network and
- *  answers null — the true venue sequence. With a stale ref it simply never looks,
- *  and the app's own stored-session scan opens the offline pass anyway. The test is
- *  meaningful either way, but the real ref is the faithful one. */
-const DEFAULT_PROJECT_REF = "kewyqqxohckurwuepucv";
+/** The Supabase URL the desktop bundle is BUILT with, resolved the same two ways
+ *  desktop/vite.config.ts resolves it: the env var if set, else the literal default
+ *  baked into that file. Exported because the smoke's network-cut probe has to aim
+ *  at a host that would REALLY resolve if the cut failed (see run-smoke.mjs).
+ *
+ *  ⚠️ DERIVED, NOT COPIED, and that is the whole point. This used to be the hardcoded
+ *  string "kewyqqxohckurwuepucv" with a comment explaining that a stale ref is fine
+ *  because "the app's own stored-session scan opens the offline pass anyway". That is
+ *  true — getStoredSessionUser() matches any `sb-*-auth-token` key — and it is exactly
+ *  why a drift here is INVISIBLE: I seeded a deliberately wrong ref and the airplane
+ *  scenario still passed, green, with zero console errors, because supabase-js never
+ *  recognised the entry and therefore never even attempted the failing refresh. The
+ *  faithful venue sequence (supabase-js finds the session → tries to refresh → the cut
+ *  network fails it → answers null → the app falls back to its own scan) had silently
+ *  stopped being the thing under test. Deriving it means a project move breaks this in
+ *  a 50ms unit test instead of quietly weakening the only offline gate we have. */
+function resolveSupabaseUrl() {
+  if (process.env.NEXT_PUBLIC_SUPABASE_URL) return process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const configPath = new URL("../vite.config.ts", import.meta.url);
+  const source = fs.readFileSync(configPath, "utf8");
+  const m = source.match(/NEXT_PUBLIC_SUPABASE_URL[\s\S]{0,240}?\?\?\s*"(https:\/\/[^"]+)"/);
+  if (!m) {
+    // Loud on purpose. A silent fallback here is the defect: it would keep the smoke
+    // green while aiming it at a project that no longer exists.
+    throw new Error(
+      "make-smoke-seed: could not read the default NEXT_PUBLIC_SUPABASE_URL out of " +
+        "desktop/vite.config.ts. The seed's project ref and the smoke's network probe " +
+        "both come from it — fix the pattern here, do not hardcode a ref."
+    );
+  }
+  return m[1];
+}
+
+export const SMOKE_SUPABASE_URL = resolveSupabaseUrl();
+const DEFAULT_PROJECT_REF = new URL(SMOKE_SUPABASE_URL).hostname.split(".")[0];
 
 const b64url = (obj) => Buffer.from(JSON.stringify(obj), "utf8").toString("base64url");
 

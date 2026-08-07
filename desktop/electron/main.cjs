@@ -72,6 +72,14 @@ const SMOKE_EXPECT_EVENTS = process.env.CUEIQ_SMOKE_EXPECT_EVENTS || "";
 // Route to open on, without a hash (e.g. "/my-show"). The self-test has no input
 // driver, so a scenario about a specific screen has to start there.
 const SMOKE_HASH = process.env.CUEIQ_SMOKE_HASH || "";
+// A URL that WOULD resolve if the network were up — see probeTheNetwork. The caller
+// derives it from the same place the bundle gets its Supabase URL and there is no
+// default here on purpose: a probe with nothing real to aim at is worse than no probe,
+// because it answers "cut" forever. Empty ⇒ the cut is UNCALIBRATED and the run fails.
+const SMOKE_PROBE_URL = process.env.CUEIQ_SMOKE_PROBE_URL || "";
+// Time-box the whole self-test. The caller owns this number because it also owns the
+// deadline it waits on, and the inner one must always fire first (run-smoke.mjs).
+const SMOKE_WATCHDOG_MS = Number(process.env.CUEIQ_SMOKE_WATCHDOG_MS) || 90_000;
 const INDEX_HTML = path.join(__dirname, "..", "dist", "index.html");
 
 // Every R2 S3-compatible endpoint lives under this suffix (lib/r2.ts builds it as
@@ -382,24 +390,53 @@ function reloadAndWait(win, whatFor) {
  *  the CDP emulation, the main process has neither and relies on the session-level
  *  emulation, so they can fail independently.
  *
+ *  ⚠️ THE URL IS THE WHOLE PROBE, and the first cut of this got it exactly backwards.
+ *  It aimed at `process.env.NEXT_PUBLIC_SUPABASE_URL || "https://example.invalid"`,
+ *  and neither workflow sets that variable — so it aimed at `.invalid`, an RFC 2606
+ *  reserved TLD that is GUARANTEED never to resolve. Both probes therefore answered
+ *  "rejected" with the network fully up. Measured, not reasoned: I ran the airplane
+ *  scenario with all three cut layers disabled and real internet, and netProbe still
+ *  came back {main: "rejected", renderer: "rejected"}. `cutHeld` was a check that
+ *  could never fail — this round's stated defect class, sitting inside the very
+ *  function whose docstring promises the opposite. The caller now supplies a host
+ *  that really is reachable, and an absent one is a FAILURE, not a default.
+ *
  *  net.fetch DIRECTLY, not through fetchAudioBytes: that path would be refused by
  *  assertR2Url's host pin and would therefore "reject" just as convincingly with the
- *  network fully up. */
-async function proveTheNetworkIsCut(win) {
-  const url = (process.env.NEXT_PUBLIC_SUPABASE_URL || "https://example.invalid") + "/auth/v1/health";
+ *  network fully up.
+ *
+ *  `expect` is "rejected" for an offline scenario and "resolved" for an online one.
+ *  Only the resolve direction retries: a cut leaks instantly and deterministically,
+ *  whereas one dropped packet on a runner should not turn a calibration into a red
+ *  build. Every attempt is time-boxed, because a probe that hangs hands the run to
+ *  the watchdog with nothing to say. */
+async function probeTheNetwork(win, expect) {
+  const url = SMOKE_PROBE_URL.replace(/\/+$/, "") + "/auth/v1/health";
+  const attempts = expect === "resolved" ? 3 : 1;
   const probe = async (run) => {
-    try {
-      await run();
-      return "resolved"; // the cut leaked
-    } catch {
-      return "rejected"; // as intended
+    for (let i = 0; i < attempts; i++) {
+      try {
+        await run();
+        return "resolved";
+      } catch {
+        if (i + 1 < attempts) await new Promise((r) => setTimeout(r, 1000));
+      }
     }
+    return "rejected";
   };
   return {
-    main: await probe(() => net.fetch(url, { redirect: "error" })),
+    main: await probe(() =>
+      net.fetch(url, { redirect: "error", signal: AbortSignal.timeout(10_000) })
+    ),
     renderer: await probe(() =>
       win.webContents.executeJavaScript(
-        `fetch(${JSON.stringify(url)}, { cache: "no-store" }).then(() => "resolved")`
+        // `.then(() => true)` matters: executeJavaScript resolves with the script's
+        // value, and a Response is not structured-cloneable. Handing it back raw makes
+        // the answer depend on how Electron serialises an object it cannot clone —
+        // and if that ever throws, a perfectly reachable host reads as "rejected",
+        // which would fail the control calibration for no reason at 2am. Return a
+        // boolean and the only thing that can reject is the fetch itself.
+        `fetch(${JSON.stringify(url)}, { cache: "no-store", signal: AbortSignal.timeout(10000) }).then(() => true)`
       )
     ),
   };
@@ -448,6 +485,25 @@ const SMOKE_PROBE = `JSON.stringify({
  *  keep going through them or the test samples a spinner and calls it an answer. */
 const TERMINAL_SCREENS = ["login", "shell", "quick-show", "app-error"];
 
+/** Console errors an OFFLINE boot is allowed to produce. Anything else fails the run.
+ *
+ *  The alternative was to keep collecting them and assert nothing, which is the same
+ *  as not collecting them: a React render error, a module that throws on eval, a
+ *  failed IndexedDB open — none of those necessarily change `screen`, so all of them
+ *  could ride a green airplane verdict. Each pattern below is here because a cut
+ *  network CAUSES it, and for no other reason:
+ *   • "Failed to fetch" — supabase-js's own fetch rejecting. Measured: this is the
+ *     ONLY error a healthy airplane boot emits, five of them, from auth-js's retrying
+ *     token refresh. Same five on a repeat run, and ZERO in the two online scenarios.
+ *   • "net::ERR_" — Chromium's network stack logging the same cut from the other
+ *     side: ERR_BLOCKED_BY_CLIENT (the webRequest layer), ERR_NAME_NOT_RESOLVED
+ *     (host-resolver-rules), ERR_INTERNET_DISCONNECTED (the session emulation).
+ *   • "Failed to load resource" — Chromium's wording when a SUBRESOURCE rather than
+ *     a fetch() is the thing the cut stopped.
+ *  ONLINE scenarios allow none of these: with the network up, "Failed to fetch" is a
+ *  real defect and must not inherit the offline run's excuse. */
+const SMOKE_ALLOWED_CONSOLE_ERRORS = [/Failed to fetch/i, /net::ERR_/, /Failed to load resource/i];
+
 /** Did this boot land where it was told to? "" means the old, weaker question:
  *  did anything render at all. */
 function smokeExpectationMet(p) {
@@ -473,6 +529,12 @@ function smokeExpectationMet(p) {
   if (SMOKE_EXPECT === "quick-show") {
     return p.screen === "quick-show";
   }
+  // A value nobody here understands is NEVER met. Falling through to `true` meant a
+  // typo in a scenario's env ("signedin") silently demoted that scenario to the old,
+  // weakest question — did anything render — and passed. run-smoke.mjs also asserts
+  // the verdict's echoed `expect` against what it asked for, so the same mistake is
+  // caught from both ends.
+  if (SMOKE_EXPECT) return false;
   return true;
 }
 
@@ -499,7 +561,15 @@ function writeSmokeVerdict(verdict) {
   console.log((verdict.ok ? "SMOKE_RESULT " : "SMOKE_ERROR ") + JSON.stringify(verdict));
   if (SMOKE_OUT) {
     try {
-      fs.writeFileSync(SMOKE_OUT, JSON.stringify(verdict));
+      // Write-then-RENAME, not writeFileSync onto the final path. The caller polls
+      // fs.existsSync() every 500ms and parses the moment the file appears, and
+      // writeFileSync creates the file BEFORE it has any bytes in it — so a poll that
+      // lands inside that window reads "" and reports `unreadable verdict: SyntaxError`
+      // for a run that actually succeeded. rename() on the same directory is atomic on
+      // both NTFS and POSIX: the caller sees no file, then the whole file.
+      const tmp = SMOKE_OUT + ".partial";
+      fs.writeFileSync(tmp, JSON.stringify(verdict));
+      fs.renameSync(tmp, SMOKE_OUT);
     } catch {
       /* the caller's assertion on a missing file is the fallback */
     }
@@ -549,6 +619,10 @@ async function createWindow() {
   // during boot — the very window the test is about — goes unobserved.
   const smokeAttemptedHosts = [];
   const smokeConsoleErrors = [];
+  // Kept SEPARATE from the diagnostic list above, and separately capped, because this
+  // one is fatal: sharing a cap would let twenty allowlisted "Failed to fetch" lines
+  // hide the one error that matters behind them.
+  const smokeUnexpectedConsoleErrors = [];
   if (SMOKE) {
     smokeAt("window-created");
     // Session-level only here; the CDP half waits until a renderer exists (below).
@@ -556,13 +630,26 @@ async function createWindow() {
     win.webContents.on("console-message", (...args) => {
       // Electron moved this event's signature: it used to be
       // (event, level:number, message, line, sourceId) and is now (details) with
-      // string levels. Read both rather than pin the test to an Electron version.
+      // string levels. Electron 42 — verified against node_modules/electron/
+      // electron.d.ts and by running it — emits BOTH: args[0] is the details object
+      // with level: 'info'|'warning'|'error'|'debug', and args[1..4] are the
+      // deprecated positional (level: number 0..3, message, line, sourceId).
+      // So test BOTH SOURCES rather than picking one. Picking one is how this stops
+      // matching silently the day the deprecated tail is finally removed — and a
+      // filter that never matches is a check that passes forever, which is the exact
+      // defect class this whole file is being hardened against.
       const details = args[0] || {};
-      const level = typeof args[1] === "undefined" ? details.level : args[1];
-      const message = typeof args[2] === "undefined" ? details.message : args[2];
-      const isError = level === "error" || level === 3;
-      if (!isError || smokeConsoleErrors.length >= 20) return;
-      smokeConsoleErrors.push(String(message).slice(0, 300));
+      const isError =
+        args[1] === 3 || args[1] === "error" || details.level === "error" || details.level === 3;
+      if (!isError) return;
+      const message = String(
+        typeof args[2] === "undefined" ? (details.message ?? "") : args[2]
+      ).slice(0, 300);
+      if (smokeConsoleErrors.length < 20) smokeConsoleErrors.push(message);
+      const allowed = SMOKE_OFFLINE && SMOKE_ALLOWED_CONSOLE_ERRORS.some((re) => re.test(message));
+      if (!allowed && smokeUnexpectedConsoleErrors.length < 10) {
+        smokeUnexpectedConsoleErrors.push(message);
+      }
     });
   }
 
@@ -782,22 +869,54 @@ async function createWindow() {
       // Prove the cut rather than assume it. Without this the whole offline test
       // stays green the day one of the three mechanisms stops taking effect, and it
       // would be testing an ordinary online boot while claiming otherwise.
+      //
+      // The ONLINE scenarios probe too, and that is not symmetry for its own sake:
+      // "rejected" is only evidence of a cut if the same request would have resolved
+      // without one. run-smoke.mjs reads the online run's answer as the calibration
+      // for the offline run's, so a probe URL that has quietly stopped being
+      // reachable at all shows up as a named failure instead of as a permanently
+      // satisfied assertion.
       smokeAt("net-probe");
-      const netProbe = SMOKE_OFFLINE ? await proveTheNetworkIsCut(win) : null;
+      const netProbe = SMOKE_PROBE_URL
+        ? await probeTheNetwork(win, SMOKE_OFFLINE ? "rejected" : "resolved")
+        : null;
       smokeAt("verdict");
-      const cutHeld = !netProbe || (netProbe.main === "rejected" && netProbe.renderer === "rejected");
+      // No probe URL ⇒ nothing was proven. An offline scenario must not pass on that.
+      const cutHeld = SMOKE_OFFLINE
+        ? !!netProbe && netProbe.main === "rejected" && netProbe.renderer === "rejected"
+        : true;
+      // navigator.onLine was collected from the very first version of this test and
+      // never once asserted on. It is not decoration: it is the ONLY signal that
+      // separates the airplane test from the black-holed-wifi test, because
+      // cache.ts's isOffline() is what gates the cache-first branch in workspace.ts,
+      // events-list.ts, event-bundle.ts and run-order.ts. Measured, not reasoned: I
+      // disabled emulateOfflineViaCdp and the airplane scenario passed, green, with
+      // onLine: true in its own verdict — exercising the app's ONLINE path while
+      // filing the result under "offline". The reported field is now the asserted one.
+      const onLineHeld = !SMOKE_OFFLINE || probe.onLine === false;
+      const consoleClean = smokeUnexpectedConsoleErrors.length === 0;
+      const failReason = !cutHeld
+        ? netProbe
+          ? "the network cut did not hold"
+          : "no probe URL: the network cut was never calibrated, so nothing was proven"
+        : !onLineHeld
+          ? "navigator.onLine stayed true: this ran the black-holed-wifi path, not the airplane one"
+          : !consoleClean
+            ? `unexpected console error(s): ${smokeUnexpectedConsoleErrors.join(" | ")}`
+            : null;
       verdict = {
-        ok: smokeExpectationMet(probe) && cutHeld,
+        ok: smokeExpectationMet(probe) && cutHeld && onLineHeld && consoleClean,
         ...context,
         planted,
         ...probe,
         onLineAfterCut,
         netProbe,
-        ...(cutHeld ? {} : { failReason: "the network cut did not hold" }),
+        ...(failReason ? { failReason } : {}),
         // Empty is the claim worth making on an offline boot: the app reached a
         // usable screen without asking the network for anything.
         attemptedHosts: smokeAttemptedHosts,
         consoleErrors: smokeConsoleErrors,
+        unexpectedConsoleErrors: smokeUnexpectedConsoleErrors,
       };
     } catch (e) {
       verdict = {
@@ -806,6 +925,7 @@ async function createWindow() {
         error: String(e),
         attemptedHosts: smokeAttemptedHosts,
         consoleErrors: smokeConsoleErrors,
+        unexpectedConsoleErrors: smokeUnexpectedConsoleErrors,
       };
     } finally {
       writeSmokeVerdict(verdict);
@@ -822,9 +942,22 @@ app.whenReady().then(() => {
   // catch the rejection, and time-box the whole run in case something never settles
   // rather than throwing (a debugger attach, a load that hangs).
   if (SMOKE) {
+    // ⚠️ THE INNER DEADLINE MUST ALWAYS FIRE FIRST. Three timeouts are nested here —
+    // this watchdog, run-smoke.mjs's per-scenario `--timeout`, and the workflow step's
+    // `timeout-minutes` — and only the innermost one can say WHY (it carries `stage`).
+    // If the outer one wins, CI reports "no verdict" for a run the app was about to
+    // explain. That ordering used to be a coincidence between two hardcoded numbers
+    // 30s apart, and 30s is not much: this timer only starts at whenReady, so every
+    // second Electron spends getting there (a cold, throttled, first-run CI runner
+    // unpacking a 100 MB binary) is charged to the caller's clock and not to this one.
+    // run-smoke.mjs now derives both from one constant and passes this half in, so the
+    // gap is a fixed 45s of margin that cannot drift apart in a later edit.
     const watchdog = setTimeout(() => {
-      writeSmokeVerdict({ ok: false, failReason: "watchdog: no verdict within 90s" });
-    }, 90_000);
+      writeSmokeVerdict({
+        ok: false,
+        failReason: `watchdog: no verdict within ${Math.round(SMOKE_WATCHDOG_MS / 1000)}s`,
+      });
+    }, SMOKE_WATCHDOG_MS);
     // Do not hold the process open on the watchdog alone.
     if (typeof watchdog.unref === "function") watchdog.unref();
   }

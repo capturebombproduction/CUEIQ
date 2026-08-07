@@ -17,6 +17,7 @@ import {
   type OverviewBand,
 } from "@/components/overview/overview-client";
 import { eventCompleteness, type CompletenessSetlistItem } from "@/lib/completeness";
+import { assertReadsSucceeded } from "@/lib/read-guard";
 import {
   type EventRow,
   type Member,
@@ -190,6 +191,24 @@ export default async function OverviewPage() {
     ),
   ]);
 
+  // A FAILED READ IS NOT A ZERO COUNT (lib/read-guard.ts). readPaged above goes to
+  // real trouble to return `{ data: null, error }` — it even manufactures one at
+  // MAX_PAGES — and every consumer below then wrote `?? []` and never looked. That
+  // turns "we could not find out" into a confident wrong number on the board the
+  // label runs the day off: a zeroed songs read reports an unreviewed song as
+  // cleared, a failed events read shows a band its day is empty. Fail loudly
+  // instead; app/(app)/error.tsx renders the retryable card, exactly as it already
+  // does for getEventBundle.
+  assertReadsSucceeded("OverviewPage", {
+    "งาน": evRes,
+    "สมาชิกวง": memRes,
+    "คลังเพลง": songRes,
+    "ทีมงาน": staffRes,
+  });
+
+  // Past the guard every one of these succeeded, so `?? []` is only satisfying the
+  // types — a null `data` is not reachable. Do NOT reintroduce one of them as a way
+  // to tolerate a failed read.
   const eventRows = (evRes.data ?? []) as EventRow[];
   const members = (memRes.data ?? []) as Member[];
   const songRows = (songRes.data ?? []) as { id: string; copyright_status: string }[];
@@ -272,6 +291,20 @@ export default async function OverviewPage() {
     ),
   ]);
 
+  // Same rule for the per-event phase, and this is where it bites hardest. A failed
+  // setlist_items read makes a COMPLETE show display "⚠ ขาด N"; a failed
+  // schedule_items read blanks every stage/booth time; and a failed run_sequence
+  // read empties runOrderFestivals below, which REMOVES the "คุมคิว (Live)" entry
+  // from the date header — i.e. it takes staff's entry point to the live
+  // show-caller away, mid-festival, with nothing on screen saying why.
+  assertReadsSucceeded("OverviewPage", {
+    "รันดาวน์": schedRes,
+    "เซ็ตลิสต์": slRes,
+    "ลำดับคิวงาน": roRes,
+    "ผังไมค์": micRes,
+  });
+
+  // Types only — see the note on the first guard above.
   const sched = (schedRes.data ?? []) as SchedRow[];
   const slRows = (slRes.data ?? []) as SlRow[];
   const roRows = (roRes.data ?? []) as RoRow[];

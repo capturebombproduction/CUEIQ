@@ -105,6 +105,16 @@ export default defineConfig({
           name: "lib",
           environment: "node",
           include: ["lib/**/*.test.ts", "lib/**/*.test.tsx"],
+          // `audio-store.dom.test.ts` ends in `.test.ts`, so it matches the include
+          // above as well as the web project's — and a file collected by both runs
+          // TWICE, once in an environment the name says it must not run in. Without
+          // this the counts silently double and the whole `.dom.` convention below
+          // means nothing.
+          // `{ts,tsx}`, not `.ts`: a `lib/x.dom.test.tsx` matches the `.test.tsx`
+          // include above, and a `.ts`-only exclude would leave it running HERE, in
+          // node — the exact silent pass (asserting the storage-unavailable branch)
+          // the `.dom.` convention exists to prevent.
+          exclude: ["**/node_modules/**", "lib/**/*.dom.test.{ts,tsx}"],
         },
       },
       jsdomProject(
@@ -112,14 +122,19 @@ export default defineConfig({
         [
           "components/**/*.test.tsx",
           "app/**/*.test.tsx",
-          "test/web/**/*.test.tsx",
-          // `lib/**/*.dom.test.ts` — the convention for lib modules that need a
+          // `{ts,tsx}` on both of the next two: a `test/web/*.test.ts` or a
+          // `lib/*.dom.test.tsx` written against a `.tsx`-only / `.ts`-only glob is
+          // collected by NO project and NO project reports it missing — it simply
+          // never runs, and a suite that silently skips a file is worse than one
+          // that never had it.
+          "test/web/**/*.test.{ts,tsx}",
+          // `lib/**/*.dom.test.{ts,tsx}` — the convention for lib modules that need a
           // BROWSER, not a DOM: audio-store, the outboxes and local-source all sit
           // on IndexedDB, which the node project does not have. Run there they would
           // quietly take their "storage unavailable" branch and the test would pass
           // while asserting the fallback. The `.dom.` marker keeps the node project
           // (`lib/**/*.test.ts`) fast and honest about what it covers.
-          "lib/**/*.dom.test.ts",
+          "lib/**/*.dom.test.{ts,tsx}",
         ],
         { "@": repoRoot },
         ["./test/setup/dom.ts"]

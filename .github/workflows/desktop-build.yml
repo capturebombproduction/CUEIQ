@@ -130,8 +130,15 @@ jobs:
       # still writes the update feed next to the installer because a publish provider
       # is configured for win. Auto-update is silently dead without it, and a missing
       # file would otherwise only surface on พี่'s machine weeks later — so fail here.
+      # `runner.os`, not `matrix.label`. Both gates on this leg are `if:`-guarded, and
+      # an `if:` that stops matching does not fail — it SKIPS, and a skipped step is a
+      # green step. So the condition must not depend on a free-text label that a later
+      # edit can rename out from under it (rename `win-exe` to `windows` and both the
+      # feed check and the smoke launch below quietly stop running, while the job still
+      # publishes an installer). `runner.os` is reported by the runner itself and
+      # cannot drift from the thing it describes.
       - name: Verify the Windows update feed was generated
-        if: matrix.label == 'win-exe'
+        if: runner.os == 'Windows'
         shell: bash
         run: |
           ls -la desktop/release
@@ -159,12 +166,24 @@ jobs:
       # The runner also cross-checks the control and airplane boots against each
       # other: every way the seed can silently fail to arrive ends as a signed-OUT
       # app, which is what the control scenario expects — so two boots landing on
-      # the same screen fails the job whatever that screen is. See
-      # desktop/scripts/run-smoke.mjs, which runs identically on a dev machine.
+      # the same screen fails the job whatever that screen is. And it cross-checks
+      # the network cut itself: the control boot runs the same probe with the network
+      # UP and must reach the host, or "rejected" in the offline runs is not evidence
+      # of anything. See desktop/scripts/run-smoke.mjs, which runs identically on a
+      # dev machine.
+      #
+      # ⚠️ This is win-unpacked, NOT the NSIS-installed app — the same tree the
+      # installer will carry, but install-only failures (a path with spaces or Thai
+      # characters, per-user install quirks) are still only found by installing it.
+      #
+      # ⚠️ TIMEOUT NESTING, outermost last: main.cjs's watchdog (the only one that
+      # reports a stage) fires at --timeout minus 45s, run-smoke's per-scenario
+      # --timeout (135s) next, this step last. 3 x 135s = ~7 min, so 15 stays
+      # strictly outermost and never pre-empts an answer the app was about to give.
       - name: Smoke-launch the packaged app (cold, airplane, Quick Show)
-        if: matrix.label == 'win-exe'
+        if: runner.os == 'Windows' # see the note on the feed check above
         shell: bash
-        timeout-minutes: 10
+        timeout-minutes: 15
         run: node desktop/scripts/run-smoke.mjs --exe ./desktop/release/win-unpacked/CueIQ.exe
 
       # The .exe alone is not enough for auto-update: electron-updater reads
@@ -189,7 +208,12 @@ jobs:
             desktop/release/*.exe
             desktop/release/*.blockmap
             desktop/release/latest*.yml
-          if-no-files-found: ignore
+          # `warn`, not `ignore`. Each leg's path list names both platforms' patterns,
+          # so half of them never match and that is normal — but `ignore` silences the
+          # case where NOTHING matched, i.e. a leg that built nothing and uploaded
+          # nothing and stayed green. `collect` downstream still refuses to publish a
+          # half-set; this just puts the annotation back where it is first visible.
+          if-no-files-found: warn
 
   # Turns a `v*` tag's artifacts into a PUBLISHED GitHub Release. Runs even if one
   # build leg failed (`always()`), because a broken Mac build must not withhold the

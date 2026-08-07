@@ -4,6 +4,7 @@ import { ListOrdered, Radio } from "lucide-react";
 import { getEventRow, getWorkspace } from "@/lib/queries";
 import { canApprove } from "@/lib/permissions";
 import { createClient } from "@/lib/supabase/server";
+import { assertReadsSucceeded } from "@/lib/read-guard";
 import { Button } from "@/components/ui/button";
 import {
   RunOrderBuilder,
@@ -50,12 +51,21 @@ export default async function RunOrderPage({
     .eq("is_template", false)
     .eq("is_practice", false);
   fq = ev.event_date ? fq.eq("event_date", ev.event_date) : fq.is("event_date", null);
-  const { data: festEvents } = await fq;
+  const festRes = await fq;
+  // A FAILED READ IS NOT A ZERO COUNT (lib/read-guard.ts). Discarding `.error` here
+  // told the staff member building the running order that this festival has no
+  // bands in it: an empty "นำเข้าจากเวทีวง" and an empty link dropdown, with no
+  // hint that a read had failed. Throw instead — app/(app)/error.tsx offers a retry.
+  assertReadsSucceeded("RunOrderPage", { "งานในเทศกาล": festRes });
+  const festEvents = festRes.data ?? [];
 
-  const ids = (festEvents ?? []).map((e) => e.id);
+  const ids = festEvents.map((e) => e.id);
   // Ordered by start_time so a band's slots arrive in the order it actually plays —
   // the builder seeds the running order straight off this list.
-  const { data: stages } = ids.length
+  const stagesRes: {
+    data: { event_id: string; start_time: string | null; end_time: string | null }[] | null;
+    error: { message?: string | null } | null;
+  } = ids.length
     ? await supabase
         .from("schedule_items")
         .select("event_id, start_time, end_time")
@@ -63,7 +73,11 @@ export default async function RunOrderPage({
         .eq("kind", "stage")
         .in("event_id", ids)
         .order("start_time", { ascending: true })
-    : { data: [] as { event_id: string; start_time: string | null; end_time: string | null }[] };
+    : { data: [], error: null };
+  // A stage read that failed reaches the builder as "this band has no slot", and
+  // the seeded running order then announces the wrong act — or drops it entirely.
+  assertReadsSucceeded("RunOrderPage", { "เวลาขึ้นเวที": stagesRes });
+  const stages = stagesRes.data ?? [];
 
   const groupName = new Map(ws.groups.map((g) => [g.id, g.name]));
   // A band can hold SEVERAL stage slots on one festival day — mig 0036 caps only
@@ -71,7 +85,7 @@ export default async function RunOrderPage({
   // returned last, so a band booked twice reached the running order once (often at the
   // wrong time) and the live caller never announced the other slot. Key a LIST instead.
   const stagesBy = new Map<string, { start_time: string | null; end_time: string | null }[]>();
-  for (const s of stages ?? []) {
+  for (const s of stages) {
     const list = stagesBy.get(s.event_id);
     if (list) list.push(s);
     else stagesBy.set(s.event_id, [s]);
@@ -79,7 +93,7 @@ export default async function RunOrderPage({
   // One entry PER STAGE SLOT, all carrying the band's event id (= linked_event_id).
   // An event with no stage row still gets one slot-less entry so the builder's link
   // dropdown can still reach it.
-  const bandEvents: RunBandEvent[] = (festEvents ?? []).flatMap((e) => {
+  const bandEvents: RunBandEvent[] = festEvents.flatMap((e) => {
     const base = { id: e.id, group_name: groupName.get(e.group_id) ?? "—" };
     const slots = stagesBy.get(e.id);
     return slots?.length
@@ -94,7 +108,16 @@ export default async function RunOrderPage({
     .eq("event_name", ev.name)
     .order("sort_order", { ascending: true });
   rq = ev.event_date ? rq.eq("event_date", ev.event_date) : rq.is("event_date", null);
-  const { data: seqs } = await rq;
+  const seqRes = await rq;
+  // THE SHARPEST ONE. RunOrderBuilder already refuses to wipe its rows on an
+  // untrusted empty read (see its runRollback: an empty answer is not proof the
+  // order is gone, because the next "นำเข้าจากเวทีวง" reads linked_event_id off
+  // these very rows and would insert every act a SECOND time and broadcast the
+  // duplicate to the live board) — and the read that SEEDS that component had no
+  // guard at all. `seqs ?? []` handed it the same empty list the component was
+  // written never to believe.
+  assertReadsSucceeded("RunOrderPage", { "ลำดับคิวงาน": seqRes });
+  const seqs = seqRes.data ?? [];
 
   return (
     <div className="space-y-6">
@@ -128,7 +151,7 @@ export default async function RunOrderPage({
         tenantId={tid}
         eventName={ev.name}
         eventDate={ev.event_date}
-        initial={(seqs ?? []) as RunSequence[]}
+        initial={seqs as RunSequence[]}
         bandEvents={bandEvents}
       />
     </div>

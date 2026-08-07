@@ -28,14 +28,33 @@
 // ── WHAT IT DOES NOT PROVE — read this before quoting a green run ────────────
 // Seeding cueiq:cache:* BYPASSES the code that writes those caches, so this proves
 // the offline READ path and the boot gate, not that an online session filled the
-// cache correctly before the wifi died. And it runs win-unpacked, not the
-// NSIS-installed app, so install-only failures (paths with spaces or Thai
-// characters, per-user install quirks) stay unproven.
+// cache correctly before the wifi died. (Still true after the round-11 hardening —
+// re-checked against make-smoke-seed.mjs, which builds those entries by hand.)
+//
+// Neither does it prove the INSTALLED app. On a `v*` tag desktop-build.yml runs this
+// against desktop/release/win-unpacked/CueIQ.exe, which is the packaged tree but not
+// the NSIS-installed one; on every push ci.yml runs it in --app mode against electron
+// + the vite build, which is one step further out again. So install-only failures —
+// paths with spaces or Thai characters, per-user install quirks, a file the installer
+// forgets to copy — stay unproven in both.
+//
+// And the seeded session is honoured by the app's OWN localStorage scan
+// (desktop/src/data/stored-session.ts matches any `sb-*-auth-token`), so a green
+// airplane run does not by itself prove supabase-js recognised the entry and failed
+// its refresh the way it would at a venue. What keeps that path faithful is that the
+// seed's project ref is DERIVED from desktop/vite.config.ts rather than copied — see
+// the comment on resolveSupabaseUrl in make-smoke-seed.mjs, which is there because a
+// deliberately wrong ref passed this suite green.
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { buildSmokeSeed, SMOKE_EVENT_COUNT, SMOKE_TENANT_NAME } from "./make-smoke-seed.mjs";
+import {
+  buildSmokeSeed,
+  SMOKE_EVENT_COUNT,
+  SMOKE_SUPABASE_URL,
+  SMOKE_TENANT_NAME,
+} from "./make-smoke-seed.mjs";
 
 function arg(name, fallback = "") {
   const i = process.argv.indexOf(`--${name}`);
@@ -45,7 +64,19 @@ function arg(name, fallback = "") {
 const exe = arg("exe");
 const appDir = arg("app");
 const only = arg("only");
-const timeoutSec = Number(arg("timeout", "120"));
+const timeoutSec = Number(arg("timeout", "135"));
+
+// ⚠️ ONE constant, two clocks. The app's own watchdog (main.cjs) is the only timer
+// that can name a CAUSE — it carries the stage the run hung at — so it must always be
+// the first to fire. It used to be a hardcoded 90s sitting 30s inside a hardcoded
+// 120s here, which is not margin: the watchdog only starts at app.whenReady, so
+// everything Electron spends before that (process spawn, a cold CI runner unpacking
+// ~100 MB, Defender's first look at a fresh binary) is charged to THIS clock and not
+// to that one. Thirty seconds of Windows-runner cold start would have inverted them
+// and turned every explained hang into a bare "no verdict". Derive instead: the inner
+// deadline is always exactly OUTER_MARGIN_SEC earlier, whatever --timeout is set to.
+const OUTER_MARGIN_SEC = 45;
+const watchdogMs = Math.max(15_000, (timeoutSec - OUTER_MARGIN_SEC) * 1000);
 
 if (!exe || !fs.existsSync(exe)) {
   console.error(`::error::run-smoke: no executable at ${exe || "<--exe not given>"}`);
@@ -101,7 +132,18 @@ async function runScenario(s) {
   const userDataDir = path.join(work, "userData");
   fs.mkdirSync(userDataDir);
 
-  const env = { ...process.env, CUEIQ_SMOKE: "1", CUEIQ_SMOKE_OUT: verdictFile, ...s.env };
+  const env = {
+    ...process.env,
+    CUEIQ_SMOKE: "1",
+    CUEIQ_SMOKE_OUT: verdictFile,
+    CUEIQ_SMOKE_WATCHDOG_MS: String(watchdogMs),
+    // The host the app really talks to, derived from the same file the bundle bakes
+    // it in from. main.cjs has NO default for this on purpose: its old fallback was
+    // "https://example.invalid", a reserved TLD that can never resolve, so the
+    // "prove the network is cut" probe answered "cut" with the network fully up.
+    CUEIQ_SMOKE_PROBE_URL: SMOKE_SUPABASE_URL,
+    ...s.env,
+  };
   if (s.seed) {
     const seedFile = path.join(work, "seed.json");
     fs.writeFileSync(seedFile, JSON.stringify(buildSmokeSeed()), "utf8");
@@ -158,6 +200,31 @@ async function runScenario(s) {
       failReason: `ran in profile ${verdict.userDataPath}, not the fresh one`,
     };
   }
+  // Same idea, applied to the QUESTION rather than the profile. main.cjs echoes back
+  // the expectation and the offline flag it actually read, and until now nobody
+  // compared them with what was sent. That gap matters because an empty
+  // CUEIQ_SMOKE_EXPECT does not fail — it demotes the run to the old, weakest
+  // question ("did anything render"), which the login screen also answers yes to. So
+  // any way the env fails to arrive (a spawn that drops it, a shell that eats it, a
+  // scenario table edited to the wrong key) turns the airplane test into a
+  // rendered-something test AND STAYS GREEN. Two string compares close it.
+  const wantExpect = s.env.CUEIQ_SMOKE_EXPECT || "anything-rendered";
+  if (verdict.expect !== wantExpect) {
+    return {
+      ...verdict,
+      name: s.name,
+      ok: false,
+      failReason: `asked for expect="${wantExpect}" but the app answered "${verdict.expect}" — the scenario's env did not arrive`,
+    };
+  }
+  if (verdict.offline !== (s.env.CUEIQ_SMOKE_OFFLINE === "1")) {
+    return {
+      ...verdict,
+      name: s.name,
+      ok: false,
+      failReason: `asked for offline=${s.env.CUEIQ_SMOKE_OFFLINE === "1"} but the app ran offline=${verdict.offline}`,
+    };
+  }
   return { ...verdict, name: s.name };
 }
 
@@ -165,6 +232,15 @@ const chosen = only ? SCENARIOS.filter((s) => s.name === only) : SCENARIOS;
 if (chosen.length === 0) {
   console.error(`::error::run-smoke: no scenario named "${only}"`);
   process.exit(2);
+}
+if (only) {
+  // --only is for iterating by hand. Said out loud because BOTH cross-checks at the
+  // bottom need two scenarios, so a CI step that ever grows an --only silently drops
+  // them and nobody reading a green log would know.
+  console.log(
+    `::warning::run-smoke: --only ${only} — the control/airplane cross-check and the ` +
+      `network-cut calibration are both skipped.`
+  );
 }
 
 const results = [];
@@ -209,6 +285,28 @@ if (control && airplane && control.screen && control.screen === airplane.screen)
     `::error::run-smoke: the control boot and the airplane boot both ended on "${control.screen}". ` +
       `The seed cannot have taken effect, so the offline scenario proved nothing.`
   );
+}
+
+// THE SECOND CROSS-CHECK: calibrate the network cut against a boot that had no cut.
+// "The probe was rejected" is evidence of nothing on its own — it is only evidence if
+// the SAME request to the SAME host resolves when nothing is blocking it. That was not
+// a theoretical gap: main.cjs's probe used to aim at https://example.invalid, a
+// reserved TLD guaranteed never to resolve, so it answered "rejected" on a machine
+// with full internet and all three cut layers switched off. Everything downstream of
+// it was decoration. The control scenario now runs the identical probe with the
+// network up, and if THAT comes back rejected the airplane run's rejection is
+// meaningless — this machine simply cannot reach the host either way.
+if (control && control.netProbe) {
+  const reachable = control.netProbe.main === "resolved" && control.netProbe.renderer === "resolved";
+  if (!reachable) {
+    failed = true;
+    console.error(
+      `::error::run-smoke: the control boot could not reach ${SMOKE_SUPABASE_URL} either ` +
+        `(main=${control.netProbe.main}, renderer=${control.netProbe.renderer}), so "the network ` +
+        `was cut" in the offline scenarios proves nothing — an unreachable probe host rejects ` +
+        `whether or not the cut works. Either this machine has no internet, or that URL is stale.`
+    );
+  }
 }
 
 if (failed) process.exit(1);

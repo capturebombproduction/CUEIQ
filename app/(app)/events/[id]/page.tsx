@@ -12,6 +12,7 @@ import {
 import { getEventBundle, getWorkspace } from "@/lib/queries";
 import { canEditGroup, canViewGroup, canApprove } from "@/lib/permissions";
 import { createClient } from "@/lib/supabase/server";
+import { assertReadsSucceeded } from "@/lib/read-guard";
 import { eventCompleteness } from "@/lib/completeness";
 import { EVENT_TYPES, type EventType, type GroupStatus } from "@/lib/types";
 import { shortClock, deadlineInfo } from "@/lib/time";
@@ -115,8 +116,14 @@ export default async function EventPage({
   roq = event.event_date
     ? roq.eq("event_date", event.event_date)
     : roq.is("event_date", null);
-  const { data: runSeqData } = await roq;
-  const runSeq = (runSeqData ?? []) as RunSeqLive[];
+  const runSeqRes = await roq;
+  // getEventBundle above is all-or-none about the six child reads for exactly this
+  // reason; this seventh read was left outside the rule. A FAILED READ IS NOT A
+  // ZERO COUNT (lib/read-guard.ts): `?? []` tells the band's own event page
+  // "วงนี้ยังไม่ถูกผูกกับลำดับในคิวงาน" and drops the countdown its members are
+  // watching, on a festival day, because one select timed out.
+  assertReadsSucceeded("EventPage", { "ลำดับคิวงาน": runSeqRes });
+  const runSeq = (runSeqRes.data ?? []) as RunSeqLive[];
 
   return (
     <div className="space-y-6">

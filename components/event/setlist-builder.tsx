@@ -595,13 +595,21 @@ export function SetlistBuilder({
       inserted = data as SetlistItem[];
     }
     if (old.length) {
-      const { error } = await supabase
+      // Ask for the removed rows back, like every other write in this file. A
+      // delete that reported no error but touched NO ROW did not happen (sent as
+      // anon after a failed token refresh), and by this point the snapshot rows
+      // are already inserted — walking on would leave the original setlist PLUS a
+      // full duplicate, with no unique constraint on (event_id, sort_order) to
+      // stop it, and that is what the printed run sheet and Live Mode would then
+      // use. See lib/write-guard.ts.
+      const { data: deleted, error } = await supabase
         .from("setlist_items")
         .delete()
         .in(
           "id",
           old.map((it) => it.id)
-        );
+        )
+        .select("id");
       if (error && inserted.length === 0) {
         // Restoring an EMPTY snapshot offline: queue "clear the setlist".
         if (await queueOffline([], error.message)) {
@@ -610,27 +618,38 @@ export function SetlistBuilder({
           return;
         }
       }
-      if (error) {
+      // Same outcome for the caller, different cause: `missed` reached the server
+      // and changed nothing, so there is no error to classify or queue — but it
+      // leaves exactly the duplicate state the rollback below exists to undo.
+      const missed = !error && wroteNothing(deleted);
+      if (error || missed) {
         // The snapshot rows are already in; deleting the old ones failed → roll the
         // insert back so we don't leave BOTH sets (duplicates). Original setlist intact.
         if (inserted.length) {
-          const { error: rollbackError } = await supabase
+          const { data: rolledBack, error: rollbackError } = await supabase
             .from("setlist_items")
             .delete()
-            .in("id", inserted.map((it) => it.id));
-          if (rollbackError) {
+            .in("id", inserted.map((it) => it.id))
+            .select("id");
+          // The rollback carries the identical hole: a 0-row delete has undone
+          // nothing, so the duplicates are still there and the user must be told.
+          if (rollbackError || wroteNothing(rolledBack)) {
             // Net died mid-restore: the DB likely holds old + restored rows. Queue
             // the restored list with base = that combined state, so flush replace-
             // sets the duplicates away (or parks a conflict if online moved on).
-            const queued = await tryQueueChildList({
-              kind: "setlist.upsert",
-              eventId,
-              tenantId,
-              eventName,
-              rows: inserted,
-              baseRows: [...old, ...inserted],
-              errorMessage: error.message,
-            });
+            // Only a real transport failure can be queued — a 0-row result proves
+            // the request reached the server, and there is no message to classify.
+            const queued = error
+              ? await tryQueueChildList({
+                  kind: "setlist.upsert",
+                  eventId,
+                  tenantId,
+                  eventName,
+                  rows: inserted,
+                  baseRows: [...old, ...inserted],
+                  errorMessage: error.message,
+                })
+              : false;
             if (queued) {
               toast.success(OFFLINE_QUEUED_MESSAGE, { id: "mgmt-offline-queued" });
               old.forEach((it) => deleteAudio(eventId, it.id).catch(() => {}));
@@ -656,7 +675,11 @@ export function SetlistBuilder({
             );
           }
         }
-        throw error;
+        // Rolled back cleanly (or there was nothing to roll back): the server still
+        // holds the original setlist, which is what's already on screen. Say why
+        // the restore didn't happen instead of reporting a success.
+        if (error) throw error;
+        throw new Error(await noRowsMessage());
       }
       old.forEach((it) => {
         deleteAudio(eventId, it.id).catch(() => {});

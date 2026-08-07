@@ -40,6 +40,62 @@ type RowTone = "ok" | "warn" | "bad" | "muted";
 const LOW_SPACE_BYTES = 500 * 1024 * 1024; // 500 MB
 const LOW_BATTERY = 0.3; // 30%
 
+// ─── Dependencies that survive a re-render ───────────────────────────────────
+//
+// `refresh` below is a useCallback that starts a full readiness pass, and its
+// dependency list is built from this component's ARRAY props. Array IDENTITY is
+// the wrong key for that job, in two directions:
+//
+//  • A DEFAULT PARAMETER re-runs on every render. `localOnly = []` handed refresh
+//    a new array every render → a new refresh identity every render → the mount
+//    effect's [refresh] dep re-fired every render → refresh() resolved and setR'd
+//    a fresh object → render. Unbounded. Measured with a counter: 219 full
+//    readiness passes in 300ms with the prop omitted versus exactly 1 with a
+//    stable array passed, React logging "Maximum update depth exceeded", each
+//    pass reopening IndexedDB and cursor-walking the event's audio cache — on the
+//    card an operator stares at immediately before cutting the wifi. It was
+//    latent only because the one caller (desktop/src/pages/live.tsx) happens to
+//    pass the prop; correctness must not depend on an OPTIONAL prop being passed.
+//  • An INLINE LITERAL from a parent that re-renders costs the same, once per
+//    parent render, forever — the hazard a future caller walks into.
+//
+// So the props are keyed on their CONTENT and the previous array is handed back
+// whenever the content has not changed. Every dep list downstream then keys on a
+// value that moves only when the answer could.
+//
+// ⚠️ TWO GUARDS, DELIBERATELY, and neither is decoration. The frozen constant
+// below keeps the omitted-prop case from ever allocating; useStableByContent
+// keeps every other case honest. Either one alone stops today's loop, which is
+// exactly why they are easy to "simplify" one at a time — and the moment one
+// goes, the other is the only thing between this card and 219 readiness passes.
+// `localOnly = []` in the parameter list is not a tidier spelling of the
+// constant: it is the original bug, because a default expression is re-evaluated
+// on EVERY render.
+//
+// The regression test can only pin the OUTCOME (it counts passes; nothing in the
+// DOM shows the difference between settling and spinning), so it will not fail
+// for removing one guard while the other still holds. Read this comment as the
+// reason, and run the "must settle, not spin" block before touching either.
+const NO_LOCAL_ONLY: readonly LocalOnlyCandidate[] = Object.freeze([]);
+// Field and record separators, so a title containing a comma cannot forge a
+// different set of rows into the same signature.
+const FS = "\u001f";
+const RS = "\u001e";
+// An OMITTED setlist is not an empty one — "not checked" versus "checked, clean"
+// is the entire point of `silent` — so the two must never share a signature.
+const NO_SETLIST = "\u0000absent";
+
+/**
+ * Returns the value it was last given for this signature, so equal content keeps
+ * one stable identity. A ref written during render, holding only a value derived
+ * from this render's props: no effect, no extra render, nothing to tear.
+ */
+function useStableByContent<T>(value: T, signature: string): T {
+  const held = useRef({ signature, value });
+  if (held.current.signature !== signature) held.current = { signature, value };
+  return held.current.value;
+}
+
 function ToneIcon({ tone }: { tone: RowTone }) {
   if (tone === "ok") return <CheckCircle2 className="h-4 w-4 text-green-600 dark:text-green-400" />;
   if (tone === "warn") return <AlertTriangle className="h-4 w-4 text-amber-500" />;
@@ -94,9 +150,12 @@ function Row({
  */
 export function ShowReadinessCheck({
   eventId,
-  targets,
-  localOnly = [],
-  setlist,
+  targets: targetsProp,
+  // NOT `= []`. See NO_LOCAL_ONLY above: a default parameter is re-evaluated on
+  // every render, and this one used to put the whole card into an unbounded
+  // render/refresh loop the moment a caller left the prop off.
+  localOnly: localOnlyProp = NO_LOCAL_ONLY,
+  setlist: setlistProp,
 }: {
   eventId: string;
   targets: PrefetchTarget[];
@@ -107,7 +166,7 @@ export function ShowReadinessCheck({
    * on stage. Before this, they were invisible here, so a set with a fileless song
    * reported a clean green "พร้อมโชว์ออฟไลน์".
    */
-  localOnly?: LocalOnlyCandidate[];
+  localOnly?: readonly LocalOnlyCandidate[];
   /**
    * The event's setlist rows, so the preflight can reconcile them against what the
    * resolvers actually claimed (lib/show-readiness.ts `silent`). REQUIRED for that
@@ -117,6 +176,30 @@ export function ShowReadinessCheck({
    */
   setlist?: readonly ShowSetlistRow[];
 }) {
+  // Content-keyed, identity-stable views of the three array props. Used from here
+  // down INSTEAD of the raw props — including in plain render code, so there is
+  // exactly one name per prop and no way to reach for the unstable one by habit.
+  const targets = useStableByContent(
+    targetsProp,
+    targetsProp.map((t) => [t.itemId, t.path, t.name].join(FS)).join(RS)
+  );
+  const localOnly = useStableByContent(
+    localOnlyProp,
+    localOnlyProp.map((c) => [c.itemId, c.songId, c.name].join(FS)).join(RS)
+  );
+  const setlist = useStableByContent(
+    setlistProp,
+    setlistProp
+      ? // EVERY field of the row, including `song_id`, which lib/show-readiness.ts
+        // does not currently read. A signature that covers only today's readers is
+        // a trap: the day someone reads one more field, equal-signature-but-changed
+        // rows would be silently held back with no failing test to say so.
+        setlistProp
+          .map((row) => [row.id, row.kind, row.title ?? "", row.song_id ?? ""].join(FS))
+          .join(RS)
+      : NO_SETLIST
+  );
+
   const [r, setR] = useState<ShowReadiness | null>(null);
   const [open, setOpen] = useState(false);
   const userToggled = useRef(false); // once the user opens/closes, stop auto-driving it
@@ -198,9 +281,12 @@ export function ShowReadinessCheck({
         .then((ids) => setHeldLocally((prev) => new Set([...prev, ...ids])))
         .catch(() => {});
     }
-    // `localOnly` / `setlist` are props built by the page from its bundle, so their
-    // identity only changes when the PAGE re-renders — never on this component's own
-    // setState. Same stability `targets` has always relied on here.
+    // These three are the CONTENT-KEYED views from the top of the component, not
+    // the raw props. That is what makes this dependency list safe: it changes when
+    // the set of songs changes and at no other time — not when a default parameter
+    // re-allocates, not when a parent re-renders with an equal inline literal, and
+    // above all not on this component's own setR, which is the cycle that turned
+    // this callback into an unbounded loop. Never swap them back for the props.
   }, [eventId, targets, localOnly, setlist]);
 
   useEffect(() => {

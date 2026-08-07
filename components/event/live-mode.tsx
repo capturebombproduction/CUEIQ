@@ -3565,7 +3565,10 @@ export function LiveMode({
       <div className="rounded-xl border bg-card p-3">
         {/* control vs view-only — only one device drives the show */}
         {!isController ? (
-          <div className="mb-2 flex items-center justify-between gap-2 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-amber-900">
+          <div
+            data-testid="viewer-banner"
+            className="mb-2 flex items-center justify-between gap-2 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-amber-900"
+          >
             <span className="flex items-center gap-1.5 text-sm font-medium">
               {audioPlaying ? (
                 <>
@@ -3585,6 +3588,7 @@ export function LiveMode({
               <Button
                 size="sm"
                 variant="outline"
+                data-testid="request-control"
                 onClick={takeControl}
                 className="shrink-0 border-amber-400 bg-white"
               >
@@ -3606,6 +3610,7 @@ export function LiveMode({
         <div className="mb-2 grid grid-cols-3 gap-2">
           <button
             type="button"
+            data-testid="sound-output-toggle"
             onClick={() => setSoundOutput((v) => !v)}
             title={
               soundOutput
@@ -3682,6 +3687,7 @@ export function LiveMode({
           <Button
             size="xl"
             className="w-full"
+            data-testid="start-show"
             onClick={start}
             disabled={!isController || !syncSettled || starting}
             title={!syncSettled ? "กำลังซิงค์สถานะโชว์กับเครื่องอื่น…" : undefined}
@@ -3731,6 +3737,7 @@ export function LiveMode({
             <Button
               variant="outline"
               size="icon"
+              data-testid="prev"
               className="h-11 w-11 shrink-0"
               onClick={() => goto(state.currentIndex - 1)}
               disabled={!isController || state.mode === "auto" || state.currentIndex === 0}
@@ -3748,6 +3755,7 @@ export function LiveMode({
                 case by 2px and still fits the row's real 302px. */}
             <Button
               size="lg"
+              data-testid="run-toggle"
               onClick={toggleShowRun}
               disabled={!isController}
               /* 🔤 The label lost the words "(จับเวลา)" to fit the fixed width, and nothing
@@ -3780,6 +3788,7 @@ export function LiveMode({
             </Button>
             <Button
               size="lg"
+              data-testid="next"
               className="min-w-[5.75rem] flex-1 justify-center px-3"
               onClick={() => goto(state.currentIndex + 1)}
               disabled={!isController || state.mode === "auto" || state.currentIndex >= items.length - 1}
@@ -3790,6 +3799,7 @@ export function LiveMode({
             <Button
               variant="ghost"
               size="icon"
+              data-testid="reset"
               className="h-11 w-11 shrink-0"
               onClick={reset}
               disabled={!isController}
@@ -3805,6 +3815,7 @@ export function LiveMode({
           <Button
             variant="outline"
             size="sm"
+            data-testid="end-show"
             className="mt-2 w-full"
             onClick={endShow}
             title="หยุดนับเวลาสะสม + บันทึกเป็นเวลาโชว์ล่าสุด (ไม่ใช่รีเซ็ต)"

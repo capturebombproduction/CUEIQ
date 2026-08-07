@@ -39,6 +39,7 @@ import { privateChannel, songsTopic } from "@/lib/realtime";
 import { clearLocalSource, getLocalSource } from "@/lib/local-source";
 import { cacheSongBlob } from "@/lib/song-cache";
 import { hasLiveSession } from "@/lib/auth-session";
+import { wroteNothing } from "@/lib/write-guard";
 import { getStoredSessionUser } from "~/data/stored-session";
 
 const DB_NAME = "cueiq-mgmt-outbox";
@@ -114,6 +115,12 @@ async function requireLiveSession(): Promise<void> {
 /** Thai reason for a resolve we couldn't even attempt as the signed-in user. */
 const NO_SESSION_REASON =
   "ยังยืนยันบัญชีกับเซิร์ฟเวอร์ไม่ได้ — ยังไม่ได้เขียนทับ ลองใหม่อีกครั้งในสักครู่";
+
+/** Thai reason for a DELETE the server accepted while removing no row — with a
+ *  proven live session that means it was refused (no right to delete) rather than
+ *  already done, and the op must stay visible instead of counting as synced. */
+const DELETE_NO_ROWS_REASON =
+  "ลบงานนี้บนออนไลน์ไม่สำเร็จ — เซิร์ฟเวอร์ไม่ได้ลบให้ (อาจไม่มีสิทธิ์ลบ) ลองใหม่อีกครั้ง";
 
 function openDB(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
@@ -438,6 +445,11 @@ async function applyChildListOp(
       );
       if (error) return failOrThrow(error.message, onLine, status);
     }
+    // write-guard-exempt: a replace-set delete ("drop the members my snapshot no
+    // longer lists") legitimately matches 0 rows, so there is nothing for a row
+    // count to prove. The anon case this file guards elsewhere is already covered
+    // upstream — requireLiveSession() before the guard read, or hasLiveSession() at
+    // the top of resolveConflict on the force path.
     let del = supabase.from(table).delete().eq("event_id", op.id);
     if (memberIds.length) del = del.not("member_id", "in", `(${memberIds.join(",")})`);
     const { error, status } = await del;
@@ -449,6 +461,8 @@ async function applyChildListOp(
   // Carries the failing response's HTTP status out with its message — a 5xx here is
   // as transient as anywhere else, and the caller can't classify it without one.
   const deleteRemoved = async (): Promise<{ message: string; status: number } | null> => {
+    // write-guard-exempt: same replace-set shape as the lineup branch — 0 rows
+    // removed is the normal outcome when the snapshot dropped nothing.
     let del = supabase.from(table).delete().eq("event_id", op.id);
     if (rows.length) del = del.not("id", "in", `(${rows.map((r) => r.id).join(",")})`);
     const { error, status } = await del;
@@ -468,6 +482,8 @@ async function applyChildListOp(
         // Still colliding → the two rows sit INSIDE this snapshot (one row gives up
         // kind='photo' while another takes it), so no upsert order clears the index.
         // Replace the whole set instead: drop the event's rows, insert mine.
+        // write-guard-exempt: the insert that follows is what has to land, and it
+        // reports its own error — a row count on the wipe would add nothing.
         const wipe = await supabase.from(table).delete().eq("event_id", op.id);
         if (wipe.error) return failOrThrow(wipe.error.message, onLine, wipe.status);
         up = await supabase.from(table).insert(rows);
@@ -764,8 +780,23 @@ async function applyOp(op: NewMgmtOp): Promise<"applied" | { conflict: string }>
     if (!Number.isNaN(ms)) selfWriteMs.set(op.id, ms);
     return "applied";
   }
-  const res = await supabase.from("events").delete().eq("id", op.id);
+  const res = await supabase.from("events").delete().eq("id", op.id).select("id");
   if (!res.error) {
+    if (wroteNothing(res.data)) {
+      // 0 rows and no error: the DELETE reached the server and removed nothing.
+      // An anon request in the minute after a venue reconnect looks EXACTLY like
+      // this, and the old `if (!res.error) return "applied"` recorded it as SYNCED
+      // — the queued intent was then deleted, the event stayed alive online, and
+      // nothing on any screen said so. Same cure as the update branch above:
+      // re-prove the session (a throw leaves the whole queue for the next
+      // reconnect), and only judge the write once we know it carried our JWT.
+      // With the session proven, 0 rows is a refusal — the guard read a moment ago
+      // DID see the row, and the "someone else deleted it first" race that could
+      // also land here returns "applied" from that read on the next flush anyway.
+      // Parking is the recoverable side of that coin; "ใช้ของออนไลน์" clears it.
+      await requireLiveSession();
+      return { conflict: DELETE_NO_ROWS_REASON };
+    }
     selfWriteMs.delete(op.id);
     return "applied";
   }
@@ -953,12 +984,27 @@ export function resolveMgmtConflict(
               await setConflictReason(key, reason);
               return { ok: false, message: reason };
             }
-          } else {
-            const { error } =
-              op.kind === "event.create"
-                ? await supabase.from("events").upsert({ ...op.values, id: op.id })
-                : await supabase.from("events").delete().eq("id", op.id);
+          } else if (op.kind === "event.create") {
+            const { error } = await supabase.from("events").upsert({ ...op.values, id: op.id });
             if (error) return { ok: false };
+          } else {
+            const { data, error } = await supabase
+              .from("events")
+              .delete()
+              .eq("id", op.id)
+              .select("id");
+            if (error) return { ok: false };
+            if (wroteNothing(data)) {
+              // The same 0-row hole the event.update branch above already guards,
+              // and the consequence here is the worst one in this function: falling
+              // through DELETES the conflict record, so the queued delete is gone
+              // for good while the event is still live online. Session first (it can
+              // die between the check at the top of this block and this write), then
+              // keep the conflict parked with a reason the user can act on.
+              if (!(await hasLiveSession())) return { ok: false, message: NO_SESSION_REASON };
+              await setConflictReason(key, DELETE_NO_ROWS_REASON);
+              return { ok: false, message: DELETE_NO_ROWS_REASON };
+            }
           }
         } catch {
           return { ok: false };

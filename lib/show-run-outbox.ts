@@ -130,13 +130,29 @@ async function removeOp(key: string): Promise<void> {
   });
 }
 
-/** How many writes are waiting to sync (for a "ค้าง N รายการ" status chip). */
-export async function pendingCount(): Promise<number> {
+/**
+ * How many writes are waiting to sync (for the status chip) — or `null` when the
+ * queue could not be READ AT ALL: no IndexedDB, a blocked/aborted transaction, a
+ * store the browser has evicted or corrupted.
+ *
+ * The null is the whole point. "A failed read is not a zero count"
+ * (lib/read-guard.ts), and this is the one store where the difference costs a
+ * night's work rather than a refresh: this number is how an operator decides the
+ * show data is safely uploaded before closing the laptop, and the queue is the
+ * LAST COPY of a run time produced offline. Answering 0 for a queue we could not
+ * open says "nothing pending" about a queue that may be full, and there is no
+ * later screen that would ever contradict it.
+ *
+ * Callers must therefore branch on null explicitly — `count > 0` reads a null as
+ * "no", which is the safe direction only for hiding a chip, never for reporting
+ * one. See components/event/live-status-strip.tsx.
+ */
+export async function pendingCount(): Promise<number | null> {
   try {
     const ops = await listOps();
     return ops.length;
   } catch {
-    return 0;
+    return null;
   }
 }
 
@@ -259,15 +275,66 @@ export async function flushOutbox(): Promise<{ flushed: number; remaining: numbe
 }
 
 /**
+ * What became of one persistLastRun call.
+ *
+ *   • "saved"  — it is on the server. Nothing is owed.
+ *   • "queued" — not sent, but written to disk. A later flushOutbox lands it, and
+ *                it survives a reload, a crash and a reinstall-free restart.
+ *   • "lost"   — NEITHER. The write did not reach the server and the queue would
+ *                not take it either, so the number exists only in the React state
+ *                of the screen that produced it and dies with that screen.
+ *
+ * The third case is the reason this function returns anything at all: "queued" and
+ * "lost" used to be the same resolved-undefined.
+ */
+export type ShowRunSaveOutcome = "saved" | "queued" | "lost";
+
+/**
+ * Fired on `window` after every persistLastRun, with the outcome in
+ * `detail.outcome`. Mirrors MGMT_OUTBOX_EVENT (lib/mgmt-outbox.ts) and
+ * RUNSEQ_OUTBOX_EVENT (lib/run-order-outbox.ts) — announce, let the chips read.
+ *
+ * It exists here for a reason those two do not have: BOTH call sites of
+ * persistLastRun (Live Mode's จบโชว์ and ล้าง) are fire-and-forget, so a return
+ * value alone reaches nobody and a rejection would only be swallowed by their
+ * `.catch(() => {})`. This event is how a "lost" gets in front of the person
+ * standing at the desk without the call site having to await anything.
+ * components/event/live-status-strip.tsx listens; the outcome is emitted on
+ * SUCCESS too, so a save that finally lands clears the warning a previous one
+ * raised.
+ */
+export const SHOW_RUN_SAVE_EVENT = "cueiq:show-run-save";
+
+function announceSave(outcome: ShowRunSaveOutcome): ShowRunSaveOutcome {
+  if (typeof window !== "undefined") {
+    try {
+      window.dispatchEvent(new CustomEvent(SHOW_RUN_SAVE_EVENT, { detail: { outcome } }));
+    } catch {
+      /* a listener threw — never let the chip's bookkeeping change the outcome */
+    }
+  }
+  return outcome;
+}
+
+/**
  * Write the saved last-run time for an event, queuing it for later if offline.
  * Used by Live Mode's จบโชว์ / ล้าง so the run time survives a fully-offline show
  * and lands on the server when the device reconnects.
+ *
+ * ⚠️ RESOLVES WITH AN OUTCOME, AND "lost" IS ONE OF THEM. This used to end with
+ * `await enqueue(…).catch(() => {})`, which meant a queue that refused the write
+ * resolved exactly like one that took it: the function returned normally having
+ * NEITHER sent nor stored the value, and both callers are fire-and-forget, so
+ * nothing anywhere learned the run time was gone — จบโชว์ still toasted
+ * "บันทึกเวลาโชว์ล่าสุด … แล้ว". A caller that can act on the result should read
+ * it (the same way saveEventWrite's `{ ok: false }` and tryQueueAudioUpload's
+ * `false` are read); a caller that cannot gets the window event above.
  */
 export async function persistLastRun(
   eventId: string,
   seconds: number | null,
   at: number | null
-): Promise<void> {
+): Promise<ShowRunSaveOutcome> {
   try {
     const supabase = createClient();
     const { data, error } = await supabase
@@ -281,9 +348,19 @@ export async function persistLastRun(
     // Same anon-fallback hole as apply() above: a 204/error:null with no row
     // touched must NOT be read as success, or จบโชว์ reports a save that never
     // happened and nothing is queued to retry it. Fall through to enqueue().
-    if (!error && !wroteNothing(data)) return;
+    if (!error && !wroteNothing(data)) return announceSave("saved");
   } catch {
     /* network failure → fall through to queue */
   }
-  await enqueue({ kind: "event_last_run", eventId, seconds, at }).catch(() => {});
+  try {
+    await enqueue({ kind: "event_last_run", eventId, seconds, at });
+    return announceSave("queued");
+  } catch (err) {
+    // The one case with nowhere left to put the number. Say it three ways,
+    // because each reaches a different reader: the return value for anyone who
+    // awaits, the window event for the status strip on the operator's screen,
+    // and the console for whoever looks at this afterwards.
+    console.error("[CueIQ] show-run: could not save OR queue the last-run time", err);
+    return announceSave("lost");
+  }
 }
