@@ -17,6 +17,13 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { createClient } from "@/lib/supabase/client";
+import {
+  COUNT_SAMPLE_COUNT,
+  countSetIsComplete,
+  countVoiceNote,
+  loadCountSamples,
+  type CountVoiceStatus,
+} from "@/lib/count-samples";
 import { wroteNothing, noRowsMessage } from "@/lib/write-guard";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -108,6 +115,11 @@ export function Metronome({
   const [beatLabel, setBeatLabel] = useState(0); // current beat shown in the dial
   const [detecting, setDetecting] = useState(false); // analysing audio for its BPM
   const [hasBeats, setHasBeats] = useState(false); // beat-locked (vs free-run) sync
+  // Did the pre-recorded count actually load? Drives the note under the mode
+  // button — see countVoiceNote(). Never let the UI imply the cute voice while
+  // the scheduler is really running the TTS/click fallback.
+  const [countStatus, setCountStatus] = useState<CountVoiceStatus>("loading");
+  const [canSpeak, setCanSpeak] = useState(false); // a platform TTS voice exists
 
   // live refs for the running scheduler (so it reads the latest values)
   const bpmRef = useRef(bpm);
@@ -154,10 +166,21 @@ export function Metronome({
 
   // Pre-recorded count samples ("one".."eight", cute JP-accented female voice):
   // scheduled sample-accurately via Web Audio so the count lands ON the beat,
-  // unlike live SpeechSynthesis (which lags). rawCountRef = fetched mp3 bytes;
-  // countBuffersRef = decoded per audio context. See public/sounds/count/.
+  // unlike live SpeechSynthesis (which lags). rawCountRef = loaded mp3 bytes;
+  // countBuffersRef = decoded per audio context. Where the bytes come from
+  // differs per build (web = fetch from public/, desktop = inlined into the
+  // bundle because file:// can't fetch) — that's all in lib/count-samples.ts.
   const rawCountRef = useRef<ArrayBuffer[]>([]);
   const countBuffersRef = useRef<(AudioBuffer | null)[]>([]);
+  // Which voice the CURRENT BAR counts in — decided at its downbeat and held for
+  // the whole 1–N. See the block in scheduleBeat: without this the all-or-nothing
+  // rule held only at the instant the decode published, and the bar straddling
+  // that instant was the mixed count the rule exists to forbid.
+  const useSamplesRef = useRef(false);
+  // False until the CURRENT RUN has decided a voice at least once, so a run that
+  // starts mid-bar decides at its own first scheduled beat instead of inheriting
+  // the previous run's answer. Cleared in startScheduler, set in scheduleBeat.
+  const barLatchedRef = useRef(false);
 
   useEffect(() => {
     if (song?.bpm) setBpm(clampBpm(song.bpm));
@@ -171,24 +194,31 @@ export function Metronome({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [song?.id]);
 
-  // Fetch the count samples once (tiny; the service worker caches them so they're
-  // on-device for stability, like Live Mode's prefetch).
+  // Load the count samples once. All-or-nothing, and the OUTCOME IS RECORDED —
+  // it used to be swallowed by a bare catch, which is how the desktop app ran for
+  // months counting with laggy TTS while the pill still said "เสียงสาวญี่ปุ่น".
+  // (An older comment here claimed the service worker kept these on-device: it
+  // does not. public/sw.js is "v8-push-only" — no fetch handler, and it deletes
+  // every cueiq-* cache on activate. The desktop app is the offline story now.)
+  //
+  // ARRIVING IS NOT PLAYING. Success here only says the BYTES are in memory, so
+  // this used to set "ready" — and on the desktop the bytes are data: URIs baked
+  // into the bundle, i.e. "ready" the instant the panel mounted, before a single
+  // decodeAudioData had run. The pill therefore promised "เสียงสาวญี่ปุ่น" while
+  // the first bar counted in the machine's TTS. Only decodeCount() knows what the
+  // scheduler will actually reach for, so only decodeCount() sets "ready" now;
+  // until it publishes, "กำลังโหลดเสียงนับ…" is the true statement.
   useEffect(() => {
     let alive = true;
     (async () => {
       try {
-        const bytes = await Promise.all(
-          Array.from({ length: 8 }, (_, i) =>
-            fetch(`/sounds/count/${i + 1}.mp3`).then((r) =>
-              r.ok ? r.arrayBuffer() : Promise.reject(new Error(String(r.status)))
-            )
-          )
-        );
+        const bytes = await loadCountSamples();
         if (!alive) return;
         rawCountRef.current = bytes;
         if (ctxRef.current) void decodeCount(ctxRef.current);
       } catch {
-        /* fall back to TTS / click */
+        if (!alive) return;
+        setCountStatus("unavailable"); // scheduleBeat falls back to TTS / click
       }
     })();
     return () => {
@@ -208,6 +238,9 @@ export function Metronome({
       const pool = en.length ? en : voices;
       voiceRef.current = pool.find((v) => FEMALE_VOICE.test(v.name)) || pool[0] || null;
       canSpeakRef.current = true;
+      // Mirrored into state (the ref alone can't re-render): the fallback notice
+      // has to say "เสียงอ่านของเครื่อง" vs "เสียงคลิก" depending on this.
+      setCanSpeak(true);
     };
     load();
     synth.addEventListener?.("voiceschanged", load);
@@ -231,23 +264,62 @@ export function Metronome({
     ctxRef.current?.close().catch(() => {});
     ctxRef.current = null;
     countBuffersRef.current = []; // decoded against the old ctx — re-decode on reopen
+    // The buffers "ready" described are gone with the context, so the pill must
+    // stop claiming them until the re-decode publishes. A loader verdict of
+    // "unavailable" is about the BYTES, not the context, and survives untouched —
+    // demoting that one to "loading" would promise a retry that never comes.
+    setCountStatus((s) => (s === "ready" ? "loading" : s));
   }
 
   // Decode the fetched count mp3s for this context (once). slice(0) clones so the
   // raw bytes survive decodeAudioData detaching them (lets us re-decode later).
   async function decodeCount(ctx: AudioContext) {
     const raw = rawCountRef.current;
-    if (raw.length < 8) return;
-    if (countBuffersRef.current.length === 8 && countBuffersRef.current.every(Boolean)) return;
+    if (raw.length < COUNT_SAMPLE_COUNT) return; // not loaded (yet) — status already says so
+    // Already decoded for a context that is still the live one — nothing to do.
+    // Same predicate as the publish below, deliberately: this was a second copy
+    // of the hole-blind `length === N && every(Boolean)` check.
+    if (countSetIsComplete(countBuffersRef.current)) return;
     const out: (AudioBuffer | null)[] = [];
-    for (let i = 0; i < 8; i++) {
+    for (let i = 0; i < COUNT_SAMPLE_COUNT; i++) {
       try {
         out[i] = await ctx.decodeAudioData(raw[i].slice(0));
       } catch {
         out[i] = null;
       }
     }
-    countBuffersRef.current = out;
+    // ABORTED IS NOT BROKEN, and only one of the two deserves a warning.
+    // Every decode above rejects if the context was closed underneath us, and
+    // closing it is ROUTINE: ปิด and unmount both call closeCtx(). Before this
+    // guard, opening the panel and closing it inside the decode window left the
+    // torn-down run free to publish its verdict — so the desktop app, where the
+    // mp3s are baked into the bundle as data: URIs and literally cannot fail to
+    // load, showed the amber "โหลดเสียงนับไม่ได้" at a venue. The same unguarded
+    // write also let a stale run clobber a fresh one's buffers. A run whose
+    // context has been replaced or nulled knows nothing about these samples, so
+    // it publishes neither buffers nor verdict and leaves both to the live run.
+    // (round 10 review, 2026-08-08.)
+    if (ctx !== ctxRef.current) return;
+    // ALL-OR-NOTHING on the decode path too — the rule lib/count-samples.ts
+    // enforces on the LOAD path and this line used to break. scheduleBeat indexes
+    // this array per beat, so a partial set counts 1–6 in the recorded voice and
+    // clicks (or TTS) on 7–8, mid-count, in front of the band. Publishing []
+    // instead sends every beat down the SAME fallback branch — which is what the
+    // amber notice actually claims — and leaves the length guard above ready to
+    // re-decode cleanly on the next open.
+    //
+    // Publishing is only half of it, and an earlier version of this comment said
+    // otherwise: a bar already in flight when this line runs would still switch
+    // voices between its beats, because scheduleBeat re-read the array every beat.
+    // It now latches at each downbeat, so what this publish changes is the NEXT
+    // bar, never the one being counted.
+    //
+    // Bytes arriving but not decoding (a codec the platform won't take) is the
+    // same lie as bytes never arriving: the operator hears the fallback while the
+    // label promises the recording. Report it the same way.
+    const complete = countSetIsComplete(out);
+    countBuffersRef.current = complete ? out : [];
+    setCountStatus(complete ? "ready" : "unavailable");
   }
 
   // Track a scheduled node so stopScheduler can cancel it if it hasn't fired yet
@@ -312,8 +384,36 @@ export function Metronome({
     if (!ctx) return;
     const nBeats = beatsRef.current;
     const idx = ((abs % nBeats) + nBeats) % nBeats;
+    // ALL-OR-NOTHING ACROSS THE BAR, not just at the moment the decode publishes.
+    // This line used to read countBuffersRef per beat, so the rule the publish
+    // site enforces held only BETWEEN publishes, never across one — and a bar
+    // straddling the publish is exactly the state the rule forbids. The venue
+    // sequence: the song is already playing, the Ar taps "เมโทรนอม", the onClick
+    // fires decodeCount (eight sequential decodeAudioData calls, ~40ms) and opens
+    // the panel in the same commit; the sync effect starts the scheduler and its
+    // first 25ms tick schedules beat 1 while the buffers are still []. Beat 1 went
+    // out on the machine's flat English TTS and beats 2–8 in the recorded Japanese
+    // voice, inside one 8-count. On the web the window is seconds, not
+    // milliseconds — loadCountSamples is eight network fetches.
+    //
+    // Latching at the downbeat (rather than once per run, which was the review's
+    // suggestion) keeps every 1–N uniform AND lets a run that started early heal
+    // at the next bar instead of counting a whole song in TTS while the pill
+    // promises the recording. The latch can only ever go fallback → recording
+    // mid-run: decodeCount early-returns on an already-complete set, so nothing
+    // downgrades a live set, and the only thing that empties it (closeCtx) stops
+    // the scheduler first. (round 10 review wave 2, 2026-08-08.)
+    //
+    // Also decide on the run's FIRST scheduled beat, wherever in the bar it falls
+    // — a beat-locked or phase-anchored run usually starts mid-bar, and deciding
+    // in startScheduler instead pinned that whole bar to a snapshot taken up to a
+    // beat before it sounded, i.e. before the decode had published. (wave 3.)
+    if (idx === 0 || !barLatchedRef.current) {
+      useSamplesRef.current = countSetIsComplete(countBuffersRef.current);
+      barLatchedRef.current = true;
+    }
     const wantVoice = modeRef.current === "voice";
-    const sample = wantVoice ? countBuffersRef.current[idx] : null;
+    const sample = wantVoice && useSamplesRef.current ? countBuffersRef.current[idx] : null;
     // Preloaded sample → schedule it on the audio clock (tight). No sample but a
     // platform voice → fall back to live TTS (laggy). Otherwise click.
     const ttsFallback = wantVoice && !sample && canSpeakRef.current;
@@ -408,6 +508,13 @@ export function Metronome({
 
   function startScheduler(anchored: boolean) {
     const ctx = ensureCtxUnlocked();
+    // The run's first bar must not inherit whatever the previous run decided — a
+    // beat-locked run can start mid-bar ("ตั้งบีตแรก" puts beat 1 wherever the
+    // operator tapped), so it may never see a downbeat. Clear the latch rather
+    // than snapshotting the buffers here: scheduleBeat then reads them as they
+    // are when the first beat is actually scheduled, which in the tap-while-
+    // playing case is a beat later — by then the decode has published.
+    barLatchedRef.current = false;
     if (timerRef.current) clearInterval(timerRef.current);
     if (anchored) {
       anchorSync();
@@ -798,7 +905,18 @@ export function Metronome({
             นับ 1–{beats} 🎀
           </button>
         </div>
-        {mode === "voice" && <span className="text-xs text-muted-foreground">เสียงสาวญี่ปุ่น</span>}
+        {/* The honest label. "voice mode is selected" and "the recorded voice is
+            what you'll hear" are different facts; this line states the second. */}
+        {mode === "voice" && (
+          <span
+            className={cn(
+              "text-xs",
+              countStatus === "unavailable" ? "text-amber-600 dark:text-amber-500" : "text-muted-foreground"
+            )}
+          >
+            {countVoiceNote(countStatus, canSpeak)}
+          </span>
+        )}
       </div>
 
       {/* metronome volume — independent of the song's volume */}

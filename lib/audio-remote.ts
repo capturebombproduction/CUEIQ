@@ -161,6 +161,22 @@ function isTerminalError(e: unknown): boolean {
 }
 
 /**
+ * A failed HTTP hop, carrying the code the server actually answered with.
+ *
+ * The message is Thai (it is shown to the operator), and a Thai message tells a
+ * classifier nothing: desktop/src/data/mgmt-outbox.ts decides whether a failed
+ * offline audio flush is RETRIED or parked forever, and that decision is
+ * isQueueableWriteError — which reads an HTTP status, falling back to an
+ * ASCII-only word list. Without the status a 503 from presign or R2 looked exactly
+ * like a permanent rejection, so a queued master was parked and dropped from the
+ * queue; "ใช้ของออนไลน์" on that conflict then clears the local source, i.e. the
+ * only copy of that take. Attach the number so a sick server stays retryable.
+ */
+function httpError(message: string, status: number): Error & { status: number } {
+  return Object.assign(new Error(message), { status });
+}
+
+/**
  * An AbortSignal bounded by a timer AND by the caller's own signal, plus the
  * cleanup that must run in a `finally` (a live timer/listener keeps the whole
  * transfer's closure alive). `ping()` restarts the countdown — that is what turns
@@ -288,7 +304,7 @@ async function presign(
       signal: t.signal,
     });
     if (!res.ok) {
-      throw new Error(`ขอลิงก์ ${op} ไม่สำเร็จ (${res.status})`);
+      throw httpError(`ขอลิงก์ ${op} ไม่สำเร็จ (${res.status})`, res.status);
     }
     const data = (await res.json()) as { url?: string };
     if (!data.url) throw new Error("presign: missing url");
@@ -350,7 +366,7 @@ export async function uploadEventAudio(
       // sending it is safe and lets R2 store a sensible type for playback.
       headers: type ? { "Content-Type": type } : undefined,
     });
-    if (!res.ok) throw new Error(`อัปโหลดไฟล์เสียงไม่สำเร็จ (${res.status})`);
+    if (!res.ok) throw httpError(`อัปโหลดไฟล์เสียงไม่สำเร็จ (${res.status})`, res.status);
   });
 }
 

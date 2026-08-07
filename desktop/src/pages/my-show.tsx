@@ -1072,19 +1072,28 @@ export function MyShow() {
       return;
     const s = stateRef.current;
     const n = itemsRef.current.length;
+    /* 🔒 A HELD KEY IS ONE INTENTION, NOT FIFTY — same rule and same PLACEMENT as Live
+       Mode's (components/event/live-mode.tsx): the repeat check goes after preventDefault,
+       inside each branch. Guarding at the top of the handler stops the toggle spam and
+       hands the browser back its default, so a held spacebar scrolls the transport row off
+       the screen — on this build, that is the laptop wired to the PA. Suppress on every
+       repeat; act once. */
     if (e.code === "Space") {
       e.preventDefault();
+      if (e.repeat) return;
       if (!s.begun) {
         if (n > 0) start(); // same guard as the START SHOW button — never begin empty
       } else toggleShowRun();
     } else if (e.key === "ArrowRight" || e.key === "n" || e.key === "N") {
       if (s.begun && s.mode === "manual" && s.currentIndex < n - 1) {
         e.preventDefault();
+        if (e.repeat) return;
         goto(s.currentIndex + 1);
       }
     } else if (e.key === "ArrowLeft") {
       if (s.begun && s.mode === "manual" && s.currentIndex > 0) {
         e.preventDefault();
+        if (e.repeat) return;
         goto(s.currentIndex - 1);
       }
     }
@@ -1591,7 +1600,20 @@ export function MyShow() {
                   <Play className="h-5 w-5" /> START SHOW
                 </Button>
               ) : (
-                <div className="flex items-center gap-1.5">
+                /* ── THE TRANSPORT ROW — identical to Live Mode's, and fixed for the same
+                   measured reason. On a 360px screen this row rendered SkipBack 44 · run 172
+                   · **NEXT 24** · Reset 44, where the 24 was pure padding: NEXT carried
+                   `min-w-0 flex-1` so its basis was zero, and its icon and label painted
+                   ~20px outside the pill, on top of RESET. The row also jumped 31px sideways
+                   the moment the show started, because the run button's label changed length.
+                   Fixed width on the run button · a floor under NEXT · the row may wrap so
+                   that on a very narrow screen RESET drops to a second line instead of NEXT
+                   collapsing. Keep this in step with components/event/live-mode.tsx — the two
+                   transports are the same control on two surfaces.
+                   📏 Budgeted against the row's REAL width (302px on a 360px device once the
+                   container's 32px and the card's 24px of padding are taken out), not the
+                   viewport: 44 + 108 + 92 + 44 + 3 gaps of 4px = 300px. */
+                <div className="flex flex-wrap items-center gap-1">
                   <Button
                     variant="outline"
                     size="icon"
@@ -1605,8 +1627,20 @@ export function MyShow() {
                   <Button
                     size="lg"
                     onClick={toggleShowRun}
+                    /* 📏 Same measured budget as Live Mode's: worst-case content is
+                       "กำลังรัน" 54px + 28px of dot/icon and gap = 82px, so px-3 + 6.75rem
+                       (108px) clears it by 2px where size="lg"'s own px-6 would have needed
+                       130px and blown the row. Keep this number in step with
+                       components/event/live-mode.tsx — same control, two surfaces. */
+                    /* 🔤 …and the same tooltip, for the same reason: the shortened label no
+                       longer says this button starts the clock. */
+                    title={
+                      state.running
+                        ? "กำลังจับเวลาโชว์ — แตะเพื่อพัก"
+                        : "เริ่มรันโชว์ (เริ่มจับเวลาสะสม)"
+                    }
                     className={cn(
-                      "min-w-0 shrink font-semibold text-white",
+                      "w-[6.75rem] shrink-0 justify-center px-3 font-semibold text-white",
                       state.running
                         ? "bg-green-600 hover:bg-green-700"
                         : "bg-amber-500 hover:bg-amber-600"
@@ -1615,17 +1649,17 @@ export function MyShow() {
                     {state.running ? (
                       <>
                         <span className="h-2 w-2 shrink-0 animate-pulse rounded-full bg-white" />
-                        กำลังรันโชว์
+                        กำลังรัน
                       </>
                     ) : (
                       <>
-                        <Play className="h-5 w-5" /> รันโชว์ (จับเวลา)
+                        <Play className="h-5 w-5 shrink-0" /> รันโชว์
                       </>
                     )}
                   </Button>
                   <Button
                     size="lg"
-                    className="min-w-0 flex-1 px-3"
+                    className="min-w-[5.75rem] flex-1 justify-center px-3"
                     onClick={() => goto(state.currentIndex + 1)}
                     disabled={state.mode === "auto" || state.currentIndex >= items.length - 1}
                     title={state.mode === "auto" ? "สลับเป็น Manual เพื่อข้ามเอง" : "รายการถัดไป"}
@@ -1637,6 +1671,7 @@ export function MyShow() {
                     size="icon"
                     className="h-11 w-11 shrink-0"
                     onClick={reset}
+                    title="รีเซ็ตสถานะโชว์"
                   >
                     <RotateCcw className="h-5 w-5" />
                   </Button>

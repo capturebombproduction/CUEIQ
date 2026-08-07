@@ -276,11 +276,30 @@ export function EventLiveCaller({
   const writesInFlightRef = useRef(0);
   const missedRefetchRef = useRef(false);
 
-  async function refetch() {
+  /**
+   * Pull the board back to what the server says.
+   *
+   * 🔎 REPORTS WHAT ACTUALLY HAPPENED (round 10), because apply()'s error path makes a
+   * PROMISE about it: it tells the operator the board was corrected. During an outage the
+   * read fails for the same reason the write did, so that promise was a sentence and
+   * nothing else while the screen kept showing an advanced row no other device agreed with.
+   *
+   * ⚠️ THREE OUTCOMES, NOT TWO. The first version returned a boolean and the caller read
+   * every `false` as "the read failed" — but two of the three early returns below are
+   * ORDINARY SUCCESS PATHS. Deferring behind our own in-flight write sets `missedRefetch`
+   * and the board is pulled correctly a moment later; a snapshot superseded by a newer
+   * refetch is dropped precisely so the newer one can land. Warning on those meant a red
+   * "บันทึกไม่สำเร็จ" followed by an untrue amber "the board may not match" — mid-show, on
+   * the authoritative festival screen, inviting a needless reload of the one device driving
+   * the running order. Only `"failed"` means nobody is going to fix this by themselves.
+   */
+  type RefetchOutcome = "applied" | "deferred" | "failed";
+
+  async function refetch(): Promise<RefetchOutcome> {
     if (writesInFlightRef.current > 0) {
       // anything we read now can be pre-write — apply() re-pulls once it commits
       missedRefetchRef.current = true;
-      return;
+      return "deferred";
     }
     const seq = ++refetchSeqRef.current;
     missedRefetchRef.current = false;
@@ -295,18 +314,21 @@ export function EventLiveCaller({
     // a newer refetch — or a local write — was issued while this was in flight:
     // drop this older snapshot and let apply()'s tail pull a fresh one
     if (seq !== refetchSeqRef.current) {
+      // superseded — the newer refetch is the one that will land. Not a failure.
       missedRefetchRef.current = true;
-      return;
+      return "deferred";
     }
-    if (!data) return;
+    if (!data) return "failed";
     // `data: [], error: null` is also what RLS answers an ANON request with, and
     // supabase-js falls back to the anon key for the minute after a failed token
     // refresh — the same minute a backgrounded phone comes back and this refetch
     // fires on wake/reconnect. Blanking the running order on the one screen the
     // whole festival is called from is not a risk worth an unverified read.
-    if (data.length === 0 && rows.length > 0 && !(await hasLiveSession())) return;
-    if (seq !== refetchSeqRef.current) return;
+    // An unverifiable empty answer is a read we could not trust — that IS a failure.
+    if (data.length === 0 && rows.length > 0 && !(await hasLiveSession())) return "failed";
+    if (seq !== refetchSeqRef.current) return "deferred";
     setRows(data as RunSeqLive[]);
+    return "applied";
   }
   const refetchRef = useRef(refetch);
   refetchRef.current = refetch;
@@ -415,10 +437,16 @@ export function EventLiveCaller({
     // Set when the press must be queued regardless of WHY — see apply()'s
     // already-queued branch. There was no network error to classify: the press is
     // simply not something the server can be asked about yet.
-    force = false
+    force = false,
+    /* The PostgrestResponse's HTTP status, when the caller has one. Round 10: without
+       it a Supabase/Cloudflare 503 or 429 was read as a REAL REJECTION, because those
+       arrive as an HTML page whose text matches none of the network words — so the
+       operator's press was neither written nor queued while the row was already
+       advanced on screen. See lib/mgmt-outbox.ts for the full account. */
+    status?: number | null
   ): Promise<boolean> {
     const onLine = typeof navigator === "undefined" || navigator.onLine !== false;
-    if (!force && !isQueueableWriteError(message, onLine)) return false;
+    if (!force && !isQueueableWriteError(message, onLine, status)) return false;
     const festival = `${eventName}${eventDate ? ` · ${eventDate}` : ""}`;
     const at = Date.now();
     for (const u of updates) {
@@ -551,7 +579,12 @@ export function EventLiveCaller({
       writesInFlightRef.current--;
       setBusy(false);
     });
-    const err = results.find((r) => r.error)?.error;
+    const failedResult = results.find((r) => r.error);
+    const err = failedResult?.error;
+    // The HTTP status of the SAME response the error came from — a 5xx/429 here is the
+    // difference between "queue this press" and "throw this press away". Read it off the
+    // response rather than off the error's prose (round 10; see isQueueableWriteError).
+    const errStatus = failedResult?.status ?? null;
     const losers = updates.filter(
       (_, i) => !results[i].error && (results[i].data?.length ?? 0) === 0
     );
@@ -567,14 +600,24 @@ export function EventLiveCaller({
       // Queueing that one too would replay it against a precondition it consumed
       // itself, and park the operator's own successful press as a conflict.
       const failed = updates.filter((_, i) => results[i].error);
-      if (await queueOffline(failed, err.message)) {
+      if (await queueOffline(failed, err.message, false, errStatus)) {
         toast.success(RUNSEQ_QUEUED_MESSAGE, { id: "runseq-offline-queued" });
         bcast();
         return "queued";
       }
       toast.error("บันทึกไม่สำเร็จ", { description: err.message });
-      // pull the board back to server truth so the optimistic rows don't linger
-      refetchRef.current();
+      /* Pull the board back to server truth so the optimistic rows don't linger — but
+         SAY SO ONLY IF IT WORKED. During the same outage that caused the failure this
+         refetch is a no-op (it bails on a failed read), so the toast above used to
+         promise a correction that never happened and the operator was left looking at
+         an advanced row that no other device agreed with. Now the screen admits it. */
+      const pulledBack = await refetchRef.current();
+      if (pulledBack === "failed") {
+        toast.warning("บอร์ดบนเครื่องนี้อาจไม่ตรงกับเครื่องอื่น", {
+          id: "runseq-refetch-failed",
+          description: "ดึงข้อมูลล่าสุดไม่สำเร็จ — กดรีเฟรชอีกครั้งเมื่อเน็ตกลับมา",
+        });
+      }
     } else if (losers.length > 0) {
       const denied = await writeWasDenied(losers);
       if (denied) {

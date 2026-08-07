@@ -4,6 +4,16 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { saveEventWrite } from "@/lib/mgmt-write";
+import { createClient } from "@/lib/supabase/client";
+import { useConfirm } from "@/components/ui/confirm-dialog";
+import {
+  describeFestivalMovePlan,
+  festivalKeyChanged,
+  normalizeFestivalKey,
+  planFestivalMove,
+  type FestivalKey,
+  type FestivalMovePlan,
+} from "@/lib/festival-key";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -64,6 +74,7 @@ export function EventForm({
   canApprove?: boolean;
 }) {
   const router = useRouter();
+  const confirm = useConfirm();
   const [name, setName] = useState(event?.name ?? "");
   const [groupId, setGroupId] = useState(
     event?.group_id ?? defaultGroupId ?? groups[0]?.id ?? ""
@@ -90,6 +101,72 @@ export function EventForm({
     const preset = findVenuePreset(v);
     if (preset && !mapUrl.trim()) setMapUrl(preset.mapUrl);
   }
+
+  /**
+   * The festival board keys on (tenant, event_name, event_date) — see lib/festival-key.ts
+   * for why, and for what renaming an event used to do to it. Two halves, and they are
+   * deliberately separate functions: ASK before the save (so a cancel costs nothing) and
+   * MOVE after it (so we never move a board for an edit that then failed to save).
+   *
+   * Returns false only when the user cancels.
+   */
+  async function confirmFestivalMove(
+    before: FestivalKey,
+    after: FestivalKey
+  ): Promise<{ go: boolean; plan: FestivalMovePlan }> {
+    if (!event || !festivalKeyChanged(before, after)) return { go: true, plan: { kind: "no-board" } };
+    /* ONE read, and it only decides WORDING — the board is never written (lib/festival-key.ts
+       explains why the write was cut). So when we already know the network is down there is
+       nothing to gain by asking: skip the doomed round trip and warn without a number, the
+       same way saveEventWrite skips its own doomed attempt on the desktop. */
+    const onLine = typeof navigator === "undefined" || navigator.onLine !== false;
+    let rows: number | null = null;
+    if (onLine) {
+      const supabase = createClient();
+      let q = supabase
+        .from("run_sequence")
+        .select("id", { count: "exact", head: true })
+        .eq("tenant_id", tenantId)
+        .eq("event_name", before.name);
+      q = before.date ? q.eq("event_date", before.date) : q.is("event_date", null);
+      /* ⏱ BOUNDED, because `navigator.onLine` only knows whether a cable/radio is attached.
+         A venue AP that has associated but has no upstream reports online, and an unbounded
+         await here left the Save button spinning until the browser's own fetch timeout with
+         the edit neither saved nor queued — the user staring at a frozen dialog on the one
+         night they cannot wait. This read only chooses WORDING, so giving up on it costs a
+         number in a sentence; the confirm still appears and the save still proceeds. Same
+         shape as the flush deadlines in event-live-caller and the desktop outbox. */
+      const { count, error } = await Promise.race([
+        q.then((r) => ({ count: r.count, error: r.error as unknown })),
+        new Promise<{ count: null; error: unknown }>((resolve) =>
+          setTimeout(() => resolve({ count: null, error: new Error("timeout") }), 4000)
+        ),
+      ]);
+      // null, never 0 — "could not check" must not read as "there is no board".
+      rows = error ? null : (count ?? 0);
+    }
+    const plan = planFestivalMove({ rows });
+    const dialog = describeFestivalMovePlan(plan, before, after);
+    if (!dialog) return { go: true, plan };
+    const go = await confirm({
+      title: dialog.title,
+      description: dialog.description,
+      confirmText: dialog.confirmText,
+      cancelText: "ยกเลิก",
+      destructive: true,
+    });
+    return { go, plan };
+  }
+
+  /* 🗑 THERE IS NO `moveFestivalBoard` ANY MORE, AND THAT IS THE FIX.
+     Two versions of it existed in one night. The first moved every row under the old key
+     and so dragged a shared festival's board away from the other seven bands. The second
+     moved only when a sibling-event count proved this event was the board's sole member —
+     and that count reads through the caller's own RLS, where a band's Ar (the person the
+     feature is FOR) cannot see the other bands' events at all and the count comes back 0.
+     A proof that says "safe" exactly when it cannot see the danger is not a proof.
+     The warning below is the whole repair: renaming already detached this event silently,
+     and now it says so first. See lib/festival-key.ts. */
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -139,11 +216,38 @@ export function EventForm({
         toast.error("สร้างงานไม่สำเร็จ", { description: friendlyError(res.message) });
         return;
       }
-      if (res.queued) toast.success("ออฟไลน์อยู่ — สร้างงานไว้ในเครื่องแล้ว จะซิงค์ให้เมื่อเน็ตกลับ");
-      else toast.success("สร้างงานสำเร็จ 🎉");
+      /* 🔤 Same rule as the edit path below: `res.queued` is now ALSO true for a 5xx/429
+         from a server that is up, so "ออฟไลน์อยู่" would send someone with full wifi bars
+         off to fix a network that is fine. Ask the browser, not the queue. */
+      if (res.queued) {
+        const reallyOffline = typeof navigator !== "undefined" && navigator.onLine === false;
+        toast.success(
+          reallyOffline
+            ? "ออฟไลน์อยู่ — สร้างงานไว้ในเครื่องแล้ว จะซิงค์ให้เมื่อเน็ตกลับ"
+            : "เซิร์ฟเวอร์ตอบไม่ได้ตอนนี้ — สร้างงานไว้ในเครื่องแล้ว จะซิงค์ให้อัตโนมัติ"
+        );
+      } else toast.success("สร้างงานสำเร็จ 🎉");
       router.push(`/events/${res.id}`);
       router.refresh();
     } else if (event) {
+      /* ── Does this edit move the festival board? Ask BEFORE writing anything ──────
+         run_sequence keys on (tenant, event_name, event_date), so an ordinary typo fix
+         used to detach this band from the whole festival — silently, and permanently if
+         the date moved too. See lib/festival-key.ts for the full account.
+         The check is skipped entirely for the edits that do not move the key, which is
+         nearly all of them, so the normal path is unchanged and costs no query. */
+      const beforeKey = normalizeFestivalKey(event.name, event.event_date);
+      const afterKey = normalizeFestivalKey(payload.name, payload.event_date);
+      /* The plan the dialog was built from is deliberately NOT kept: nothing after this
+         point acts on it any more. It existed to tell the post-save mover how many rows to
+         move, and there is no mover — see the tombstone above. */
+      if (festivalKeyChanged(beforeKey, afterKey)) {
+        const ask = await confirmFestivalMove(beforeKey, afterKey);
+        if (!ask.go) {
+          setLoading(false);
+          return;
+        }
+      }
       const res = await saveEventWrite({
         mode: "edit",
         payload,
@@ -155,8 +259,21 @@ export function EventForm({
         toast.error("บันทึกไม่สำเร็จ", { description: friendlyError(res.message) });
         return;
       }
-      if (res.queued) toast.success("ออฟไลน์อยู่ — บันทึกไว้ในเครื่องแล้ว จะซิงค์ให้เมื่อเน็ตกลับ");
-      else toast.success("บันทึกแล้ว");
+      /* 🔤 "ออฟไลน์อยู่" only when we actually are. `res.queued` is now ALSO true for a
+         5xx/429 from a server that is up (round 10 taught isQueueableWriteError to read the
+         HTTP status), and telling someone with full wifi bars that they are offline sends
+         them off to fix a network that is fine. */
+      if (res.queued) {
+        const reallyOffline = typeof navigator !== "undefined" && navigator.onLine === false;
+        toast.success(
+          reallyOffline
+            ? "ออฟไลน์อยู่ — บันทึกไว้ในเครื่องแล้ว จะซิงค์ให้เมื่อเน็ตกลับ"
+            : "เซิร์ฟเวอร์ตอบไม่ได้ตอนนี้ — บันทึกไว้ในเครื่องแล้ว จะซิงค์ให้อัตโนมัติ"
+        );
+      } else toast.success("บันทึกแล้ว");
+      /* Nothing happens to the board here, on purpose and in every case — the dialog above
+         already told the user it will not follow, and the two attempts to make it follow
+         are the reason this file has a tombstone where a mover used to be. */
       router.push(`/events/${event.id}`);
       router.refresh();
     }

@@ -1,7 +1,7 @@
 import { redirect } from "next/navigation";
 import Link from "next/link";
 import { ListOrdered, Radio } from "lucide-react";
-import { getWorkspace } from "@/lib/queries";
+import { getEventRow, getWorkspace } from "@/lib/queries";
 import { canApprove } from "@/lib/permissions";
 import { createClient } from "@/lib/supabase/server";
 import { Button } from "@/components/ui/button";
@@ -32,11 +32,13 @@ export default async function RunOrderPage({
   const tid = ws.membership.tenant_id;
   const supabase = await createClient();
 
-  const { data: ev } = await supabase
-    .from("events")
-    .select("id, name, event_date")
-    .eq("id", id)
-    .single();
+  // Same read, same guard as the live caller next door (see that file for the
+  // incident). A `.single()` whose `.error` is discarded cannot tell "this show was
+  // deleted" from "this one read timed out", and here the blind answer was to bounce
+  // the staff member building the running order back to /overview with no
+  // explanation at all. getEventRow keeps the redirect for a genuinely missing /
+  // RLS-hidden / malformed-id event and throws on a failed read.
+  const ev = await getEventRow(id);
   if (!ev) redirect("/overview");
 
   // Every band event of this festival (same name + date).

@@ -28,7 +28,9 @@ import {
   getShowReadiness,
   requestPersist,
   formatBytes,
+  describeSilentRows,
   type ShowReadiness,
+  type ShowSetlistRow,
 } from "@/lib/show-readiness";
 
 type RowTone = "ok" | "warn" | "bad" | "muted";
@@ -94,6 +96,7 @@ export function ShowReadinessCheck({
   eventId,
   targets,
   localOnly = [],
+  setlist,
 }: {
   eventId: string;
   targets: PrefetchTarget[];
@@ -105,6 +108,14 @@ export function ShowReadinessCheck({
    * reported a clean green "พร้อมโชว์ออฟไลน์".
    */
   localOnly?: LocalOnlyCandidate[];
+  /**
+   * The event's setlist rows, so the preflight can reconcile them against what the
+   * resolvers actually claimed (lib/show-readiness.ts `silent`). REQUIRED for that
+   * check to run at all: round 10 built the whole guard and then left this prop
+   * unpassed, so `silent` was hard-wired to [] on every real call and the green lie
+   * shipped unchanged. Omit it and you get the old, blinder behaviour.
+   */
+  setlist?: readonly ShowSetlistRow[];
 }) {
   const [r, setR] = useState<ShowReadiness | null>(null);
   const [open, setOpen] = useState(false);
@@ -166,7 +177,14 @@ export function ShowReadinessCheck({
   const [heldLocally, setHeldLocally] = useState<Set<string>>(new Set());
 
   const refresh = useCallback(() => {
-    getShowReadiness(eventId, targets)
+    // `alsoAccounted` = the local-only candidates. They are NOT download targets but
+    // they are accounted for (the row resolved to a song; whether this device holds
+    // the bytes is the separate noFileAtAll check below), so without them every
+    // master-less row would be double-reported as silent.
+    getShowReadiness(eventId, targets, {
+      setlist,
+      alsoAccounted: localOnly.map((c) => c.itemId),
+    })
       .then(setR)
       .catch(() => {});
     if (localOnly.length > 0) {
@@ -180,7 +198,10 @@ export function ShowReadinessCheck({
         .then((ids) => setHeldLocally((prev) => new Set([...prev, ...ids])))
         .catch(() => {});
     }
-  }, [eventId, targets, localOnly.length]);
+    // `localOnly` / `setlist` are props built by the page from its bundle, so their
+    // identity only changes when the PAGE re-renders — never on this component's own
+    // setState. Same stability `targets` has always relied on here.
+  }, [eventId, targets, localOnly, setlist]);
 
   useEffect(() => {
     refresh();
@@ -203,8 +224,18 @@ export function ShowReadinessCheck({
   // inside the readiness callback, which only ever saw the download counts, so a
   // set whose ONLY problem was a song with no file at all stayed collapsed —
   // hiding the very row that names those songs.
+  //
+  // `silentCount` is deliberately NOT in here (wave-2 repair). Auto-open exists for
+  // states with an ACTION: needCount has เตรียม, missingFileCount has "put a file on
+  // that song". A silent row may be a band that plays that song live, and there is
+  // no button anywhere that clears it — so keying auto-open on it re-opened the
+  // panel on every single mount, forever, on a perfectly healthy live_band show.
+  // (`userToggled` is a ref, reset per mount, so it could not even be dismissed.)
   const needCount = r ? r.audio.stale + r.audio.missing : 0;
   const missingFileCount = localOnly.filter((c) => !heldLocally.has(c.songId)).length;
+  // Rows that resolved to nothing at all. Only meaningful when `setlist` was passed:
+  // with the prop omitted this is [] meaning "not checked", never "checked and clean".
+  const silentCount = r?.silent.length ?? 0;
   useEffect(() => {
     if (!r || userToggled.current) return;
     setOpen(needCount > 0 || missingFileCount > 0);
@@ -243,8 +274,14 @@ export function ShowReadinessCheck({
     refresh();
   }, [refresh]);
 
-  // No audio in this event → nothing to preflight (e.g. an MC-only run).
-  if (targets.length === 0 && localOnly.length === 0) return null;
+  // No audio in this event → nothing to preflight (e.g. an MC-only run). The silent
+  // count has to be part of this: a set whose song rows ALL lost their audio has no
+  // targets and no local-only candidates either, so the old condition removed the
+  // card entirely — the operator saw no mention of those rows at all, only the
+  // absence of a control they may never have noticed was there. The card now shows
+  // up collapsed and calm in that state (it is also where the storage-pin, battery
+  // and audio-output rows live, which are worth having on the Show Runner anyway).
+  if (targets.length === 0 && localOnly.length === 0 && silentCount === 0) return null;
   if (!r) return null;
 
   // Master-less rows split in two: bytes on this device (playable) vs no audio
@@ -260,7 +297,13 @@ export function ShowReadinessCheck({
   const localReady = bySong(localOnly.filter((c) => heldLocally.has(c.songId)));
   const noFileAtAll = bySong(localOnly.filter((c) => !heldLocally.has(c.songId)));
   const audioReady =
-    r.audio.total + localReady.length > 0 && needCount === 0 && noFileAtAll.length === 0;
+    // "there is something playable" — or every row that could have carried audio is
+    // already named in the silent list below, in which case the download counts have
+    // nothing left to say and a red "เพลงยังไม่ครบในเครื่อง" would point the operator
+    // at a เตรียม button with nothing to fetch.
+    (r.audio.total + localReady.length > 0 || r.silent.length > 0) &&
+    needCount === 0 &&
+    noFileAtAll.length === 0;
 
   // Critical = audio not all on-device at the current version (blocks offline run).
   // Warnings = won't stop the show but worth fixing: storage not pinned, low space,
@@ -272,6 +315,26 @@ export function ShowReadinessCheck({
     r.battery.level != null &&
     r.battery.level < LOW_BATTERY &&
     !r.battery.charging;
+  // A silent row is NOT a warning. Round 10 argued correctly that a hard red would
+  // be wrong here, then put `r.silent.length > 0` in `hasWarn` anyway, which is the
+  // same guess one shade lighter — and the wave-2 review caught what that costs.
+  //
+  // The device cannot tell "this row's library song was deleted" from "the band
+  // plays this one live and never wanted a file": ON DELETE SET NULL leaves the two
+  // byte-identical (lib/completeness.ts makes the same argument about the same rows,
+  // and lib/completeness.test.ts pins a hand-typed row as COMPLETE). A "+ เพลง" row
+  // named by hand has song_id null and no audio_path — a first-class way to build a
+  // setlist, and the whole of a live_band set. Amber here meant the Show Runner told
+  // an operator their healthy show had five faults, every mount, with nothing to
+  // press. An operator who learns to ignore this panel is exactly who will miss the
+  // deleted-song case it was built for.
+  //
+  // What the guard actually has to kill is the CLAIM — the headline must never read
+  // a bare "พร้อมโชว์ออฟไลน์" while a song row plays nothing. `verdictText` below
+  // still appends the count ("มี N แถวที่ไม่มีไฟล์เสียง") whenever there is one, so
+  // the bare string is unreachable then and that guard holds without this term
+  // — and it composes with the caution wording instead of replacing it. The body still names the
+  // rows. Stating the fact is honest; scoring it as a fault is a guess.
   const hasWarn =
     lowSpace ||
     notPinned ||
@@ -284,9 +347,21 @@ export function ShowReadinessCheck({
     ? `ยังไม่พร้อม — มี ${noFileAtAll.length} เพลงที่ยังไม่มีไฟล์`
     : !audioReady
       ? "ยังไม่พร้อม — เพลงยังไม่ครบในเครื่อง"
-      : hasWarn
-        ? "พร้อมโชว์ (มีข้อควรระวัง)"
-        : "พร้อมโชว์ออฟไลน์";
+      : // Two independent facts, COMPOSED — not one shadowing the other. The silent
+        // count qualifies the headline without condemning it (the bare
+        // "พร้อมโชว์ออฟไลน์" must not stand over a row that plays nothing, but a row
+        // that plays nothing is normal for a band playing live). Checking it above
+        // hasWarn instead made "มีข้อควรระวัง" unreachable on any set with a silent
+        // row, so the amber header named the one thing it tells the operator to
+        // ignore while the real warning — dead audio device, low battery, งานยังไม่
+        // อยู่ในเครื่อง — went unnamed and the panel does not auto-open for those.
+        `${
+          hasWarn
+            ? "พร้อมโชว์ (มีข้อควรระวัง)"
+            : r.silent.length > 0
+              ? "พร้อมโชว์"
+              : "พร้อมโชว์ออฟไลน์"
+        }${r.silent.length > 0 ? ` — มี ${r.silent.length} แถวที่ไม่มีไฟล์เสียง` : ""}`;
 
   const toggle = () => {
     userToggled.current = true;
@@ -330,7 +405,18 @@ export function ShowReadinessCheck({
       {open && (
         <div className="space-y-0.5 border-t px-3 py-2">
           <Row
-            tone={audioReady ? "ok" : needCount > 0 ? "bad" : "muted"}
+            // A set that reaches here with no files at all is now possible (every
+            // song row silent → no targets, no local-only). A green tick next to
+            // "ไม่มีไฟล์เพลง" would be nonsense, so that state reads muted.
+            tone={
+              r.audio.total + localReady.length === 0
+                ? "muted"
+                : audioReady
+                  ? "ok"
+                  : needCount > 0
+                    ? "bad"
+                    : "muted"
+            }
             icon={<Download className="h-4 w-4" />}
             label="เพลงในเครื่อง (เล่นได้แม้เน็ตหลุด)"
             value={
@@ -388,6 +474,24 @@ export function ShowReadinessCheck({
                 .map((c) => c.name)
                 .join(", ")
                 .concat(noFileAtAll.length > 3 ? ` +${noFileAtAll.length - 3}` : "")}
+            />
+          )}
+
+          {/* Rows the resolvers never claimed at all — no library link and no file
+              of their own, so nothing downstream will play them. Sometimes a song
+              deleted out from under the row (ON DELETE SET NULL keeps the row and its
+              title), just as often a line the band typed in and intends to play live.
+              Naming them is the point. MUTED and phrased as a question, not an
+              accusation: this row wore tone="bad" + an XCircle for one round and put
+              five red faults on a hand-typed live_band set. See the `hasWarn` comment
+              above — nothing here can tell the two causes apart, so it must not
+              pretend to. */}
+          {r.silent.length > 0 && (
+            <Row
+              tone="muted"
+              icon={<ListChecks className="h-4 w-4" />}
+              label="แถวที่ไม่มีไฟล์เสียง — ถ้าเล่นสดไม่ต้องทำอะไร"
+              value={describeSilentRows(r.silent)}
             />
           )}
 

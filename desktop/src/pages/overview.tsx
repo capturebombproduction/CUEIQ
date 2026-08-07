@@ -19,9 +19,8 @@ import {
   type Member,
   type StaffContact,
   type ScheduleItem,
-  type SetlistItem,
 } from "@/lib/types";
-import { eventCompleteness } from "@/lib/completeness";
+import { eventCompleteness, type CompletenessSetlistItem } from "@/lib/completeness";
 import {
   OverviewClient,
   type OverviewEvent,
@@ -42,6 +41,9 @@ type SlRow = {
   event_id: string;
   song_id: string | null;
   kind: string;
+  // Mirrors app/(app)/overview/page.tsx — selected only so this board applies the
+  // same "song row with no name" rule as the event Summary. See lib/completeness.ts.
+  title: string;
   mic_slots: { mic: string; member: string }[] | null;
 };
 
@@ -266,7 +268,7 @@ export function Overview() {
         readForEvents<SlRow>("setlist_items", eventIds, (evIds, from, to) =>
           sb
             .from("setlist_items")
-            .select("event_id, song_id, kind, mic_slots", { count: "exact" })
+            .select("event_id, song_id, kind, title, mic_slots", { count: "exact" })
             .eq("tenant_id", tid)
             .in("event_id", evIds)
             .order("id", { ascending: true })
@@ -323,11 +325,17 @@ export function Overview() {
       // desktop Overview agrees with the web Overview + the event Summary.
       const micByEvent = new Map<string, number>();
       for (const m of micRows) micByEvent.set(m.event_id, (micByEvent.get(m.event_id) ?? 0) + 1);
-      const setlistByEvent = new Map<string, { kind: string }[]>();
+      // `title` is OPTIONAL and must stay optional — no `?? ""`. Mirrors
+      // app/(app)/overview/page.tsx; the reasoning is written out there and in
+      // lib/completeness.ts:118-121. Short version: `undefined` means "not told"
+      // and reads lenient, `""` means "a human left it blank" and flags the event,
+      // so coercing the first into the second would flag every song of every event
+      // on this board the day someone trims the select.
+      const setlistByEvent = new Map<string, { kind: string; title?: string }[]>();
       const songMicByEvent = new Map<string, boolean>();
       for (const r of slRows) {
         const arr = setlistByEvent.get(r.event_id) ?? [];
-        arr.push({ kind: r.kind });
+        arr.push({ kind: r.kind, title: r.title });
         setlistByEvent.set(r.event_id, arr);
         if ((r.mic_slots?.length ?? 0) > 0) songMicByEvent.set(r.event_id, true);
       }
@@ -344,9 +352,12 @@ export function Overview() {
             kind: s.kind,
             start_time: s.start_time,
           })) as Pick<ScheduleItem, "kind" | "start_time">[],
+          // The gate's own input type — it declares `title` optional, which
+          // Pick<SetlistItem,"kind"|"title"> does not.
           setlist: (setlistByEvent.get(e.id) ?? []).map((s) => ({
             kind: s.kind,
-          })) as Pick<SetlistItem, "kind">[],
+            title: s.title,
+          })) as CompletenessSetlistItem[],
           micCount: micByEvent.get(e.id) ?? 0,
           hasSongMics: songMicByEvent.get(e.id) ?? false,
         });

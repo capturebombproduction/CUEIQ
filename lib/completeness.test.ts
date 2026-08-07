@@ -24,7 +24,7 @@ const completeIdol = (): Args => ({
     { kind: "stage", start_time: "18:00" },
     { kind: "booth", start_time: "20:00" },
   ],
-  setlist: [{ kind: "song" }],
+  setlist: [{ kind: "song", title: "Cruel Angel's Thesis" }],
   micCount: 3,
   hasSongMics: false,
 });
@@ -110,6 +110,132 @@ describe("setlist + mic + costume", () => {
     const a = completeIdol();
     a.event.costume_theme = "";
     expect(keys(a)).toContain("costume");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Song rows with no NAME. "+ เพลง" inserts `title: ""`, so a band lands here by
+// pressing a button and walking away, and an unnamed row is unreadable on the run
+// sheet at the venue.
+//
+// This block does NOT cover "the song was deleted": ON DELETE SET NULL (migration
+// 0012) leaves the row's title intact and only nulls song_id, which is identical to
+// a hand-typed row — see the comment in lib/completeness.ts and the tests below.
+// ---------------------------------------------------------------------------
+describe("setlist rows with no title", () => {
+  it("a blank-titled song row does not count as a song, and is named", () => {
+    const a = completeIdol();
+    a.setlist = [{ kind: "song", title: "   " }];
+    const k = keys(a);
+    expect(k).toContain("setlist"); // it was the only "song" — the set has none
+    expect(k).toContain("setlist_untitled");
+    expect(eventCompleteness(a).complete).toBe(false);
+  });
+
+  it("blocks even when the other songs are fine — a mystery row is not shippable", () => {
+    const a = completeIdol();
+    a.setlist = [
+      { kind: "song", title: "Cruel Angel's Thesis" },
+      { kind: "song", title: "" },
+    ];
+    const k = keys(a);
+    expect(k).not.toContain("setlist"); // one real song is present
+    expect(k).toContain("setlist_untitled");
+    expect(eventCompleteness(a).complete).toBe(false);
+  });
+
+  it("names how many rows are unnamed", () => {
+    const a = completeIdol();
+    a.setlist = [
+      { kind: "song", title: "Cruel Angel's Thesis" },
+      { kind: "song", title: "" },
+      { kind: "song", title: "" },
+    ];
+    const item = eventCompleteness(a).missing.find((m) => m.key === "setlist_untitled");
+    expect(item?.label).toContain("2");
+  });
+
+  it("a blank MC/SE row is untouched — those are not songs", () => {
+    const a = completeIdol();
+    a.setlist = [
+      { kind: "song", title: "Cruel Angel's Thesis" },
+      { kind: "mc", title: "" },
+      { kind: "se", title: "   " },
+      // A deliberate non-song slot: a break, a costume change, a VTR. Blank or not,
+      // these must never be reported as incomplete — silence is the point of them.
+      { kind: "interlude", title: "" },
+      { kind: "guest", title: "   " },
+      { kind: "instrument", title: "" },
+    ];
+    expect(eventCompleteness(a).complete).toBe(true);
+  });
+
+  // THE REGRESSION THAT MATTERS MOST. The Overview boards map rows down to
+  // `{ kind }` before calling this. An absent title must keep the old lenient
+  // reading — reading `undefined` as blank would have flagged every song of every
+  // event on both boards at once.
+  it("a caller that does not pass titles gets exactly the old behaviour", () => {
+    const a = completeIdol();
+    a.setlist = [{ kind: "song" }, { kind: "mc" }];
+    const r = eventCompleteness(a);
+    expect(r.complete).toBe(true);
+    expect(r.missing).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// THE RULE THAT WAS REMOVED, PINNED SO IT DOES NOT COME BACK.
+//
+// Round 10 added a `librarySongIds` parameter that flagged any row whose song_id
+// was absent from the list the caller handed over ("ไฟล์หายไปจากคลัง"). The repair
+// pass deleted it. `setlist_items.song_id` is a real FK with ON DELETE SET NULL, so
+// a non-null song_id ALWAYS resolves to a live songs row — measured on prod: 0 of
+// 112 song rows across 44 events pointed outside the library. The branch could only
+// ever go true when the caller's library list came back short (a failed, paginated
+// or wrongly-scoped read), and A FAILED READ IS NOT A ZERO COUNT: it would have
+// declared a healthy setlist broken and auto-reverted an approved show to Draft.
+//
+// So: this gate judges NAMES, never LINKS. Whether a row will make a sound is
+// answered in lib/show-readiness.ts, where the device can actually check.
+// ---------------------------------------------------------------------------
+describe("the gate never judges library links", () => {
+  it("a hand-typed song row (no library link) is complete", () => {
+    const a = completeIdol();
+    a.setlist = [{ kind: "song", title: "เพลงใหม่ยังไม่เข้าคลัง" }];
+    expect(eventCompleteness(a).complete).toBe(true);
+  });
+
+  it("a row whose song was deleted is indistinguishable from a hand-typed one, and stays complete", () => {
+    // ON DELETE SET NULL keeps the title and nulls only song_id, so this fixture IS
+    // the post-delete row. The gate must not guess; the preflight answers it.
+    const a = completeIdol();
+    a.setlist = [
+      { kind: "song", title: "Cruel Angel's Thesis" },
+      { kind: "song", title: "Zankoku" }, // its song was deleted out from under it
+    ];
+    const r = eventCompleteness(a);
+    expect(r.complete).toBe(true);
+    expect(r.missing).toEqual([]);
+  });
+
+  it("takes no library argument at all — and an extra one changes no verdict", () => {
+    // THIS ASSERTS AGAINST THE FUNCTION, NOT THE FIXTURE. The first version of this
+    // test read `Object.keys(completeIdol())` and checked the key was absent — but
+    // completeIdol() is a local literal that never sets it, so the assertion was true
+    // for EVERY possible state of lib/completeness.ts. Re-adding the parameter and
+    // the whole `setlist_orphan` branch would have left it green, while its own
+    // comment told the next reader the removal was enforced. A test that cannot fail
+    // is not a test.
+    //
+    // Two guards now, one per layer. COMPILE TIME: `@ts-expect-error` below is
+    // satisfied only while `librarySongIds` is an excess property — the day someone
+    // re-declares the parameter the directive becomes unused and `npx tsc --noEmit`
+    // fails on THIS LINE (lib/**/*.ts is in tsconfig include). Read the comment block
+    // above before you delete it. RUN TIME: the verdict must stay `complete` even so,
+    // because a genuinely inert extra argument is harmless — it is the BRANCH, not
+    // the parameter, that would auto-revert a healthy show to Draft.
+    // @ts-expect-error re-adding a library-links parameter to the gate must not compile
+    expect(eventCompleteness({ ...completeIdol(), librarySongIds: [] }).complete).toBe(true);
   });
 });
 

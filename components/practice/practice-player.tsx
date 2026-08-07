@@ -27,6 +27,8 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { createClient } from "@/lib/supabase/client";
+import { hasLiveSession } from "@/lib/auth-session";
+import { writeFailureMessage } from "@/lib/practice-journal-gate";
 import { wroteNothing, noRowsMessage } from "@/lib/write-guard";
 import { getSongBlob } from "@/lib/song-cache";
 import { getLocalSource, listLocalSourceIds } from "@/lib/local-source";
@@ -54,6 +56,30 @@ import { MARKER_PRESETS, type Song, type SongMarker, type PracticeSong } from "@
 const SPEEDS = [1, 0.75, 0.5] as const;
 // only auto-log a song as "practiced" once it's been played at least this long
 const RUN_LOG_THRESHOLD = 20;
+
+/**
+ * The Thai sentence for a failed write here — the same one the สมุดซ้อม tab uses,
+ * through the same helper (lib/practice-journal-gate.ts), because both halves of
+ * this room fail the same way: `anon` holds no grants on song_markers /
+ * practice_songs (0026 grants only to `authenticated`), so in the ~minute
+ * supabase-js spends on the anon key after a failed token refresh every write
+ * below comes back `permission denied for table song_markers`, 42501 — which used
+ * to be printed verbatim, English SQL inside a Thai toast. That is the original
+ * bug the gate was written to kill; it just stopped at the tab boundary.
+ * Mirrors practice-journal.tsx's writeFailureNote deliberately: same shape, same
+ * console line, so the two tabs cannot drift apart again.
+ */
+async function writeFailureNote(
+  error: { code?: string | null; message?: string | null } | null | undefined
+): Promise<string> {
+  const live = await hasLiveSession();
+  console.error(
+    "[CueIQ] practice player write failed:",
+    error?.code ?? "-",
+    error?.message ?? "-"
+  );
+  return writeFailureMessage(error?.code, error?.message, live);
+}
 
 function mmss(sec: number) {
   if (!isFinite(sec) || sec < 0) sec = 0;
@@ -394,7 +420,7 @@ export function PracticePlayer({
       .select("*")
       .single();
     if (error || !data) {
-      toast.error("เพิ่มมาร์คไม่สำเร็จ", { description: error?.message });
+      toast.error("เพิ่มมาร์คไม่สำเร็จ", { description: await writeFailureNote(error) });
       return;
     }
     const m = data as SongMarker;
@@ -418,7 +444,7 @@ export function PracticePlayer({
       .eq("id", id)
       .select("id");
     if (error) {
-      toast.error("ลบท่อนไม่สำเร็จ", { description: error.message });
+      toast.error("ลบท่อนไม่สำเร็จ", { description: await writeFailureNote(error) });
       setMarkers((prev) => ({ ...prev, [songId]: snapshot })); // revert
       return;
     }
@@ -456,7 +482,7 @@ export function PracticePlayer({
       .eq("song_id", songId)
       .select("id");
     if (error) {
-      toast.error("ล้างท่อนไม่สำเร็จ", { description: error.message });
+      toast.error("ล้างท่อนไม่สำเร็จ", { description: await writeFailureNote(error) });
       setMarkers((prev) => ({ ...prev, [songId]: list })); // revert
       return;
     }
@@ -517,7 +543,7 @@ export function PracticePlayer({
       if (error?.code === "23505") {
         toast.info("เพลงนี้อยู่ในลิสต์ซ้อมอยู่แล้ว");
       } else {
-        toast.error("เพิ่มเพลงไม่สำเร็จ", { description: error?.message });
+        toast.error("เพิ่มเพลงไม่สำเร็จ", { description: await writeFailureNote(error) });
       }
       return;
     }
@@ -546,7 +572,7 @@ export function PracticePlayer({
       .eq("id", itemId)
       .select("id");
     if (error) {
-      toast.error("เอาเพลงออกไม่สำเร็จ", { description: error.message });
+      toast.error("เอาเพลงออกไม่สำเร็จ", { description: await writeFailureNote(error) });
       setItems(snapshot);
       return;
     }

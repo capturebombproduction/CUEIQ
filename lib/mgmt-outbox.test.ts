@@ -364,6 +364,47 @@ describe("isQueueableWriteError — network failures queue, real rejections surf
     expect(isQueueableWriteError("duplicate key value violates unique constraint", true)).toBe(false);
     expect(isQueueableWriteError(null, true)).toBe(false);
   });
+
+  /* Round 10. The prose rules above have one blind spot and it is the worst-shaped one:
+     the server is UP and answering badly. A Supabase/Cloudflare 5xx or 429 arrives as an
+     HTML error page that postgrest-js copies into error.message verbatim, and none of the
+     words above appear in it — so a "จบ + ต่อไป" press on the festival board was neither
+     written nor queued while the row was already optimistically advanced on screen. */
+  it("a 5xx or 429 from a server that is UP is transient, however its body is worded", () => {
+    const html = "<html><head><title>503 Service Temporarily Unavailable</title></head></html>";
+    expect(isQueueableWriteError(html, true)).toBe(false); // ← the bug, message-only
+    expect(isQueueableWriteError(html, true, 503)).toBe(true);
+    expect(isQueueableWriteError("Bad Gateway", true, 502)).toBe(true);
+    expect(isQueueableWriteError("Too Many Requests", true, 429)).toBe(true);
+    expect(isQueueableWriteError("Gateway Timeout", true, 504)).toBe(true);
+    expect(isQueueableWriteError(null, true, 500)).toBe(true);
+    expect(isQueueableWriteError("Request Timeout", true, 408)).toBe(true);
+  });
+
+  it("a definite 4xx stays a real rejection — including 401/403, on purpose", () => {
+    // This pins the OLD behaviour, not a new rule: the message regex never matched
+    // "permission denied" or "JWT expired" either, so threading the status in moved only
+    // 5xx/429. Queueing a genuine denial would replay it on every reconnect, forever.
+    // ⚠️ Whether the anon-fallback window can produce a 403 here at all is an open question
+    // — see the long note on isQueueableWriteError. If it turns out it can, this line is
+    // the one to revisit, and only with an observation from production behind it.
+    expect(isQueueableWriteError("JWT expired", true, 401)).toBe(false);
+    expect(isQueueableWriteError("permission denied", true, 403)).toBe(false);
+    expect(isQueueableWriteError("duplicate key", true, 409)).toBe(false);
+    expect(isQueueableWriteError("invalid input syntax", true, 400)).toBe(false);
+    expect(isQueueableWriteError("Not Found", true, 404)).toBe(false);
+  });
+
+  it("no usable status falls back to the message rules, unchanged", () => {
+    // status 0 = the request never got a response; that IS the transport case the
+    // message rules were written for, so they must still be the ones to answer.
+    expect(isQueueableWriteError("TypeError: Failed to fetch", true, 0)).toBe(true);
+    expect(isQueueableWriteError("row-level security", true, 0)).toBe(false);
+    expect(isQueueableWriteError("Failed to fetch", true, undefined)).toBe(true);
+    expect(isQueueableWriteError("Failed to fetch", true, null)).toBe(true);
+    // …and offline still wins over everything, including a 403.
+    expect(isQueueableWriteError("permission denied", false, 403)).toBe(true);
+  });
 });
 
 describe("newEventId", () => {

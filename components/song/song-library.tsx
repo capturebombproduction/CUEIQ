@@ -42,6 +42,15 @@ import {
 } from "@/lib/mgmt-write";
 import { formatDuration, parseDurationToSeconds } from "@/lib/time";
 import { wroteNothing, noRowsMessage } from "@/lib/write-guard";
+import { hasLiveSession } from "@/lib/auth-session";
+import {
+  fetchServerNowMs,
+  planTempSongPurge,
+  stillTemporary,
+  tempSongCandidates,
+  type EventDateRow,
+  type SetlistLink,
+} from "@/lib/temp-song-purge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -200,40 +209,296 @@ export function SongLibrary({
     [groups]
   );
 
-  // Lazy cleanup: a temporary (ad-hoc) song past its expiry is purged when the
-  // library is opened — file from R2 + the row (linked setlist items lose the
-  // link via on-delete-set-null). No background job needed.
+  // Lazy cleanup of temporary (ad-hoc) songs. The decision itself lives in
+  // lib/temp-song-purge.ts — read the header there for the whole story; the short
+  // version is that this used to be a SILENT delete, on THIS DEVICE'S CLOCK, of
+  // both the row and the R2 master, with no undo and no second copy. It lost files
+  // two ways: a machine whose clock ran fast (dead CMOS battery, a phone set
+  // forward) condemned every temporary song in the opener's scope — and an
+  // admin's scope is all 8 bands — while the 3-day horizon was measured from the
+  // UPLOAD rather than from the show, so a song loaded ad hoc at an Aug-1
+  // rehearsal for an Aug-6 gig was "expired" on Aug 4 and destroyed by whoever
+  // merely OPENED คลังเพลง first. The setlist row then lost its song_id, and
+  // because lib/audio-targets.ts skips rows with no song_id, it disappeared from
+  // the completeness gate and the desktop readiness preflight too: a green
+  // "พร้อมโชว์ออฟไลน์" with a silent track in the set.
+  //
+  // พี่พัชร์'s ruling: a temporary song must survive until the event that needs it.
+  // So: the SERVER's clock decides expiry, any event that has not happened vetoes
+  // the delete, and the user is asked before anything goes. Every step that cannot
+  // be established with confidence ends the sweep instead of guessing — the files
+  // simply linger until the next open, which costs megabytes, not a show.
+  //
+  // Round 11 added the two rules that make that actually hold:
+  //   · the whole plan is REMADE after the confirm dialog and only the songs both
+  //     rounds condemn are deleted — a plan is only true at the instant it was
+  //     made, and this dialog can sit unanswered while someone else builds
+  //     Saturday's setlist out of exactly these files;
+  //   · the "is this really us?" question is handed to planTempSongPurge instead
+  //     of asked here, because asked here it ran BEFORE the reads it was meant to
+  //     vouch for, and an anon-degraded empty read sailed through as "unused".
+  //
+  // Round 12 changed WHO OPENS THE DIALOG, and nothing else about the decision.
+  // Until now this effect called confirm() itself, and it was the only confirm()
+  // in the repo not fired by a click (every other call site is inside an onClick;
+  // `grep -rn "confirm({" app components desktop/src` is how that was checked).
+  // Two things follow from that, both observed in review:
+  //   · ConfirmProvider holds exactly ONE resolver (components/ui/confirm-dialog.tsx
+  //     :51-59). A second confirm() while a dialog is open overwrites
+  //     `resolver.current` and leaves `open` true — so the first promise is never
+  //     settled and the panel simply swaps its contents in place. (Round 13: the
+  //     provider now answers a second confirm() "cancelled" instead of repainting,
+  //     because click-fired confirms CAN overlap after all — onDelete's opens only
+  //     after a setlist-count round-trip, and the page stays clickable in that gap.)
+  //     This one fired after an unbounded async run-up (pending-uploads
+  //     read → an up-to-8s HEAD for the server clock → setlist read → events read),
+  //     so it landed straight on top of an Ar who had just tapped 🗑 on a song. Their
+  //     delete then never ran — no toast, no error, nothing — and the destructive
+  //     button under their cursor had quietly become "ลบเพลงชั่วคราว", which is the
+  //     irreversible R2 delete this whole guard exists to slow down.
+  //   · ConfirmProvider is mounted in app/(app)/layout.tsx (and in the desktop's
+  //     own shell.tsx:148/153), i.e. OUTSIDE this page in both apps, so an
+  //     unprompted modal survived navigating away from คลังเพลง — and answering it
+  //     there hit the `cancelled` guard and did precisely nothing, silently.
+  // So the effect no longer asks anything. It PREPARES an offer and renders it as an
+  // ordinary bar in the page (see `tempPurgeOffer` in the JSX); the confirm is opened
+  // by runTempPurge() from a real click, like every other destructive action here.
+  // The cost is that expired files linger until someone presses the button, which is
+  // the same currency this whole feature already spends: megabytes, not a show.
+  const [tempPurgeOffer, setTempPurgeOffer] = useState<{
+    purge: Song[];
+    keptForEvent: number;
+  } | null>(null);
+  const [tempPurgeBusy, setTempPurgeBusy] = useState(false);
+
+  // One round of "may these songs go?", from scratch: server clock, links,
+  // events, verdict. Called TWICE per sweep — once to build the offer, once after
+  // the human answers the confirm — because a plan is only true at the instant it
+  // was made (see the second call site in runTempPurge). Lifted to component scope
+  // in round 12 for no reason other than that the click handler needs it too; the
+  // body below is unchanged.
+  const planTempPurge = async (cands: readonly Song[]) => {
+    // Rows whose bytes are still sitting in the offline outbox waiting to
+    // become the master: the user picked a file at the venue ten minutes ago,
+    // and deleting the row now strands it. Read fresh rather than off the
+    // `pendingUploads` state, which the sweep effect (deps `[]`) captured as an
+    // empty Set before its own loader resolved.
+    const pending = await listPendingAudioUploads();
+    const candidates = cands.filter((s) => !pending.has(s.id));
+    if (candidates.length === 0) return null;
+    // The only clock allowed to condemn a file. null = we could not get one,
+    // and the rule is then DO NOTHING rather than fall back to Date.now().
+    const serverNowMs = await fetchServerNowMs();
+    const ids = candidates.map((s) => s.id);
+    // A read that ERRORED must be reported as null, never as []: an empty array
+    // here means "proved unused", and proving that from a failed request is how
+    // you delete a file a show is waiting for.
+    const linkRes = await supabase
+      .from("setlist_items")
+      .select("song_id, event_id")
+      .in("song_id", ids);
+    const links = linkRes.error ? null : ((linkRes.data ?? []) as SetlistLink[]);
+    const eventIds = [
+      ...new Set(
+        (links ?? [])
+          .map((l) => l.event_id)
+          .filter((x): x is string => typeof x === "string")
+      ),
+    ];
+    let events: EventDateRow[] | null = [];
+    if (eventIds.length > 0) {
+      const evRes = await supabase
+        .from("events")
+        .select("id, event_date")
+        .in("id", eventIds);
+      events = evRes.error ? null : ((evRes.data ?? []) as EventDateRow[]);
+    }
+    // hasLiveSession is handed over as a QUESTION, not called here and passed
+    // as an answer: the planner runs it after every read above has come back,
+    // which is the only moment at which it proves anything. Round 10 asked it
+    // first and an anon-degraded `[]` read straight through as "unused".
+    return {
+      serverNowMs,
+      plan: await planTempSongPurge({
+        candidates,
+        serverNowMs,
+        links,
+        events,
+        proveSession: hasLiveSession,
+      }),
+    };
+  };
+
   useEffect(() => {
-    const now = Date.now();
-    const isExpired = (s: Song) =>
-      !!s.audio_expires_at && new Date(s.audio_expires_at).getTime() < now;
-    const expired = initialSongs.filter(isExpired);
-    if (expired.length === 0) return;
+    // Scope: only bands this user may actually edit. A viewer would just collect
+    // an RLS-refused delete and an alarming toast, and an Ar has no business being
+    // asked about another band's files.
+    const scoped = tempSongCandidates(initialSongs).filter((s) =>
+      editableGroupIds.has(s.group_id)
+    );
+    if (scoped.length === 0) return;
+    let cancelled = false;
     (async () => {
-      // DB rows delete first (one shot, mirroring onDelete) — if that fails,
-      // leave everything intact and retry on the next open. R2 files only go
-      // after the rows are confirmed gone, so a failed delete never leaves a
-      // surviving row pointing at a missing file.
-      // ...and "confirmed gone" has to mean rows came back, not merely that no
-      // error did. This sweep runs on every library open, so it also runs during
-      // the anon minute after a reconnect, where the DELETE is RLS-filtered to
-      // zero rows with error:null — and the loop below would then delete masters
-      // from R2 for rows that are still there, pointing at files that no longer
-      // exist. Retrying next open is free; deleting the bytes is not.
+      const first = await planTempPurge(scoped);
+      if (cancelled || !first) return;
+      const { plan } = first;
+      if (plan.blocked || plan.purge.length === 0) return;
+      // The whole output of this effect: an offer, sitting in the page, that the
+      // user may ignore forever. Nothing is asked and nothing is deleted here.
+      setTempPurgeOffer({
+        purge: plan.purge,
+        keptForEvent: plan.keptForEvent.length,
+      });
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // What the offer may still truthfully claim. The bar can now sit on screen for
+  // as long as the user likes, and 🔒 (promoteSong) clears a row's stamp in `songs`
+  // the moment it lands — a bar that keeps counting a song the user just rescued is
+  // telling them their rescue did not work. Narrowed in the same breath for the
+  // dialog and the delete, so the number they see, the titles they are asked about
+  // and the ids that go are one list.
+  const tempPurgeNow = useMemo(
+    () => (tempPurgeOffer ? stillTemporary(tempPurgeOffer.purge, songs) : []),
+    [tempPurgeOffer, songs]
+  );
+
+  /**
+   * The user pressed "ตรวจและลบ" on the offer bar. Everything destructive lives
+   * here, behind a real click — see the effect above for why that matters.
+   *
+   * There is deliberately no unmount guard on this flow, unlike the sweep it
+   * replaced. That guard existed because a dialog the user never opened could
+   * outlive the page and be answered from somewhere else, and honouring it there
+   * would have deleted masters on behalf of a page that was gone; it made the
+   * answer a silent no-op instead. This dialog is opened by hand, on this page,
+   * seconds earlier — so if the user does navigate away with it open and then
+   * presses ลบเพลงชั่วคราว, finishing the job is exactly what they asked for, and
+   * the toasts below still reach them (Sonner's <Toaster> is in the layout too).
+   * The two setSongs/setTempPurgeOffer calls at the end are no-ops on an unmounted
+   * component in React 19; nothing else here touches the DOM.
+   */
+  async function runTempPurge() {
+    const offer = tempPurgeOffer;
+    if (!offer || tempPurgeBusy) return;
+
+    // The offer was built when the library opened and this button may be pressed
+    // an hour later, so work from the NARROWED list (tempPurgeNow): a song the user
+    // promoted with 🔒 in the meantime must not even be NAMED in a delete dialog.
+    // (The database is asked again below, and the DELETE's .lt() refuses a promoted
+    // row outright — this is only so the dialog tells the truth about what it does.)
+    const stillOffered = tempPurgeNow;
+    if (stillOffered.length === 0) {
+      setTempPurgeOffer(null);
+      toast.info("ไม่มีเพลงชั่วคราวที่ต้องลบแล้ว");
+      return;
+    }
+
+    // Confirm-every-delete, the repo standard. Name the files, say plainly that
+    // the bytes go for good, and point at the way out (🔒 = เก็บถาวร).
+    //
+    // The keep-count deliberately does NOT promise "ผูกกับงานที่ยังไม่ถึง":
+    // keptForEvent also collects songs whose event row never came back, whose
+    // event has no date, and whose link carries no event_id — i.e. "we could
+    // not tell". An admin hunting for four upcoming shows that do not exist is
+    // a support call; say the weaker thing that is always true.
+    const names = stillOffered.map((s) => `“${s.title}”`).join(", ");
+    const ok = await confirm({
+      title: `ลบเพลงชั่วคราวที่หมดอายุแล้ว ${stillOffered.length} เพลง?`,
+      description: (
+        <>
+          {names} — เป็นไฟล์ที่อัปแบบด่วนจากโหมดไลฟ์ และไม่มีงานที่ยังไม่ถึงใช้อยู่แล้ว
+          ลบแล้วไฟล์เสียงจะหายถาวร กู้คืนไม่ได้
+          {offer.keptForEvent > 0 &&
+            ` (เก็บไว้อีก ${offer.keptForEvent} เพลง เพราะยังมีงานที่ยังไม่จบใช้อยู่ หรือยังตรวจไม่ได้)`}
+          {" — ถ้าอยากเก็บไว้ ให้กด “ยังไม่ลบ” แล้วกดรูปกุญแจที่แถวเพลงเพื่อเก็บเป็นเพลงถาวร"}
+        </>
+      ),
+      confirmText: "ลบเพลงชั่วคราว",
+      cancelText: "ยังไม่ลบ",
+    });
+    if (!ok) return;
+
+    setTempPurgeBusy(true);
+    try {
+      // RE-PLAN. The dialog above waits an unbounded amount of time for a human,
+      // and the offer bar behind it may have been sitting there since the page
+      // opened — so the plan is old twice over. Meanwhile the other Ar builds
+      // Saturday's setlist and adds exactly this ad-hoc backing track. The .lt()
+      // below re-checks the EXPIRY half of the guard against the database, but
+      // nothing re-checked the LINK half, which is the entire point of this guard.
+      // So ask the same questions again on the far side of the wait and delete
+      // only what BOTH rounds agreed on. This re-runs the session proof too, which
+      // closes the anon window across the dialog for free.
+      const second = await planTempPurge(stillOffered);
+      if (second?.plan.blocked) {
+        // Could not re-check ≠ nothing to re-check. Say so out loud: the user
+        // pressed a destructive button and deserves to know it did not run.
+        toast.error("ยังลบเพลงชั่วคราวไม่ได้", {
+          description: "ตรวจสอบซ้ำไม่สำเร็จ — ลองกดอีกครั้งเมื่อเน็ตกลับมา",
+        });
+        return;
+      }
+      const stillOk = new Set(second?.plan.purge.map((s) => s.id) ?? []);
+      const doomed = stillOffered.filter((s) => stillOk.has(s.id));
+      if (!second || doomed.length === 0) {
+        setTempPurgeOffer(null);
+        toast.info("ไม่ได้ลบเพลงไหนเลย", {
+          description:
+            "ระหว่างที่ถามยืนยัน เพลงเหล่านี้ถูกงานที่ยังไม่จบเรียกใช้ ถูกเก็บถาวร หรือมีไฟล์ใหม่รออัปโหลดอยู่",
+        });
+        return;
+      }
+      // The instant the DATABASE gave us on the SECOND pass — the freshest server
+      // clock we hold, and the one the verdict just above was reached with. It
+      // cannot be null here (a null clock blocks the plan), but narrow it rather
+      // than assert it: a cast that is right today is the shape of the next bug.
+      const serverNowMs = second.serverNowMs;
+      if (serverNowMs === null) return;
+
+      // DB rows delete first (one shot, mirroring onDelete) — if that fails, leave
+      // everything intact and retry on the next press. R2 files only go after the
+      // rows are confirmed gone, so a failed delete never leaves a surviving row
+      // pointing at a missing file. And "confirmed gone" has to mean rows came
+      // back, not merely that no error did: this runs during the anon minute after
+      // a venue reconnect too, where the DELETE is RLS-filtered to zero rows with
+      // error:null, and the loop below would then delete masters for rows that are
+      // still there. See lib/write-guard.ts.
+      //
+      // The .lt() re-states the expiry test as a predicate the DATABASE evaluates,
+      // against the instant the database itself gave us. Two things fall out for
+      // free: this device's clock cannot widen the delete however wrong it is, and
+      // a song someone promoted to permanent in the seconds since we planned is
+      // excluded automatically, because a NULL audio_expires_at never satisfies `<`.
       const { data, error } = await supabase
         .from("songs")
         .delete()
-        .in("id", expired.map((s) => s.id))
+        .in("id", doomed.map((s) => s.id))
+        .lt("audio_expires_at", new Date(serverNowMs).toISOString())
         .select("id");
-      if (error || wroteNothing(data)) return;
+      if (error) {
+        toast.error("ลบเพลงชั่วคราวไม่สำเร็จ", { description: error.message });
+        return;
+      }
+      if (wroteNothing(data)) {
+        toast.error("ลบเพลงชั่วคราวไม่สำเร็จ", { description: await noRowsMessage() });
+        return;
+      }
       const deleted = new Set((data ?? []).map((r) => (r as { id: string }).id));
-      for (const s of expired) {
+      for (const s of doomed) {
         if (s.audio_path && deleted.has(s.id)) removeEventAudio(s.audio_path).catch(() => {});
       }
-      setSongs((prev) => prev.filter((s) => !(isExpired(s) && deleted.has(s.id))));
-    })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+      setSongs((prev) => prev.filter((s) => !deleted.has(s.id)));
+      setTempPurgeOffer(null);
+      toast.success(`ลบเพลงชั่วคราวที่หมดอายุแล้ว ${deleted.size} เพลง`);
+    } finally {
+      setTempPurgeBusy(false);
+    }
+  }
 
   // Garbage-collect the on-device audio cache. It's keyed by R2 path, so replacing
   // a song's file (new random suffix) orphans the old version's blob, and removing a
@@ -820,16 +1085,27 @@ export function SongLibrary({
   }
 
   // Promote a temporary (ad-hoc) song to permanent — keep its file forever.
+  //
+  // This is the ESCAPE HATCH from the expiry sweep above, which is exactly why it
+  // needs the write guard: an update that lands on zero rows returns error:null
+  // (lib/write-guard.ts — the anon minute after a venue reconnect), so this used
+  // to show a green "เก็บเป็นเพลงถาวรแล้ว", leave the row's audio_expires_at
+  // untouched in the database, and the very next library open would offer the file
+  // up for deletion anyway. A user who took the one action available to save a
+  // file must not be told it worked when it did not.
   async function promoteSong(song: Song) {
     setSongs((prev) =>
       prev.map((s) => (s.id === song.id ? { ...s, audio_expires_at: null } : s))
     );
-    const { error } = await supabase
+    const { data, error } = await supabase
       .from("songs")
       .update({ audio_expires_at: null })
-      .eq("id", song.id);
-    if (error) {
-      toast.error("เก็บถาวรไม่สำเร็จ", { description: error.message });
+      .eq("id", song.id)
+      .select("id");
+    if (error || wroteNothing(data)) {
+      toast.error("เก็บถาวรไม่สำเร็จ", {
+        description: error ? error.message : await noRowsMessage(),
+      });
       setSongs((prev) =>
         prev.map((s) =>
           s.id === song.id ? { ...s, audio_expires_at: song.audio_expires_at } : s
@@ -840,16 +1116,31 @@ export function SongLibrary({
     }
   }
 
-  // Days left before a temporary (ad-hoc) audio file expires, or null if permanent.
+  // Days left before a temporary (ad-hoc) audio file passes its stamp, or null if
+  // permanent. NEGATIVE means the stamp is behind us.
+  //
+  // This is the DEVICE's clock, and that is now the only place in this feature
+  // where the device clock is still allowed to speak — because all it does here
+  // is colour a badge. It must never sound like a deadline: the sweep condemns a
+  // file on the SERVER's clock, refuses while any unfinished งาน still points at
+  // it, and asks a human before anything goes. So a laptop with a dead CMOS
+  // battery can make this label wrong, but it can no longer make it a promise —
+  // see TEMP_BADGE_RULE below, which is the label's title on every row.
   const tempDaysLeft = (song: Song) =>
     song.audio_expires_at
-      ? Math.max(
-          0,
-          Math.ceil(
-            (new Date(song.audio_expires_at).getTime() - Date.now()) / 86400000
-          )
+      ? Math.ceil(
+          (new Date(song.audio_expires_at).getTime() - Date.now()) / 86400000
         )
       : null;
+
+  /**
+   * What the ชั่วคราว badge actually means, verbatim, on every row that shows one.
+   * Round 10 changed when a temporary file dies and left the countdown advertising
+   * the old rule; "ชั่วคราว 0ว." on a track the band uploaded an hour ago (fast
+   * device clock) had Ars re-uploading files that were never in danger.
+   */
+  const TEMP_BADGE_RULE =
+    "ไฟล์ชั่วคราวจากโหมดไลฟ์ — จะถูกลบก็ต่อเมื่อเลยกำหนดตามเวลาของเซิร์ฟเวอร์ ไม่มีงานที่ยังไม่จบใช้อยู่ และมีคนกดยืนยันเท่านั้น (ตัวเลขนี้นับตามนาฬิกาของเครื่องนี้ จึงอาจคลาดเคลื่อน) — กดรูปกุญแจเพื่อเก็บเป็นเพลงถาวร";
 
   // Per-song render pieces shared by the desktop table and the mobile cards so
   // the two layouts can never drift apart.
@@ -900,8 +1191,9 @@ export function SongLibrary({
       return (
         <div className="flex flex-wrap items-center gap-1.5">
           {tempLeft != null ? (
-            <Badge variant="secondary" className="gap-1">
-              <Clock3 className="h-3 w-3" /> ชั่วคราว {tempLeft}ว.
+            <Badge variant="secondary" className="gap-1" title={TEMP_BADGE_RULE}>
+              <Clock3 className="h-3 w-3" />{" "}
+              {tempLeft > 0 ? `ชั่วคราว ${tempLeft}ว.` : "ชั่วคราว — เลยกำหนดแล้ว"}
             </Badge>
           ) : (
             <span className="flex items-center gap-1 text-xs font-medium text-green-600">
@@ -1076,6 +1368,50 @@ export function SongLibrary({
           )}
         </div>
       </div>
+
+      {/* The temporary-song sweep's offer. This bar exists instead of the modal
+          that used to appear by itself when คลังเพลง opened: a dialog nobody
+          asked for destroyed the confirm the user HAD asked for (one resolver in
+          ConfirmProvider), and it outlived the page, because the provider is
+          mounted in the layout. A bar can do neither. It waits, it can be
+          dismissed with ไว้ก่อน, and it comes back next open — retrying is free
+          and the bytes are not. See the sweep effect above. */}
+      {tempPurgeNow.length > 0 && (
+        <div className="flex flex-wrap items-center gap-3 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2">
+          <Clock3 className="h-4 w-4 shrink-0 text-amber-600" />
+          <div className="min-w-0 text-sm">
+            <span className="font-medium">
+              เพลงชั่วคราวที่หมดอายุแล้ว {tempPurgeNow.length} เพลง
+            </span>{" "}
+            <span className="text-muted-foreground">
+              — ไฟล์ที่อัปแบบด่วนจากโหมดไลฟ์ และตอนนี้ไม่มีงานที่ยังไม่จบใช้อยู่ · ถ้าอยากเก็บไว้
+              ให้กดรูปกุญแจที่แถวเพลงเพื่อเก็บเป็นเพลงถาวร
+            </span>
+          </div>
+          <div className="ml-auto flex items-center gap-2">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setTempPurgeOffer(null)}
+            >
+              ไว้ก่อน
+            </Button>
+            <Button
+              variant="destructive"
+              size="sm"
+              disabled={tempPurgeBusy}
+              onClick={runTempPurge}
+            >
+              {tempPurgeBusy ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Trash2 className="h-4 w-4" />
+              )}
+              ตรวจและลบ
+            </Button>
+          </div>
+        </div>
+      )}
 
       {visible.length === 0 ? (
         <div className="flex flex-col items-center justify-center gap-3 rounded-lg border border-dashed py-16 text-center">

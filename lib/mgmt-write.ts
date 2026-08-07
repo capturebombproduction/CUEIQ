@@ -105,16 +105,19 @@ export async function saveEventWrite(args: {
   try {
     const supabase = createClient();
     if (args.mode === "create") {
-      const { data, error } = await supabase
+      // `status` rides along so a 5xx/429 from a server that is UP is queued rather
+      // than reported as a rejection — a Cloudflare error page matches none of the
+      // network words the classifier used to rely on. See lib/mgmt-outbox.ts.
+      const { data, error, status } = await supabase
         .from("events")
         .insert({ ...args.payload, created_by: args.createdBy })
         .select("id")
         .single();
       if (!error && data) return { ok: true, id: data.id as string, queued: false };
-      if (queueSink && isQueueableWriteError(error?.message, onLine)) return queueWrite(args);
+      if (queueSink && isQueueableWriteError(error?.message, onLine, status)) return queueWrite(args);
       return { ok: false, message: error?.message };
     }
-    const { data, error } = await supabase
+    const { data, error, status } = await supabase
       .from("events")
       .update(args.payload)
       .eq("id", args.eventId!)
@@ -127,7 +130,7 @@ export async function saveEventWrite(args: {
       return { ok: false, message: await noRowsMessage() };
     }
     if (!error) return { ok: true, id: args.eventId!, queued: false };
-    if (queueSink && isQueueableWriteError(error.message, onLine)) return queueWrite(args);
+    if (queueSink && isQueueableWriteError(error.message, onLine, status)) return queueWrite(args);
     return { ok: false, message: error.message };
   } catch (e) {
     // supabase-js normally returns errors; an actual throw here is a transport

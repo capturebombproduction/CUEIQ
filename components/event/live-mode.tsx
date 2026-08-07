@@ -33,7 +33,7 @@ import { createClient } from "@/lib/supabase/client";
 import { hasLiveSession } from "@/lib/auth-session";
 import { shouldMuteOnStepDown, shouldYieldControl } from "@/lib/live-arbitration";
 import { saveAudio, loadAudioForEvent } from "@/lib/audio-store";
-import { getCachedSongBlob } from "@/lib/song-cache";
+import { getCachedSongBlob, cacheSongBlob } from "@/lib/song-cache";
 import { getLocalSource, listLocalSourceIds } from "@/lib/local-source";
 import { MGMT_OUTBOX_EVENT } from "@/lib/mgmt-outbox";
 import { persistLastRun } from "@/lib/show-run-outbox";
@@ -872,9 +872,30 @@ export function LiveMode({
           // A local-only row with no bytes left (the queue flushed and cleared the
           // override between the id listing and here) has no second source to try.
           if (!path && !local) continue;
-          const blob = path
-            ? (local?.blob ?? (await getCachedSongBlob(path)) ?? (await downloadEventAudio(path)))
-            : local!.blob;
+          /* 🔄 The source ladder used to be one chained `??` expression. It is spelled out
+             now for ONE reason: the caller has to know whether these bytes came off the
+             NETWORK, because only then are they news to the shared library cache.
+             Live Mode READ that cache (getCachedSongBlob) and never wrote it, so every
+             master it pulled was known to this event and to nothing else — open the same
+             band's next event and all of it downloads again, 27–88 MB a song, on venue
+             wifi. `saveAudio()` below is the PER-EVENT store; `cacheSongBlob()` is the
+             per-SONG one the library prefetch and the practice player share. Both are
+             wanted, and only the second one was missing. */
+          let blob: Blob;
+          let fromNetwork = false;
+          if (!path) {
+            blob = local!.blob;
+          } else if (local?.blob) {
+            blob = local.blob;
+          } else {
+            const cached = await getCachedSongBlob(path);
+            if (cached) {
+              blob = cached;
+            } else {
+              blob = await downloadEventAudio(path);
+              fromNetwork = true;
+            }
+          }
           // The bytes are HERE. Even if this run was superseded meanwhile, KEEP them:
           // dropping them un-cached meant re-downloading the whole master from zero on
           // venue wifi. Only discard when the item now wants a DIFFERENT file (a
@@ -887,6 +908,21 @@ export function LiveMode({
           // "the only copy that exists", and audio-prefetch's orphan sweep skips
           // exactly those records rather than deleting bytes it can't re-fetch.
           saveAudio(eventId, it.id, blob, name, path).catch(() => {});
+          /* …and tell the SHARED library cache too, but only about bytes that BELONG in it:
+             · `fromNetwork` — a cache hit is already filed, and a per-device local override
+               has no `path` to file it under (that null is how audio-store marks "the only
+               copy that exists", and the orphan sweep depends on it);
+             · `it.song_id` — and this one is not obvious. An unlinked LEGACY setlist item
+               keeps its own `audio_path` under `<tenant>/<group>/<event>/<item>-…`, which is
+               not a song key at all. Nothing ever reads the library cache by it (Practice and
+               คลังเพลง look up `song.audio_path`), and `songIdFromPath` parses the SETLIST
+               ITEM's uuid out of it, which never appears in `currentBySong` — so
+               `pruneSupersededSongs` deliberately KEEPS it, forever. Three legacy jingles at
+               30–80 MB each would leave ~150 MB of unreachable, unsweepable bytes on the venue
+               laptop after every show, in the same IndexedDB budget whose exhaustion costs
+               that laptop its queued offline edits.
+             Best-effort by design — a full quota must never take the show down. */
+          if (fromNetwork && path && it.song_id) cacheSongBlob(path, blob, name).catch(() => {});
           // Left Live Mode while this was transferring: the bytes are safely cached
           // for next time, but an object URL minted now would outlive the unmount
           // revoke-all above and never be freed.
@@ -1971,7 +2007,8 @@ export function LiveMode({
 
   // Pick a file in Live Mode = the QUICK/ad-hoc path (you forgot to prep in the
   // library). Plays instantly on this device, then uploads to R2 as a TEMPORARY
-  // library song (auto-cleans after 3 days) and LINKS this item to it — so all
+  // library song (removable later, never on a timer — see the note by `expires` below)
+  // and LINKS this item to it — so all
   // audio lives in the library, every device can play it, and you can promote it
   // to permanent in the library. (Deleting/managing audio is done in the library,
   // not here.) R2 has no per-file size cap, so full WAV masters upload as-is.
@@ -2007,7 +2044,14 @@ export function LiveMode({
     try {
       const supabase = createClient();
       const legacyPath = item.song_id ? null : item.audio_path ?? null; // pre-library file to clean up
-      // create a TEMPORARY library song (auto-clean in 3 days) + link the item
+      /* Create a TEMPORARY library song + link the item.
+         ⚠️ `audio_expires_at` is a STAMP, not a deadline any more. Round 10 removed the
+         sweep that deleted on this date alone — it ran off the device clock, measured three
+         days from UPLOAD rather than from the show, and destroyed the R2 master with no
+         confirmation, so a song uploaded at a Tuesday rehearsal for a Sunday gig was gone by
+         Friday. Nothing is removed now unless a server-supplied clock says it is past, no
+         un-finished event still links it, AND a human confirms (lib/temp-song-purge.ts).
+         Keep the stamp; do not reinstate a countdown anywhere from it. */
       const expires = new Date(Date.now() + 3 * 86400000).toISOString();
       const { data: song, error: songErr } = await supabase
         .from("songs")
@@ -2055,7 +2099,12 @@ export function LiveMode({
       if (cached) saveAudio(eventId, itemId, cached, file.name, path).catch(() => {});
       if (legacyPath) removeEventAudio(legacyPath).catch(() => {});
       bcastSetlistChanged();
-      toast.success("อัปขึ้นคลังเป็นเพลงชั่วคราว (3 วัน) — เก็บถาวรได้ในคลังเพลง");
+      /* 🔤 The old copy promised "(3 วัน)", which stopped being true when the blind expiry
+         sweep was removed — and it was the one line that told the user a number. Say what
+         actually decides now, and where the escape hatch is. */
+      toast.success(
+        "อัปขึ้นคลังเป็นเพลงชั่วคราว — จะถูกลบก็ต่อเมื่อไม่มีงานที่ยังไม่จบใช้อยู่ และมีคนกดยืนยันเท่านั้น · กดรูปกุญแจในคลังเพลงเพื่อเก็บถาวร"
+      );
     } catch (err) {
       // online upload failed — still keep a local-only copy so THIS device can play
       if (cached) saveAudio(eventId, itemId, cached, file.name).catch(() => {});
@@ -2440,7 +2489,9 @@ export function LiveMode({
    * stamped a newer claim that the real controller then yielded to — adopting item
    * 0 and a fresh clock, and going silent. show_authority is the persisted mirror
    * of exactly that fact, and a suspended device's row is still fresh (the ghost
-   * threshold is 90s), so ask it before overwriting someone's running show.
+   * threshold is GHOST_MS 90s + CLOCK_SKEW_GRACE_MS 120s = 3.5 นาที — see
+   * lib/show-authority.ts; it quoted the bare 90s for two review waves after the
+   * grace was added), so ask it before overwriting someone's running show.
    *
    * Best-effort like every other authority call: offline resolves to [] and the
    * show starts as it always has.
@@ -2795,18 +2846,34 @@ export function LiveMode({
       return;
     const s = stateRef.current;
     const n = itemsRef.current.length;
+    /* 🔒 A HELD KEY IS ONE INTENTION, NOT FIFTY — but the guard goes INSIDE each branch,
+       AFTER preventDefault, and that placement is the whole point.
+       The OS repeats `keydown` ~30×/second while a key stays down. In a dark venue that is
+       not theoretical: a hand resting on the laptop, a bag lid, a cable across the desk.
+       Held Space used to flip run/pause dozens of times and broadcast every flip, so where
+       the finger lifted decided the show — a coin toss whose losing side is a stopped show.
+       Held →/N walked the band through their own setlist.
+       ⚠️ The first attempt at this returned on `e.repeat` at the TOP of the handler, which
+       fixed the spam and introduced a new bug: Space is the browser's page-scroll key, and
+       every repeat that returns early never reaches preventDefault, so a held spacebar
+       scrolled the transport row off the screen mid-show on the machine wired to the PA.
+       Suppressing the browser's default is this handler's job on every repeat; ACTING is
+       the part that must happen once. */
     if (e.code === "Space") {
       e.preventDefault();
+      if (e.repeat) return;
       if (!s.begun) void start();
       else toggleShowRun();
     } else if (e.key === "ArrowRight" || e.key === "n" || e.key === "N") {
       if (s.begun && s.mode === "manual" && s.currentIndex < n - 1) {
         e.preventDefault();
+        if (e.repeat) return;
         goto(s.currentIndex + 1);
       }
     } else if (e.key === "ArrowLeft") {
       if (s.begun && s.mode === "manual" && s.currentIndex > 0) {
         e.preventDefault();
+        if (e.repeat) return;
         goto(s.currentIndex - 1);
       }
     }
@@ -3636,7 +3703,31 @@ export function LiveMode({
             )}
           </Button>
         ) : (
-          <div className="flex items-center gap-1.5">
+          /* ── THE TRANSPORT ROW — measured on a 360px phone, not eyeballed ─────────────
+             What it used to do there: SkipBack 44 · run 172 · **NEXT 24** · Reset 44. The
+             24px was the button's own padding with ZERO content width, because NEXT carried
+             `min-w-0 flex-1` (basis 0, shrink to nothing) while the run button carried a
+             long label and only `shrink`. So the control pressed between every single song
+             was the smallest thing in the row, its icon and the word NEXT rendered ~20px
+             OUTSIDE its own pill, and what sat under that overflow was RESET.
+             Worse, the row MOVED: the instant the show started, the run label changed length,
+             NEXT jumped 31px left and grew 2.3×. A thumb travelling to a target in the dark
+             arrived where the target no longer was.
+             Three changes, all of them layout only:
+               · the run button is a FIXED width and its two labels are the same short length
+                 (P'Patz chose the words) — so the row cannot reflow when the show starts;
+               · NEXT keeps `flex-1` but can no longer collapse below its own content;
+               · the row may WRAP. On a very narrow screen something has to give, and the
+                 thing that should give is Reset dropping to a second line — never NEXT
+                 shrinking into the button beside it.
+             📏 THE BUDGET IS AGAINST 302px, NOT 360. The first version of this fix sized the
+             row against the VIEWPORT and wrapped on the most common Android phone as a
+             result: `.container` contributes 32px of padding and this card's `p-3` another
+             24px, so a 360px device gives the row 302px — measured, in the browser, with
+             the real ancestors. 44 + 108 + 92 + 44 + 3 gaps of 4px = 300px. One line at
+             360px and 390px; wraps below ~330px, which is where wrapping was always the
+             intended answer. */
+          <div className="flex flex-wrap items-center gap-1">
             <Button
               variant="outline"
               size="icon"
@@ -3647,13 +3738,30 @@ export function LiveMode({
             >
               <SkipBack className="h-5 w-5" />
             </Button>
-            {/* play/stop — distinct color + label so it isn't mistaken for skip */}
+            {/* play/stop — distinct color + label so it isn't mistaken for skip.
+                🔒 FIXED WIDTH ON PURPOSE: this button is the only thing in the row whose
+                content changes, and every pixel it gains or loses is a pixel NEXT moves.
+                📏 MEASURED IN KANIT AT 16px, NOT ESTIMATED — "กำลังรัน" is 54px, "รันโชว์"
+                is 41px, and the dot/icon plus the button's gap add 28px, so the widest
+                content is 82px. `size="lg"` brings px-6 (48px), which would need a 130px
+                box; the padding is pulled back to px-3 so 6.75rem/108px clears the worst
+                case by 2px and still fits the row's real 302px. */}
             <Button
               size="lg"
               onClick={toggleShowRun}
               disabled={!isController}
+              /* 🔤 The label lost the words "(จับเวลา)" to fit the fixed width, and nothing
+                 else on this screen says this button starts the accumulated clock — an
+                 operator who only presses NEXT walks the whole show with the timer at zero
+                 and no way to reconstruct it afterwards. The meaning moves to the tooltip,
+                 which every other control in this row now carries. */
+              title={
+                state.running
+                  ? "กำลังจับเวลาโชว์ — แตะเพื่อพัก"
+                  : "เริ่มรันโชว์ (เริ่มจับเวลาสะสม)"
+              }
               className={cn(
-                "min-w-0 shrink font-semibold text-white",
+                "w-[6.75rem] shrink-0 justify-center px-3 font-semibold text-white",
                 state.running
                   ? "bg-green-600 hover:bg-green-700"
                   : "bg-amber-500 hover:bg-amber-600"
@@ -3662,17 +3770,17 @@ export function LiveMode({
               {state.running ? (
                 <>
                   <span className="h-2 w-2 shrink-0 animate-pulse rounded-full bg-white" />
-                  กำลังรันโชว์
+                  กำลังรัน
                 </>
               ) : (
                 <>
-                  <Play className="h-5 w-5" /> รันโชว์ (จับเวลา)
+                  <Play className="h-5 w-5 shrink-0" /> รันโชว์
                 </>
               )}
             </Button>
             <Button
               size="lg"
-              className="min-w-0 flex-1 px-3"
+              className="min-w-[5.75rem] flex-1 justify-center px-3"
               onClick={() => goto(state.currentIndex + 1)}
               disabled={!isController || state.mode === "auto" || state.currentIndex >= items.length - 1}
               title={state.mode === "auto" ? "สลับเป็น Manual เพื่อข้ามเอง" : "รายการถัดไป"}
@@ -3685,6 +3793,7 @@ export function LiveMode({
               className="h-11 w-11 shrink-0"
               onClick={reset}
               disabled={!isController}
+              title="รีเซ็ตสถานะโชว์"
             >
               <RotateCcw className="h-5 w-5" />
             </Button>

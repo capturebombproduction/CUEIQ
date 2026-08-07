@@ -51,6 +51,15 @@ export function ConfirmProvider({ children }: { children: React.ReactNode }) {
   const resolver = React.useRef<((v: boolean) => void) | null>(null);
 
   const confirm = React.useCallback<ConfirmFn>((next) => {
+    // One resolver, one dialog. A second confirm() arriving while the first is
+    // still awaiting an answer must NOT repaint the panel: the user is already
+    // reading it with a finger over the red button, and swapping the text in
+    // place (same DOM node, same footer slot) makes them approve something they
+    // never read. Answer the newcomer "cancelled" — never leave it unresolved,
+    // its caller is awaiting — and leave the dialog they can see alone.
+    // Reachable because a confirm can be fired after an async run-up while the
+    // page is still interactive (song-library's 🗑 waits on a setlist count).
+    if (resolver.current) return Promise.resolve(false);
     setTyped(""); // fresh type-to-confirm field every time
     setOpts(next);
     return new Promise<boolean>((resolve) => {

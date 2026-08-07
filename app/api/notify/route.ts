@@ -3,6 +3,13 @@ import { createClient as createServerClient } from "@/lib/supabase/server";
 import { createClient as createTokenClient } from "@supabase/supabase-js";
 import { createAdminClient, hasServiceRole } from "@/lib/supabase/admin";
 import { vapidConfigured, sendPush } from "@/lib/push";
+import {
+  runOrderLinksFor,
+  runOrderPushBody,
+  RUN_ORDER_FALLBACK_LINK,
+  type FestivalEvent,
+  type GroupRoleRow,
+} from "@/lib/dead-link";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -101,6 +108,11 @@ export async function POST(req: Request) {
   let link: string;
   let recipientRule: "approvers" | "band_ar" | "all_tenant";
   const meta: Record<string, unknown> = {};
+  // run_order_live only — the festival identity + the event the board was opened
+  // from, needed below to give each recipient a link THEY can open (see step 4c).
+  let festivalName = "";
+  let festivalDate: string | null = null;
+  let entryEventId = "";
 
   if (EVENT_KINDS.has(kind)) {
     if (!eventId) return json(req, { error: "no eventId" }, 400);
@@ -188,10 +200,27 @@ export async function POST(req: Request) {
     const { count: liveCount } = await liveQ;
     if (!liveCount) return noOp(req); // not actually live → don't notify
     title = "🔴 งานเริ่มแล้ว (Live)";
-    messageBody = `${(ev.name as string) || "งาน"} — เปิดดูคิวงานสดได้เลย`;
-    link = `/events/${ev.id}/run-order/live`;
+    // The DEFAULT link for this kind is the everyone-safe one. It used to be
+    // `/events/${ev.id}/run-order/live` — the entry event, i.e. whichever single
+    // band's event the caller happened to open the board from — while the audience
+    // is the WHOLE label. events_select is can_view_group(group_id), so the members
+    // and Ar of the other 7 bands could not read that row: the live page's
+    // `.single()` came back null and called notFound(). Twelve to fifteen of the 19
+    // accounts got a push on their phone and a bare 404 at the exact minute the show
+    // started. Step 4c below upgrades this to a per-recipient deep link wherever one
+    // provably exists; anything it cannot resolve stays on this fallback, because a
+    // duller destination beats a dead one and this fires on show day.
+    link = RUN_ORDER_FALLBACK_LINK;
     recipientRule = "all_tenant";
     meta.event_id = ev.id;
+    entryEventId = ev.id as string;
+    festivalName = (ev.name as string) ?? "";
+    festivalDate = (ev.event_date as string | null) ?? null;
+    // The body has to agree with the LINK, not with the kind: whoever ends up on the
+    // /overview fallback cannot reach the live board from there, so they must not be
+    // told to open it. This is the default (fallback) wording; step 4c upgrades it
+    // per recipient wherever it also upgrades the link. See runOrderPushBody.
+    messageBody = runOrderPushBody(festivalName, link);
     // The board is festival-wide (one run_sequence per tenant + name + date) but is
     // reachable from ANY member event's page, so remember the FESTIVAL identity and
     // dedupe on that below — keying on the entry-point event id would let a restart
@@ -272,14 +301,79 @@ export async function POST(req: Request) {
   recipientIds = recipientIds.filter((id) => !stillUnread.has(id));
   if (recipientIds.length === 0) return noOp(req);
 
+  // 4c) run_order_live only: the audience is the whole label but the live board is
+  // reached through SOME event row, and RLS only lets a band-tier account read the
+  // events of their own band(s). So resolve the destination per recipient instead of
+  // shipping one band's event id to all 19 people. The board itself is festival-wide
+  // (run_sequence is keyed on tenant + name + date, never on an event id), so every
+  // link below opens the SAME board — they differ only in which door they use.
+  //
+  // Every read here is best-effort ON PURPOSE: a failure leaves that recipient on
+  // the /overview fallback, which is never a 404. Nothing in this block may make the
+  // notification worse than not sending the deep link at all.
+  const linkFor = new Map<string, string>();
+  if (kind === "run_order_live") {
+    let fq = admin
+      .from("events")
+      .select("id, group_id")
+      .eq("tenant_id", tenantId)
+      .eq("name", festivalName);
+    fq = festivalDate ? fq.eq("event_date", festivalDate) : fq.is("event_date", null);
+    const [{ data: festEvents }, { data: memberRows }] = await Promise.all([
+      fq,
+      admin
+        .from("tenant_members")
+        .select("user_id, role")
+        .eq("tenant_id", tenantId)
+        .in("user_id", recipientIds),
+    ]);
+    const festivalEvents: FestivalEvent[] = (festEvents ?? []).map((e) => ({
+      id: e.id as string,
+      group_id: (e.group_id as string | null) ?? null,
+    }));
+    const bandIds = Array.from(
+      new Set(festivalEvents.map((e) => e.group_id).filter((g): g is string => !!g))
+    );
+    let groupRoles: GroupRoleRow[] = [];
+    if (bandIds.length) {
+      const { data: grRows } = await admin
+        .from("group_roles")
+        .select("user_id, group_id")
+        .in("group_id", bandIds)
+        .in("user_id", recipientIds);
+      groupRoles = (grRows ?? []).map((r) => ({
+        user_id: r.user_id as string,
+        group_id: r.group_id as string,
+      }));
+    }
+    for (const [uid, dest] of runOrderLinksFor({
+      recipientIds,
+      members: (memberRows ?? []).map((m) => ({
+        user_id: m.user_id as string,
+        role: (m.role as string | null) ?? null,
+      })),
+      festivalEvents,
+      groupRoles,
+      entryEventId,
+    })) {
+      linkFor.set(uid, dest);
+    }
+  }
+  const linkOf = (uid: string) => linkFor.get(uid) ?? link;
+  // …and the body is resolved from that same link, never separately: a push that
+  // promises the live board to someone whose destination has no way into it is the
+  // same broken promise as the dead link it replaced, just one step further along.
+  const bodyOf = (uid: string) =>
+    kind === "run_order_live" ? runOrderPushBody(festivalName, linkOf(uid)) : messageBody;
+
   // 5) Insert the in-app rows.
   const rows = recipientIds.map((uid) => ({
     tenant_id: tenantId,
     user_id: uid,
     type: kind,
     title,
-    body: messageBody,
-    link,
+    body: bodyOf(uid),
+    link: linkOf(uid),
     meta,
   }));
   await admin.from("notifications").insert(rows);
@@ -293,13 +387,21 @@ export async function POST(req: Request) {
       .from("push_subscriptions")
       .select("id, user_id, endpoint, p256dh, auth")
       .in("user_id", pushIds);
-    const payload = { title, body: messageBody, link };
+    // The payload SHAPE is unchanged ({title, body, link}) — phones already hold
+    // subscriptions and public/sw.js reads exactly these three fields — but the link
+    // AND the body are now resolved per subscription owner, the same pair stored in
+    // that person's bell row. A push and a bell item that disagree about where to go
+    // would be worse than either bug alone.
     const dead: string[] = [];
     await Promise.all(
       (subs ?? []).map(async (s) => {
         const res = await sendPush(
           { endpoint: s.endpoint as string, p256dh: s.p256dh as string, auth: s.auth as string },
-          payload
+          {
+            title,
+            body: bodyOf(s.user_id as string),
+            link: linkOf(s.user_id as string),
+          }
         );
         if (res === "ok") sent++;
         else if (res === "gone") dead.push(s.id as string);

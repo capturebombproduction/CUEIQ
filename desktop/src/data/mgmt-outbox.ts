@@ -362,9 +362,27 @@ const DUPLICATE_ROW_REASON =
 /** Thai reason for migration 0037's approval guard refusing the queued status. */
 const APPROVAL_REASON = "สถานะ “อนุมัติแล้ว” ต้องให้สตาฟที่มีสิทธิ์เป็นคนอนุมัติ";
 
-/** Classify one failed write during a flush: still-offline throws, rejection parks. */
-function failOrThrow(message: string, onLine: boolean): { conflict: string } {
-  if (isQueueableWriteError(message, onLine)) throw new Error(message);
+/**
+ * Classify one failed write during a flush: still-offline throws, rejection parks.
+ *
+ * `status` is the PostgrestResponse's HTTP status, passed at every site that has a
+ * response in scope. Round 10 taught the ENQUEUE side that a 5xx/429 is transient;
+ * this side had been left classifying by prose, and prose is exactly what a sick
+ * server doesn't give you — a Supabase/Cloudflare 503 arrives as an HTML error page
+ * that postgrest-js puts into `error.message` verbatim, matching none of the network
+ * words. That read as a REAL REJECTION, so a venue edit the user had correctly
+ * queued got PARKED (and deleted from the queue) with a raw HTML page as its Thai
+ * reason — and "ใช้ของออนไลน์" then threw the edit away. With the status it throws
+ * instead, which the flush loop treats as "not now": the op stays queued for the
+ * next reconnect. See lib/mgmt-outbox.ts isQueueableWriteError for what a status
+ * does and does not decide.
+ */
+function failOrThrow(
+  message: string,
+  onLine: boolean,
+  status?: number | null
+): { conflict: string } {
+  if (isQueueableWriteError(message, onLine, status)) throw new Error(message);
   return { conflict: message };
 }
 
@@ -390,8 +408,8 @@ async function applyChildListOp(
     // on. See childFlushDecision for the already-applied re-run shortcut.
     const sel =
       op.kind === "lineup.upsert" ? "member_id" : CHILD_WRITE_COLUMNS[op.kind].join(",");
-    const { data, error } = await supabase.from(table).select(sel).eq("event_id", op.id);
-    if (error) return failOrThrow(error.message, onLine);
+    const { data, error, status } = await supabase.from(table).select(sel).eq("event_id", op.id);
+    if (error) return failOrThrow(error.message, onLine, status);
     // An anon read comes back EMPTY with no error (RLS) — which fingerprints as
     // "the online list changed" (park a false conflict) or, for a snapshot that
     // clears the list, as "already applied" (drop the op). Both would throw away
@@ -410,7 +428,7 @@ async function applyChildListOp(
   if (isLineup) {
     const memberIds = op.rows as string[];
     if (memberIds.length) {
-      const { error } = await supabase.from(table).upsert(
+      const { error, status } = await supabase.from(table).upsert(
         memberIds.map((member_id) => ({
           tenant_id: op.tenantId,
           event_id: op.id,
@@ -418,21 +436,23 @@ async function applyChildListOp(
         })),
         { onConflict: "event_id,member_id", ignoreDuplicates: true }
       );
-      if (error) return failOrThrow(error.message, onLine);
+      if (error) return failOrThrow(error.message, onLine, status);
     }
     let del = supabase.from(table).delete().eq("event_id", op.id);
     if (memberIds.length) del = del.not("member_id", "in", `(${memberIds.join(",")})`);
-    const { error } = await del;
-    if (error) return failOrThrow(error.message, onLine);
+    const { error, status } = await del;
+    if (error) return failOrThrow(error.message, onLine, status);
     return "applied";
   }
 
   const rows = op.rows as Record<string, unknown>[];
-  const deleteRemoved = async (): Promise<string | null> => {
+  // Carries the failing response's HTTP status out with its message — a 5xx here is
+  // as transient as anywhere else, and the caller can't classify it without one.
+  const deleteRemoved = async (): Promise<{ message: string; status: number } | null> => {
     let del = supabase.from(table).delete().eq("event_id", op.id);
     if (rows.length) del = del.not("id", "in", `(${rows.map((r) => r.id).join(",")})`);
-    const { error } = await del;
-    return error ? error.message : null;
+    const { error, status } = await del;
+    return error ? { message: error.message, status } : null;
   };
   if (rows.length) {
     let up = await supabase.from(table).upsert(rows);
@@ -441,15 +461,15 @@ async function applyChildListOp(
       // id, so the server's stale photo row blocks the upsert. Clear the rows the
       // snapshot no longer contains FIRST, then retry once (the delete below then
       // re-runs as a no-op).
-      const delMsg = await deleteRemoved();
-      if (delMsg) return failOrThrow(delMsg, onLine);
+      const delFail = await deleteRemoved();
+      if (delFail) return failOrThrow(delFail.message, onLine, delFail.status);
       up = await supabase.from(table).upsert(rows);
       if (up.error && isUniqueViolation(up.error.code, up.error.message)) {
         // Still colliding → the two rows sit INSIDE this snapshot (one row gives up
         // kind='photo' while another takes it), so no upsert order clears the index.
         // Replace the whole set instead: drop the event's rows, insert mine.
         const wipe = await supabase.from(table).delete().eq("event_id", op.id);
-        if (wipe.error) return failOrThrow(wipe.error.message, onLine);
+        if (wipe.error) return failOrThrow(wipe.error.message, onLine, wipe.status);
         up = await supabase.from(table).insert(rows);
       }
       if (up.error) {
@@ -458,14 +478,14 @@ async function applyChildListOp(
         // back (best-effort) before parking, or the server keeps a half-emptied list.
         await supabase.from(table).upsert(rows);
         const dup = isUniqueViolation(up.error.code, up.error.message);
-        return failOrThrow(dup ? DUPLICATE_ROW_REASON : up.error.message, onLine);
+        return failOrThrow(dup ? DUPLICATE_ROW_REASON : up.error.message, onLine, up.status);
       }
     } else if (up.error) {
-      return failOrThrow(up.error.message, onLine);
+      return failOrThrow(up.error.message, onLine, up.status);
     }
   }
-  const delMsg = await deleteRemoved();
-  if (delMsg) return failOrThrow(delMsg, onLine);
+  const delFail = await deleteRemoved();
+  if (delFail) return failOrThrow(delFail.message, onLine, delFail.status);
   return "applied";
 }
 
@@ -549,13 +569,13 @@ async function applyAudioUploadOp(
   force: boolean
 ): Promise<"applied" | { conflict: string }> {
   const supabase = createClient();
-  const { data, error } = await supabase
+  const { data, error, status } = await supabase
     .from("songs")
     .select("id, audio_path")
     .eq("id", op.id)
     .maybeSingle();
   if (error) {
-    if (isQueueableWriteError(error.message, onLine)) throw new Error(error.message);
+    if (isQueueableWriteError(error.message, onLine, status)) throw new Error(error.message);
     return { conflict: error.message };
   }
   // An anon read is an empty result too, and "the song is gone" is a terminal
@@ -613,7 +633,16 @@ async function applyAudioUploadOp(
       // syncing with no error anywhere. Classify like every other write: retry the
       // transient, park the real rejection where a human can see it.
       const msg = e instanceof Error ? e.message : String(e);
-      if (isQueueableWriteError(msg, onLine)) throw e instanceof Error ? e : new Error(msg);
+      // The status, when the hop had one (lib/audio-remote.ts attaches it): these
+      // messages are Thai with a bare number, so the classifier's ASCII word list
+      // reads a 503 from presign/R2 as a PERMANENT rejection. This op carries the
+      // largest and least recoverable payload in the queue — the only copy of a
+      // take the operator picked offline — and parking it means the ชนกัน panel's
+      // "ใช้ของออนไลน์" clears the local source and the song falls back to the old
+      // master at showtime. Every other write in this file already survives an
+      // identical 503 by staying queued.
+      const status = (e as { status?: number } | null)?.status;
+      if (isQueueableWriteError(msg, onLine, status)) throw e instanceof Error ? e : new Error(msg);
       return { conflict: msg };
     }
     const upd = await supabase
@@ -622,7 +651,8 @@ async function applyAudioUploadOp(
       .eq("id", op.id)
       .select("id");
     if (upd.error) {
-      if (isQueueableWriteError(upd.error.message, onLine)) throw new Error(upd.error.message);
+      if (isQueueableWriteError(upd.error.message, onLine, upd.status))
+        throw new Error(upd.error.message);
       return { conflict: upd.error.message };
     }
     if (!upd.data || upd.data.length === 0) {
@@ -662,7 +692,7 @@ async function applyOp(op: NewMgmtOp): Promise<"applied" | { conflict: string }>
 
   if (op.kind === "event.create") {
     // upsert on the client-minted id → idempotent when a half-flushed queue re-runs.
-    const { data, error } = await supabase
+    const { data, error, status } = await supabase
       .from("events")
       .upsert({ ...op.values, id: op.id })
       .select("updated_at");
@@ -671,19 +701,19 @@ async function applyOp(op: NewMgmtOp): Promise<"applied" | { conflict: string }>
       if (!Number.isNaN(ms)) selfWriteMs.set(op.id, ms);
       return "applied";
     }
-    if (isQueueableWriteError(error.message, onLine)) throw new Error(error.message);
+    if (isQueueableWriteError(error.message, onLine, status)) throw new Error(error.message);
     return { conflict: error.message };
   }
 
   // Online-wins guard: read the server row before touching it (the whole row —
   // the patch-vs-row idempotence check below needs the columns, not just updated_at).
-  const { data, error } = await supabase
+  const { data, error, status } = await supabase
     .from("events")
     .select("*")
     .eq("id", op.id)
     .maybeSingle();
   if (error) {
-    if (isQueueableWriteError(error.message, onLine)) throw new Error(error.message);
+    if (isQueueableWriteError(error.message, onLine, status)) throw new Error(error.message);
     return { conflict: error.message };
   }
   if (!data) {
@@ -716,7 +746,8 @@ async function applyOp(op: NewMgmtOp): Promise<"applied" | { conflict: string }>
       .eq("id", op.id)
       .select("updated_at");
     if (res.error) {
-      if (isQueueableWriteError(res.error.message, onLine)) throw new Error(res.error.message);
+      if (isQueueableWriteError(res.error.message, onLine, res.status))
+        throw new Error(res.error.message);
       // 0037: the queued patch tried to set 'approved' without the right — park it
       // in Thai, not with the raw Postgres exception the ชนกัน panel would show.
       if (isApprovalGuardError(res.error.message)) return { conflict: APPROVAL_REASON };
@@ -738,7 +769,8 @@ async function applyOp(op: NewMgmtOp): Promise<"applied" | { conflict: string }>
     selfWriteMs.delete(op.id);
     return "applied";
   }
-  if (isQueueableWriteError(res.error.message, onLine)) throw new Error(res.error.message);
+  if (isQueueableWriteError(res.error.message, onLine, res.status))
+    throw new Error(res.error.message);
   return { conflict: res.error.message };
 }
 

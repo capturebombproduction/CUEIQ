@@ -5,13 +5,43 @@
 # No secrets needed: desktop/vite.config.ts bakes in public Supabase URL + anon key
 # + web origin as defaults, so `npm run dist` builds straight through.
 #
-# TWO WAYS TO GET A BUILD:
-#   • Manual dispatch → artifacts only. Actions tab → the run → "Artifacts" →
-#     `CueIQ-mac-dmg` (the .dmg, zipped) or `CueIQ-win-exe` (the .exe + update feed).
-#   • Push a `v*` tag → same build, PLUS a published GitHub Release carrying the
-#     installers and `latest.yml`. That Release is what makes AUTO-UPDATE work:
-#     an installed Windows copy checks it at startup, downloads in the background
-#     and installs on the next quit (never mid-show — see electron/main.cjs).
+# THREE WAYS TO GET A BUILD. This list used to have two entries and the first one
+# said "Manual dispatch → artifacts only, does not publish". That was FALSE, and
+# the file therefore documented the dangerous action as the safe one: `publish`
+# gates on `startsWith(github.ref, 'refs/tags/v')`, not on the event, and the
+# "Run workflow" ref dropdown lists TAGS as well as branches. Read all three:
+#   • Manual dispatch FROM A BRANCH → artifacts only, nothing is published.
+#     Actions tab → the run → "Artifacts" → `CueIQ-mac-dmg` (the .dmg, zipped) or
+#     `CueIQ-win-exe` (the .exe + update feed). `publish` is skipped because the
+#     ref is `refs/heads/…`.
+#   • Manual dispatch FROM A TAG, or "Re-run jobs" on an old tag's run → builds
+#     AND PUBLISHES, because the ref really is `refs/tags/v…`. It re-uploads that
+#     tag's assets over the existing ones. It will not hand the "Latest" pointer
+#     to an OLD tag: the publish step compares versions — against whatever holds
+#     the pointer, or, when nothing holds it, against the newest published release
+#     — and refuses the pointer unless this tag really is the newest. Replaying
+#     the CURRENT tag is allowed to re-claim it; that is a repair, not a demotion,
+#     and an earlier cut of the guard got it wrong in that direction. EVERY
+#     refusal prints a `::warning::`, replays included, so a green run with no
+#     annotation means the pointer was not refused. The one thing it cannot
+#     compare is a releases API that will not answer at all: that branch asserts
+#     nothing on an existing Release and warns loudly. None of this is a guarantee
+#     about GitHub's side — read the long comment in the publish step before
+#     changing any `gh` invocation. And it is still a publish, not a dry run: that
+#     tag's assets really are replaced. Treat it as one.
+#   • Push a `v*` tag → the intended path: same build, PLUS a published GitHub
+#     Release carrying the installers and `latest.yml`. That Release is what makes
+#     AUTO-UPDATE work — but NOT silently, and this bullet used to say otherwise.
+#     An installed Windows copy checks the Release at startup and then ASKS:
+#     `โหลดเลย` / `ไว้ก่อน`, with a "don't ask about this version again" checkbox
+#     (desktop/electron/main.cjs sets `autoDownload = false` on purpose — พี่'s
+#     call 2026-08-02 — so a venue on mobile data is never ambushed by a ~100 MB
+#     download; that is the figure main.cjs's own dialog quotes, and it is the
+#     only number a user ever sees). NOTHING downloads until the operator says
+#     yes; once they do, it installs on the next quit, never mid-show. A laptop
+#     whose operator tapped `ไว้ก่อน` stays on the old build until somebody says
+#     yes or fetches the .exe by hand — which is why the Thai release notes below
+#     must keep saying that too.
 #
 # ⚠️ WHY PUBLISHING IS ITS OWN JOB. electron-builder's implicit publish-on-tag broke
 # repeatedly (mac: the rename hook renames the .dmg, then publish reopens the
@@ -178,6 +208,27 @@ jobs:
     # tag, and publishing an empty Release on top of that would bury the reason.
     if: ${{ always() && startsWith(github.ref, 'refs/tags/v') && needs.build.result != 'skipped' }}
     runs-on: ubuntu-latest
+    # The Latest-pointer block below is a READ-MODIFY-WRITE (read the pointer,
+    # compare versions, write). Two tag runs overlapping breaks it no matter how
+    # careful the comparison is: v0.1.6 and v0.1.7 were tagged 50 minutes apart
+    # and the build matrix waits on `macos-latest`, the queue-starved runner, so
+    # a v0.1.6 publish still running when v0.1.7's starts is ordinary. Both would
+    # read the pre-v0.1.6 pointer, both would decide "yes", and whichever wrote
+    # LAST would win — the older one, half the time. Both runs green, both
+    # printing `latest=true`, and the fleet quietly pinned to the older build.
+    # Serializing them is what makes the comparison mean anything: the second run
+    # then reads a pointer that already reflects the first, and `is_newer` does
+    # the rest.
+    #
+    # `cancel-in-progress: false` = queue, do not kill. Known cost, accepted on
+    # purpose: GitHub keeps at most ONE run pending per group, so if a THIRD tag
+    # arrives while one publish runs and another waits, the waiting one is
+    # CANCELLED and that tag gets no Release. That is loud — a cancelled job and
+    # a missing Release — and re-running it afterwards is correct by then. The
+    # failure it replaces is silent and fleet-wide, which is the trade we want.
+    concurrency:
+      group: desktop-publish-latest
+      cancel-in-progress: false
     permissions:
       contents: write
     steps:
@@ -207,7 +258,10 @@ jobs:
       # re-run of the same tag re-uploads over the existing assets, and a release
       # left as a DRAFT by an earlier failed attempt is flipped to published —
       # electron-updater cannot see drafts at all, so a lingering draft is exactly
-      # how "the release exists but nobody updates" happens.
+      # how "the release exists but nobody updates" happens. Idempotent does NOT
+      # mean harmless, though: re-running an OLD tag used to hand it the "Latest"
+      # pointer. The block below is what stops that; read it before changing the
+      # gh invocations.
       - name: Publish the Release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -221,21 +275,293 @@ jobs:
         run: |
           set -euo pipefail
           tag="${GITHUB_REF_NAME}"
+
+          # ── May THIS run claim GitHub's "Latest" pointer? ────────────────────
+          # It used to claim it unconditionally, on both branches below, and that
+          # is a silent fleet-wide outage waiting for someone to press a button.
+          # electron-updater does not read our tag list: main.cjs never sets
+          # allowPrerelease/allowDowngrade, so GitHubProvider asks GitHub for
+          # /releases/latest, takes whatever tag that ONE pointer names, and reads
+          # THAT tag's latest.yml. So re-running the v0.1.6 job — a perfectly
+          # reasonable thing to do to re-fetch a Mac .dmg — moved the pointer back
+          # to v0.1.6, and every installed 0.1.8 then compared 0.1.6 to itself,
+          # decided there was nothing newer and stopped updating: no dialog, no
+          # error, nothing on screen (main.cjs swallows updater failures on
+          # purpose so a venue never sees one), until the next real release
+          # happened to fix it. At the same time the Releases page's "Latest"
+          # badge hands a fresh install the OLD .exe, which is exactly the file
+          # nobody is supposed to be given. Same silent no-op class the `guard`
+          # job above was written for, arriving through a different door.
+          #
+          # The rule: publish the assets always, claim "Latest" only when this tag
+          # really is the newest published version.
+
+          # Answers with exactly one of:  "found <tag>" | "none" | "unknown".
+          resolve_latest_pointer() {
+            local t
+            if t=$(gh release view --json tagName --jq '.tagName' 2>/dev/null) && [ -n "$t" ]; then
+              printf 'found %s' "$t"; return
+            fi
+            # `gh release view` with no tag argument fails for two very different
+            # reasons and we must not treat them alike: either nothing is flagged
+            # Latest yet (legitimate — there is nothing to demote), or the API did
+            # not answer (we are blind and must not gamble). `gh release list`
+            # separates them: it exits 0 and prints nothing for a repo with no
+            # releases, and exits non-zero when the call itself failed.
+            if gh release list --limit 1 >/dev/null 2>&1; then
+              printf 'none'; return
+            fi
+            printf 'unknown'
+          }
+
+          state=unknown; current=""
+          for attempt in 1 2 3; do
+            read -r state current <<<"$(resolve_latest_pointer)"
+            [ "$state" = unknown ] || break
+            [ "$attempt" = 3 ] || { echo "attempt $attempt: the releases API did not answer; retrying in 5s"; sleep 5; }
+          done
+
+          # Semver, not string comparison: v0.1.10 is NEWER than v0.1.9 but sorts
+          # BEFORE it alphabetically, and a plain `<` would demote the fleet on the
+          # first two-digit patch we ship. `sort -V` compares numeric components
+          # and is GNU coreutils, always present on ubuntu-latest.
+          is_release_tag() { [[ "$1" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; }
+          is_newer() { [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | tail -n 1)" = "$1" ]; }
+
+          # A REPLAY IS NOT A RELEASE. Two of the three branches below CAN compare
+          # versions — `found` against the pointer it just read, `none` against the
+          # release list — and only `unknown` can compare nothing at all, because
+          # the call that would answer is the call that failed. The first cut of
+          # this block handed the pointer to both non-`found` branches outright,
+          # which put an old tag one button-press away from taking Latest through
+          # the two doors the header tells people to use. Where no comparison is
+          # possible the only signal left is HOW this run started: a first-attempt
+          # tag push is a real release; a `workflow_dispatch` from a tag ref, and
+          # "Re-run jobs" on an old tag's run (which keeps the ORIGINAL `push`
+          # event name and only bumps the attempt counter — hence both tests), are
+          # replays of a release that already happened. A replay must never be
+          # handed the pointer by a branch that did not check the version — and,
+          # learned the hard way in the `none` arm below, must not be DEMOTED by
+          # one either.
+          is_fresh_release_push() {
+            [ "${GITHUB_EVENT_NAME:-}" = push ] && [ "${GITHUB_RUN_ATTEMPT:-1}" = 1 ]
+          }
+
+          case "$state" in
+            none)
+              # Nothing is FLAGGED Latest. That is not the same as "no release
+              # exists", and the difference is the whole bug: /releases/latest also
+              # 404s when every release happens to be a draft or a prerelease. Flip
+              # v0.1.8 to pre-release for ten minutes while investigating, dispatch
+              # from v0.1.6 to re-fetch a Mac .dmg (header bullet 2, a thing we
+              # tell people to do), and the FIRST cut of this branch answered `yes`
+              # for a tag two versions old — the exact fleet-wide silent outage the
+              # block above is written about, reached through the one branch that
+              # never compares anything.
+              #
+              # The SECOND cut answered `no` for every replay, and in one case that
+              # was worse than the bug it fixed, because `no` no longer means "stay
+              # out of it": it now says --latest=false OUT LOUD (see the `no` arm
+              # further down, and the reason it has to). Same premise — v0.1.8 is
+              # the release somebody flipped to pre-release — but now dispatch from
+              # v0.1.8 ITSELF, which is the likelier half of header bullet 2: the
+              # .dmg you usually want to re-fetch is the one you just shipped. The
+              # run un-prereleases v0.1.8 and pins make_latest=false on it in the
+              # same `gh release edit`, so GitHub hands the badge to v0.1.7, or to
+              # nobody at all if v0.1.8 is the only non-draft release — and then
+              # /releases/latest 404s, main.cjs swallows it (AUTOUPDATE_CHECK_FAIL,
+              # console only) and the whole fleet stops updating with no dialog.
+              # Both the pre-guard code and the first cut RESTORED v0.1.8 there. A
+              # guard that demotes what the unguarded code repaired is not a guard.
+              #
+              # So compare here too, using the release LIST instead of the pointer.
+              # We are allowed to: `gh release list` is the call that answered, and
+              # its answering is the only reason we are in `none` rather than
+              # `unknown`. Ask it for the newest PUBLISHED release-shaped tag and
+              # run the same is_newer test the `found` arm runs. Newest or tied →
+              # take the unheld pointer (a repair, not a demotion). Older, or a tag
+              # shape we do not compare, or nothing to compare against → refuse,
+              # and the ::warning:: below says so out loud on every one of them.
+              newest=$(gh release list --limit 100 --json tagName,isDraft --jq '.[] | select(.isDraft | not) | .tagName' 2>/dev/null | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1 || true)
+              echo "latest-pointer: nothing holds the pointer; newest published release-shaped tag = ${newest:-<none>}"
+              # SHAPE FIRST, event second. A fresh push is evidence that this is a
+              # real release; it is NOT evidence that the tag is one we know how to
+              # order. Testing the event first granted the pointer to shapes the
+              # `found` arm refuses — push `v0.2.0-rc1` while v0.1.8 sits flipped to
+              # pre-release and the RC took Latest, so every installed 0.1.8 was
+              # offered a release candidate, with no ::warning:: and no ⚠️ on the
+              # notes (both gated on decision=no). The same tag must not be Latest or
+              # not depending on whether a pointer happened to be held. What the event
+              # test is still for: letting a genuine first push take the unheld
+              # pointer when there is no published release-shaped tag to compare with.
+              if is_release_tag "$tag" && { is_fresh_release_push || { [ -n "$newest" ] && is_newer "$tag" "$newest"; }; }; then
+                decision=yes
+              else
+                decision=no
+              fi ;;
+            unknown)
+              # Blind after 3 tries, and unlike `none` there is no second source to
+              # fall back on: `gh release list` is exactly the call that failed.
+              #
+              # On an EXISTING Release this branch asserts nothing — and that is a
+              # choice between two bad options, NOT the no-op an earlier version of
+              # this comment claimed ("gh release edit with no --latest leaves the
+              # pointer where it is"). It does not: gh PATCHes only the flags it
+              # was given, but GitHub's update endpoint documents make_latest as
+              # defaulting to true for a release that BECOMES published, and the
+              # edit below says --draft=false. So silence can HAND this tag the
+              # pointer. The `no` arm further down removes that bet by saying
+              # --latest=false out loud, and the honest question here is why this
+              # arm does not copy it. Because blind, it cannot rule out the one
+              # case where false is catastrophic: a replay of the CURRENT release
+              # (header bullet 2, and the .dmg people re-fetch is usually the one
+              # just shipped) would be un-prereleased and pinned false in the same
+              # call, which is the fleet-wide silent outage the `none` arm above
+              # was rewritten to stop creating. A wrong GRANT is one badge click to
+              # undo and is visible on the Releases page; a wrong DEMOTION looks
+              # like nothing at all until a venue is on an old build. So: assert
+              # nothing, and WARN loudly enough that a human resolves what the API
+              # would not tell us.
+              #
+              # On the CREATE branch the tag has no Release at all, so it cannot be
+              # holding the pointer today — which makes it safe for a replay to say
+              # --latest=false there, while a genuine push keeps GitHub's own
+              # default (make_latest=true) and becomes Latest, the behaviour this
+              # workflow already had.
+              decision=unknown
+              echo "::warning::Could not read the current Latest release after 3 tries — publishing $tag without asserting --latest. That is NOT a promise the pointer stayed put: if this run flips an existing draft to published, GitHub may hand Latest to $tag by its own default; if this run CREATES the Release, a fresh tag push takes Latest by that default and a replay is forced to --latest=false. Open the Releases page and confirm which release is flagged Latest." ;;
+            found)
+              if [ "$tag" = "$current" ]; then
+                # A tie means we are re-running the release that already holds the
+                # pointer, or re-publishing a draft that a failed attempt left
+                # behind. Deliberately re-assert it: it is a no-op in the first
+                # case and a repair in the second.
+                decision=yes
+              elif is_release_tag "$tag" && is_release_tag "$current" && is_newer "$tag" "$current"; then
+                decision=yes
+              else
+                # Older tag — or a tag shape we cannot compare with confidence,
+                # e.g. a "-rc1" suffix, where sort -V's answer is not obviously the
+                # answer a human means. Ship the assets, leave Latest alone. If a
+                # release genuinely deserves the pointer and lands here, flag it in
+                # the GitHub UI rather than loosening this test.
+                decision=no
+              fi ;;
+          esac
+          echo "latest-pointer: state=$state current=${current:-<none>} tag=$tag decision=$decision"
+
+          # `no` and `unknown` end the same way from this run's side — assets
+          # published, pointer not CLAIMED by us (on `unknown` that is not the same
+          # as "not moved"; see that arm) — but only `unknown` said so where anyone
+          # would see it; `no` had the plain echo above and nothing else, so a run
+          # that published a real release and then failed to announce it was green
+          # with no annotation. Push `v0.2.0-rc1` (is_release_tag rejects the rc
+          # shape, so decision=no) and the release ships, the fleet is never
+          # offered it, and the only way to find out is noticing days later that
+          # nothing updated — the same detection latency as the bug this whole
+          # block exists to remove, and the same silent no-op the `guard` job at
+          # the top of the file is written against.
+          #
+          # This used to fire only for a fresh tag push, on the reasoning that "a
+          # REPLAY landing on `no` is the guard doing its job and stays quiet".
+          # That reasoning is wrong twice over. A replay is a button somebody just
+          # pressed thirty seconds ago, so one annotation per press is not noise —
+          # it is the answer to the question they pressed it to ask, and the header
+          # at the top of this file promises them that answer. And `no` is not a
+          # no-op any more: it sends --latest=false out loud, so a `no` reached
+          # WITHOUT a version comparison could demote a live release, which is
+          # precisely what the silence hid (see the `none` arm). Warn on every one.
+          if [ "$decision" = no ]; then
+            echo "::warning::$tag was published but did NOT take the Latest pointer (state=$state current=${current:-<none>}). electron-updater only ever reads the Latest release, so no installed copy will be offered this version — flag it by hand on the Releases page if that is wrong."
+          fi
+
+          # These two verbs do NOT behave alike when --latest is absent, and no
+          # arm below is allowed to pretend otherwise. `gh release create` plainly
+          # takes the pointer — the REST default for make_latest is true — so
+          # creating a release for an old tag has to say --latest=false out loud.
+          # `gh release edit` is the murky one: gh PATCHes only the flags it was
+          # given, but the same documented default applies to a release that
+          # BECOMES published, and every edit below sends --draft=false. Treat an
+          # absent --latest on the edit path as "we did not assert", never as "the
+          # pointer did not move". (Empty-array expansion under `set -u` is safe on
+          # bash >= 4.4; ubuntu-latest ships bash 5.)
+          case "$decision" in
+            yes)
+              edit_latest=(--latest)
+              create_latest=(--latest) ;;
+            no)
+              # Say --latest=false OUT LOUD on the edit path too. Staying silent
+              # bet the whole `no` decision on "gh only PATCHes flags it was
+              # given" — true of gh, but it says nothing about GitHub's side, and
+              # the REST update endpoint documents make_latest as defaulting to
+              # true for a release that becomes published. The edit call below
+              # --draft=false, which IS that transition, and drafts are exactly
+              # what turns up here: electron-builder's implicit publish creates
+              # releases as drafts, which is why the idempotency note above exists
+              # at all. One token removes the bet instead of resting on it.
+              # From `found` this is guaranteed safe: "$tag" != "$current", so this
+              # tag is not the one holding the pointer. From `none` nothing holds the
+              # pointer and that arm compares versions — but only when it has
+              # something to compare against, so the claim is narrower than an
+              # earlier version of this comment made it. Comparing matters, because
+              # while `none` gated on the event alone this line demoted a current
+              # release that the pre-guard code restored: do not let a branch reach
+              # `no` without comparing again. The gap left on purpose: if the release
+              # list yields NO published release-shaped tag at all (every release in
+              # the repo is a draft), a replay reaches `no` uncompared, and the edit
+              # below would flip that draft to published pinned --latest=false,
+              # leaving the repo with nothing flagged Latest. It needs every release
+              # to be a draft to happen, and the run says so in its ::warning::.
+              edit_latest=(--latest=false)
+              create_latest=(--latest=false) ;;
+            unknown)
+              # Blind: assert nothing on edit — the lesser of two bad options, not
+              # a no-op; the long `unknown` comment above is the argument for why
+              # a wrong grant beats a wrong demotion when we cannot read anything.
+              # On create a fresh push gets GitHub's default and a replay is pinned
+              # to false, which is safe there because a tag with no Release cannot
+              # be holding the pointer.
+              edit_latest=()
+              if is_fresh_release_push; then create_latest=(); else create_latest=(--latest=false); fi ;;
+          esac
+
+          # The Thai release notes are written LAST, and that ordering is the fix,
+          # not tidiness. They used to be composed at the top of this step, ~80
+          # lines before `decision` existed, and line 2 promises every operator
+          # "เปิดโปรแกรมครั้งถัดไปมันจะเด้งถาม" — next launch it will ask you about
+          # THIS version. That is true only for a release that takes the Latest
+          # pointer, because main.cjs sets no allowPrerelease/allowDowngrade and
+          # electron-updater therefore reads nothing but /releases/latest. Push
+          # `v0.2.0-rc1` (is_release_tag rejects the rc shape → decision=no) and the
+          # release page went up promising a dialog that would never appear on any
+          # machine; re-publishing an old tag re-stamped the same promise onto a
+          # release explicitly denied the pointer. The ::warning:: that tells the
+          # truth lands in the Actions run summary — a page the band operators
+          # reading release notes never open. Put the truth where they read.
           cat > notes.md <<'NOTES'
           **Windows** — ดาวน์โหลด `.exe` แล้วเปิดติดตั้งได้เลย
-          เครื่องที่ลง CueIQ ไว้อยู่แล้วไม่ต้องทำอะไร: มันจะเห็นเวอร์ชันนี้เองตอนเปิดโปรแกรมครั้งถัดไป
-          โหลดเบื้องหลังแล้วติดตั้งตอน**ปิด**โปรแกรม — ไม่มีทางเด้งใส่ระหว่างโชว์
+          เครื่องที่ลง CueIQ ไว้อยู่แล้ว: เปิดโปรแกรมครั้งถัดไปมันจะ**เด้งถาม**ว่าจะโหลดเวอร์ชันนี้ไหม
+          กด「โหลดเลย」แล้วมันจะติดตั้งให้ตอน**ปิด**โปรแกรม — ไม่มีทางเด้งใส่ระหว่างโชว์
+          ถ้ากด「ไว้ก่อน」จะ**ไม่โหลดอะไรเลย** แล้วถามใหม่รอบหน้า (ถ้าติ๊ก「ไม่ต้องถามเรื่องเวอร์ชันนี้อีก」ไว้ ต้องมาโหลด `.exe` จากหน้านี้เอง)
 
           **Mac** — ดาวน์โหลด `.dmg` ให้ตรงเครื่อง (Apple Silicon หรือ Intel) แล้วลากลง Applications
           แอปยังไม่ได้เซ็นใบรับรอง เปิดครั้งแรกให้รัน `xattr -dr com.apple.quarantine /Applications/CueIQ.app`
           ฝั่ง Mac ยังไม่มีอัปเดตอัตโนมัติ (ต้องเซ็นใบรับรองก่อน) — โหลด `.dmg` ใหม่เอาเอง
           NOTES
+          if [ "$decision" = no ]; then
+            printf '\n> ⚠️ เวอร์ชันนี้**ไม่ได้**ถูกตั้งเป็น Latest — เครื่องที่ลง CueIQ ไว้แล้วจะ**ไม่เด้งถาม**ถึงเวอร์ชันนี้ ต้องมาโหลด `.exe` จากหน้านี้เอง\n' >> notes.md
+          elif [ "$decision" = unknown ]; then
+            printf '\n> ⚠️ รอบนี้ระบบเช็คไม่ได้ว่าเวอร์ชันนี้ถูกตั้งเป็น Latest หรือเปล่า — ถ้าเปิดโปรแกรมแล้วไม่เด้งถาม ให้โหลด `.exe` จากหน้านี้เอง\n' >> notes.md
+          fi
+
           if gh release view "$tag" >/dev/null 2>&1; then
             echo "release $tag exists — updating assets"
             gh release upload "$tag" out/* --clobber
-            gh release edit "$tag" --draft=false --prerelease=false --latest --notes-file notes.md
+            gh release edit "$tag" --draft=false --prerelease=false "${edit_latest[@]}" --notes-file notes.md
           else
-            gh release create "$tag" out/* --title "CueIQ $tag" --latest --notes-file notes.md
+            gh release create "$tag" out/* --title "CueIQ $tag" "${create_latest[@]}" --notes-file notes.md
           fi
-          gh release view "$tag" --json isDraft,tagName,assets \
-            --jq '"published: \(.tagName) draft=\(.isDraft) assets=\([.assets[].name] | join(", "))"'
+          # isLatest is printed so the run's own log answers "did this move the
+          # pointer?" without anyone having to open the Releases page.
+          gh release view "$tag" --json isDraft,isLatest,tagName,assets \
+            --jq '"published: \(.tagName) draft=\(.isDraft) latest=\(.isLatest) assets=\([.assets[].name] | join(", "))"'

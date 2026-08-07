@@ -18,6 +18,7 @@
     "baseUrl": ".",
     "paths": {
       "@/lib/supabase/client": ["./src/shims/supabase-client.ts"],
+      "@/lib/count-samples": ["./src/shims/count-samples.ts"],
       "@/*": ["../*"],
       "~/*": ["./src/*"],
       "next/navigation": ["./src/shims/next-navigation.tsx"],

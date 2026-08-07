@@ -537,12 +537,66 @@ export function describeOp(op: NewMgmtOp): string {
  * supabase-js doesn't throw on network loss; it resolves with an error whose
  * message wraps the fetch failure, so we classify by message. `onLine` false is
  * always queueable (navigator already knows we're offline).
+ *
+ * ── 🔴 WHY IT ALSO TAKES AN HTTP STATUS NOW (round 10) ──────────────────────────
+ * Reading the PROSE was never the contract, only the best evidence available at the
+ * call sites of the day — and it has one blind spot that is exactly the wrong shape:
+ * **the server is up and answering badly.** A Supabase or Cloudflare 503 / 502 / 429
+ * comes back as an HTML error page, and postgrest-js puts that page into
+ * `error.message` verbatim (dist/index.cjs:420-432). "Service Unavailable", "Bad
+ * Gateway" and "Too Many Requests" match none of the words below, so the write was
+ * classified as a REAL REJECTION: not written, not queued, gone.
+ *
+ * On the festival board that is the operator's "จบ + ต่อไป" press disappearing while
+ * the row is already optimistically advanced — their screen says band B is on, every
+ * other device still says band A. And because `next()` is TWO writes, an outage that
+ * catches one of them can leave two rows holding `status='live'` on a board the whole
+ * label is watching. **A fully offline press was handled perfectly; a sick server was
+ * handled worse than no server at all.**
+ *
+ * The `status` on a PostgrestResponse answers this exactly and no other code in the
+ * repo was reading it. Pass it wherever you have it.
+ *
+ * 🔒 WHAT DELIBERATELY DID NOT CHANGE: 401/403 are still real rejections — and note that
+ * this is not a NEW rule, it is the old behaviour written down. The message regex never
+ * matched "permission denied" or "JWT expired" either, so nothing about a 4xx moved when
+ * the status was threaded in; only 5xx/429 changed hands.
+ *
+ * ⚠️ AN OPEN QUESTION THE NEXT ROUND SHOULD SETTLE, because two files in this repo
+ * disagree about it. `lib/auth-session.ts` states that the anon-fallback window produces
+ * "an empty result and no error at all", which is what the whole "an empty read is not an
+ * empty table" class was built on. But every table grant in `supabase/migrations/0001` is
+ * `to authenticated` ONLY, and if `anon` truly holds no privilege on these tables then that
+ * window yields a permission denial (42501 → HTTP 403), not a silent empty read — in which
+ * case a write attempted in that minute would be classified here as a real rejection and
+ * DISCARDED rather than queued.
+ *
+ * It is left alone on purpose rather than guessed at: flipping 403 to queueable would make
+ * a genuine permission denial replay on every reconnect forever, and the observable
+ * behaviour today is unchanged from before this round either way. **Settle it by observing
+ * a real anon-window write against production, not by reading the migrations** — Supabase
+ * projects have carried different default privileges over time, which is exactly why 0002's
+ * own comment says "newer Supabase projects don't auto-grant".
+ *
+ * When no status is available (an older caller, or a transport failure that never got
+ * a response) the message rules still decide, exactly as before.
  */
 export function isQueueableWriteError(
   message: string | null | undefined,
-  onLine: boolean
+  onLine: boolean,
+  status?: number | null
 ): boolean {
   if (!onLine) return true;
+  // A status of 0 means "no response at all" — that is a transport failure, and the
+  // message rules below already recognise it. Only a real HTTP code decides here.
+  if (typeof status === "number" && status > 0) {
+    // Transient by definition: the request was understood and the server asked to be
+    // asked again. 408 request timeout · 425 too early · 429 rate limited · 5xx.
+    if (status === 408 || status === 425 || status === 429 || status >= 500) return true;
+    // Any other 4xx is the server telling us this write is not acceptable. Queueing it
+    // would mean replaying a rejection on every reconnect, forever.
+    if (status >= 400) return false;
+  }
   if (!message) return false;
   return /failed to fetch|fetch failed|load failed|network|err_internet|err_network|err_connection|timed? ?out|abort/i.test(
     message

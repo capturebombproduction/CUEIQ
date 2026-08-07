@@ -22,6 +22,16 @@ export default defineConfig({
       "@/lib/supabase/client": fileURLToPath(
         new URL("./src/shims/supabase-client.ts", import.meta.url)
       ),
+      // Same trick, same reason it must precede "@": the practice metronome's
+      // spoken 1–8 count. The web module fetches "/sounds/count/N.mp3" out of
+      // Next's public/, which the desktop has neither (no publicDir → dist holds
+      // only assets/ + index.html) nor could load (file:// documents cannot use
+      // fetch at all). The shim imports the same eight mp3s as `?inline` assets
+      // so they are baked into the bundle as data: URIs. Before this, the default
+      // "voice" mode degraded silently to laggy TTS at every venue rehearsal.
+      "@/lib/count-samples": fileURLToPath(
+        new URL("./src/shims/count-samples.ts", import.meta.url)
+      ),
       // "@/..." → repo root (shared components / lib), "~/..." → desktop src.
       "@": repoRoot,
       "~": fileURLToPath(new URL("./src", import.meta.url)),

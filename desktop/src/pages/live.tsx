@@ -79,7 +79,16 @@ export function LivePage() {
           </Link>
         </Button>
       </div>
-      <ShowReadinessCheck eventId={event.id} targets={audioTargets} localOnly={localOnly} />
+      {/* `setlist` is what lets the preflight reconcile rows against the resolvers —
+          without it a row whose song was deleted leaves no trace in either list and
+          the check prints a green "พร้อมโชว์ออฟไลน์" over a track that plays nothing.
+          Round 10 built that guard and never passed this prop. */}
+      <ShowReadinessCheck
+        eventId={event.id}
+        targets={audioTargets}
+        localOnly={localOnly}
+        setlist={bundle.setlist}
+      />
       <LiveMode
         eventId={event.id}
         groupId={event.group_id}

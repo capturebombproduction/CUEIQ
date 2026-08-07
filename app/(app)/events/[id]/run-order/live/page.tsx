@@ -1,7 +1,7 @@
 import { redirect, notFound } from "next/navigation";
 import Link from "next/link";
 import { ArrowLeft, Radio } from "lucide-react";
-import { getWorkspace } from "@/lib/queries";
+import { getEventRow, getWorkspace } from "@/lib/queries";
 import { canApprove } from "@/lib/permissions";
 import { createClient } from "@/lib/supabase/server";
 import {
@@ -30,11 +30,19 @@ export default async function RunOrderLivePage({
   const fromOverview = from === "overview";
   const supabase = await createClient();
 
-  const { data: ev } = await supabase
-    .from("events")
-    .select("id, name, event_date")
-    .eq("id", id)
-    .single();
+  // getEventRow, not a bare `.single()` with the `.error` thrown away. This is the
+  // highest-stakes single-row event read in the product: when staff press เริ่ม,
+  // /api/notify fans "🔴 งานเริ่มแล้ว (Live)" out with a per-recipient link to THIS
+  // route (lib/dead-link.ts runOrderLiveLink), so ~19 phones open this page within
+  // seconds of each other. `.single()` resolves "there is no such row" and
+  // "statement timeout / 429 / dead pooler" identically as { data: null, error },
+  // so discarding `.error` meant the one phone that drew the hiccup was shown
+  // app/(app)/not-found.tsx — "ไม่พบงานนี้ — งานนี้อาจถูกลบไปแล้ว หรือบัญชีของคุณไม่มีสิทธิ์
+  // เข้าถึง" — for a festival that was running in front of them. getEventRow still
+  // returns null (→ this notFound) for a genuinely missing, RLS-hidden or
+  // malformed-id event, and THROWS when the read itself failed, which the (app)
+  // error boundary renders as a retryable error instead of a false obituary.
+  const ev = await getEventRow(id);
   if (!ev) notFound();
 
   let rq = supabase

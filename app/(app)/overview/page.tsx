@@ -16,13 +16,12 @@ import {
   type OverviewEvent,
   type OverviewBand,
 } from "@/components/overview/overview-client";
-import { eventCompleteness } from "@/lib/completeness";
+import { eventCompleteness, type CompletenessSetlistItem } from "@/lib/completeness";
 import {
   type EventRow,
   type Member,
   type StaffContact,
   type ScheduleItem,
-  type SetlistItem,
 } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
@@ -40,6 +39,12 @@ type SlRow = {
   event_id: string;
   song_id: string | null;
   kind: string;
+  // Selected ONLY so this board applies the same "song row with no name" rule as the
+  // event Summary. Before the round-10 repair pass the boards mapped rows down to
+  // `{ kind }`, so an unnamed song row showed ยังขาด 1 on its own event page (which
+  // auto-reverts the show to Draft) while Overview — the board the label actually
+  // runs the day off — showed nothing left to do. See lib/completeness.ts.
+  title: string;
   mic_slots: { mic: string; member: string }[] | null;
 };
 
@@ -246,7 +251,7 @@ export default async function OverviewPage() {
     readForEvents<SlRow>("setlist_items", eventIds, (ids, from, to) =>
       supabase
         .from("setlist_items")
-        .select("event_id, song_id, kind, mic_slots", { count: "exact" })
+        .select("event_id, song_id, kind, title, mic_slots", { count: "exact" })
         .eq("tenant_id", tid)
         .in("event_id", ids)
         .order("id", { ascending: true })
@@ -302,11 +307,24 @@ export default async function OverviewPage() {
   // source of truth eventCompleteness() so the Overview agrees with the event Summary.
   const micByEvent = new Map<string, number>();
   for (const m of micRows) micByEvent.set(m.event_id, (micByEvent.get(m.event_id) ?? 0) + 1);
-  const setlistByEvent = new Map<string, { kind: string }[]>();
+  // `title` is OPTIONAL here and stays that way all the way into eventCompleteness.
+  // Do NOT put a `?? ""` back on the push below. lib/completeness.ts:118-121 makes
+  // `title: undefined` load-bearing — it means "the caller did not tell us", which
+  // reads LENIENT, while "" means "a human left this row blank", which flags the
+  // event. Coercing the first into the second is the exact reading that comment
+  // calls catastrophic: the day someone trims this select for payload size, or a
+  // response shape changes, every song row of every event flips to
+  // "⚠ ขาด 1 · เพลงใน Setlist ที่ยังไม่ได้ใส่ชื่อ" on the board the label runs the
+  // day off — and every pending_review event auto-reverts to Draft on its event page
+  // (components/event/event-workspace.tsx). It is not a type error and not a missing
+  // column, so nothing else would catch it. The column is `text not null default ''`
+  // today (0001_init.sql:93) and is in the select, so this changes no current
+  // behaviour; it restores the failure mode the guard was designed to have.
+  const setlistByEvent = new Map<string, { kind: string; title?: string }[]>();
   const songMicByEvent = new Map<string, boolean>(); // any setlist song with mic_slots
   for (const r of slRows) {
     const arr = setlistByEvent.get(r.event_id) ?? [];
-    arr.push({ kind: r.kind });
+    arr.push({ kind: r.kind, title: r.title });
     setlistByEvent.set(r.event_id, arr);
     if ((r.mic_slots?.length ?? 0) > 0) songMicByEvent.set(r.event_id, true);
   }
@@ -323,9 +341,13 @@ export default async function OverviewPage() {
         kind: s.kind,
         start_time: s.start_time,
       })) as Pick<ScheduleItem, "kind" | "start_time">[],
+      // Cast to the gate's OWN input type, which declares `title` optional. Casting
+      // to Pick<SetlistItem,"kind"|"title"> (title: string) asserted a title always
+      // exists and would have hidden a trimmed select from tsc.
       setlist: (setlistByEvent.get(e.id) ?? []).map((s) => ({
         kind: s.kind,
-      })) as Pick<SetlistItem, "kind">[],
+        title: s.title,
+      })) as CompletenessSetlistItem[],
       micCount: micByEvent.get(e.id) ?? 0,
       hasSongMics: songMicByEvent.get(e.id) ?? false,
     });

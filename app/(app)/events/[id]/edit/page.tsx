@@ -1,7 +1,7 @@
 import { notFound, redirect } from "next/navigation";
 import Link from "next/link";
 import { ArrowLeft } from "lucide-react";
-import { getEventBundle, getWorkspace } from "@/lib/queries";
+import { getEventRow, getWorkspace } from "@/lib/queries";
 import { canApprove, canEditGroup, editableGroups } from "@/lib/permissions";
 import { EventForm } from "@/components/event/event-form";
 import { Button } from "@/components/ui/button";
@@ -14,10 +14,15 @@ export default async function EditEventPage({
   params: Promise<{ id: string }>;
 }) {
   const { id } = await params;
-  const bundle = await getEventBundle(id);
-  if (!bundle) notFound();
+  // getEventRow, NOT getEventBundle: this form is built entirely from the event
+  // row, so a failed read of the setlist / mic map / song library has nothing to
+  // do with it. Loading the whole bundle here meant a statement timeout on the
+  // band's library select locked the Ar out of pushing show_start_time back on
+  // show day, on a page where every field they needed had read fine.
+  const event = await getEventRow(id);
+  if (!event) notFound();
   const ws = await getWorkspace();
-  if (!canEditGroup(ws.perms, bundle.event.group_id)) {
+  if (!canEditGroup(ws.perms, event.group_id)) {
     redirect(`/events/${id}`);
   }
 
@@ -33,8 +38,8 @@ export default async function EditEventPage({
       </div>
       <EventForm
         mode="edit"
-        event={bundle.event}
-        tenantId={bundle.event.tenant_id}
+        event={event}
+        tenantId={event.tenant_id}
         userId={ws.user?.id}
         groups={editableGroups(ws.perms, ws.groups)}
         canApprove={canApprove(ws.perms)}

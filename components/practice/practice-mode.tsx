@@ -3,6 +3,12 @@
 import { useEffect, useState } from "react";
 import { Music2, Dumbbell, NotebookPen } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
+import { hasLiveSession } from "@/lib/auth-session";
+import {
+  canWriteJournal,
+  membershipFromProbe,
+  type BandMembership,
+} from "@/lib/practice-journal-gate";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { PracticePlayer } from "@/components/practice/practice-player";
 import { PracticeJournal } from "@/components/practice/practice-journal";
@@ -57,24 +63,42 @@ export function PracticeMode({
   // group_roles row for the band). Unknown (still loading / offline) keeps the
   // controls, so a member at a venue is never locked out of their own practice list;
   // RLS stays the real boundary.
-  const [inThisBand, setInThisBand] = useState(true);
+  //
+  // The verdict goes through lib/practice-journal-gate.ts, which is also what the
+  // journal tab uses. It has to: this probe used to end with
+  // `setInThisBand(data.length > 0)`, and an empty read is NOT an empty table —
+  // supabase-js falls back to the anon key for ~a minute after a failed token
+  // refresh, and RLS answers anon with `data: [], error: null`. So during a venue
+  // reconnect a genuine member watched add-song / reorder / section-marker vanish
+  // from THIS tab (one-shot probe, so gone until remount) while the สมุดซ้อม tab,
+  // which already used membershipFromProbe, kept their composer. One user, one
+  // screen, two opposite answers — and this was the half that failed CLOSED.
+  //
+  // canWriteJournal despite the name: practice_songs/song_markers (0038 §2 C13)
+  // and practice_logs (0041) carry the identical write clause.
+  const [membership, setMembership] = useState<BandMembership>("unknown");
   useEffect(() => {
     if (canManage) return; // admin / the band's Ar — already an editor
     let alive = true;
-    createClient()
-      .from("group_roles")
-      .select("role")
-      .eq("group_id", groupId)
-      .eq("user_id", currentUserId)
-      .then(({ data, error }) => {
-        // a failed read must not hide a member's own controls
-        if (!alive || error || !data) return;
-        setInThisBand(data.length > 0);
-      });
+    (async () => {
+      const { data, error } = await createClient()
+        .from("group_roles")
+        .select("role")
+        .eq("group_id", groupId)
+        .eq("user_id", currentUserId);
+      if (!alive) return;
+      // a failed read must not hide a member's own controls, and an empty answer
+      // is only believable when the request actually went out signed
+      const rows = error || !data ? null : data.length;
+      const signedIn = rows === 0 ? await hasLiveSession() : true;
+      if (!alive) return;
+      setMembership(membershipFromProbe(rows, signedIn));
+    })();
     return () => {
       alive = false;
     };
   }, [groupId, currentUserId, canManage]);
+  const canCurate = canWriteJournal(canManage, membership);
 
   return (
     <div className="space-y-4">
@@ -107,7 +131,7 @@ export function PracticeMode({
             markers={markers}
             setMarkers={setMarkers}
             canManage={canManage}
-            canCurate={canManage || inThisBand}
+            canCurate={canCurate}
             onRunLogged={() => setRunSignal((n) => n + 1)}
           />
         </TabsContent>
