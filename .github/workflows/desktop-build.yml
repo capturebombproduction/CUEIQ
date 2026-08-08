@@ -105,7 +105,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
 
       # Root deps: the desktop renderer reuses the repo-root components/lib via the
       # "@" → repo-root alias, so those packages must resolve during the vite build.
