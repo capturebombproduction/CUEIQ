@@ -7,8 +7,10 @@
 // policy refuses a freshly built unsigned .exe, which is this project's Windows
 // machine — point --exe at electron itself and --app at the project:
 //
-//   node desktop/scripts/run-smoke.mjs \
-//     --exe desktop/node_modules/electron/dist/electron.exe --app desktop
+//   node desktop/scripts/run-smoke.mjs --app desktop
+//
+// (--exe is optional in that mode: the electron binary's location is asked of the
+// electron package rather than written down here — see resolveElectron.)
 //
 // That runs the SAME main.cjs against the SAME vite build from the same file://
 // origin; only app.isPackaged differs, and nothing asserted here depends on it.
@@ -47,6 +49,7 @@
 // deliberately wrong ref passed this suite green.
 import { spawn } from "node:child_process";
 import fs from "node:fs";
+import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import {
@@ -61,10 +64,58 @@ function arg(name, fallback = "") {
   return i >= 0 && process.argv[i + 1] ? process.argv[i + 1] : fallback;
 }
 
-const exe = arg("exe");
+const exeArg = arg("exe");
 const appDir = arg("app");
 const only = arg("only");
 const timeoutSec = Number(arg("timeout", "135"));
+
+/**
+ * Where electron's binary actually is — ASKED, not assumed.
+ *
+ * The first cut of the CI job hardcoded
+ * `desktop/node_modules/electron/dist/electron.exe`, which is exactly where it sits
+ * on this dev box and is nevertheless the wrong thing to write down: the location is
+ * the electron package's business, and on a GitHub runner the file was simply not
+ * there (that install finished in twelve seconds — too fast to have fetched a ~100 MB
+ * binary at all). The job failed with "no executable at <a path I invented>", which
+ * says nothing about why.
+ *
+ * `require("electron")` returns the absolute path the package itself recorded, and
+ * when the postinstall did not run it throws a message that IS the diagnosis
+ * ("Electron failed to install correctly…"). Both beat a guess.
+ */
+function resolveElectron() {
+  if (exeArg) {
+    if (fs.existsSync(exeArg)) return exeArg;
+    console.error(`::error::run-smoke: no executable at ${exeArg}`);
+    process.exit(2);
+  }
+  if (!appDir) {
+    console.error("::error::run-smoke: give --exe <packaged app> or --app <project dir>");
+    process.exit(2);
+  }
+  const from = path.resolve(appDir, "package.json");
+  let resolved;
+  try {
+    resolved = createRequire(from)("electron");
+  } catch (e) {
+    console.error(
+      `::error::run-smoke: could not resolve electron from ${appDir} — ${String(e).split("\n")[0]}\n` +
+        `That message is usually electron's own: its postinstall did not run, so there is ` +
+        `no binary to launch. Run \`node node_modules/electron/install.js\` in ${appDir}.`
+    );
+    process.exit(2);
+  }
+  if (typeof resolved !== "string" || !fs.existsSync(resolved)) {
+    console.error(
+      `::error::run-smoke: electron resolved to ${String(resolved)}, which does not exist.`
+    );
+    process.exit(2);
+  }
+  return resolved;
+}
+
+const exe = resolveElectron();
 
 // The version the app under test MUST report. Read from desktop/package.json, which
 // is the same file electron-builder stamps the installer and latest.yml from — so a
@@ -97,10 +148,7 @@ const DESKTOP_VERSION = JSON.parse(
 const OUTER_MARGIN_SEC = 45;
 const watchdogMs = Math.max(15_000, (timeoutSec - OUTER_MARGIN_SEC) * 1000);
 
-if (!exe || !fs.existsSync(exe)) {
-  console.error(`::error::run-smoke: no executable at ${exe || "<--exe not given>"}`);
-  process.exit(2);
-}
+console.log(`run-smoke: launching ${exe}`);
 
 const SCENARIOS = [
   {

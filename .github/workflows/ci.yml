@@ -115,6 +115,17 @@ jobs:
         run: npm run build
         working-directory: desktop
 
+      # ⚠️ `npm ci` DID NOT FETCH THE ELECTRON BINARY HERE, and it did not say so.
+      # Two consecutive runs installed 481 packages in ~12 seconds — far too fast to
+      # have downloaded a ~100 MB runtime — and the smoke then failed with "no
+      # executable". electron ships this exact script as its own postinstall, so
+      # running it by hand is not a workaround for the wrong problem: it is the same
+      # code path, made unconditional. It is a no-op when the binary is already
+      # there, and unlike the postinstall it cannot be skipped silently.
+      - name: Make sure electron's binary is actually installed
+        run: node node_modules/electron/install.js
+        working-directory: desktop
+
       # cold -> the login screen · airplane (expired session, DNS dead,
       # navigator.onLine false) -> the signed-in dashboard rendered from cache ·
       # Quick Show -> opens with no account and no network. Plus TWO cross-checks:
@@ -132,4 +143,4 @@ jobs:
       - name: Boot the app offline with a session
         shell: bash
         timeout-minutes: 15
-        run: node desktop/scripts/run-smoke.mjs --exe desktop/node_modules/electron/dist/electron.exe --app desktop
+        run: node desktop/scripts/run-smoke.mjs --app desktop
