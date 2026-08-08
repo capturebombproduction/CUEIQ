@@ -626,6 +626,23 @@ export function SetlistBuilder({
       // under those ids to delete. Judging that as a miss sends the rollback below
       // to take the snapshot rows that DID insert correctly back out again, and on
       // this no-undo path that is the restore destroying its own result.
+      //
+      // KNOWN LIMIT, recorded rather than papered over. The reorder writes below
+      // clear a stale flag from their own evidence first ("this row DID write, so
+      // it is on the server whatever the set says"). That step cannot help HERE and
+      // is deliberately absent: this is one batch delete, so its evidence is
+      // all-or-nothing — a non-empty `deleted` already makes `missed` false on the
+      // next line, and an empty one clears nothing. So the one case the exclusion
+      // cannot tell apart survives: EVERY old row flagged local-only, the outbox
+      // has since flushed (the rows really are on the server under those same ids,
+      // and nothing here listens for the flush), and the delete then 0-rows for
+      // real as anon → `attempted` is empty, the guard is skipped, and the setlist
+      // is left duplicated. Distinguishing it needs a server read or a flush
+      // subscription, i.e. new plumbing on the path round 10 deliberately made
+      // lenient; the two directions that ARE decidable are pinned in
+      // setlist-builder.restore.test.tsx. Do not "fix" this by copying the reorder's
+      // clear-from-evidence line here — it compiles, reads like a repair, and
+      // changes nothing.
       const attempted = old.filter((it) => !localOnlyIds.current.has(it.id));
       // Same outcome for the caller, different cause: `missed` reached the server
       // and changed nothing, so there is no error to classify or queue — but it

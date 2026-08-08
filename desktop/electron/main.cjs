@@ -77,7 +77,11 @@ const SMOKE_EXPECT_TENANT = process.env.CUEIQ_SMOKE_EXPECT_TENANT || "";
 const SMOKE_EXPECT_EVENTS = process.env.CUEIQ_SMOKE_EXPECT_EVENTS || "";
 // Route to open on, without a hash (e.g. "/my-show"). The self-test has no input
 // driver, so a scenario about a specific screen has to start there.
-const SMOKE_HASH = process.env.CUEIQ_SMOKE_HASH || "";
+// `SMOKE &&` for the same reason as SMOKE_OFFLINE above, and it matters MORE here:
+// this one is read by load(), which runs on every normal launch, so without the gate
+// a stray CUEIQ_SMOKE_HASH in the show laptop's environment silently reroutes the
+// app's boot route.
+const SMOKE_HASH = (SMOKE && process.env.CUEIQ_SMOKE_HASH) || "";
 // A URL that WOULD resolve if the network were up — see probeTheNetwork. The caller
 // derives it from the same place the bundle gets its Supabase URL and there is no
 // default here on purpose: a probe with nothing real to aim at is worse than no probe,

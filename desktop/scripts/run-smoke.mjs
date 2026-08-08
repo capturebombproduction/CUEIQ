@@ -71,6 +71,16 @@ const timeoutSec = Number(arg("timeout", "135"));
 // win-unpacked left over from an earlier build, smoke-tested green for a tag it was
 // not built from, is a mismatch here instead of a published Release whose contents
 // are a version older than its own update feed says.
+//
+// ⚠️ AND IT IS INERT UNDER --app, WHICH IS THE MODE CI RUNS ON EVERY PUSH. `electron.exe
+// desktop` makes app.getVersion() read desktop/package.json — the same file this
+// constant is read from — so the two cannot disagree and the comparison below can only
+// pass. (Confirmed by bumping package.json to 0.1.99 and watching a green run.) Nothing
+// here can give it teeth in that mode: there is no second artifact to disagree with,
+// because the app under test IS this source tree. It has teeth in exactly one place —
+// the `v*` tag run in desktop-build.yml, where the thing launched is a separately built
+// desktop/release/win-unpacked. So --app mode SAYS SO in the log (the ::notice:: below)
+// instead of letting a green push log read as if a build's version had been checked.
 const DESKTOP_VERSION = JSON.parse(
   fs.readFileSync(new URL("../package.json", import.meta.url), "utf8")
 ).version;
@@ -245,7 +255,8 @@ async function runScenario(s) {
   // And WHICH BUILD answered. Reported since the first cut of this, asserted by
   // nobody: on a `v*` tag the thing being launched is desktop/release/win-unpacked,
   // which is whatever the last `npm run dist` left there — a build step that silently
-  // did nothing would hand this suite an old tree to bless.
+  // did nothing would hand this suite an old tree to bless. Meaningful in THAT mode
+  // only; under --app it is a tautology, announced as one above and in the log.
   if (verdict.appVersion !== DESKTOP_VERSION) {
     return {
       ...verdict,
@@ -275,6 +286,18 @@ if (mute.length > 0) {
       `CUEIQ_SMOKE_EXPECT — a smoke run must name the screen it expects.`
   );
   process.exit(2);
+}
+if (appDir) {
+  // Said out loud, in the log a reader of a green CI run actually sees, because the
+  // verdict JSON printed below carries an appVersion and the check on it reads like a
+  // check. In this mode it is not one — see the DESKTOP_VERSION comment above.
+  console.log(
+    `::notice::run-smoke: --app ${appDir} — this runs the SOURCE TREE via electron, not a ` +
+      `packaged build. The appVersion assertion is INERT here (the app reads the very ` +
+      `desktop/package.json this script compares it against, so it cannot disagree); only ` +
+      `the v* tag run, against desktop/release/win-unpacked, tests a real build's version. ` +
+      `Everything else below — the screens, the network cut, both cross-checks — is real.`
+  );
 }
 if (only) {
   // --only is for iterating by hand. Said out loud because BOTH cross-checks at the

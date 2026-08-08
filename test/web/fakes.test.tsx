@@ -133,6 +133,39 @@ describe("makeQueryFake — the builder resolves at every stage of the chain", (
     expect((await supa.from("songs").select("id").single()).error?.code).toBe("PGRST116");
   });
 
+  it("applies .limit() and .range(), so a paged read is not a plural-row error", async () => {
+    // The chain that made this matter: desktop/src/data/event-bundle.ts reads the
+    // membership with `.order(…).limit(1).maybeSingle()`. Production can only ever see
+    // one row there — but the fake recorded .limit() and dropped it, so a script with
+    // two rows answered PGRST116, and an author asserting on `role` would have passed
+    // while exercising the errored-read branch instead of the one they meant.
+    supa.setTable("tenant_members", ok([{ role: "admin" }, { role: "member" }]));
+    const membership = await supa
+      .from("tenant_members")
+      .select("role")
+      .eq("tenant_id", "t1")
+      .order("created_at", { ascending: true })
+      .limit(1)
+      .maybeSingle();
+    expect(membership.error).toBeNull();
+    expect(membership.data).toEqual({ role: "admin" });
+
+    // .range() is inclusive at BOTH ends, like the Range header postgrest sends.
+    supa.setTable("songs", ok([{ id: "s1" }, { id: "s2" }, { id: "s3" }]));
+    expect((await supa.from("songs").select("id").range(1, 2)).data).toEqual([
+      { id: "s2" },
+      { id: "s3" },
+    ]);
+
+    // …and an exact count is the TOTAL matching the filters, not the page's size.
+    const page = await supa.from("songs").select("id", { count: "exact" }).limit(2);
+    expect(page.data).toHaveLength(2);
+    expect(page.count).toBe(3);
+
+    // still RECORDED as well as applied — assertions about the paging keep working
+    expect(supa.lastCall("songs")?.modifiers.map((m) => m.op)).toEqual(["limit"]);
+  });
+
   it("carries an error code so a code-keyed branch is reachable", async () => {
     // isUniqueViolation / isRlsRefusal match on error.code FIRST and only fall
     // back to the prose. A fail() that could not carry a code meant every test

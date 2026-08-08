@@ -233,7 +233,10 @@ export function EventPage() {
   if (!bundle && state.unreachable) {
     return <EventUnreachable onRetry={() => setAttempt((n) => n + 1)} />;
   }
-  // Not found, or a band-tier user reaching another band's event by URL.
+  // Not found, or a band-tier user reaching another band's event by URL — and also
+  // where a show this device DELETED OFFLINE lands. That one reaches no server either,
+  // but it is not `unreachable`: the answer is local and final, so the dead end is the
+  // truthful screen and a ลองใหม่ would only promise a retry that changes nothing.
   if (!bundle || (ws && !canViewGroup(ws.perms, bundle.event.group_id))) {
     return (
       <div className="space-y-4 py-16 text-center">

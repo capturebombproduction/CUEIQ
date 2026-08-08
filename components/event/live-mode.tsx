@@ -383,11 +383,17 @@ export function LiveMode({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [eventId]);
 
-  // The single writer for the crash-recovery snapshot (see the flush-on-hide below).
-  function writeLiveSnapshot() {
+  // The single writer for the crash-recovery snapshot — shared by the debounce
+  // below, the flush-on-hide under it, and จบโชว์ itself, so the copies of this
+  // write can never drift apart.
+  //
+  // `s` is passed explicitly by a caller that has just COMPUTED the next state:
+  // stateRef is only reassigned during the next render, so a flush inside the same
+  // tick that ends a running show would otherwise write `running: true` back to
+  // disk. (The desktop port, desktop/src/pages/my-show.tsx, takes it the same way.)
+  function writeLiveSnapshot(s: LiveState = stateRef.current) {
     if (!liveRestoredRef.current) return; // don't write before the restore check ran
     try {
-      const s = stateRef.current;
       if (s.begun) {
         localStorage.setItem(
           `cueiq:live:${eventId}`,
@@ -421,8 +427,9 @@ export function LiveMode({
     // `showEnded` is NOT a dep (it is declared far below, so naming it here is a
     // TDZ error) and it doesn't need to be: writeLiveSnapshot reads the flag off
     // its ref, so every path that flips it ALSO changes LiveState and re-runs
-    // this. The one exception — จบโชว์ on an already-paused show — flushes by
-    // hand in endShow().
+    // this. The one exception is จบโชว์ — which flushes by hand from BOTH of its
+    // branches (endShow()), since this debounce is also the half-second the
+    // operator can outrun by navigating off the page.
     //
     // `isController` IS a dep: the snapshot now carries the device's role, and a
     // step-down that arrives without any state change would otherwise leave a
@@ -1941,7 +1948,18 @@ export function LiveMode({
       const frozenItem = s.itemStartedAt
         ? (Date.now() - s.itemStartedAt) / 1000
         : (s.itemElapsedAtPause ?? 0);
-      apply({ ...s, running: false, itemElapsedAtPause: frozenItem });
+      const next = { ...s, running: false, itemElapsedAtPause: frozenItem };
+      apply(next);
+      // Flush by hand as well, for the same reason the paused branch below does
+      // (and as the desktop port's endShow() already did): the snapshot effect is
+      // debounced 500 ms and its cleanup clearTimeout()s on unmount, and a Next
+      // client-side navigation off this page fires NO pagehide — so leaving inside
+      // that window left a snapshot on disk still saying running:true, and the next
+      // open of the event restored a finished show as a live one (wake lock
+      // re-armed, other devices told the show was back on). `next`, not stateRef:
+      // the ref is only reassigned during the next render, so it still holds the
+      // running state here.
+      writeLiveSnapshotRef.current(next);
     } else {
       // Ending an already-paused show changes no LiveState, so neither the
       // broadcast nor the snapshot would happen on their own — and without the

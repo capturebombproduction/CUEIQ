@@ -55,11 +55,18 @@ export interface Workspace {
  *    same asymmetry lib/read-guard.ts already documents.
  *  • WHERE the throw lands is not the (app) card, and pretending otherwise would
  *    send the next reader to the wrong file. Next's error.tsx does not catch a
- *    throw from the layout in its own segment, and the (app) layout is the first
- *    caller (React.cache memoises the rejection, so the page inherits it), so this
- *    surfaces in app/global-error.tsx — a Thai retryable card with ลองใหม่ /
- *    โหลดหน้าใหม่, but no digest. assertReadsSucceeded logs the real cause under
- *    "[CueIQ] getWorkspace read failed", which is what to grep in the Vercel log.
+ *    throw from the layout in its own SEGMENT — verified in the shipped runtime,
+ *    where create-component-tree passes the segment's error module as the `error`
+ *    prop of the LayoutRouter that becomes that segment's CHILDREN — and the (app)
+ *    layout is the first caller (React.cache memoises the rejection, so all 14
+ *    pages inherit it without running). So it sails past app/(app)/error.tsx to
+ *    **app/error.tsx**, which exists for exactly this and renders the same
+ *    components/error-card.tsx inside the real root layout, digest and all.
+ *    app/global-error.tsx is now reached only by a throw in the ROOT layout itself.
+ *    assertReadsSucceeded logs the real cause under "[CueIQ] getWorkspace read
+ *    failed", which is what to grep in the Vercel log.
+ *    ⚠️ Deleting or moving app/error.tsx silently sends this back to global-error
+ *    with every gate green — app/error-boundary.test.tsx is the tripwire.
  *
  * NOT covered here, deliberately: `supabase.auth.getUser()` below still discards
  * its error. For the two ordinary causes — no cookie, and a refresh token the

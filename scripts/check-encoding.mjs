@@ -50,6 +50,17 @@ const OPT_OUT = "encoding-check: this file contains deliberate mojibake samples"
 // Hand-walking the tree instead was the tempting version and the wrong one: it would
 // have had to re-implement gitignore to avoid scanning node_modules, and the copy
 // that drifts from the real ignore rules is the copy that starts scanning it.
+//
+// KEPT after wave 4 re-examined it, on two measurements. First, CI runs this after a
+// plain `actions/checkout`, whose tree has no untracked files at all — so `--others`
+// can only ever affect a local run, and the "an untracked file could red CI" worry is
+// not reachable from here. Second, the narrowed detector (see scripts/mojibake.mjs)
+// scores zero false positives on the 53-string corpus of legitimate Thai, French,
+// German, Icelandic, Vietnamese, CJK, units, currency and real code pinned in
+// lib/mojibake.test.ts, so the thing `--others` newly exposes is not a new source of
+// noise — eleven of those strings used to fail it. What it does expose is the
+// case it was added for: a file being written right now, which is exactly when the
+// PowerShell round-trip happens and exactly when nobody has staged anything yet.
 function candidateFiles() {
   const out = execFileSync(
     "git",

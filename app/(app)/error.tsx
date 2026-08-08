@@ -12,12 +12,8 @@ import { ErrorCard } from "@/components/error-card";
  * an error.tsx catch its own segment's layout. That one goes to `app/error.tsx`,
  * which is why both exist and why they share one body (components/error-card.tsx).
  */
-export default function AppError({
-  error,
-  reset,
-}: {
-  error: Error & { digest?: string };
-  reset: () => void;
-}) {
-  return <ErrorCard error={error} reset={reset} where="in-app" />;
+export default function AppError({ error }: { error: Error & { digest?: string } }) {
+  // `reset` is deliberately not taken: see the long note in ErrorCard about why the
+  // card offers a reload and not Next's reset().
+  return <ErrorCard error={error} where="in-app" />;
 }

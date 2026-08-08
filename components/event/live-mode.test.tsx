@@ -674,6 +674,39 @@ describe("LiveMode · จบโชว์ stops the sound", () => {
     expect(last.payload.ended).toBe(true);
     expect(last.payload.audioPlaying).toBe(false);
   });
+
+  // ── จบโชว์ HAS TO REACH THE DISK, NOT JUST THE WIRE ────────────────────────
+  // The snapshot effect is debounced 500 ms and its cleanup clearTimeout()s on
+  // unmount. A Next client-side navigation off /events/[id]/live — the ordinary
+  // way anyone leaves this page, including the "ออกจากโหมดไลฟ์" link — unmounts
+  // without firing pagehide, so the flush-on-hide listener never runs either.
+  // endShow's already-paused branch flushes by hand; its RUNNING branch used to
+  // call apply() and trust the debounce, so ending a running show and walking off
+  // the page inside half a second left running:true on disk. The next open of the
+  // event then restored a finished show as a live one: wake lock re-armed, and the
+  // sync-request reply telling every other device the show was back on.
+  it("the RUNNING branch reaches the disk too — unmount with no pagehide, show still ended", async () => {
+    instrumentMediaElements();
+    const { unmount } = await mountLive();
+    await startShowFromUi();
+
+    // The premise: the debounce has already put the RUNNING show on disk.
+    await act(async () => {
+      vi.advanceTimersByTime(30_000);
+    });
+    expect(JSON.parse(localStorage.getItem(SNAPSHOT_KEY)!).state.running).toBe(true);
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("end-show"));
+    });
+    // No timer advance and no pagehide — just the navigation.
+    unmount();
+
+    const snap = JSON.parse(localStorage.getItem(SNAPSHOT_KEY)!);
+    expect(snap.state.running).toBe(false);
+    expect(snap.state.begun).toBe(true); // จบโชว์ freezes, it does not reset
+    expect(snap.ended).toBe(true);
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

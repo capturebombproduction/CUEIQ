@@ -313,7 +313,11 @@ const totalFailure = (
 // next module to grow a timeout gets a mechanism test (the shape of every other test
 // in this directory makes that automatic) and no ceiling at all, which is the exact
 // gap this file was written to close. So the constants are DISCOVERED from source
-// rather than listed, and an exported timeout with no ceiling fails here.
+// rather than listed, and an exported wait-bound with no ceiling fails here.
+//
+// Discovery is BY NAME (BOUND_WORDS below), which is the guard's one soft edge: a
+// bound named after none of those words is not seen. That is stated in the failure
+// message too, because a reader here should not have to infer it.
 //
 // Non-vacuous by construction: a walk that found nothing (a moved directory, a
 // regex that stopped matching) does not pass quietly — every row in BUDGETS is then
@@ -335,7 +339,21 @@ function sourceFiles(dir: string): string[] {
   return out;
 }
 
-/** Every `export const …TIMEOUT…` under desktop/src, mapped to the file that owns it.
+/** The words a bound on waiting is plausibly NAMED after.
+ *
+ *  Discovery is by name, so the list is the guard's real coverage — and it used to be
+ *  the single word TIMEOUT, while every line of prose in this file calls these numbers
+ *  BUDGETS. A next bound named EVENT_BUNDLE_BUDGET_MS is not a contrived rename; it is
+ *  the name this file teaches. It would have been invisible, gained a mechanism test
+ *  like every other constant in the directory, and had no ceiling — the exact gap this
+ *  file exists to close, reopened by a word.
+ *
+ *  A bound named after NONE of these is still invisible; that is the residual hole and
+ *  it is named in the failure message rather than papered over. Widening the list is a
+ *  one-word edit here. */
+const BOUND_WORDS = ["TIMEOUT", "BUDGET", "DEADLINE", "GRACE", "WAIT"] as const;
+
+/** Every `export const …<one of BOUND_WORDS>…` under desktop/src, mapped to its file.
  *
  *  EXPORTED only, on purpose. A module-private timeout (mgmt-outbox's audio upload
  *  bound) cannot be imported by a test at all, so no assertion here or anywhere else
@@ -343,11 +361,16 @@ function sourceFiles(dir: string): string[] {
  *  slow hotspot legitimately takes minutes, and there is nothing on disk to serve
  *  instead of waiting. If one is ever exported, this guard will demand a ceiling for
  *  it; the honest ceiling for an upload is minutes, and it belongs in its own kind. */
-function exportedTimeouts(): Map<string, string> {
+function exportedBounds(): Map<string, string> {
+  const pattern = String.raw`^\s*export const ([A-Za-z0-9_]*(?:${BOUND_WORDS.join(
+    "|"
+  )})[A-Za-z0-9_]*)\s*=`;
   const found = new Map<string, string>();
   for (const file of sourceFiles(DESKTOP_SRC)) {
     const text = readFileSync(file, "utf8");
-    for (const m of text.matchAll(/^\s*export const ([A-Za-z0-9_]*TIMEOUT[A-Za-z0-9_]*)\s*=/gm)) {
+    // A fresh RegExp per file: matchAll on a shared /g literal is safe by spec, but a
+    // local one removes the question entirely.
+    for (const m of text.matchAll(new RegExp(pattern, "gm"))) {
       found.set(m[1], relative(DESKTOP_SRC, file).replace(/\\/g, "/"));
     }
   }
@@ -357,8 +380,8 @@ function exportedTimeouts(): Map<string, string> {
 // ── assertions ────────────────────────────────────────────────────────────────
 
 describe("desktop timeout budgets", () => {
-  it("gives every exported timeout in desktop/src an argued ceiling", () => {
-    const found = exportedTimeouts();
+  it("gives every exported wait-bound in desktop/src an argued ceiling", () => {
+    const found = exportedBounds();
     const covered = new Set(BUDGETS.map((b) => b.name));
 
     const missing = [...found]
@@ -366,12 +389,16 @@ describe("desktop timeout budgets", () => {
       .map(([name, file]) => `${name} (desktop/src/${file})`);
     expect(
       missing,
-      `These timeouts are exported by desktop source and have no ceiling here: ` +
+      `These wait-bounds are exported by desktop source and have no ceiling here: ` +
         `${missing.join(", ")}. A mechanism test for them proves only that the bound is ` +
         `WIRED UP — it advances the constant itself, so it stays green at any value, ` +
         `including ten minutes on a show screen. Add a row to BUDGETS in ` +
         `desktop/src/data/timeout-budgets.test.ts naming the human budget the number ` +
-        `serves, and add it to a path total if it stacks with the others on one screen.`
+        `serves, and add it to a path total if it stacks with the others on one screen. ` +
+        `⚠️ This guard finds bounds BY NAME — it only sees an exported const whose name ` +
+        `contains one of ${BOUND_WORDS.join(", ")}. If you add a bound on how long an ` +
+        `operator waits and call it something else, NOTHING here will ask you for a ` +
+        `ceiling: add the word to BOUND_WORDS in the same commit, or add the row by hand.`
     ).toEqual([]);
 
     const stale = BUDGETS.map((b) => b.name).filter((name) => !found.has(name));

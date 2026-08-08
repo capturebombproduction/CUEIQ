@@ -113,14 +113,20 @@ function findCachedSibling(groupId: string | undefined): EventBundle | null {
   return null;
 }
 
-/** Overlay this event's pending offline ops onto the loaded (or missing) bundle. */
+/** Overlay this event's pending offline ops onto the loaded (or missing) bundle.
+ *
+ *  `deleted` is the ONE reason for a null bundle that is not a failure to reach
+ *  anything: this device queued the delete itself. The caller needs it because the
+ *  offline path below marks every empty answer `unreachable` — true for a cache miss,
+ *  a lie for a show the operator deleted a minute ago, who would then be offered a
+ *  ลองใหม่ that can never succeed and told this device holds no copy of it. */
 async function withPendingOverlay(
   bundle: EventBundle | null,
   eventId: string
-): Promise<EventBundle | null> {
+): Promise<{ bundle: EventBundle | null; deleted: boolean }> {
   const ops = (await pendingMgmtOps()).filter((op) => op.id === eventId);
-  if (ops.length === 0) return bundle;
-  if (ops.some((op) => op.kind === "event.delete")) return null;
+  if (ops.length === 0) return { bundle, deleted: false };
+  if (ops.some((op) => op.kind === "event.delete")) return { bundle: null, deleted: true };
 
   let out = bundle;
   const create = ops.find((op) => op.kind === "event.create");
@@ -140,13 +146,13 @@ async function withPendingOverlay(
       role: ws?.membership?.role ?? null,
     };
   }
-  if (!out) return null;
+  if (!out) return { bundle: null, deleted: false };
   for (const op of ops) {
     if (op.kind === "event.update") out = { ...out, event: { ...out.event, ...op.patch } };
   }
   // Child-list snapshots (⭐#1 step 5): a queued offline setlist/schedule/mic/
   // lineup edit replaces its whole list, so reopening the event shows it.
-  return applyPendingChildren(out, ops, eventId);
+  return { bundle: applyPendingChildren(out, ops, eventId), deleted: false };
 }
 
 /** What one load actually learned.
@@ -160,7 +166,11 @@ async function withPendingOverlay(
  *  congested hotspot, with no way to try again.
  *
  *  `bundle` can be non-null WITH `unreachable` true: the cache covered it, and the
- *  caller has something to render either way. Only a null bundle needs the flag. */
+ *  caller has something to render either way. Only a null bundle needs the flag.
+ *
+ *  A show DELETED offline is null and NOT unreachable, even though nothing was
+ *  reached: the queued delete is a local answer, and offering ลองใหม่ for it would
+ *  promise a retry that can never change anything. */
 export interface EventBundleLoad {
   bundle: EventBundle | null;
   unreachable: boolean;
@@ -172,11 +182,16 @@ export async function loadEventBundleStatus(eventId: string): Promise<EventBundl
 
   /** Every failure below lands here: a failed read is not a missing show. Offline
    *  counts — we did not reach the server, so a miss here is "no copy on this
-   *  device", never "no such show". */
-  const servedFromCache = async (): Promise<EventBundleLoad> => ({
-    bundle: await withPendingOverlay(readCache<EventBundle>(cacheKey), eventId),
-    unreachable: true,
-  });
+   *  device", never "no such show".
+   *
+   *  The one exception is a delete this device queued itself. That answer needs no
+   *  server and no cache, so it is not `unreachable`: the show really is gone as far
+   *  as this operator is concerned, and pages/event.tsx must give them the dead end
+   *  rather than a retry button for a deletion they performed. */
+  const servedFromCache = async (): Promise<EventBundleLoad> => {
+    const overlay = await withPendingOverlay(readCache<EventBundle>(cacheKey), eventId);
+    return { bundle: overlay.bundle, unreachable: !overlay.deleted };
+  };
 
   // Offline: the network reads below would all fail, so serve the last good
   // bundle for this event from cache (null if it was never opened online).
@@ -213,7 +228,7 @@ export async function loadEventBundleStatus(eventId: string): Promise<EventBundl
     const reallyGone = !eventRes.error && proven === true;
     if (!reallyGone) return servedFromCache();
     // Proven gone. The overlay may still synthesize a pending offline create.
-    return { bundle: await withPendingOverlay(null, eventId), unreachable: false };
+    return { bundle: (await withPendingOverlay(null, eventId)).bundle, unreachable: false };
   }
 
   // This used to be TWO awaits, both OUTSIDE any try/catch, so a REJECTION escaped
@@ -299,7 +314,7 @@ export async function loadEventBundleStatus(eventId: string): Promise<EventBundl
   };
   writeCache(cacheKey, bundle);
   // Cache the SERVER truth, then overlay pending local edits on top for display.
-  return { bundle: await withPendingOverlay(bundle, eventId), unreachable: false };
+  return { bundle: (await withPendingOverlay(bundle, eventId)).bundle, unreachable: false };
 }
 
 /** The bundle alone — for every caller with nothing different to do about a show it

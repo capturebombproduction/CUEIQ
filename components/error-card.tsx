@@ -35,11 +35,9 @@ const NEXT_REDACTED_PREFIX = "An error occurred in the Server Components render"
  */
 export function ErrorCard({
   error,
-  reset,
   where,
 }: {
   error: Error & { digest?: string };
-  reset: () => void;
   /** Console label only, so a report says which boundary caught it. */
   where: string;
 }) {
@@ -54,7 +52,7 @@ export function ErrorCard({
 
   if (offline) {
     return (
-      <div className="mx-auto max-w-md space-y-4 py-16 text-center">
+      <div className="mx-auto max-w-md space-y-4 px-4 py-16 text-center">
         <CloudOff className="mx-auto h-10 w-10 text-amber-500" />
         <h1 className="text-xl font-bold">ออฟไลน์</h1>
         <p className="text-sm text-muted-foreground">
@@ -89,7 +87,11 @@ export function ErrorCard({
   const hasClue = details !== "ไม่ทราบสาเหตุ";
 
   return (
-    <div className="mx-auto max-w-md space-y-4 py-16 text-center">
+    // px-4: the in-app boundary renders inside <main className="container">, which
+    // supplies its own padding — the ROOT one does not, and max-w-md (448px) is wider
+    // than the 375px phone this is actually read on at a venue, so without it the
+    // digest box the copy asks the operator to send runs edge to edge.
+    <div className="mx-auto max-w-md space-y-4 px-4 py-16 text-center">
       <AlertTriangle className="mx-auto h-10 w-10 text-destructive" />
       <h1 className="text-xl font-bold">หน้านี้มีปัญหา</h1>
       {/* Say only what the boundary can actually know. Next redacts EVERY server
@@ -110,12 +112,23 @@ export function ErrorCard({
       <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-words rounded-md border bg-muted/40 p-3 text-left text-xs text-muted-foreground">
         {details}
       </pre>
-      <div className="flex justify-center gap-2">
-        <Button onClick={reset}>
-          <RotateCw className="h-4 w-4" /> ลองใหม่
-        </Button>
-        <Button variant="outline" onClick={() => window.location.reload()}>
-          โหลดหน้าใหม่
+      {/* ⚠️ ONE BUTTON, AND IT RELOADS. This used to offer a filled "ลองใหม่" calling
+          Next's reset() with "โหลดหน้าใหม่" beside it as the quiet outline option —
+          and reset() CANNOT RECOVER THE ERROR THIS BOUNDARY NOW MOSTLY CATCHES.
+          Measured in the shipped runtime, not reasoned: next 15.5.22's
+          error-boundary.js defines reset as setState({error: null}); render then
+          returns the same LayoutRouter whose cacheNode.rsc is the already-errored
+          Flight element, which layout-router.js re-reads and re-throws on the spot
+          (the refetch branch never runs — an errored element is truthy, not null).
+          So the big obvious button did nothing, on a card an operator meets at a
+          venue with nineteen phones behind them, while the one that worked looked
+          secondary. router.refresh() inside a transition is the documented way to
+          recover an RSC throw softly; it is not here because a full reload is
+          CERTAINLY correct for both error classes and one button that always works
+          beats two where the prominent one might not. */}
+      <div className="flex justify-center">
+        <Button onClick={() => window.location.reload()}>
+          <RotateCw className="h-4 w-4" /> โหลดหน้าใหม่
         </Button>
       </div>
     </div>

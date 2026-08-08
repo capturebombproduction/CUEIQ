@@ -22,12 +22,8 @@ import { ErrorCard } from "@/components/error-card";
  * global-error remains for what nothing else can catch: a throw in the root layout
  * itself.
  */
-export default function RootError({
-  error,
-  reset,
-}: {
-  error: Error & { digest?: string };
-  reset: () => void;
-}) {
-  return <ErrorCard error={error} reset={reset} where="root" />;
+export default function RootError({ error }: { error: Error & { digest?: string } }) {
+  // `reset` is deliberately not taken: see the long note in ErrorCard about why the
+  // card offers a reload and not Next's reset().
+  return <ErrorCard error={error} where="root" />;
 }

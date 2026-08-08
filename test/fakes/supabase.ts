@@ -306,6 +306,23 @@ function normalize(part: ScriptResult, call: RecordedCall): QueryResult {
   let count: number | null =
     part.count ?? (call.countRequested && Array.isArray(data) ? data.length : null);
 
+  // .limit()/.range() were RECORDED and never APPLIED, which mattered because the
+  // terminals below model PGRST116 strictly. event-bundle.ts's membership read is
+  // `.order(…).limit(1).maybeSingle()`: production can only ever see one row there,
+  // but a script with two rows made the fake answer PGRST116, so a test author's
+  // assertion would pass while exercising the errored-read branch instead of the one
+  // they wrote. Applied in recorded order, which is also last-one-wins the way
+  // postgrest treats a chain that sets both.
+  //
+  // AFTER `count` on purpose: a `count: "exact"` request answers with the total
+  // matching the filters, not the size of the page returned.
+  if (!error && Array.isArray(data)) {
+    for (const m of call.modifiers) {
+      if (m.op === "limit") data = data.slice(0, Number(m.args[0]));
+      else if (m.op === "range") data = data.slice(Number(m.args[0]), Number(m.args[1]) + 1);
+    }
+  }
+
   if (!error && call.terminal && Array.isArray(data)) {
     if (data.length === 1) {
       data = data[0];
