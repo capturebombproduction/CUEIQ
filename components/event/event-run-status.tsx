@@ -5,7 +5,7 @@ import Link from "next/link";
 import type { RealtimeChannel } from "@supabase/supabase-js";
 import { Radio, Clock, CheckCircle2, ExternalLink } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
-import { hasLiveSession } from "@/lib/auth-session";
+import { keepOnUntrustedEmpty } from "@/lib/read-guard";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -104,9 +104,8 @@ export function EventRunStatusCard({
     // refresh has just failed and supabase-js falls back to the anon key, which
     // RLS answers with zero rows and no error. Rendering that would tell a band
     // mid-festival "วงนี้ยังไม่ถูกผูกกับลำดับในคิวงาน" and drop their countdown.
-    if (data.length === 0 && rowsRef.current.length > 0 && !(await hasLiveSession())) {
-      return;
-    }
+    // lib/read-guard.ts keepOnUntrustedEmpty is that judgement, shared.
+    if (await keepOnUntrustedEmpty(data, rowsRef.current.length > 0)) return;
     setRows(data as RunSeqLive[]);
   }
   // live mirror of rows for refetch(), which must know whether it has anything to lose
@@ -339,7 +338,14 @@ export function EventRunStatusCard({
             ))}
           </p>
         )}
-        <SelfStatus />
+        {/* The four states below are four different Thai sentences and nothing
+            else — "รอเล่น" and "ยังไม่ถูกผูกกับลำดับ" are one wording change apart
+            on screen but are opposite facts, and the second is what an untrusted
+            empty read would paint over a band's countdown. Name the state in the
+            DOM so a test can tell them apart by structure. */}
+        <div data-cueiq-self={selfRow?.status ?? "unlinked"}>
+          <SelfStatus />
+        </div>
       </div>
 
       {/* Overall: what's playing festival-wide right now */}

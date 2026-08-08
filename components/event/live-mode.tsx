@@ -1917,15 +1917,31 @@ export function LiveMode({
     });
     // BEFORE the apply below, so the broadcast it sends already carries it.
     markShowEnded(true); // let every screen sleep again — the show is over
-    // pause so the accumulated clock stops (does NOT reset the show)
+    // ⏹ SILENCE THIS DEVICE — running or not. The pause used to live inside the
+    // `s.running` branch below, which is exactly the state จบโชว์ is LEAST often
+    // pressed from: Manual deliberately leaves the previously-committed track
+    // sounding while the next row is cued (goto's manual branch sets running:false
+    // and touches no audio at all). So START → NEXT → จบโชว์ recorded the run,
+    // released every wake lock and told Electron the show was over while the song
+    // played on out of the PA, with nothing left on screen that would stop it.
+    audioRef.current?.pause();
+    audioRef2.current?.pause();
+    overlapNextIdRef.current = null;
+    preRollIdRef.current = null;
+    setAudioPlaying(false);
+    // Telling the OTHER devices needs no new message: every state broadcast
+    // already carries this device's audio intent (audioFields), and that intent is
+    // read off committedRef — which in the Manual-cue case still names the track we
+    // just silenced, i.e. would tell a speaker device to keep playing it. Clearing
+    // it here, before both branches broadcast, is what makes "the show is over"
+    // mean the same thing on the PA as it does here.
+    committedRef.current = { id: null, anchor: null };
+    // freeze the accumulated clock (does NOT reset the show)
     if (s.running) {
       const frozenItem = s.itemStartedAt
         ? (Date.now() - s.itemStartedAt) / 1000
         : (s.itemElapsedAtPause ?? 0);
       apply({ ...s, running: false, itemElapsedAtPause: frozenItem });
-      audioRef.current?.pause();
-      audioRef2.current?.pause();
-      setAudioPlaying(false);
     } else {
       // Ending an already-paused show changes no LiveState, so neither the
       // broadcast nor the snapshot would happen on their own — and without the

@@ -35,7 +35,7 @@ export interface EventBundle {
 /** Read-cache key for one event's bundle — shared by the loader and the probes below. */
 const bundleKey = (eventId: string) => `event:${eventId}`;
 
-/** How long ONE of this loader's reads may wait on Supabase before the cache is served.
+/** How long the SINGLE event read may wait on Supabase before the cache is served.
  *
  *  isOffline() only catches the network the OS knows is gone. The venue case that
  *  actually happens is the other one: wifi JOINED, navigator.onLine TRUE, TCP
@@ -52,10 +52,43 @@ const bundleKey = (eventId: string) => `event:${eventId}`;
  *  failed read — the cached bundle — so this adds a bound, not a new state. */
 export const EVENT_BUNDLE_TIMEOUT_MS = 8000;
 
+/** How long the CHILD BATCH may wait — the one await here that is not one read.
+ *
+ *  This constant exists because the sentence above used to be a lie with a price on
+ *  it. The batch is a Promise.all of SEVEN selects, two of them a whole band's
+ *  members and songs, and a Promise.all settles when its SLOWEST leg does — so the
+ *  single-read budget was 8s for all seven TOGETHER. Load-in, twenty phones on the
+ *  venue hotspot, an Ar opening a show this laptop has never opened: the seven reads
+ *  land in 9s, the network WORKS, it is merely congested. The bound fired, there was
+ *  no cached bundle to fall back to, and the operator was told the show did not
+ *  exist. A congested-but-working hotspot must still be allowed to deliver the show.
+ *
+ *  So the batch gets its own, larger budget rather than the comment being softened
+ *  to match the number: 2.5x the single-read budget for 7x the reads. Still bounded,
+ *  and a timeout still takes the module's existing failed-read branch (the cache).
+ *
+ *  Worst case for one loadEventBundleStatus() on a network that answers the first
+ *  read and then goes black: 8s + 20s = 28s. It used to be three stacked bounds
+ *  (8 + 8 + 8) because the membership read was awaited on its own; it now rides in
+ *  the same batch, which is both one fewer bound to stack and one fewer round trip
+ *  on the good path. On a network that is dead from the start it is still 8s. */
+export const EVENT_BUNDLE_BATCH_TIMEOUT_MS = 20000;
+
+/** How long the "was that empty answer really empty?" session probe may wait.
+ *
+ *  Deliberately much shorter than a read budget. It is a SECONDARY probe — it only
+ *  runs after a read has already answered — and getSession() is a storage read plus,
+ *  at worst, one refresh POST, so 2s is generous when anything is working at all.
+ *  It is also the one bound here whose expiry costs nothing: a timeout takes the
+ *  same "keep the cached bundle" branch that a slow answer would have produced. */
+export const EVENT_BUNDLE_SESSION_TIMEOUT_MS = 2000;
+
 /** Resolves to `null` if `p` has not settled within `ms`. The in-flight request is
- *  deliberately NOT cancelled — a late answer can still warm the cache for the next
- *  screen; we simply stop waiting on it. (Mirrors ~/data/workspace.ts, which owns
- *  the canonical comment; kept local because that copy is not exported.) */
+ *  not cancelled, it is ABANDONED: the timer is cleared on both outcomes, nothing
+ *  subscribes to `p` after the race settles so a late value is discarded (it does
+ *  NOT warm any cache — no path here writes one), and a late rejection is still
+ *  observed by the race, so it cannot go unhandled. (Mirrors ~/data/workspace.ts,
+ *  which owns the canonical comment; kept local because that copy is not exported.) */
 function withTimeout<T>(p: PromiseLike<T>, ms: number): Promise<T | null> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   return Promise.race<T | null>([
@@ -116,17 +149,38 @@ async function withPendingOverlay(
   return applyPendingChildren(out, ops, eventId);
 }
 
-export async function loadEventBundle(eventId: string): Promise<EventBundle | null> {
+/** What one load actually learned.
+ *
+ *  `unreachable` is the difference between two answers that used to be one: "the
+ *  server told us this show is gone, or is not yours" and "we never got a
+ *  trustworthy answer at all" (offline, a read that timed out, rejected or came
+ *  back errored, or a session we could not prove). Both resolved to a bare `null`,
+ *  so pages/event.tsx rendered the same dead end — "ไม่พบงานนี้ หรือไม่มีสิทธิ์เข้าถึง"
+ *  and one button back to the dashboard — for a show that was merely behind a
+ *  congested hotspot, with no way to try again.
+ *
+ *  `bundle` can be non-null WITH `unreachable` true: the cache covered it, and the
+ *  caller has something to render either way. Only a null bundle needs the flag. */
+export interface EventBundleLoad {
+  bundle: EventBundle | null;
+  unreachable: boolean;
+}
+
+export async function loadEventBundleStatus(eventId: string): Promise<EventBundleLoad> {
   const supabase = createClient();
   const cacheKey = bundleKey(eventId);
 
+  /** Every failure below lands here: a failed read is not a missing show. Offline
+   *  counts — we did not reach the server, so a miss here is "no copy on this
+   *  device", never "no such show". */
+  const servedFromCache = async (): Promise<EventBundleLoad> => ({
+    bundle: await withPendingOverlay(readCache<EventBundle>(cacheKey), eventId),
+    unreachable: true,
+  });
+
   // Offline: the network reads below would all fail, so serve the last good
   // bundle for this event from cache (null if it was never opened online).
-  if (isOffline()) return withPendingOverlay(readCache<EventBundle>(cacheKey), eventId);
-
-  /** Every failure below lands here: a failed read is not a missing show. */
-  const servedFromCache = () =>
-    withPendingOverlay(readCache<EventBundle>(cacheKey), eventId);
+  if (isOffline()) return servedFromCache();
 
   let eventRes;
   try {
@@ -155,32 +209,31 @@ export async function loadEventBundle(eventId: string): Promise<EventBundle | nu
     // getSession() can itself attempt a token refresh over the same dead network,
     // so bound it too: a timeout means "we could NOT prove the session is live",
     // which is precisely the case this guard already refuses to call a deletion.
-    const proven = await withTimeout(hasLiveSession(), EVENT_BUNDLE_TIMEOUT_MS);
+    const proven = await withTimeout(hasLiveSession(), EVENT_BUNDLE_SESSION_TIMEOUT_MS);
     const reallyGone = !eventRes.error && proven === true;
-    return withPendingOverlay(reallyGone ? null : readCache<EventBundle>(cacheKey), eventId);
+    if (!reallyGone) return servedFromCache();
+    // Proven gone. The overlay may still synthesize a pending offline create.
+    return { bundle: await withPendingOverlay(null, eventId), unreachable: false };
   }
 
-  // Both awaits below used to sit OUTSIDE any try/catch, so a REJECTION escaped
+  // This used to be TWO awaits, both OUTSIDE any try/catch, so a REJECTION escaped
   // loadEventBundle entirely instead of falling through to the cache the caller
   // needs — and neither had a bound, so a black-holed venue wifi parked the show
-  // screen here for ever. One try/catch and one bound each; the branches they feed
-  // are the module's existing ones.
-  let membershipRes;
-  let childResults;
+  // screen here for ever. One try/catch and one bound, feeding the module's
+  // existing branches. The membership read joins the batch rather than being
+  // awaited ahead of it: it depends on nothing the children produce, so waiting for
+  // it first only bought a second stacked timeout and a second round trip.
+  let batch;
   try {
-    membershipRes = await withTimeout(
-      supabase
-        .from("tenant_members")
-        .select("role")
-        .eq("tenant_id", event.tenant_id)
-        .order("created_at", { ascending: true })
-        .limit(1)
-        .maybeSingle(),
-      EVENT_BUNDLE_TIMEOUT_MS
-    );
-
-    childResults = await withTimeout(
+    batch = await withTimeout(
       Promise.all([
+        supabase
+          .from("tenant_members")
+          .select("role")
+          .eq("tenant_id", event.tenant_id)
+          .order("created_at", { ascending: true })
+          .limit(1)
+          .maybeSingle(),
         supabase
           .from("schedule_items")
           .select("*")
@@ -212,22 +265,22 @@ export async function loadEventBundle(eventId: string): Promise<EventBundle | nu
           .select("member_id")
           .eq("event_id", eventId),
       ]),
-      EVENT_BUNDLE_TIMEOUT_MS
+      EVENT_BUNDLE_BATCH_TIMEOUT_MS
     );
   } catch {
     return servedFromCache();
   }
   // A read that never answered is a read that failed — never an empty child list.
-  if (!membershipRes || !childResults) return servedFromCache();
+  if (!batch) return servedFromCache();
 
-  const [schedule, setlist, micMap, members, songs, lineup] = childResults;
+  const [membershipRes, schedule, setlist, micMap, members, songs, lineup] = batch;
 
   // postgrest resolves a network failure as { data: null, error } — it does NOT
   // throw — so an errored child read must never be coerced to an empty list:
   // caching that would overwrite the last GOOD offline bundle with an empty
   // setlist/schedule/mic map. Cache only a COMPLETE read (like workspace.ts);
   // on any failed read fall back to the cached copy, same as the catch above.
-  if (membershipRes.error || childResults.some((r) => r.error)) {
+  if (batch.some((r) => r.error)) {
     return servedFromCache();
   }
 
@@ -246,7 +299,14 @@ export async function loadEventBundle(eventId: string): Promise<EventBundle | nu
   };
   writeCache(cacheKey, bundle);
   // Cache the SERVER truth, then overlay pending local edits on top for display.
-  return withPendingOverlay(bundle, eventId);
+  return { bundle: await withPendingOverlay(bundle, eventId), unreachable: false };
+}
+
+/** The bundle alone — for every caller with nothing different to do about a show it
+ *  could not reach than about a show that is gone. pages/event.tsx is the one that
+ *  does care, and calls loadEventBundleStatus directly. */
+export async function loadEventBundle(eventId: string): Promise<EventBundle | null> {
+  return (await loadEventBundleStatus(eventId)).bundle;
 }
 
 /** Does THIS device hold `eventId`'s bundle, i.e. can the show be OPENED with no net? */
@@ -280,7 +340,9 @@ export async function hasPendingEventOp(eventId: string): Promise<boolean> {
  * unreachable — so the dashboard's bulk prepare warms this alongside the files.
  * Never throws, and never HANGS: the dashboard's "เตรียมทุกงาน" awaits this once per
  * event in sequence, so one unreachable show must neither abort the rest of a prepare
- * run nor stall it — loadEventBundle is bounded by EVENT_BUNDLE_TIMEOUT_MS per read.
+ * run nor stall it — every await in loadEventBundle is bounded (EVENT_BUNDLE_TIMEOUT_MS
+ * for the event read, EVENT_BUNDLE_BATCH_TIMEOUT_MS for the child batch), so the
+ * longest one show can hold the loop is the sum of the two.
  */
 export async function warmEventBundle(eventId: string): Promise<boolean> {
   try {

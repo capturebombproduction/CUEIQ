@@ -19,6 +19,7 @@ import {
   instrumentMediaElements,
   makeSession,
   ok,
+  fail,
   offline,
   type SupabaseFake,
 } from "@/test/fakes/supabase";
@@ -104,11 +105,51 @@ describe("makeQueryFake — the builder resolves at every stage of the chain", (
   });
 
   it("reduces the terminals the way postgrest does", async () => {
+    // TWO rows is not a row — for EITHER terminal. .maybeSingle() forgives the
+    // empty case, never the plural one: postgrest-js checks `isMaybeSingle &&
+    // data.length > 1` client-side and rewrites its own 200 into a 406. A fake
+    // that quietly hands back the first row instead lets a query that LOST ITS
+    // FILTER pass for ever — which is the whole reason getEventRow (lib/queries.ts)
+    // is allowed to treat `data: null, error: null` as "no such show".
+    const many = await supa.from("songs").select("id").maybeSingle();
+    expect(many.data).toBeNull();
+    expect(many.error?.code).toBe("PGRST116");
+    expect(many.status).toBe(406);
+    // even though the script said ok(), i.e. status 200 — the terminal overrides it
+    expect(many.count).toBeNull();
+
+    const manySingle = await supa.from("songs").select("id").single();
+    expect(manySingle.error?.code).toBe("PGRST116");
+    expect(manySingle.status).toBe(406);
+
+    supa.setTable("songs", ok([{ id: "s1" }]));
     expect((await supa.from("songs").select("id").maybeSingle()).data).toEqual({ id: "s1" });
-    // two rows for .single() is an error, not a row — the app branches on it
-    expect((await supa.from("songs").select("id").single()).error?.code).toBe("PGRST116");
+    expect((await supa.from("songs").select("id").single()).data).toEqual({ id: "s1" });
+
+    // …and the one place the two terminals genuinely differ.
     supa.setTable("songs", ok([]));
-    expect((await supa.from("songs").select("id").maybeSingle()).data).toBeNull();
+    const none = await supa.from("songs").select("id").maybeSingle();
+    expect(none).toMatchObject({ data: null, error: null, status: 200 });
+    expect((await supa.from("songs").select("id").single()).error?.code).toBe("PGRST116");
+  });
+
+  it("carries an error code so a code-keyed branch is reachable", async () => {
+    // isUniqueViolation / isRlsRefusal match on error.code FIRST and only fall
+    // back to the prose. A fail() that could not carry a code meant every test
+    // aiming at those branches hit the prose fallback instead and still passed.
+    supa.setTable("event_photos", fail({ message: "duplicate key value", code: "23505" }, 409));
+    const dup = await supa.from("event_photos").insert({ id: "p1" }).select("id");
+    expect(dup.error?.code).toBe("23505");
+    expect(dup.status).toBe(409);
+
+    supa.setTable("practice_logs", fail({ message: "permission denied", code: "42501" }, 403));
+    expect((await supa.from("practice_logs").insert({}).select("id")).error?.code).toBe("42501");
+
+    // the one-argument call is unchanged, and still carries no code
+    supa.setTable("songs", fail("boom"));
+    const plain = await supa.from("songs").select("*");
+    expect(plain.error).toEqual({ message: "boom" });
+    expect(plain.status).toBe(400);
   });
 
   it("records the verb, the filters and whether .select() followed a write", async () => {
@@ -201,6 +242,34 @@ describe("makeChannelFake — a recorded handler reaches the component", () => {
       ch?.setStatus("SUBSCRIBED");
     });
     expect(ch?.lastSent()?.event).toBe("sync-request");
+  });
+
+  it("matches the event filter the way RealtimeChannel does", () => {
+    // RealtimeChannel._updateFilterMessage, broadcast branch:
+    //   bindEvent = bind?.filter?.event?.toLocaleLowerCase()
+    //   return bindEvent === '*' || bindEvent === payload?.event?.toLocaleLowerCase()
+    // All three of these were backwards in the fake, and each one flatters a
+    // handoff test into passing on wiring the venue would never deliver.
+    const ch = supa.channel("verify");
+    const seen: string[] = [];
+    ch.on("broadcast", { event: "state" }, () => seen.push("exact"));
+    ch.on("broadcast", { event: "STATE" }, () => seen.push("upper"));
+    ch.on("broadcast", { event: "*" }, () => seen.push("star"));
+    // no { event } filter at all — DEAD in production, so dead here
+    ch.on("broadcast", () => seen.push("filterless"));
+
+    expect(ch.emit("state", {})).toBe(3);
+    expect(seen).toEqual(["exact", "upper", "star"]);
+
+    seen.length = 0;
+    expect(ch.emit("SyNc-ReQuEsT", {})).toBe(1);
+    expect(seen).toEqual(["star"]);
+
+    // .on() lowercases the listen type, so the registration is still a broadcast
+    seen.length = 0;
+    ch.on("BROADCAST", { event: "lastrun" }, () => seen.push("loud-type"));
+    expect(ch.emit("lastrun", {})).toBe(2); // the "*" handler and this one
+    expect(seen).toEqual(["star", "loud-type"]);
   });
 
   it("hands the same channel back for an open topic and drops it on removeChannel", () => {

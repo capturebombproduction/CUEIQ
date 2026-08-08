@@ -310,7 +310,20 @@ describe("LiveMode · a held key is one intention, not fifty", () => {
 // Starting before the first sync round-trip stamps a NEWER controllerSince than
 // the real controller's, which hijacks a running show back to item 0 and mutes
 // its speaker. The gate is timer-driven in four different ways and none of them
-// had a test. The constants are READ FROM THE FILE, not assumed.
+// had a test.
+//
+// The three constants below are TRANSCRIBED from live-mode.tsx, not imported from
+// it (they are module-private there, and exporting a number only so a test can
+// echo it back proves nothing). Transcribed copies normally rot — these cannot go
+// quietly wrong, because every arm brackets its boundary: advance to N-1 and assert
+// still DISABLED, advance the last 1ms and assert ENABLED. Widen the product's
+// window and the "N-1 → disabled" half stays green while the "+1 → enabled" half
+// fails; narrow it and the disabled half fails. Move the 2_000 in live-mode.tsx and
+// the blast radius is both arms below that advance by it PLUS all five tests that
+// go through startShowFromUi() — it advances the same 2_000 and then clicks, so a
+// gate that has not opened leaves the button disabled and the click sends nothing.
+// A drifted copy therefore shows up as a failure, not as a test that quietly passes
+// against the wrong number.
 // ─────────────────────────────────────────────────────────────────────────────
 describe("LiveMode · the START gate", () => {
   const SETTLE_AFTER_SUBSCRIBED_MS = 2_000;
@@ -594,7 +607,77 @@ describe("LiveMode · the sounding device owns its own playhead", () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// (f) CRASH SNAPSHOT — the reply is the only observable proof it was read back
+// (f) จบโชว์ MUST SILENCE THE PA
+//
+// The pause used to sit inside endShow's `if (s.running)` branch — and Manual
+// deliberately leaves the previously-committed track sounding while the next row
+// is cued (goto's manual branch sets running:false and touches no audio). So the
+// one sequence every Manual show ends with, START → NEXT → จบโชว์, saved the run,
+// released every wake lock and told Electron the show was over while the song kept
+// coming out of the PA with nothing left on screen that would stop it.
+// ─────────────────────────────────────────────────────────────────────────────
+describe("LiveMode · จบโชว์ stops the sound", () => {
+  it("silences a track still sounding under a Manual cue, and says so on the wire", async () => {
+    const media = instrumentMediaElements();
+    h.saved = [
+      { itemId: "item-1", blob: new Blob(["audio"]), name: "track-1.wav", path: null },
+    ];
+    await mountLive();
+    await startShowFromUi();
+
+    const primary = media.first()!;
+    // The premise: START really did put audio out of this device.
+    expect(media.state(primary).src).toBeTruthy();
+    expect(media.state(primary).paused).toBe(false);
+
+    // NEXT cues item 2 FROZEN and leaves item 1 playing — by design.
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("next"));
+    });
+    expect(stateSends().at(-1)!.payload.running).toBe(false);
+    expect(media.state(primary).paused).toBe(false);
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("end-show"));
+    });
+
+    // 1. this device is quiet — both elements, so a pre-roll can't outlive the show
+    expect(media.state(primary).paused).toBe(true);
+    expect(media.state(media.second()!).paused).toBe(true);
+    // 2. …and the speaker device is told, on the message that already exists: the
+    //    state broadcast's own audio intent, not a new "stop" event.
+    const last = stateSends().at(-1)!;
+    expect(last.payload.ended).toBe(true);
+    expect(last.payload.audioPlaying).toBe(false);
+  });
+
+  it("still freezes the clock and silences a RUNNING show", async () => {
+    const media = instrumentMediaElements();
+    h.saved = [
+      { itemId: "item-1", blob: new Blob(["audio"]), name: "track-1.wav", path: null },
+    ];
+    await mountLive();
+    await startShowFromUi();
+    const primary = media.first()!;
+
+    await act(async () => {
+      vi.advanceTimersByTime(30_000);
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("end-show"));
+    });
+
+    expect(media.state(primary).paused).toBe(true);
+    const last = stateSends().at(-1)!;
+    expect(last.payload.running).toBe(false);
+    expect(last.payload.begun).toBe(true); // a freeze, not a reset
+    expect(last.payload.ended).toBe(true);
+    expect(last.payload.audioPlaying).toBe(false);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// (g) CRASH SNAPSHOT — the reply is the only observable proof it was read back
 //
 // A reload used to hand every restored device isController=true with a null
 // claim, and used to forget that the show had already ended. Both fields are

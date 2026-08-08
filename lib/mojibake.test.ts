@@ -33,6 +33,11 @@ function mangle(s: string): string {
     .join("");
 }
 
+/** A non-breaking space, built from its code point rather than typed: the whole
+ *  hazard with this character is that neither its healthy nor its mangled form is
+ *  visible in a diff, and a fixture nobody can see is a fixture nobody can check. */
+const NBSP = String.fromCharCode(0xa0);
+
 describe("mojibake detection", () => {
   it("catches Thai that went through a single-byte codepage", () => {
     const broken = mangle("บันทึกแล้ว");
@@ -56,6 +61,41 @@ describe("mojibake detection", () => {
     expect(findMojibake(mangle("the show — it must go on"))).toHaveLength(1);
   });
 
+  // Every character the old punctuation fingerprint CLAIMED, one at a time, because
+  // the claim was false for two of them: `”` mangles through byte 0x9D, which cp1252
+  // does not map at all, and `•` through 0xA2, and neither was in the class. A
+  // comment announcing coverage the code does not have is round 10's signature
+  // defect, and a line whose only non-ASCII character is one of those two is a line
+  // this gate used to wave through.
+  it.each(["—", "–", "“", "”", "‘", "’", "…", "•", "†", "‰"])(
+    "catches a lone mangled %s",
+    (ch) => {
+      expect(findMojibake(mangle(`a ${ch} b`))).toHaveLength(1);
+    }
+  );
+
+  // The "Â…" family: characters whose UTF-8 lead byte is 0xC2. Not one of these was
+  // detectable before — and `·` is a separator this repo uses in real UI strings.
+  it.each(["·", "°", "©", "±", "«", "»"])("catches a lone mangled 2-byte %s", (ch) => {
+    expect(findMojibake(mangle(`a${ch}b`))).toHaveLength(1);
+  });
+
+  it("catches a mangled non-breaking space", () => {
+    expect(findMojibake(mangle(`a${NBSP}b`))).toHaveLength(1);
+  });
+
+  it("catches an arrow and CJK, which nothing matched before", () => {
+    expect(findMojibake(mangle("offline → online"))).toHaveLength(1);
+    expect(findMojibake(mangle("中文"))).toHaveLength(1);
+    expect(findMojibake(mangle("日本語"))).toHaveLength(1);
+    expect(findMojibake(mangle("精神革命"))).toHaveLength(1);
+  });
+
+  it("catches a mangled emoji", () => {
+    expect(findMojibake(mangle("ready ✅"))).toHaveLength(1); // 3-byte
+    expect(findMojibake(mangle("ready 🎤"))).toHaveLength(1); // 4-byte, lead 0xF0
+  });
+
   it("catches accented Latin", () => {
     expect(findMojibake(mangle("café"))).toHaveLength(1);
   });
@@ -72,7 +112,11 @@ describe("mojibake detection", () => {
 
   it("leaves healthy files alone", () => {
     // Everything here is legitimate content from this codebase. A gate that cries
-    // wolf on real Thai, real em dashes or real code is a gate someone will delete.
+    // wolf on real Thai, real em dashes or real code is a gate someone will delete,
+    // so widening the fingerprints is only defensible while this list grows with
+    // them: every family the detector newly matches appears here in its HEALTHY
+    // form, and the risky shape — an accented letter immediately followed by a
+    // symbol that is also a continuation byte — is pinned down deliberately.
     const healthy = [
       "ยืนยันการลบ — พิมพ์ชื่อเพื่อยืนยัน",
       "เสียงออกเครื่องเดียว",
@@ -81,6 +125,15 @@ describe("mojibake detection", () => {
       "à la carte", // a real French phrase: "à" followed by a space, not a Thai byte
       "Ça va",
       "โหมดซ้อม · Practice Mode · 中文 · 日本語",
+      "Crème brûlée — 25° C, ±1°, © 2026, 1920×1080, ~5 µs",
+      "« Où ça ? » — déjà, Æon, Þór, Straße, Ærø",
+      "offline → online → ✅ พร้อมโชว์ 🎤",
+      "精神革命 · Seishin Kakumei · A Lot Of Tone",
+      "ราคา 100 € · 50 £ · 20 ¥ · ½ ชั่วโมง · หมายเหตุ¹",
+      // Correct French typography: a NBSP between the accented word and its
+      // punctuation, i.e. a continuation-byte glyph sitting immediately after a
+      // 3-byte lead glyph. One is not two, so this must not fire.
+      `Le café${NBSP}: c'est prêt${NBSP}!`,
     ].join("\n");
     expect(findMojibake(healthy)).toEqual([]);
   });

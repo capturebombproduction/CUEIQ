@@ -15,7 +15,19 @@ export const dynamic = "force-dynamic";
 // another object. Defaults to the newest snapshot; an explicit ?key must still be
 // a real backups/ object.
 export async function GET(req: Request) {
-  const ws = await getWorkspace();
+  // getWorkspace() THROWS on a failed read as of round 11 — it used to swallow the
+  // error and answer "this user is in no band", which on this route would have
+  // rejected the Master Admin as forbidden. Every other caller is a page, where the
+  // throw is the point (an error boundary the user can retry beats a wrong answer
+  // about their own permissions). A route handler has no boundary, so an unhandled
+  // throw here is a bare 500 with no body; say which of the two it was instead.
+  let ws;
+  try {
+    ws = await getWorkspace();
+  } catch (e) {
+    console.error("[CueIQ] backup download: workspace read failed:", e);
+    return NextResponse.json({ error: "workspace unavailable, try again" }, { status: 503 });
+  }
   if (!ws.user || !isAdmin(ws.perms) || !isMasterAdminEmail(ws.user.email)) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
   }

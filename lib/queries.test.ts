@@ -1,5 +1,18 @@
-import { describe, it, expect } from "vitest";
-import { eventBundleReadFailure, isEventIdShaped } from "@/lib/queries";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { eventBundleReadFailure, getWorkspace, isEventIdShaped } from "@/lib/queries";
+import {
+  makeSupabaseFake,
+  makeSession,
+  ok,
+  fail,
+  type SupabaseFake,
+} from "@/test/fakes/supabase";
+
+// getWorkspace() reaches the DB through the SERVER client (cookies + RSC). One
+// top-of-file mock of that specifier is the whole seam; the factory is hoisted
+// above every binding in this file, so it may only reach through the hoisted box.
+const h = vi.hoisted(() => ({ supa: null as unknown }));
+vi.mock("@/lib/supabase/server", () => ({ createClient: async () => h.supa }));
 
 // Round 10: getEventBundle used to write `schedule.data ?? []` for six parallel
 // child reads and never inspect `.error`. postgrest-js resolves a 500 / 429 /
@@ -126,5 +139,170 @@ describe("isEventIdShaped", () => {
     // how an injected second line would ride along into a query string.
     expect(isEventIdShaped("9f3a1c8e-2b4d-4a91-8c7e-1f2a3b4c5d6e\nx")).toBe(false);
     expect(isEventIdShaped("\n9f3a1c8e-2b4d-4a91-8c7e-1f2a3b4c5d6e")).toBe(false);
+  });
+});
+
+// Round 12: lib/read-guard.ts was wired into four server pages so that a failed
+// read stops becoming a confident wrong number — and getWorkspace(), which runs
+// FIRST on all four of them (the (app) layout awaits it before anything renders),
+// discarded `.error` on all four of its OWN reads. These failures are sharper than
+// the counts that were fixed, because each one comes out as a PERMISSION ANSWER:
+//
+//   tenant_members / tenants fail → membership/tenant null → /overview and
+//     /dashboard render <JoinDemo/> ("บัญชียังไม่ได้รับสิทธิ์เข้าวง") at a real label
+//     member, and both /events/[id]/run-order routes silently bounce to /dashboard —
+//     the route ~19 phones open within seconds when staff press เริ่ม;
+//   group_roles fails → groupRoles [] → canViewGroup false → an Ar is locked out of
+//     their own band's show;
+//   groups fails → [] is fed back in as `.in("group_id", …)`, so the events read
+//     returns zero rows while SUCCEEDING and the page's own guard confirms all is
+//     well.
+//
+// One case per read, plus the two that must NOT throw.
+describe("getWorkspace", () => {
+  const USER_ID = "11111111-1111-4111-8111-111111111111";
+  const TID = "22222222-2222-4222-8222-222222222222";
+  const GID = "33333333-3333-4333-8333-333333333333";
+
+  /** Every read healthy — override one entry per test to break exactly one. */
+  const healthy = () => ({
+    tenant_members: ok([{ tenant_id: TID, role: "member" }]),
+    group_roles: ok([{ group_id: GID, role: "artist_manager" }]),
+    tenants: ok([{ id: TID, name: "A Lot Of Tone" }]),
+    groups: ok([{ id: GID, name: "Seishin Kakumei", tenant_id: TID }]),
+  });
+
+  let supa: SupabaseFake;
+  let logged: string[];
+
+  beforeEach(() => {
+    supa = makeSupabaseFake({
+      session: makeSession({ user: { id: USER_ID, email: "seishin-ar@cueiq.local" } }),
+      script: healthy(),
+    });
+    h.supa = supa;
+    // assertReadsSucceeded logs the cause before throwing — that console line is the
+    // only thing tying the card the user sees to a cause in the Vercel log, so keep
+    // it out of the test output but assert it happened.
+    logged = [];
+    vi.spyOn(console, "error").mockImplementation((...args: unknown[]) => {
+      logged.push(args.map(String).join(" "));
+    });
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("resolves the whole workspace when every read succeeds (positive control)", async () => {
+    const ws = await getWorkspace();
+
+    expect(ws.user?.id).toBe(USER_ID);
+    expect(ws.membership).toEqual({ tenant_id: TID, role: "member" });
+    expect(ws.tenant?.name).toBe("A Lot Of Tone");
+    expect(ws.groups.map((g) => g.id)).toEqual([GID]);
+    expect(ws.groupRoles).toEqual([{ group_id: GID, role: "artist_manager" }]);
+    expect(ws.perms).toEqual({
+      tenantRole: "member",
+      groupRoles: [{ group_id: GID, role: "artist_manager" }],
+    });
+    expect(logged).toEqual([]);
+  });
+
+  it("THROWS when the tenant_members read fails, instead of answering 'not a member'", async () => {
+    supa.setTable("tenant_members", fail("canceling statement due to statement timeout"));
+
+    await expect(getWorkspace()).rejects.toThrow("อ่านข้อมูลไม่สำเร็จ");
+    await expect(getWorkspace()).rejects.toMatchObject({ name: "ReadFailedError" });
+    // The cause has to reach the server log: Next redacts the message in production
+    // and the client only ever sees a digest.
+    expect(logged.join("\n")).toContain("getWorkspace read failed");
+    expect(logged.join("\n")).toContain("statement timeout");
+  });
+
+  it("does not go on to read tenants/groups once identity is unknown", async () => {
+    // Not tidiness: reaching the second batch with `memberRow.tenant_id` undefined
+    // would send `?id=eq.undefined` at Postgres and answer with a DIFFERENT error
+    // about a different table, which is what the next reader would then chase.
+    supa.setTable("tenant_members", fail("503"));
+
+    await expect(getWorkspace()).rejects.toThrow();
+    expect(supa.callsTo("tenants")).toHaveLength(0);
+    expect(supa.callsTo("groups")).toHaveLength(0);
+  });
+
+  it("THROWS when the group_roles read fails, instead of locking an Ar out of their band", async () => {
+    supa.setTable("group_roles", fail("canceling statement due to statement timeout"));
+
+    await expect(getWorkspace()).rejects.toThrow("บทบาทในวง");
+  });
+
+  it("THROWS when the tenants read fails, instead of showing the join screen", async () => {
+    supa.setTable("tenants", fail("fetch failed"));
+
+    await expect(getWorkspace()).rejects.toThrow("ข้อมูลค่าย");
+  });
+
+  it("THROWS when the groups read fails, instead of a label with no bands", async () => {
+    // The quiet one: `groups: []` is fed back into the next page's query as
+    // `.in("group_id", [])`, so the events read returns nothing AND succeeds.
+    supa.setTable("groups", fail("canceling statement due to statement timeout"));
+
+    await expect(getWorkspace()).rejects.toThrow("รายชื่อวง");
+  });
+
+  it("names ONLY the read that failed", async () => {
+    supa.setTable("groups", fail("503"));
+
+    const err = await getWorkspace().catch((e: Error) => e);
+    expect((err as Error).message).toContain("รายชื่อวง");
+    expect((err as Error).message).not.toContain("ข้อมูลค่าย");
+  });
+
+  it("still shows a brand-new account the join screen (empty is not failure)", async () => {
+    // The invariant the guards must not break: maybeSingle() reports "no such row"
+    // as { data: null, error: null }, and that is a real answer about a real account.
+    supa.setTable("tenant_members", ok([]));
+
+    const ws = await getWorkspace();
+    expect(ws.user?.id).toBe(USER_ID);
+    expect(ws.membership).toBeNull();
+    expect(ws.tenant).toBeNull();
+    expect(ws.perms.tenantRole).toBeNull();
+    expect(logged).toEqual([]);
+  });
+
+  it("keeps the join screen even if group_roles errored, when there is no membership", async () => {
+    // The one degrade: on this path the group_roles answer is DISCARDED — groupRoles
+    // is [] and perms is makePerms(null) whatever it said — so failing over it would
+    // turn a first-login hiccup into an error card on the one screen whose whole job
+    // is to say "ask an admin to add you".
+    supa.setTable("tenant_members", ok([]));
+    supa.setTable("group_roles", fail("503"));
+
+    const ws = await getWorkspace();
+    expect(ws.membership).toBeNull();
+    expect(ws.groupRoles).toEqual([]);
+  });
+
+  it("accepts empty-but-successful group and role lists for a real member", async () => {
+    // A label with no bands yet, and a member with no per-band row: both are real
+    // answers and must render, not throw.
+    supa.setTable("group_roles", ok([]));
+    supa.setTable("groups", ok([]));
+
+    const ws = await getWorkspace();
+    expect(ws.membership).toEqual({ tenant_id: TID, role: "member" });
+    expect(ws.groups).toEqual([]);
+    expect(ws.groupRoles).toEqual([]);
+    expect(logged).toEqual([]);
+  });
+
+  it("returns the signed-out shape without reading anything", async () => {
+    supa.auth.setSession(null);
+
+    const ws = await getWorkspace();
+    expect(ws.user).toBeNull();
+    expect(ws.membership).toBeNull();
+    expect(supa.calls).toHaveLength(0);
   });
 });

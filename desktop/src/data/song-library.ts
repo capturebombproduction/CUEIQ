@@ -26,9 +26,11 @@ import { isOffline, readCache, writeCache } from "~/data/cache";
 export const SONG_LIBRARY_TIMEOUT_MS = 8000;
 
 /** Resolves to `null` if `p` has not settled within `ms`. The in-flight request is
- *  deliberately NOT cancelled — a late answer can still warm the cache for the next
- *  screen; we simply stop waiting on it. (Mirrors ~/data/workspace.ts, which owns
- *  the canonical comment; kept local because that copy is not exported.) */
+ *  not cancelled, it is ABANDONED: the timer is cleared on both outcomes, nothing
+ *  subscribes to `p` after the race settles so a late value is discarded (it does
+ *  NOT warm any cache — no path here writes one), and a late rejection is still
+ *  observed by the race, so it cannot go unhandled. (Mirrors ~/data/workspace.ts,
+ *  which owns the canonical comment; kept local because that copy is not exported.) */
 function withTimeout<T>(p: PromiseLike<T>, ms: number): Promise<T | null> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   return Promise.race<T | null>([

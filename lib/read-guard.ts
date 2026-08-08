@@ -55,7 +55,7 @@ export type ReadOutcome = { error: { message?: string | null } | null };
  * could not be read instead of printing a bare stack. Keys are Thai for the same
  * reason lib/queries.ts BUNDLE_PART_LABELS is.
  *
- * Three rules, and they are the entire contract:
+ * Two rules, and they are the entire contract:
  *   1. ONLY `.error` decides. A successful read that returned zero rows is a
  *      success — a brand-new festival really does have no running order yet, and
  *      that must stay indistinguishable from an empty table. Any version of this
@@ -65,21 +65,26 @@ export type ReadOutcome = { error: { message?: string | null } | null };
  *      can tolerate a missing part should not pass that part in, rather than this
  *      rule being softened for everyone (the same split getEventRow made away
  *      from getEventBundle).
- *   3. An entry that is null/undefined was NOT ATTEMPTED (a read skipped because
- *      there was nothing to read — `ids.length ? … : …`) and is not a failure.
+ *
+ * A read that was SKIPPED (`ids.length ? await … : { data: [], error: null }`,
+ * app/(app)/events/[id]/run-order/page.tsx) is passed in as that literal, so it
+ * arrives here as a plain success and needs no rule of its own. There was a third
+ * rule saying null/undefined meant "not attempted"; no caller ever passed either,
+ * so the entry type is non-nullable now and the reader is spared a case that only
+ * ever existed on paper.
  *
  * Pure and exported so lib/read-guard.test.ts can pin the truth table with no DB.
  */
 export function readFailure(
-  reads: Record<string, ReadOutcome | null | undefined>,
+  reads: Record<string, ReadOutcome>,
   where?: string
 ): Error | null {
-  const failed = Object.entries(reads).filter(([, r]) => !!r?.error);
+  const failed = Object.entries(reads).filter(([, r]) => !!r.error);
   if (failed.length === 0) return null;
 
   const labels = failed.map(([label]) => label).join(", ");
   const detail = failed
-    .map(([label, r]) => `${label}: ${r?.error?.message || "unknown error"}`)
+    .map(([label, r]) => `${label}: ${r.error?.message || "unknown error"}`)
     .join(" | ");
   const err = new Error(
     `อ่านข้อมูลไม่สำเร็จ (${labels}) — ลองใหม่อีกครั้ง ข้อมูลยังอยู่ครบ ` +
@@ -101,7 +106,7 @@ export function readFailure(
  */
 export function assertReadsSucceeded(
   where: string,
-  reads: Record<string, ReadOutcome | null | undefined>
+  reads: Record<string, ReadOutcome>
 ): void {
   const err = readFailure(reads, where);
   if (!err) return;
@@ -134,18 +139,23 @@ export function assertReadsSucceeded(
  * @param hadRows do we currently hold rows this empty answer would wipe out?
  * @returns true  → do NOT believe it; keep what is on screen.
  *
- * FOUR HAND-ROLLED COPIES OF THIS EXIST TODAY and are deliberately left alone in
- * this round (changing four live surfaces to prove a helper works is how a fix
- * becomes an incident):
- *   • components/event/event-run-status.tsx:107
+ * CALLED BY components/event/event-run-status.tsx — the band-facing status card,
+ * folded in first because it is the least dangerous of the copies (it renders a
+ * card; it writes nothing and seeds nothing). components/event/event-run-status.
+ * test.tsx is the trace from a real reconnect to this function.
+ *
+ * THREE HAND-ROLLED COPIES REMAIN, deliberately, because each differs from this
+ * one in a way that has to be decided rather than assumed:
  *   • components/notifications/notification-bell.tsx:141 and :222
- *   • components/event/run-order-builder.tsx:163 — which even defines its OWN
- *     private hasLiveSession() instead of importing lib/auth-session, and then
- *     re-reads once more before wiping, because the order it would wipe is what
+ *   • components/event/run-order-builder.tsx:163 — which defines its OWN private
+ *     hasLiveSession() instead of importing lib/auth-session, and then RE-READS
+ *     once more before wiping, because the order it would wipe is what
  *     "นำเข้าจากเวทีวง" reads linked_event_id off (wipe it and the next import
- *     inserts every act a second time and broadcasts the duplicate).
+ *     inserts every act a second time and broadcasts the duplicate). That extra
+ *     read is not in here; folding it in without it would be a downgrade.
  *   • desktop/src/data/event-bundle.ts:114 — the `reallyGone` check.
- * Fold them in one at a time, each with its own test.
+ * Fold them in one at a time, each with its own test — and only where the local
+ * copy really is this function and nothing more.
  */
 export async function keepOnUntrustedEmpty(
   rows: unknown[] | null | undefined,

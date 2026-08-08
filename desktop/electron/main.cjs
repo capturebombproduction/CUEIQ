@@ -59,10 +59,16 @@ const SMOKE_OUT = process.env.CUEIQ_SMOKE_OUT || "";
 //   CUEIQ_SMOKE_SEED_FILE  a JSON file of localStorage entries, planted BEFORE the
 //                          app's own boot code runs (see plantSmokeSeed).
 //   CUEIQ_SMOKE_OFFLINE=1  cut the network for the renderer AND the main process.
-//   CUEIQ_SMOKE_EXPECT     "signed-in" | "signed-out" — what the boot must reach.
-//                          Empty keeps the old "did anything render" behaviour.
+//   CUEIQ_SMOKE_EXPECT     "signed-in" | "signed-out" | "quick-show" — what the boot
+//                          must reach. Empty is a FAILURE, not a weaker question.
 const SMOKE_SEED_FILE = process.env.CUEIQ_SMOKE_SEED_FILE || "";
-const SMOKE_OFFLINE = process.env.CUEIQ_SMOKE_OFFLINE === "1";
+// ⚠️ `SMOKE &&` is not belt-and-braces, it is the difference between a self-test flag
+// and a production kill switch. SMOKE_OFFLINE gates assertNotOfflineSmoke() at the top
+// of fetchAudioBytes/putAudioBytes — real paths on every launch — so derived from
+// CUEIQ_SMOKE_OFFLINE alone, a stray variable left in the environment of the machine
+// that runs the show means no audio plays at all, with a message about a smoke test.
+// The host-resolver block at the top of this file already requires both; match it.
+const SMOKE_OFFLINE = SMOKE && process.env.CUEIQ_SMOKE_OFFLINE === "1";
 const SMOKE_EXPECT = process.env.CUEIQ_SMOKE_EXPECT || "";
 // What the seeded cache should surface once it is read back. Kept as env rather
 // than baked in here so main.cjs stays generic and the fixture owns its own values
@@ -283,34 +289,30 @@ function initAutoUpdate() {
 
 // ─── self-test helpers (CUEIQ_SMOKE only) ────────────────────────────────────
 
-/** Make "no network" real, and REPORTABLE.
+/** Make "no network" real.
  *
  *  Two layers on purpose. webRequest cancellation is the deterministic one — a
  *  cancelled request fails instantly, where emulated-offline can sit in Chromium's
- *  retry logic and turn a 20-second test into a 3-minute CI timeout — and it is
- *  also the only layer that can say WHAT the app tried to reach, which is the
- *  difference between "it booted" and "it booted without touching the network".
+ *  retry logic and turn a 20-second test into a 3-minute CI timeout.
  *  enableNetworkEmulation backs it up for anything that never reaches webRequest.
- *  The main process's own net.fetch is cut separately (assertNotOfflineSmoke). */
-function blockNetworkRequestsForSmoke(win, attempted) {
+ *  The main process's own net.fetch is cut separately (assertNotOfflineSmoke).
+ *
+ *  This used to ALSO collect the hosts it cancelled, into an `attemptedHosts` field
+ *  whose comment called an empty list "the claim worth making". Nothing ever asserted
+ *  it, and it could not have: a healthy airplane boot cancels the Supabase host
+ *  several times over (auth-js retries its token refresh), so the claim the comment
+ *  made was one every green run contradicted. What actually distinguishes "booted
+ *  offline" from "booted and hung on the network" is asserted elsewhere and for real —
+ *  probeTheNetwork proves the cut, probe.onLine proves the app knew, and the console
+ *  allowlist bounds what the cut is allowed to break. */
+function blockNetworkRequestsForSmoke(win) {
   const ses = win.webContents.session;
   // ⚠️ NEVER "<all_urls>" or "*://*/*" here: the app's own document and bundle are
   // file:// URLs, and cancelling those blanks the window — a test that then reports
   // "rendered nothing" for a reason that has nothing to do with the app.
   ses.webRequest.onBeforeRequest(
     { urls: ["http://*/*", "https://*/*", "ws://*/*", "wss://*/*"] },
-    (details, callback) => {
-      let host;
-      try {
-        host = new URL(details.url).host;
-      } catch {
-        host = String(details.url).slice(0, 80);
-      }
-      // Deduped and capped: supabase-js retries a failing refresh several times,
-      // and an unbounded list would bloat the verdict file with one host repeated.
-      if (host && !attempted.includes(host) && attempted.length < 25) attempted.push(host);
-      callback({ cancel: true });
-    }
+    (_details, callback) => callback({ cancel: true })
   );
   ses.enableNetworkEmulation({ offline: true });
 }
@@ -456,13 +458,18 @@ async function plantSmokeSeed(win) {
   // JS object literal. Same result, one less way to break: a seed value is
   // arbitrary text, and inlining it makes the page's parser responsible for it.
   const payload = JSON.stringify(JSON.stringify(entries));
-  const planted = await win.webContents.executeJavaScript(
+  // Returns nothing on purpose. It used to hand back the number of keys it wrote, and
+  // that number rode the verdict as `planted` with nobody asserting it — it could only
+  // ever have equalled the key count of the file this same function just read, so an
+  // assertion on it would have compared a number with itself. What a seed that failed
+  // to arrive really looks like is a signed-OUT app, and run-smoke.mjs's control ⇄
+  // airplane cross-check is what catches that. A throw in here (quota, a hostile key)
+  // still rejects and lands in the verdict as `error`.
+  await win.webContents.executeJavaScript(
     `(() => { const e = JSON.parse(${payload});
-      for (const k of Object.keys(e)) window.localStorage.setItem(k, e[k]);
-      return Object.keys(e).length; })()`
+      for (const k of Object.keys(e)) window.localStorage.setItem(k, e[k]); })()`
   );
   await reloadAndWait(win, "after seeding");
-  return planted;
 }
 
 /** What the renderer is actually showing. Deliberately structural, not textual:
@@ -479,11 +486,6 @@ const SMOKE_PROBE = `JSON.stringify({
   eventRows: Number(document.querySelector('[data-cueiq-events]')?.getAttribute('data-cueiq-events') ?? -1),
   onLine: navigator.onLine,
 })`;
-
-/** A screen the app has ARRIVED at, as opposed to one it is passing through. Only
- *  "boot" and "shell-fallback"'s loading half are transient, and polling has to
- *  keep going through them or the test samples a spinner and calls it an answer. */
-const TERMINAL_SCREENS = ["login", "shell", "quick-show", "app-error"];
 
 /** Console errors an OFFLINE boot is allowed to produce. Anything else fails the run.
  *
@@ -504,8 +506,14 @@ const TERMINAL_SCREENS = ["login", "shell", "quick-show", "app-error"];
  *  real defect and must not inherit the offline run's excuse. */
 const SMOKE_ALLOWED_CONSOLE_ERRORS = [/Failed to fetch/i, /net::ERR_/, /Failed to load resource/i];
 
-/** Did this boot land where it was told to? "" means the old, weaker question:
- *  did anything render at all. */
+/** Did this boot land where it was told to? Every recognised value below names a
+ *  screen the app has ARRIVED at rather than one it is passing through, which is why
+ *  pollUntilSettled can poll on this predicate alone: "boot" and the loading half of
+ *  "shell-fallback" satisfy none of them, so a spinner can never be sampled as an
+ *  answer. (There used to be a TERMINAL_SCREENS list here saying the same thing, with
+ *  a paragraph of documentation and not one reference — deleted. The guard that made
+ *  it moot is the one at the top of the SMOKE block: an EMPTY expectation now fails
+ *  the run outright, so "poll until anything renders" is not a state this can be in.) */
 function smokeExpectationMet(p) {
   if (!p.hasRoot) return false;
   if (SMOKE_EXPECT === "signed-in") {
@@ -529,13 +537,13 @@ function smokeExpectationMet(p) {
   if (SMOKE_EXPECT === "quick-show") {
     return p.screen === "quick-show";
   }
-  // A value nobody here understands is NEVER met. Falling through to `true` meant a
-  // typo in a scenario's env ("signedin") silently demoted that scenario to the old,
-  // weakest question — did anything render — and passed. run-smoke.mjs also asserts
-  // the verdict's echoed `expect` against what it asked for, so the same mistake is
-  // caught from both ends.
-  if (SMOKE_EXPECT) return false;
-  return true;
+  // A value nobody here understands is NEVER met — and neither is an absent one,
+  // which is why there is no `return true` under this line any more. Falling through
+  // to `true` meant a typo in a scenario's env ("signedin") silently demoted that
+  // scenario to the old, weakest question — did anything render — and passed.
+  // run-smoke.mjs also asserts the verdict's echoed `expect` against what it asked
+  // for, so the same mistake is caught from both ends.
+  return false;
 }
 
 /** Write the verdict and stop. Idempotent: whichever path gets here first wins, so
@@ -617,7 +625,6 @@ async function createWindow() {
 
   // Self-test bookkeeping. Installed BEFORE the first load so nothing that happens
   // during boot — the very window the test is about — goes unobserved.
-  const smokeAttemptedHosts = [];
   const smokeConsoleErrors = [];
   // Kept SEPARATE from the diagnostic list above, and separately capped, because this
   // one is fatal: sharing a cap would let twenty allowlisted "Failed to fetch" lines
@@ -626,7 +633,7 @@ async function createWindow() {
   if (SMOKE) {
     smokeAt("window-created");
     // Session-level only here; the CDP half waits until a renderer exists (below).
-    if (SMOKE_OFFLINE) blockNetworkRequestsForSmoke(win, smokeAttemptedHosts);
+    if (SMOKE_OFFLINE) blockNetworkRequestsForSmoke(win);
     win.webContents.on("console-message", (...args) => {
       // Electron moved this event's signature: it used to be
       // (event, level:number, message, line, sourceId) and is now (details) with
@@ -827,9 +834,10 @@ async function createWindow() {
     const context = {
       mode: SMOKE_SEED_FILE ? "seeded" : "cold",
       offline: SMOKE_OFFLINE,
-      expect: SMOKE_EXPECT || "anything-rendered",
-      // A stale win-unpacked next to a bumped package.json would otherwise pass for
-      // the tag being released.
+      expect: SMOKE_EXPECT,
+      // ASSERTED by the caller against desktop/package.json (run-smoke.mjs), which is
+      // the point: a stale win-unpacked next to a bumped package.json would otherwise
+      // pass for the tag being released.
       appVersion: app.getVersion(),
       // Reported so a typo in the profile switch cannot silently share the real
       // %APPDATA%\CueIQ profile — which would make "cold boot" a claim about
@@ -839,19 +847,30 @@ async function createWindow() {
     let verdict = { ok: false, ...context, error: loadError ?? "no result" };
     try {
       if (loadError) throw new Error(loadError);
+      // A run with nothing to expect can only ask the weakest question there is —
+      // did anything render — which the login screen answers yes to on a boot that
+      // failed at everything this test is for. It used to be merely unlikely (all
+      // three scenarios happen to set the variable); it is now impossible.
+      if (!SMOKE_EXPECT) {
+        throw new Error("CUEIQ_SMOKE_EXPECT is empty: a smoke run must name the screen it expects");
+      }
       // Now that a renderer exists, flip navigator.onLine — BEFORE the reload
       // below, so the boot actually under test begins already offline.
-      let onLineAfterCut = null;
+      //
+      // The reading taken right here used to be reported as `onLineAfterCut` and
+      // asserted nowhere. Deleted rather than asserted: it measures the document that
+      // is about to be REPLACED by the reload below, and the emulation deliberately
+      // does not survive that reload (see emulateOfflineViaCdp) — so the only reading
+      // that can mean anything is the one taken from the boot under test, which is
+      // probe.onLine, which onLineHeld does assert.
       if (SMOKE_OFFLINE) {
         smokeAt("cdp-offline");
         await emulateOfflineViaCdp(win);
-        onLineAfterCut = await win.webContents.executeJavaScript("navigator.onLine");
       }
 
-      let planted = 0;
       if (SMOKE_SEED_FILE) {
         smokeAt("seeding");
-        planted = await plantSmokeSeed(win);
+        await plantSmokeSeed(win);
         smokeAt("seeded");
       } else if (SMOKE_OFFLINE) {
         // No seed to plant, but the first load happened before the flag flipped, so
@@ -907,14 +926,9 @@ async function createWindow() {
       verdict = {
         ok: smokeExpectationMet(probe) && cutHeld && onLineHeld && consoleClean,
         ...context,
-        planted,
         ...probe,
-        onLineAfterCut,
         netProbe,
         ...(failReason ? { failReason } : {}),
-        // Empty is the claim worth making on an offline boot: the app reached a
-        // usable screen without asking the network for anything.
-        attemptedHosts: smokeAttemptedHosts,
         consoleErrors: smokeConsoleErrors,
         unexpectedConsoleErrors: smokeUnexpectedConsoleErrors,
       };
@@ -923,7 +937,6 @@ async function createWindow() {
         ok: false,
         ...context,
         error: String(e),
-        attemptedHosts: smokeAttemptedHosts,
         consoleErrors: smokeConsoleErrors,
         unexpectedConsoleErrors: smokeUnexpectedConsoleErrors,
       };
@@ -964,10 +977,27 @@ app.whenReady().then(() => {
   // Deliberately NOT awaited: the update prompt is parentless, so it needs no
   // window — and awaiting the page load would let a failed load take both the
   // updater and the activate handler down with it.
-  createWindow().catch((e) => {
-    if (SMOKE) writeSmokeVerdict({ ok: false, failReason: "createWindow threw", error: String(e) });
-    else console.log("CREATE_WINDOW_FAIL " + String(e));
-  });
+  // ⚠️ THE CATCH IS FOR THE SELF-TEST ONLY, and the else-branch that used to sit
+  // beside it was the one change in the smoke work that touched a NORMAL launch —
+  // for the worse. `console.log` on a GUI-subsystem .exe goes nowhere: Windows
+  // attaches no console to it, so a corrupt install (dist/index.html missing —
+  // precisely the failure this smoke machinery exists to catch) showed the operator
+  // a dark rectangle forever and said nothing, anywhere. Left UNCAUGHT, the same
+  // rejection reaches Electron's default handler and puts up "A JavaScript error
+  // occurred in the main process" naming ERR_FILE_NOT_FOUND — ugly, and infinitely
+  // better than silence at a venue. Production behaviour restored exactly.
+  //
+  // Under SMOKE the opposite is right: a throw here must become the verdict FILE, or
+  // the caller waits out its whole timeout for an answer this process already has.
+  // That verdict (like the watchdog's) carries no context block — see the echo-check
+  // in run-smoke.mjs, which must not overwrite this failReason with its own.
+  if (SMOKE) {
+    createWindow().catch((e) =>
+      writeSmokeVerdict({ ok: false, failReason: "createWindow threw", error: String(e) })
+    );
+  } else {
+    createWindow();
+  }
   initAutoUpdate();
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();

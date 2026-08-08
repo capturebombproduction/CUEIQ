@@ -170,6 +170,17 @@ export function MyShow() {
   // reset), so anything keyed on `begun` alone needs this second flag to know
   // the show is actually over. Same shape as live-mode.tsx's `showEnded`.
   const [showEnded, setShowEnded] = useState(false);
+  const showEndedRef = useRef(showEnded);
+  showEndedRef.current = showEnded;
+  /** Flip it on the REF as well as in state — the other half of live-mode.tsx's
+   *  markShowEnded(). endShow() sets it and flushes the snapshot in the SAME tick,
+   *  and the snapshot writer reads the ref; a React state update is still the old
+   *  value by then, so the flush would write ended:false for a show that just
+   *  ended. Every caller goes through here so the two can never disagree. */
+  function markShowEnded(v: boolean) {
+    showEndedRef.current = v;
+    setShowEnded(v);
+  }
   const [now, setNow] = useState(() => Date.now());
   const [editing, setEditing] = useState(false);
   const [adding, setAdding] = useState(false);
@@ -481,7 +492,7 @@ export function MyShow() {
           // blocker (it is gated on `state.begun && !showEnded`) for a show that
           // is over — holding the venue laptop's display awake until รีเซ็ต,
           // navigate-away or quit.
-          if (snap.ended) setShowEnded(true);
+          if (snap.ended) markShowEnded(true);
           toast.message("กู้คืนสถานะโชว์ที่ค้างไว้", {
             description: "เวลาเดินต่อจากเดิม — กดรีเซ็ตถ้าจะเริ่มใหม่",
           });
@@ -492,30 +503,70 @@ export function MyShow() {
     }
   }, [loaded]);
 
+  /**
+   * The single writer for the crash-recovery snapshot — shared by the debounce
+   * below, the flush-on-hide under it, and จบโชว์ itself, so the copies of this
+   * write can never drift apart. Port of live-mode.tsx's writeLiveSnapshot().
+   *
+   * `s` is passed explicitly by a caller that has just COMPUTED the next state:
+   * stateRef is only reassigned on the next render, and a flush inside the same
+   * tick that ends a running show must not write `running: true` back to disk —
+   * the restore's un-end guard would take the show straight back off `ended`.
+   */
+  function writeLiveSnapshot(s: ShowState = stateRef.current) {
+    if (!restoredRef.current) return; // don't write before the restore check ran
+    try {
+      if (s.begun) {
+        localStorage.setItem(
+          LIVE_SNAPSHOT_KEY,
+          // `ended` is not part of ShowState (จบโชว์ is not a state change —
+          // begun stays true), but it HAS to survive a relaunch or the restore
+          // above brings the show back as still-on. Read off the REF, for the
+          // same reason live-mode.tsx reads it off one: endShow() flips it and
+          // flushes here in the same tick, when the state value is still stale.
+          JSON.stringify({ state: s, ended: showEndedRef.current, savedAt: Date.now() })
+        );
+      } else {
+        localStorage.removeItem(LIVE_SNAPSHOT_KEY);
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+  const writeLiveSnapshotRef = useRef(writeLiveSnapshot);
+  writeLiveSnapshotRef.current = writeLiveSnapshot;
+
+  // `showEnded` is a dep because ending an already-paused show changes no
+  // ShowState at all, so without it this effect would never re-run and the
+  // machine would forget the show ended the moment it restarted.
   useEffect(() => {
     if (!restoredRef.current) return;
-    const id = setTimeout(() => {
-      try {
-        if (state.begun) {
-          localStorage.setItem(
-            LIVE_SNAPSHOT_KEY,
-            // `ended` is not part of ShowState (จบโชว์ is not a state change —
-            // begun stays true), but it HAS to survive a relaunch or the restore
-            // above brings the show back as still-on. It is also why `showEnded`
-            // is a dep: ending an already-paused show changes no ShowState at
-            // all, so without it this effect would never re-run and the machine
-            // would forget the show ended the moment it restarted.
-            JSON.stringify({ state, ended: showEnded, savedAt: Date.now() })
-          );
-        } else {
-          localStorage.removeItem(LIVE_SNAPSHOT_KEY);
-        }
-      } catch {
-        /* ignore */
-      }
-    }, 500);
+    const id = setTimeout(() => writeLiveSnapshotRef.current(), 500);
     return () => clearTimeout(id);
   }, [state, showEnded]);
+
+  // The persist above is debounced by half a second, and the operator can outrun
+  // it: จบโชว์ followed straight away by a quit, an app kill or a navigation left
+  // a snapshot on disk still saying ended:false, so the next launch restored
+  // begun:true / showEnded:false and re-armed the power-save blocker for a show
+  // that was over — the exact bug the `ended` field was added to fix. This is the
+  // half live-mode.tsx already had and this port never inherited: pagehide and
+  // visibilitychange are delivered where beforeunload is not (and the exit guard's
+  // beforeunload only sets returnValue anyway), and localStorage.setItem is
+  // synchronous, so flushing on them costs nothing and closes the window.
+  // Registered once — the writer reads the live state off its ref.
+  useEffect(() => {
+    const flush = () => writeLiveSnapshotRef.current();
+    const onVisibility = () => {
+      if (document.visibilityState === "hidden") flush();
+    };
+    window.addEventListener("pagehide", flush);
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      window.removeEventListener("pagehide", flush);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, []);
 
   // wake lock while running (+ re-acquire on tab return) — same as Live Mode
   const wakeLockRef = useRef<WakeLockSentinel | null>(null);
@@ -561,7 +612,7 @@ export function MyShow() {
   // stay off right through it. A guard, deliberately, rather than another branch
   // in each of the four callers that can set running.
   useEffect(() => {
-    if (state.running && showEnded) setShowEnded(false);
+    if (state.running && showEnded) markShowEnded(false);
   }, [state.running, showEnded]);
 
   // Belt-and-braces alongside the wake lock above: navigator.wakeLock is a
@@ -731,7 +782,7 @@ export function MyShow() {
 
   function start() {
     const ts = Date.now();
-    setShowEnded(false);
+    markShowEnded(false);
     setState({
       running: true,
       begun: true,
@@ -931,7 +982,7 @@ export function MyShow() {
     setAudioPlaying(false);
     setAudioCurrent(0);
     setAudioDuration(0);
-    setShowEnded(false); // a reset show is a fresh one — it may be run again
+    markShowEnded(false); // a reset show is a fresh one — it may be run again
     setState({ ...INITIAL, mode: state.mode });
   }
 
@@ -941,16 +992,33 @@ export function MyShow() {
     const rec = { seconds, at: Date.now() };
     setLastRun(rec);
     setSoloLastRun(rec).catch(() => {});
-    setShowEnded(true); // let the display sleep again — the show is over
+    markShowEnded(true); // let the display sleep again — the show is over
+    // ⏹ SILENCE THE MACHINE — running or not. The pause used to live inside the
+    // `s.running` branch below, which is exactly the state จบโชว์ is LEAST often
+    // pressed from: Manual deliberately leaves the previously-committed track
+    // sounding while the next row is cued (goto's manual branch sets running:false
+    // and touches no audio at all). So START → NEXT → จบโชว์ recorded the run,
+    // released the wake lock and let the display sleep while the song played on out
+    // of the PA, with nothing left on screen that would stop it.
+    audioRef.current?.pause();
+    audioRef2.current?.pause();
+    overlapNextIdRef.current = null;
+    overlapTriggeredForRef.current = null;
+    setAudioPlaying(false);
+    let next = s;
     if (s.running) {
       const frozen = s.itemStartedAt
         ? (Date.now() - s.itemStartedAt) / 1000
         : (s.itemElapsedAtPause ?? 0);
-      setState({ ...s, running: false, itemElapsedAtPause: frozen });
-      audioRef.current?.pause();
-      audioRef2.current?.pause();
-      setAudioPlaying(false);
+      next = { ...s, running: false, itemElapsedAtPause: frozen };
+      setState(next);
     }
+    // Flush the snapshot BY HAND, as live-mode.tsx's endShow() does: the effect
+    // above is debounced 500 ms, and quitting / killing / navigating away inside
+    // that window (a power cut too) would leave a snapshot on disk still saying
+    // ended:false — and the next launch would bring a finished show back as a
+    // running one. `next`, not stateRef: the frozen state has not rendered yet.
+    writeLiveSnapshot(next);
     toast.success(`บันทึกเวลาโชว์ล่าสุด ${formatDuration(seconds)} แล้ว`);
   }
 
@@ -1624,7 +1692,13 @@ export function MyShow() {
               </div>
 
               {!state.begun ? (
-                <Button size="xl" className="w-full" onClick={start} disabled={items.length === 0}>
+                <Button
+                  size="xl"
+                  className="w-full"
+                  data-testid="start-show"
+                  onClick={start}
+                  disabled={items.length === 0}
+                >
                   <Play className="h-5 w-5" /> START SHOW
                 </Button>
               ) : (
@@ -1645,6 +1719,7 @@ export function MyShow() {
                   <Button
                     variant="outline"
                     size="icon"
+                    data-testid="prev"
                     className="h-11 w-11 shrink-0"
                     onClick={() => goto(state.currentIndex - 1)}
                     disabled={state.mode === "auto" || state.currentIndex === 0}
@@ -1654,6 +1729,7 @@ export function MyShow() {
                   </Button>
                   <Button
                     size="lg"
+                    data-testid="run-toggle"
                     onClick={toggleShowRun}
                     /* 📏 Same measured budget as Live Mode's: worst-case content is
                        "กำลังรัน" 54px + 28px of dot/icon and gap = 82px, so px-3 + 6.75rem
@@ -1687,6 +1763,7 @@ export function MyShow() {
                   </Button>
                   <Button
                     size="lg"
+                    data-testid="next"
                     className="min-w-[5.75rem] flex-1 justify-center px-3"
                     onClick={() => goto(state.currentIndex + 1)}
                     disabled={state.mode === "auto" || state.currentIndex >= items.length - 1}
@@ -1697,6 +1774,7 @@ export function MyShow() {
                   <Button
                     variant="ghost"
                     size="icon"
+                    data-testid="reset"
                     className="h-11 w-11 shrink-0"
                     onClick={reset}
                     title="รีเซ็ตสถานะโชว์"
@@ -1709,6 +1787,7 @@ export function MyShow() {
                 <Button
                   variant="outline"
                   size="sm"
+                  data-testid="end-show"
                   className="mt-2 w-full"
                   onClick={endShow}
                   title="หยุดนับเวลาสะสม + บันทึกเป็นเวลาโชว์ล่าสุด (ไม่ใช่รีเซ็ต)"

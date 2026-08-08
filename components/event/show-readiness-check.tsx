@@ -49,13 +49,12 @@ const LOW_BATTERY = 0.3; // 30%
 //  • A DEFAULT PARAMETER re-runs on every render. `localOnly = []` handed refresh
 //    a new array every render → a new refresh identity every render → the mount
 //    effect's [refresh] dep re-fired every render → refresh() resolved and setR'd
-//    a fresh object → render. Unbounded. Measured with a counter: 219 full
-//    readiness passes in 300ms with the prop omitted versus exactly 1 with a
-//    stable array passed, React logging "Maximum update depth exceeded", each
-//    pass reopening IndexedDB and cursor-walking the event's audio cache — on the
-//    card an operator stares at immediately before cutting the wifi. It was
-//    latent only because the one caller (desktop/src/pages/live.tsx) happens to
-//    pass the prop; correctness must not depend on an OPTIONAL prop being passed.
+//    a fresh object → render. Unbounded, with React logging "Maximum update depth
+//    exceeded", each pass reopening IndexedDB and cursor-walking the event's audio
+//    cache — on the card an operator stares at immediately before cutting the
+//    wifi. It was latent only because the one caller (desktop/src/pages/live.tsx)
+//    happens to pass the prop; correctness must not depend on an OPTIONAL prop
+//    being passed.
 //  • An INLINE LITERAL from a parent that re-renders costs the same, once per
 //    parent render, forever — the hazard a future caller walks into.
 //
@@ -63,19 +62,28 @@ const LOW_BATTERY = 0.3; // 30%
 // whenever the content has not changed. Every dep list downstream then keys on a
 // value that moves only when the answer could.
 //
-// ⚠️ TWO GUARDS, DELIBERATELY, and neither is decoration. The frozen constant
-// below keeps the omitted-prop case from ever allocating; useStableByContent
-// keeps every other case honest. Either one alone stops today's loop, which is
-// exactly why they are easy to "simplify" one at a time — and the moment one
-// goes, the other is the only thing between this card and 219 readiness passes.
-// `localOnly = []` in the parameter list is not a tidier spelling of the
-// constant: it is the original bug, because a default expression is re-evaluated
-// on EVERY render.
+// ⚠️ THE TWO GUARDS ARE NOT EQUALS — do not read them as symmetric, because the
+// suite does not. Measured on the "must settle, not spin" block:
 //
-// The regression test can only pin the OUTCOME (it counts passes; nothing in the
-// DOM shows the difference between settling and spinning), so it will not fail
-// for removing one guard while the other still holds. Read this comment as the
-// reason, and run the "must settle, not spin" block before touching either.
+//   useStableByContent removed, frozen default kept  → 1 test RED (11 passes)
+//   frozen default removed (`= []`), stabiliser kept → ALL 8 GREEN
+//   both removed                                     → 3 RED (22, 22, 11 passes)
+//
+// So useStableByContent is the LOAD-BEARING guard: it subsumes the frozen default
+// completely, because a fresh `[]` per render still hashes to the same signature
+// and gets the held array back. NO_LOCAL_ONLY is the BELT — it stops the omitted-
+// prop case from allocating at all, and it keeps the source honest about the
+// original bug. A "simplifier" who deletes useStableByContent and sees 7/8 green
+// has been told; one who deletes the constant and sees 8/8 green has not, which is
+// why test/web/show-readiness-frozen-default.test.ts pins the constant STRUCTURALLY
+// instead of leaving that claim to this comment. `localOnly = []` in the parameter
+// list is not a tidier spelling of the constant: it is the original bug verbatim,
+// because a default expression is re-evaluated on EVERY render — today only the
+// stabiliser stands behind it.
+//
+// (An older note here cited "219 readiness passes in 300ms". That came from a
+// wall-clock probe that is NOT in the suite; the numbers above are what the
+// shipped, microtask-driven test actually counts. Quote those.)
 const NO_LOCAL_ONLY: readonly LocalOnlyCandidate[] = Object.freeze([]);
 // Field and record separators, so a title containing a comma cannot forge a
 // different set of rows into the same signature.
@@ -153,7 +161,8 @@ export function ShowReadinessCheck({
   targets: targetsProp,
   // NOT `= []`. See NO_LOCAL_ONLY above: a default parameter is re-evaluated on
   // every render, and this one used to put the whole card into an unbounded
-  // render/refresh loop the moment a caller left the prop off.
+  // render/refresh loop the moment a caller left the prop off. useStableByContent
+  // now catches that case too — this constant is the belt, not the brace.
   localOnly: localOnlyProp = NO_LOCAL_ONLY,
   setlist: setlistProp,
 }: {

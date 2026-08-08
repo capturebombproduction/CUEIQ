@@ -12,6 +12,7 @@ import type {
   Tenant,
 } from "@/lib/types";
 import { makePerms, type GroupRoleRow, type Perms } from "@/lib/permissions";
+import { assertReadsSucceeded } from "@/lib/read-guard";
 
 export interface Workspace {
   user: { id: string; email: string | null; name: string | null } | null;
@@ -29,6 +30,44 @@ export interface Workspace {
  * Wrapped in React.cache so the (app) layout AND the page can both call it within
  * one request and it only runs once (dedupes the getUser + workspace queries per
  * navigation — request-scoped, NOT cross-request, so no staleness).
+ *
+ * A FAILED READ IS NOT A PERMISSION ANSWER (round 12).
+ *
+ * lib/read-guard.ts was wired into four server pages so that a failed read stops
+ * becoming a confident wrong number. This function runs FIRST on all four of them
+ * — the (app) layout awaits it before anything renders — and it used to discard
+ * `.error` on all four of ITS OWN reads. So "every read on this page is honest"
+ * was false at the top of every page that claimed it, and these four failures are
+ * SHARPER than the counts that were fixed, because they come out as a permission
+ * answer rather than as a number. A wrong count at least looks like data the user
+ * can question; "บัญชียังไม่ได้รับสิทธิ์เข้าวง" looks like a settled fact about
+ * their account, and there is nothing on screen to retry.
+ *
+ * So: all four reads are FATAL, each for the reason written at its guard below,
+ * and none of them changes what an EMPTY-but-successful read does. Two notes on
+ * that verdict, because "throw on everything" is the lazy version of it:
+ *
+ *  • It is what the desktop mirror already decided. desktop/src/data/workspace.ts
+ *    folds tenants, groups AND group_roles into one `blipped` flag, refuses to
+ *    believe the half-empty result and refuses to cache it. It can then fall back
+ *    to the last good workspace; a SERVER render has no such fallback, so the web's
+ *    only way to say "do not believe this" is to throw. Same invariant, and the
+ *    same asymmetry lib/read-guard.ts already documents.
+ *  • WHERE the throw lands is not the (app) card, and pretending otherwise would
+ *    send the next reader to the wrong file. Next's error.tsx does not catch a
+ *    throw from the layout in its own segment, and the (app) layout is the first
+ *    caller (React.cache memoises the rejection, so the page inherits it), so this
+ *    surfaces in app/global-error.tsx — a Thai retryable card with ลองใหม่ /
+ *    โหลดหน้าใหม่, but no digest. assertReadsSucceeded logs the real cause under
+ *    "[CueIQ] getWorkspace read failed", which is what to grep in the Vercel log.
+ *
+ * NOT covered here, deliberately: `supabase.auth.getUser()` below still discards
+ * its error. For the two ordinary causes — no cookie, and a refresh token the
+ * server rejects — `user: null` → redirect("/login") is the RIGHT answer, and
+ * turning those into an error card would strand a user whose only way out is to
+ * sign in again. A transport failure on that call therefore still reads as
+ * "signed out". Fixing that needs auth-error classification, which is machinery,
+ * not a guard; it is a known gap, not an oversight.
  */
 export const getWorkspace = cache(async (): Promise<Workspace> => {
   const supabase = await createClient();
@@ -58,7 +97,7 @@ export const getWorkspace = cache(async (): Promise<Workspace> => {
   // anything), and each Supabase round trip from the serverless region is worth
   // real milliseconds — the group_roles read used to sit behind the membership
   // read for no reason but the order it was written in.
-  const [{ data: memberRow }, { data: groupRoleRows }] = await Promise.all([
+  const [memberRead, groupRoleRead] = await Promise.all([
     supabase
       .from("tenant_members")
       .select("tenant_id, role")
@@ -69,7 +108,32 @@ export const getWorkspace = cache(async (): Promise<Workspace> => {
     supabase.from("group_roles").select("group_id, role").eq("user_id", user.id),
   ]);
 
+  // READ 1 — tenant_members. FATAL: this row IS the answer to "who is this user in
+  // the label", so a failure means we cannot answer it at all. Discarded, its
+  // `.error` became `membership: null`, and `membership: null` means exactly one
+  // thing to every caller: this account belongs to no band. /overview and
+  // /dashboard render <JoinDemo/> ("บัญชียังไม่ได้รับสิทธิ์เข้าวง"), and BOTH
+  // /events/[id]/run-order routes silently redirect("/dashboard") — the route about
+  // nineteen phones open within seconds of each other when staff press เริ่ม. One
+  // statement timeout at a festival and a real label member is told, with no error
+  // and nothing to retry, that they are not a member.
+  assertReadsSucceeded("getWorkspace", { "สังกัดของผู้ใช้": memberRead });
+
+  const memberRow = memberRead.data;
+
   if (!memberRow) {
+    // EMPTY BUT SUCCESSFUL — unchanged, and it must stay that way. maybeSingle()
+    // reports "no such row" as `{ data: null, error: null }`, so past the guard
+    // above this really is a brand-new account with no membership, and the join
+    // screen is the correct page for it.
+    //
+    // group_roles is deliberately NOT judged on this path — the one degrade in this
+    // function, and it is a degrade only in the sense that we decline to fail over a
+    // read whose answer we are about to throw away: with no tenant membership the
+    // return below is `groupRoles: []` + `makePerms(null)` no matter what that read
+    // said, and no permission anywhere is derived from it. Judging it would turn a
+    // first-login hiccup into an error card on the one screen whose whole job is to
+    // say "ask an admin to add you".
     return {
       user: base,
       membership: null,
@@ -80,9 +144,23 @@ export const getWorkspace = cache(async (): Promise<Workspace> => {
     };
   }
 
+  // READ 2 — group_roles. FATAL from here on, because from here on the answer is
+  // USED, and an empty one is the sharpest of the four: canViewGroup() falls back to
+  // it for every band-tier user, so a timeout locks an Ar out of their own band's
+  // show, empties /overview through viewableGroups(), sends a band member who is not
+  // label-wide out of /overview entirely (canViewOverview → groupRoles.length), and
+  // removes the "New Event" button (canCreateAnyEvent → groupRoles.some(…)).
+  //
+  // No role-shaped exception, though the temptation is obvious: isLabelWideUser()
+  // short-circuits canViewGroup, so an admin looks unaffected. They are not —
+  // canCreateAnyEvent() and editableGroups() read group_roles for a ceo too, and the
+  // branch would have to be evaluated after the fact anyway, since both reads go out
+  // in parallel before the role is known. One rule for everyone.
+  assertReadsSucceeded("getWorkspace", { "บทบาทในวง": groupRoleRead });
+
   const role = memberRow.role as Role;
 
-  const [{ data: tenant }, { data: groups }] = await Promise.all([
+  const [tenantRead, groupsRead] = await Promise.all([
     supabase
       .from("tenants")
       .select("*")
@@ -95,7 +173,40 @@ export const getWorkspace = cache(async (): Promise<Workspace> => {
       .order("created_at", { ascending: true }),
   ]);
 
-  const groupRoles = (groupRoleRows ?? []) as GroupRoleRow[];
+  // READ 3 — tenants. FATAL: four callers gate on `!ws.tenant` in the same breath as
+  // `!ws.membership` (`if (!ws.membership || !ws.tenant)`), so a null tenant IS the
+  // "not in a band" answer, with the same JoinDemo and the same silent
+  // redirect("/dashboard") as read 1 — reached this time through a row we know
+  // exists, because the membership we just read points at it.
+  //
+  // READ 4 — groups. FATAL too, and this is the one worth arguing. An errored list
+  // becomes `[]`, i.e. "this label has no bands" — and it does not stop there,
+  // because `[]` is then fed BACK IN as a query filter: /dashboard and /overview
+  // both scope their events read with `.in("group_id", viewableGroupIds)`, so an
+  // empty groups list makes the event read return zero rows while SUCCEEDING, and
+  // each page's own assertReadsSucceeded then confirms that everything read fine. A
+  // band is shown an empty day by a board that has just verified its own honesty.
+  // Nothing downstream can catch that, because there is nothing wrong downstream.
+  //
+  // The counter-argument, stated so it is not rediscovered: `groups` is the only
+  // unbounded read of the four (a whole-tenant list, so the likeliest to time out)
+  // and the live show-caller never touches it, so failing it takes down a page for
+  // data it does not use. That loses to the paragraph above. There is no third
+  // option available from in here: the only "degrade" this function could return is
+  // `groups: []`, which is not less information, it is wrong information — and being
+  // down is recoverable in one tap while being wrong is not.
+  assertReadsSucceeded("getWorkspace", {
+    "ข้อมูลค่าย": tenantRead,
+    "รายชื่อวง": groupsRead,
+  });
+
+  // Past the guards, an empty answer is a real one and keeps its old meaning: a
+  // tenants row that is genuinely absent (deleted, or hidden by RLS) still yields
+  // `tenant: null` → the join screen, and a label with no bands yet still yields
+  // `groups: []` → "ยังไม่มีวง". Only `.error` decides, exactly as in read-guard.
+  const tenant = tenantRead.data;
+  const groups = groupsRead.data;
+  const groupRoles = (groupRoleRead.data ?? []) as GroupRoleRow[];
 
   return {
     user: base,

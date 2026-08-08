@@ -265,24 +265,28 @@ function rowButton(title: string): HTMLElement {
 }
 const rowFor = (title: string) => rowButton(title).parentElement as HTMLElement;
 
-const startButton = () => screen.getByRole("button", { name: /START SHOW/ });
+/* The transport controls carry only Thai labels (รันโชว์ · จบโชว์) or none at all
+ * (the icon-only back/reset), so they used to be reached by POSITION: btns[0..3]
+ * of NEXT's parent, and "the last button in the controls card" for จบโชว์. That
+ * made the selector a hostage of the layout — appending any control after จบโชว์
+ * (a ส่งออกเวลา button, a second row of the output picker) silently handed the
+ * two ended-persistence tests a DIFFERENT button, and they would have failed as
+ * "lastRunWrites is empty", which reads like the persistence fix broke rather
+ * than the selector. These names are live-mode.tsx's, spelled identically, so
+ * the two ports of the same transport stay readable side by side. */
+const startButton = () => screen.getByTestId("start-show");
 
-/** The transport row, positionally — its run/reset buttons carry only Thai
- *  labels, but their POSITION around NEXT is the layout the row is built on. */
 function transport() {
-  const next = screen.getByRole("button", { name: /NEXT/ });
-  const btns = within(next.parentElement as HTMLElement).getAllByRole("button");
-  return { back: btns[0], run: btns[1], next: btns[2], reset: btns[3] };
+  return {
+    back: screen.getByTestId("prev"),
+    run: screen.getByTestId("run-toggle"),
+    next: screen.getByTestId("next"),
+    reset: screen.getByTestId("reset"),
+  };
 }
 
-function controlsCard() {
-  return screen.getByRole("button", { name: "Manual" }).closest(".rounded-xl") as HTMLElement;
-}
-/** จบโชว์ · บันทึกเวลาสะสม — the last button in the controls card once begun. */
-function endShowButton() {
-  const btns = within(controlsCard()).getAllByRole("button");
-  return btns[btns.length - 1];
-}
+/** จบโชว์ · บันทึกเวลาสะสม — only rendered once the show has begun. */
+const endShowButton = () => screen.getByTestId("end-show");
 
 function nativeBridge() {
   const bridge = {
@@ -381,6 +385,29 @@ describe("Quick Show — the running order and the clock", () => {
     expect(within(lastRunPanel).getByText("1:30")).toBeInTheDocument();
     expect(media.callsFor(primary).filter((c) => c.type === "pause").length).toBeGreaterThan(0);
   });
+
+  it("จบโชว์ stops the sound even between Manual cues", async () => {
+    // The pause used to sit inside endShow's `if (state.running)` branch, and
+    // Manual deliberately leaves the previous track sounding while the next row is
+    // cued (goto's manual branch sets running:false and touches no audio). So the
+    // sequence every Manual show actually ends with — START → NEXT → จบโชว์ —
+    // saved the run and let the display sleep while the song played on.
+    await boot(threeUp());
+    const primary = media.first() as HTMLMediaElement;
+
+    await click(startButton());
+    expect(media.state(primary).paused).toBe(false);
+
+    await click(transport().next); // cue row 2; Opening keeps sounding, by design
+    expect(positionLabel()).toBe("2 / 3");
+    expect(media.state(primary).paused).toBe(false);
+
+    await click(endShowButton());
+
+    // both elements: a เล่นสวน pre-roll must not outlive the show either
+    expect(media.state(primary).paused).toBe(true);
+    expect(media.state(media.second() as HTMLMediaElement).paused).toBe(true);
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -414,7 +441,7 @@ describe("Quick Show — restore after a relaunch", () => {
 
     // The show really did come back — otherwise the assertion below would pass
     // for the wrong reason (nothing restored at all).
-    expect(screen.queryByRole("button", { name: /START SHOW/ })).not.toBeInTheDocument();
+    expect(screen.queryByTestId("start-show")).not.toBeInTheDocument();
     expect(native.setShowRunning.mock.calls.map((c) => c[0])).not.toContain(true);
     expect(native.setShowRunning).toHaveBeenLastCalledWith(false);
   });
@@ -440,6 +467,54 @@ describe("Quick Show — restore after a relaunch", () => {
     expect(native.setShowRunning).toHaveBeenLastCalledWith(true);
     const snap = JSON.parse(window.localStorage.getItem(SNAPSHOT_KEY) as string);
     expect(snap.ended).toBe(false);
+  });
+
+  it("the snapshot says ended BEFORE the debounce fires — a quit cannot lose it", async () => {
+    // The only writer of cueiq:solo:live is a 500 ms debounce whose cleanup
+    // clearTimeout()s on unmount, and the exit guard's beforeunload only sets
+    // returnValue. So จบโชว์ followed inside that window by a quit, an app kill, a
+    // navigation (or a power cut) left ended:false on disk, and the next launch
+    // brought a finished show back as a running one with the display blocker
+    // re-armed — the exact bug the `ended` field exists to prevent. live-mode.tsx
+    // flushes by hand in endShow(); this port never inherited that.
+    const native = nativeBridge();
+    const view = await boot(threeUp());
+
+    await click(startButton());
+    await tick(30_000);
+    await click(endShowButton());
+    // deliberately NO tick(600) — this is the window the debounce leaves open
+    await act(async () => {
+      view.unmount();
+    });
+
+    const snap = JSON.parse(window.localStorage.getItem(SNAPSHOT_KEY) as string);
+    expect(snap.state.begun).toBe(true);
+    expect(snap.state.running).toBe(false); // frozen, not the pre-จบโชว์ state
+    expect(snap.ended).toBe(true);
+
+    // …and the relaunch really does come back as a show that is over
+    native.setShowRunning.mockClear();
+    await boot(threeUp());
+    expect(native.setShowRunning.mock.calls.map((c) => c[0])).not.toContain(true);
+  });
+
+  it("pagehide flushes a pending snapshot, so a cue is never one behind", async () => {
+    // The other half of the ported flush: localStorage.setItem is synchronous and
+    // pagehide is delivered where beforeunload is not, so a quit half a second
+    // after a cue must not come back on the previous row.
+    await boot(threeUp());
+
+    await click(startButton());
+    await tick(600); // the START snapshot lands
+    await click(transport().next); // …and the write for THIS cue is still pending
+
+    await act(async () => {
+      window.dispatchEvent(new Event("pagehide"));
+    });
+
+    const snap = JSON.parse(window.localStorage.getItem(SNAPSHOT_KEY) as string);
+    expect(snap.state.currentIndex).toBe(1);
   });
 
   it("a show still in progress DOES re-arm the blocker on relaunch", async () => {

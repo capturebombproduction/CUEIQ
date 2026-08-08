@@ -55,11 +55,14 @@ import { vi, onTestFinished, type Mock } from "vitest";
 // Results and scripts
 // ─────────────────────────────────────────────────────────────────────────────
 
+/** `details` and `hint` are nullable because that is what PostgREST actually puts
+ *  on the wire — `hint` is `null` on a PGRST116, not the empty string the
+ *  PostgrestError class declares. */
 export interface PostgrestErrorLike {
   message: string;
   code?: string;
-  details?: string;
-  hint?: string;
+  details?: string | null;
+  hint?: string | null;
 }
 
 /** The shape every awaited postgrest chain resolves to. `status` is on it because
@@ -97,13 +100,26 @@ export function ok<T = any>(data: T, extra: ScriptResult = {}): ScriptResult {
 }
 
 /** A real server rejection: the request arrived and was refused. Default 400 —
- *  the app must NOT queue these for replay. */
+ *  the app must NOT queue these for replay.
+ *
+ *  Pass an OBJECT when the branch under test keys on `error.code` rather than on
+ *  the prose, which several do: 23505 (unique violation) in schedule-editor.tsx,
+ *  photo-time-cell.tsx, practice-player.tsx and mgmt-outbox.ts' isUniqueViolation;
+ *  42501 (RLS refusal) in lib/practice-journal-gate.ts' isRlsRefusal. A bare
+ *  `fail("duplicate key value…")` carries NO code, so those branches are reached
+ *  only by the prose fallback — a test author who meant to exercise the code path
+ *  would silently exercise the other one and still pass. */
 export function fail(
-  message: string,
+  error: string | PostgrestErrorLike,
   status = 400,
   extra: ScriptResult = {}
 ): ScriptResult {
-  return { data: null, error: { message }, status, ...extra };
+  return {
+    data: null,
+    error: typeof error === "string" ? { message: error } : { ...error },
+    status,
+    ...extra,
+  };
 }
 
 /** No response at all — the venue-wifi case. status 0 is what makes the app's
@@ -212,7 +228,8 @@ export interface QueryBuilderFake extends PromiseLike<QueryResult> {
   returns<T>(): QueryBuilderFake;
   overrideTypes<T>(): QueryBuilderFake;
 
-  /** Reduces an array result to its first row (null when empty), like postgrest. */
+  /** Like postgrest: 0 rows is `data: null`, 1 row is the row, and >1 rows is a
+   *  PGRST116 error — .maybeSingle() forgives the empty case, not the plural one. */
   maybeSingle(): QueryBuilderFake;
   /** Like postgrest: 0 or >1 rows becomes a PGRST116 error, not a row. */
   single(): QueryBuilderFake;
@@ -289,25 +306,35 @@ function normalize(part: ScriptResult, call: RecordedCall): QueryResult {
   let count: number | null =
     part.count ?? (call.countRequested && Array.isArray(data) ? data.length : null);
 
-  if (!error && call.terminal) {
-    if (Array.isArray(data)) {
-      if (call.terminal === "maybeSingle") {
-        data = data.length ? data[0] : null;
-      } else if (data.length === 1) {
-        data = data[0];
-      } else {
-        // postgrest's own answer for .single() with 0 or >1 rows.
-        return {
-          data: null,
-          error: {
-            message: "JSON object requested, multiple (or no) rows returned",
-            code: "PGRST116",
-          },
-          status: part.status ?? 406,
-          statusText: part.statusText ?? "Not Acceptable",
-          count,
-        };
-      }
+  if (!error && call.terminal && Array.isArray(data)) {
+    if (data.length === 1) {
+      data = data[0];
+    } else if (data.length === 0 && call.terminal === "maybeSingle") {
+      data = null;
+    } else {
+      // PGRST116 for BOTH terminals. The only thing .maybeSingle() forgives is
+      // the empty case: postgrest-js checks `isMaybeSingle && data.length > 1`
+      // client-side and rewrites the 200 into a 406, and PostgREST itself answers
+      // 406 for .single() with 0 or >1 rows. Two rows is never a row.
+      //
+      // The status is FORCED, not taken from the script: postgrest-js overwrites
+      // it after an ok() response too, so a script saying `ok([a, b])` must not be
+      // able to produce a 200 carrying an error.
+      return {
+        data: null,
+        error: {
+          code: "PGRST116",
+          message: "JSON object requested, multiple (or no) rows returned",
+          details:
+            call.terminal === "maybeSingle"
+              ? `Results contain ${data.length} rows, application/vnd.pgrst.object+json requires 1 row`
+              : `The result contains ${data.length} rows`,
+          hint: null,
+        },
+        status: 406,
+        statusText: "Not Acceptable",
+        count: null,
+      };
     }
   }
   // head:true asks for the count only — postgrest sends no body.
@@ -551,7 +578,8 @@ export function makeQueryFake(script: QueryScript = {}): QueryFake {
 export type ChannelStatus = "SUBSCRIBED" | "CHANNEL_ERROR" | "TIMED_OUT" | "CLOSED";
 
 export interface RegisteredHandler {
-  /** "broadcast" | "presence" | "postgres_changes" | "system" */
+  /** "broadcast" | "presence" | "postgres_changes" | "system", lower-cased the
+   *  way RealtimeChannel._on stores it. */
   type: string;
   /** the 2nd argument when it is a filter, e.g. { event: "state" } */
   filter: Record<string, unknown> | null;
@@ -591,9 +619,12 @@ export interface ChannelFake {
   readonly removed: boolean;
 
   /** Deliver a broadcast to the handlers registered for `event`, in the shape
-   *  supabase delivers it: { type: "broadcast", event, payload }. Returns how
-   *  many handlers ran — 0 means the component never registered, which is the
-   *  failure a handoff test is actually looking for. */
+   *  supabase delivers it: { type: "broadcast", event, payload }. Matching follows
+   *  RealtimeChannel exactly — `{ event: "*" }` gets everything, a handler with NO
+   *  filter gets nothing, and the names are compared case-insensitively. Returns
+   *  how many handlers ran — 0 means the component never registered (or registered
+   *  without an { event } filter, which is the same thing at the venue), and that
+   *  is the failure a handoff test is actually looking for. */
   emit(event: string, payload?: any): number;
   /** The general form, for a non-broadcast `.on(type, …)`. */
   emitRaw(type: string, arg: any, match?: (filter: Record<string, unknown> | null) => boolean): number;
@@ -645,7 +676,9 @@ export function makeChannelFake(
     on: vi.fn((type: string, a?: any, b?: any) => {
       const hasFilter = typeof a !== "function";
       handlers.push({
-        type,
+        // RealtimeChannel._on stores `type.toLocaleLowerCase()` and dispatches on
+        // the lowered form, so .on("BROADCAST", …) is a broadcast binding.
+        type: type.toLowerCase(),
         filter: hasFilter ? ((a ?? null) as Record<string, unknown> | null) : null,
         handler: (hasFilter ? b : a) as (payload: any) => void,
       });
@@ -672,22 +705,39 @@ export function makeChannelFake(
     presenceState: vi.fn(() => ({}) as Record<string, unknown[]>),
 
     emit(event: string, payload?: any) {
-      return ch.emitRaw(
-        "broadcast",
-        { type: "broadcast", event, payload },
-        (filter) => !filter?.event || filter.event === event
-      );
+      // realtime-js RealtimeChannel._updateFilterMessage, the broadcast branch:
+      //
+      //   const bindEvent = bind?.filter?.event?.toLocaleLowerCase()
+      //   return bindEvent === '*' || bindEvent === payload?.event?.toLocaleLowerCase()
+      //
+      // Three consequences a fake is easy to get backwards, and all three matter
+      // because getting them wrong here makes a HANDOFF test pass on a wiring the
+      // venue would never deliver:
+      //   • no filter at all → bindEvent is undefined → matches NOTHING. A
+      //     `.on("broadcast", handler)` with no { event } is dead in production.
+      //   • { event: "*" } → matches EVERYTHING.
+      //   • the comparison is case-insensitive on both sides.
+      // (Real code uses toLocaleLowerCase; toLowerCase is used here so the match
+      // cannot depend on the CI box's locale. They differ only for casing rules
+      // no event name in this repo uses.)
+      const wanted = event?.toLowerCase();
+      return ch.emitRaw("broadcast", { type: "broadcast", event, payload }, (filter) => {
+        const bound =
+          typeof filter?.event === "string" ? filter.event.toLowerCase() : undefined;
+        return bound === "*" || bound === wanted;
+      });
     },
     emitRaw(
       type: string,
       arg: any,
       match?: (filter: Record<string, unknown> | null) => boolean
     ) {
+      const wantedType = type.toLowerCase();
       let ran = 0;
       // Copy first: a handler that registers another handler (or tears the
       // channel down) must not mutate the list we are walking.
       for (const h of [...handlers]) {
-        if (h.type !== type) continue;
+        if (h.type !== wantedType) continue;
         if (match && !match(h.filter)) continue;
         h.handler(arg);
         ran++;

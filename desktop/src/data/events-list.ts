@@ -32,9 +32,37 @@ export type EventWithGroup = EventRow & {
  *  through to the cache, which is what the ลองใหม่ button then retries from. */
 export const EVENTS_LIST_TIMEOUT_MS = 8000;
 
+/** How long the "was that empty answer really empty?" session probe may wait.
+ *
+ *  Much shorter than the read budget above, because timeouts STACK and this one is
+ *  the cheapest place to stop paying. Reaching the dashboard on a black-holed
+ *  network already costs ~/data/workspace.ts's 5s + 8s + 8s and then this module's
+ *  8s; a full 8s again for a session probe took the wait past half a minute, and an
+ *  operator at load-in force-quits long before that — never reaching the cached list
+ *  that was sitting on disk the whole time.
+ *
+ *  It is also the safest one to shorten. The probe is SECONDARY: it only runs after
+ *  the list read has already answered, and getSession() is a storage read plus, at
+ *  worst, one refresh POST — 2s is generous when anything is working at all. Its
+ *  expiry costs nothing either, because a timeout takes the same "keep the cached
+ *  list" branch a slow answer would have produced; the only thing given up is
+ *  write-through of an EMPTY list, which is by definition the case with nothing to
+ *  lose. Worst case to the dashboard is now 5 + 8 + 8 + 8 + 2 = 31s, and every one
+ *  of those stages resolves to cached data rather than to a blank screen.
+ *
+ *  That 31s is not a comment that can drift: it is summed from the live constants and
+ *  held under a ceiling by data/timeout-budgets.test.ts, which is also where the case
+ *  for raising ANY of these numbers has to be made. The timeout tests elsewhere in
+ *  this directory pin the mechanism only — they advance the constants themselves, so
+ *  they stay green at any value. */
+export const EVENTS_LIST_SESSION_TIMEOUT_MS = 2000;
+
 /** Resolves to `null` if `p` has not settled within `ms`. The in-flight request is
- *  deliberately NOT cancelled — a late answer can still warm the cache for the next
- *  screen; we simply stop waiting on it. (Mirrors ~/data/workspace.ts.) */
+ *  not cancelled, it is ABANDONED: the timer is cleared on both outcomes, nothing
+ *  subscribes to `p` after the race settles so a late value is discarded (it does
+ *  NOT warm any cache — no path here writes one), and a late rejection is still
+ *  observed by the race, so it cannot go unhandled. (Mirrors ~/data/workspace.ts,
+ *  which owns the canonical comment; kept local because that copy is not exported.) */
 function withTimeout<T>(p: PromiseLike<T>, ms: number): Promise<T | null> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   return Promise.race<T | null>([
@@ -121,8 +149,13 @@ export async function loadEventsList(
   // the same dead network, so an empty answer arriving just before the wifi went
   // black-holed would otherwise park the dashboard here instead of one await up.
   // A timeout is "we could not prove the request carried our token", which is
-  // exactly the case this guard already treats as too dangerous to cache.
-  if (events.length === 0 && (await withTimeout(hasLiveSession(), EVENTS_LIST_TIMEOUT_MS)) !== true) {
+  // exactly the case this guard already treats as too dangerous to cache. On its
+  // own short budget — see EVENTS_LIST_SESSION_TIMEOUT_MS for why this probe must
+  // not draw a fresh full read budget on a network that is already limping.
+  if (
+    events.length === 0 &&
+    (await withTimeout(hasLiveSession(), EVENTS_LIST_SESSION_TIMEOUT_MS)) !== true
+  ) {
     return withPendingOverlay(readCache<EventWithGroup[]>(cacheKey) ?? []);
   }
   writeCache(cacheKey, events);

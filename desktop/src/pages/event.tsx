@@ -6,7 +6,7 @@
 // actually goes to the venue, which is exactly where the run sheet is needed.
 import { useEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { ArrowLeft, CalendarDays, MapPin, Music2, Pencil, AlarmClock, AlertTriangle } from "lucide-react";
+import { ArrowLeft, CalendarDays, MapPin, Music2, Pencil, Play, AlarmClock, AlertTriangle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { StatusBadge } from "@/components/status-badge";
 import { EventWorkspace } from "@/components/event/event-workspace";
@@ -20,7 +20,7 @@ import { eventCompleteness } from "@/lib/completeness";
 import { EVENT_TYPES, type EventType, type GroupStatus } from "@/lib/types";
 import { shortClock, deadlineInfo } from "@/lib/time";
 import { cn } from "@/lib/utils";
-import { loadEventBundle, type EventBundle } from "~/data/event-bundle";
+import { loadEventBundle, loadEventBundleStatus, type EventBundle } from "~/data/event-bundle";
 import { isOffline, readCache, writeCache } from "~/data/cache";
 import { hasLiveSession } from "@/lib/auth-session";
 import { onRouterRefresh } from "~/shims/next-navigation";
@@ -40,26 +40,84 @@ function formatDate(date: string | null): string {
   return d.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
 }
 
+/** Shown when the load came back with NOTHING because the server could not be
+ *  reached — as opposed to because the show is gone or is not this account's.
+ *
+ *  Those two used to render the same dead end, so an Ar opening a show at load-in
+ *  on a congested venue hotspot was told the show did not exist, with one button
+ *  back to a dashboard that would tell them the same thing. Same shape as
+ *  ~/components/shell.tsx's ShellFallback and App.tsx's BootScreen, deliberately:
+ *  say plainly that this is the network, offer ลองใหม่, and keep Quick Show one
+ *  click away — when the wifi is the problem, running the show from this machine's
+ *  own files is the operator's real next move. */
+function EventUnreachable({ onRetry }: { onRetry: () => void }) {
+  return (
+    <div className="mx-auto w-full max-w-sm space-y-6 py-16">
+      <div className="space-y-1 text-center">
+        <p className="text-muted-foreground">โหลดข้อมูลงานไม่สำเร็จ — อาจออฟไลน์อยู่หรือเน็ตมีปัญหา</p>
+        {/* Same instruction the dashboard's readiness badge gives, word for word —
+            see components/event/events-list.tsx. */}
+        <p className="text-xs text-muted-foreground">
+          เครื่องนี้ยังไม่ได้เก็บข้อมูลงานนี้ไว้ — กด ‘เตรียมทุกงานที่จะถึง’ ที่หน้างานทั้งหมด หรือเปิดงานนี้ตอนออนไลน์ 1 ครั้ง
+        </p>
+      </div>
+      <div className="flex flex-wrap items-center justify-center gap-2">
+        <Button variant="outline" size="sm" onClick={onRetry}>
+          ลองใหม่
+        </Button>
+        <Button asChild variant="ghost" size="sm">
+          <Link to="/dashboard">
+            <ArrowLeft className="h-4 w-4" /> กลับไปหน้างานทั้งหมด
+          </Link>
+        </Button>
+      </div>
+      {/* Same Quick Show entry as the boot + shell fallbacks (see ~/pages/Login). */}
+      <Link
+        to="/my-show"
+        className="group flex items-center gap-3 rounded-xl border-2 border-primary/40 bg-primary/5 px-4 py-3 shadow-sm transition-colors hover:border-primary/70 hover:bg-primary/10"
+      >
+        <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-primary/15 text-primary transition-colors group-hover:bg-primary/25">
+          <Play className="h-5 w-5" />
+        </span>
+        <span className="min-w-0">
+          <span className="block text-sm font-bold text-primary">Quick Show</span>
+          <span className="block text-xs text-muted-foreground">
+            โหมดโชว์เดี่ยว — เปิดเพลง+จับเวลาจากเครื่องนี้ ไม่ต้องเข้าสู่ระบบ
+          </span>
+        </span>
+      </Link>
+    </div>
+  );
+}
+
 export function EventPage() {
   const { id } = useParams<{ id: string }>();
   const { ws } = useWorkspace();
-  const [state, setState] = useState<{ loading: boolean; bundle: EventBundle | null }>({
-    loading: true,
-    bundle: null,
-  });
+  const [state, setState] = useState<{
+    loading: boolean;
+    bundle: EventBundle | null;
+    /** The load never got a trustworthy answer — see EventBundleLoad.unreachable.
+     *  Only consulted when `bundle` is null; a cached bundle renders either way. */
+    unreachable: boolean;
+  }>({ loading: true, bundle: null, unreachable: false });
   const [runSeq, setRunSeq] = useState<RunSeqLive[]>([]);
+  /** Bumped by the ลองใหม่ button to re-run the load below. */
+  const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
     if (!id) return;
     let alive = true;
-    setState({ loading: true, bundle: null });
-    loadEventBundle(id)
-      .then((bundle) => alive && setState({ loading: false, bundle }))
-      .catch(() => alive && setState({ loading: false, bundle: null }));
+    setState({ loading: true, bundle: null, unreachable: false });
+    loadEventBundleStatus(id)
+      .then(
+        ({ bundle, unreachable }) =>
+          alive && setState({ loading: false, bundle, unreachable })
+      )
+      .catch(() => alive && setState({ loading: false, bundle: null, unreachable: true }));
     return () => {
       alive = false;
     };
-  }, [id]);
+  }, [id, attempt]);
 
   // router.refresh() from the reused components (the auto draft↔pending write,
   // and switching to the Summary tab) has to re-read the bundle here — there is
@@ -83,7 +141,7 @@ export function EventPage() {
       reloadQueued.current = false;
       loadEventBundle(id)
         .then((bundle) => {
-          if (alive && bundle) setState({ loading: false, bundle });
+          if (alive && bundle) setState({ loading: false, bundle, unreachable: false });
         })
         .catch(() => {})
         .finally(() => {
@@ -169,6 +227,12 @@ export function EventPage() {
   }
 
   const bundle = state.bundle;
+  // Nothing to show because nothing answered. NOT the same screen as the one below:
+  // this one can be retried, and saying "ไม่พบงานนี้" here would be a lie about a
+  // show that exists and is merely on the far side of a bad hotspot.
+  if (!bundle && state.unreachable) {
+    return <EventUnreachable onRetry={() => setAttempt((n) => n + 1)} />;
+  }
   // Not found, or a band-tier user reaching another band's event by URL.
   if (!bundle || (ws && !canViewGroup(ws.perms, bundle.event.group_id))) {
     return (

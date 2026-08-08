@@ -618,10 +618,20 @@ export function SetlistBuilder({
           return;
         }
       }
+      // A 0-row delete of rows that only exist in the offline outbox so far
+      // (localOnlyIds) is expected, not a failure — the same rule the reorder
+      // writes below already apply to their own 0-row results. The band edited
+      // the setlist offline in the van, so those rows were minted locally and the
+      // flush has not landed (or has parked as a conflict): the server has NO row
+      // under those ids to delete. Judging that as a miss sends the rollback below
+      // to take the snapshot rows that DID insert correctly back out again, and on
+      // this no-undo path that is the restore destroying its own result.
+      const attempted = old.filter((it) => !localOnlyIds.current.has(it.id));
       // Same outcome for the caller, different cause: `missed` reached the server
       // and changed nothing, so there is no error to classify or queue — but it
       // leaves exactly the duplicate state the rollback below exists to undo.
-      const missed = !error && wroteNothing(deleted);
+      // One real server row among the old ones is enough: it should have come back.
+      const missed = !error && attempted.length > 0 && wroteNothing(deleted);
       if (error || missed) {
         // The snapshot rows are already in; deleting the old ones failed → roll the
         // insert back so we don't leave BOTH sets (duplicates). Original setlist intact.
@@ -633,6 +643,10 @@ export function SetlistBuilder({
             .select("id");
           // The rollback carries the identical hole: a 0-row delete has undone
           // nothing, so the duplicates are still there and the user must be told.
+          // It needs no localOnlyIds filter of its own, and adding one would be
+          // wrong: `inserted` only ever holds rows the server itself just handed
+          // back (the offline insert path returned above), so every id here has a
+          // real row and a 0-row answer is always a genuine miss.
           if (rollbackError || wroteNothing(rolledBack)) {
             // Net died mid-restore: the DB likely holds old + restored rows. Queue
             // the restored list with base = that combined state, so flush replace-

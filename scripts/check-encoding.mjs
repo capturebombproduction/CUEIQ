@@ -1,4 +1,5 @@
-// Fails if any tracked text file has had its UTF-8 mangled.
+// Fails if any text file git can see — tracked OR merely untracked-and-not-ignored —
+// has had its UTF-8 mangled.
 //
 //   node scripts/check-encoding.mjs
 //
@@ -35,17 +36,34 @@ const TEXT_EXT = new Set([
 // to whoever reads the file, and every run prints who opted out.
 const OPT_OUT = "encoding-check: this file contains deliberate mojibake samples";
 
-function trackedFiles() {
-  const out = execFileSync("git", ["ls-files", "-z"], {
-    encoding: "utf8",
-    maxBuffer: 64 * 1024 * 1024,
-  });
-  return out.split("\0").filter(Boolean);
+// `git ls-files` alone lists only what is in the INDEX, and every gate in this repo
+// runs before the commit — so a brand-new file was invisible to this check until
+// somebody `git add`ed it. Round 11 created about twenty new files; the gate they
+// were meant to pass had not read one of them.
+//
+//   --cached           what git ls-files gives by default: tracked files
+//   --others           untracked files as well
+//   --exclude-standard obey .gitignore/.git/info/exclude, which is what keeps
+//                      node_modules, .next/ and desktop/release/ out — including
+//                      desktop/.gitignore, since the flag honours nested files too
+//
+// Hand-walking the tree instead was the tempting version and the wrong one: it would
+// have had to re-implement gitignore to avoid scanning node_modules, and the copy
+// that drifts from the real ignore rules is the copy that starts scanning it.
+function candidateFiles() {
+  const out = execFileSync(
+    "git",
+    ["ls-files", "-z", "--cached", "--others", "--exclude-standard"],
+    { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 }
+  );
+  // Deduplicated because a file can be both staged and modified in the worktree, and
+  // reporting the same line twice would inflate the count in the failure summary.
+  return [...new Set(out.split("\0").filter(Boolean))];
 }
 
 const problems = [];
 const exempt = [];
-for (const file of trackedFiles()) {
+for (const file of candidateFiles()) {
   if (!TEXT_EXT.has(path.extname(file).toLowerCase())) continue;
   let text;
   try {
@@ -83,6 +101,6 @@ if (problems.length > 0) {
   process.exit(1);
 }
 
-console.log("encoding check: every tracked text file is intact UTF-8");
+console.log("encoding check: every text file git can see is intact UTF-8");
 // encoding-check: this file contains deliberate mojibake samples (the à¸-shaped
 // example in the header above is the whole point of the gate).

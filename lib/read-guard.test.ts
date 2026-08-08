@@ -89,10 +89,12 @@ describe("readFailure", () => {
     expect(err!.message).toContain("unknown error");
   });
 
-  it("treats a read that was never attempted as neither success nor failure", () => {
-    // `ids.length ? await supabase… : { data: [], error: null }` and friends: a
-    // skipped read has nothing to report, and must not be invented as a failure.
-    expect(readFailure({ stages: undefined, seqs: null })).toBeNull();
+  it("treats a read that was SKIPPED as the success its caller wrote", () => {
+    // `ids.length ? await supabase… : { data: [], error: null }` — the skipped
+    // branch is a literal success, not a third state. (readFailure used to accept
+    // null/undefined for this and no caller ever passed either; the entry type is
+    // non-nullable now, so a skipped read has to say what it is.)
+    expect(readFailure({ stages: { error: null } })).toBeNull();
   });
 });
 
@@ -118,6 +120,11 @@ describe("assertReadsSucceeded", () => {
 });
 
 // The client-side half: an empty answer we cannot prove was signed.
+//
+// These pin the truth table. They do NOT prove anything ships: a helper nobody
+// calls passes every one of them for ever. The trace from a real reconnect to
+// this function is components/event/event-run-status.test.tsx — if that file ever
+// disappears, these seven go back to being decoration.
 describe("keepOnUntrustedEmpty", () => {
   it("believes an empty read while a live session is provable", async () => {
     expect(await keepOnUntrustedEmpty([], true)).toBe(false);

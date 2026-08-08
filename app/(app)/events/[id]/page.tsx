@@ -119,9 +119,17 @@ export default async function EventPage({
   const runSeqRes = await roq;
   // getEventBundle above is all-or-none about the six child reads for exactly this
   // reason; this seventh read was left outside the rule. A FAILED READ IS NOT A
-  // ZERO COUNT (lib/read-guard.ts): `?? []` tells the band's own event page
-  // "วงนี้ยังไม่ถูกผูกกับลำดับในคิวงาน" and drops the countdown its members are
-  // watching, on a festival day, because one select timed out.
+  // ZERO COUNT (lib/read-guard.ts) — and here it is worse than a wrong count,
+  // because the empty array says NOTHING AT ALL. components/event/event-summary.tsx
+  // gates the card on `runSeq.length > 0`, so a failed select does not render "วงนี้
+  // ยังไม่ถูกผูกกับลำดับในคิวงาน"; it makes the whole EventRunStatusCard VANISH from
+  // the band's event page, on a festival day, with no message and nothing to retry.
+  // And because the card never mounts, its own self-healing refetch never arms
+  // either — the SUBSCRIBED / visibilitychange / online handlers in
+  // components/event/event-run-status.tsx live INSIDE it, so the one component that
+  // would have recovered on the next reconnect is the component that was removed.
+  // Failing the page here is the only outcome the members watching a countdown can
+  // actually see.
   assertReadsSucceeded("EventPage", { "ลำดับคิวงาน": runSeqRes });
   const runSeq = (runSeqRes.data ?? []) as RunSeqLive[];
 

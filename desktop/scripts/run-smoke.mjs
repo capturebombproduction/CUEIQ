@@ -66,6 +66,15 @@ const appDir = arg("app");
 const only = arg("only");
 const timeoutSec = Number(arg("timeout", "135"));
 
+// The version the app under test MUST report. Read from desktop/package.json, which
+// is the same file electron-builder stamps the installer and latest.yml from — so a
+// win-unpacked left over from an earlier build, smoke-tested green for a tag it was
+// not built from, is a mismatch here instead of a published Release whose contents
+// are a version older than its own update feed says.
+const DESKTOP_VERSION = JSON.parse(
+  fs.readFileSync(new URL("../package.json", import.meta.url), "utf8")
+).version;
+
 // ⚠️ ONE constant, two clocks. The app's own watchdog (main.cjs) is the only timer
 // that can name a CAUSE — it carries the stage the run hung at — so it must always be
 // the first to fire. It used to be a hardcoded 90s sitting 30s inside a hardcoded
@@ -200,15 +209,23 @@ async function runScenario(s) {
       failReason: `ran in profile ${verdict.userDataPath}, not the fresh one`,
     };
   }
-  // Same idea, applied to the QUESTION rather than the profile. main.cjs echoes back
+  // ⚠️ EVERY CHECK BELOW READS THE CONTEXT BLOCK, so every check below must first ask
+  // whether there is one. main.cjs writes exactly two verdicts without it — the
+  // watchdog's and "createWindow threw" — and both are the app naming a cause nothing
+  // out here can reconstruct. Comparing their absent `expect` against what we sent
+  // tripped the echo-check on all of them and REPLACED the app's explanation with a
+  // fabricated one ("the scenario's env did not arrive"), which is the reverse of a
+  // diagnosis: main.cjs's own comment says the inner deadline is the only timer that
+  // can say WHERE a run hung, and the caller was throwing that away. Reproduced with
+  // CUEIQ_SMOKE_WATCHDOG_MS=8000, which is how it was found.
+  if (!("expect" in verdict)) return { ...verdict, name: s.name };
+
+  // Now the QUESTION, the same way the profile was checked above. main.cjs echoes back
   // the expectation and the offline flag it actually read, and until now nobody
-  // compared them with what was sent. That gap matters because an empty
-  // CUEIQ_SMOKE_EXPECT does not fail — it demotes the run to the old, weakest
-  // question ("did anything render"), which the login screen also answers yes to. So
-  // any way the env fails to arrive (a spawn that drops it, a shell that eats it, a
-  // scenario table edited to the wrong key) turns the airplane test into a
-  // rendered-something test AND STAYS GREEN. Two string compares close it.
-  const wantExpect = s.env.CUEIQ_SMOKE_EXPECT || "anything-rendered";
+  // compared them with what was sent — so any way the env fails to arrive (a spawn
+  // that drops it, a shell that eats it, a scenario table edited to the wrong key)
+  // would change what was tested while staying green. Two string compares close it.
+  const wantExpect = s.env.CUEIQ_SMOKE_EXPECT;
   if (verdict.expect !== wantExpect) {
     return {
       ...verdict,
@@ -225,12 +242,38 @@ async function runScenario(s) {
       failReason: `asked for offline=${s.env.CUEIQ_SMOKE_OFFLINE === "1"} but the app ran offline=${verdict.offline}`,
     };
   }
+  // And WHICH BUILD answered. Reported since the first cut of this, asserted by
+  // nobody: on a `v*` tag the thing being launched is desktop/release/win-unpacked,
+  // which is whatever the last `npm run dist` left there — a build step that silently
+  // did nothing would hand this suite an old tree to bless.
+  if (verdict.appVersion !== DESKTOP_VERSION) {
+    return {
+      ...verdict,
+      name: s.name,
+      ok: false,
+      failReason: `the app under test reports version ${verdict.appVersion}, but desktop/package.json says ${DESKTOP_VERSION} — a stale build is being smoke-tested`,
+    };
+  }
   return { ...verdict, name: s.name };
 }
 
 const chosen = only ? SCENARIOS.filter((s) => s.name === only) : SCENARIOS;
 if (chosen.length === 0) {
   console.error(`::error::run-smoke: no scenario named "${only}"`);
+  process.exit(2);
+}
+// A scenario with no CUEIQ_SMOKE_EXPECT asks the weakest question there is — did
+// anything render — which the login screen answers yes to on a boot that failed at
+// everything this file is about. All three below happen to set it, which made that a
+// latent trap for whoever adds the fourth; main.cjs now refuses such a run outright
+// and this refuses to launch it in the first place, which is also where the message
+// can name the scenario.
+const mute = chosen.filter((s) => !s.env.CUEIQ_SMOKE_EXPECT);
+if (mute.length > 0) {
+  console.error(
+    `::error::run-smoke: scenario(s) ${mute.map((s) => s.name).join(", ")} set no ` +
+      `CUEIQ_SMOKE_EXPECT — a smoke run must name the screen it expects.`
+  );
   process.exit(2);
 }
 if (only) {
@@ -243,19 +286,17 @@ if (only) {
   );
 }
 
+// One verdict per scenario, and runScenario always returns one — a scenario that
+// could not launch, timed out or wrote an unreadable file comes back as a NAMED
+// failure rather than as a gap. (There used to be an `if (results.length !==
+// chosen.length)` guard here, described as catching a scenario that never ran. A
+// `for…of` that pushes exactly once per element cannot produce that, so it was a
+// check that passes forever — the very thing this file's header is about — sitting
+// in the file that says so. Deleted rather than made true: the property it wanted is
+// already guaranteed by the loop, and a loop is easier to read than an assertion
+// about one.)
 const results = [];
 for (const s of chosen) results.push(await runScenario(s));
-
-// Count first, evaluate second. A scenario that never launched would otherwise
-// simply not be checked, and the job would go green having run fewer tests than it
-// claims to have run.
-if (results.length !== chosen.length) {
-  console.error(
-    `::error::run-smoke: expected ${chosen.length} verdicts, got ${results.length} ` +
-      `(${results.map((r) => r.name).join(", ")})`
-  );
-  process.exit(1);
-}
 
 let failed = false;
 for (const r of results) {

@@ -4,6 +4,7 @@ import {
   makeSession,
   makeSupabaseFake,
   ok,
+  offline,
   type RecordedCall,
   type ScriptResult,
   type SupabaseFake,
@@ -21,6 +22,14 @@ import {
 // so the repair could silently no-op too. Both are asserted here, and the happy
 // path is asserted alongside them so the test cannot be satisfied by a restore
 // that simply never works.
+//
+// AND the other direction, which is how that first guard drew blood: a row edited
+// offline in the van only exists in the mgmt outbox, so the server has no row under
+// its id and a delete of it legitimately matches ZERO rows. Read as a miss, the
+// rollback then deletes the snapshot rows that had just inserted correctly — the
+// restore eating its own result, on a path with no undo. So both readings are
+// pinned: all-old-rows-local-only is a success, one real server row among them is
+// still a miss.
 
 const h = vi.hoisted(() => ({ supa: null as unknown }));
 vi.mock("@/lib/supabase/client", () => ({ createClient: () => h.supa }));
@@ -40,6 +49,8 @@ vi.mock("sonner", () => ({ toast: toastSpy, Toaster: () => null }));
 
 import { ConfirmProvider } from "@/components/ui/confirm-dialog";
 import { SetlistBuilder } from "@/components/event/setlist-builder";
+import { registerMgmtQueueSink } from "@/lib/mgmt-write";
+import type { NewMgmtOp } from "@/lib/mgmt-outbox";
 import type { SetlistItem } from "@/lib/types";
 
 const EVENT_ID = "eeeeeeee-1111-4111-8111-eeeeeeeeeeee";
@@ -90,6 +101,8 @@ const VERSION = {
 
 let supa: SupabaseFake;
 let realConfirm: typeof window.confirm | undefined;
+/** Ops the desktop outbox would have stored. Only the desktop registers a sink. */
+let queuedOps: NewMgmtOp[] = [];
 
 /**
  * `onDelete` sees every delete in restore order: call 1 removes the OLD rows,
@@ -114,20 +127,29 @@ beforeEach(() => {
   // gates its restore on it. Install it here, remove it after.
   realConfirm = window.confirm;
   window.confirm = vi.fn(() => true);
+  // Stand in for the desktop's IndexedDB outbox: with a sink registered, a write
+  // that failed on a dead network is QUEUED and its row lives on client-side only
+  // — which is the whole precondition for the local-only tests below. The web
+  // registers nothing, so the other tests here are unaffected by its presence.
+  queuedOps = [];
+  registerMgmtQueueSink(async (op) => {
+    queuedOps.push(op);
+  });
 });
 
 afterEach(() => {
   window.confirm = realConfirm as typeof window.confirm;
+  registerMgmtQueueSink(null); // module-level state — never leak it to the next file
 });
 
-function renderBuilder() {
+function renderBuilder(initialItems: SetlistItem[] = OLD) {
   return render(
     <ConfirmProvider>
       <SetlistBuilder
         eventId={EVENT_ID}
         tenantId={TENANT_ID}
         editable
-        initialItems={OLD}
+        initialItems={initialItems}
         showStartTime="19:00"
         hardOutTime={null}
         members={[]}
@@ -153,6 +175,23 @@ async function runRestore() {
   await act(async () => {
     fireEvent.click(restore);
   });
+}
+
+/**
+ * Add one row with the network dead — the van case. The insert comes back as a
+ * transport failure, so the builder mints the row client-side, queues the whole
+ * list in the outbox and remembers the id as LOCAL-ONLY. Returns that id: it is
+ * an id no server row has, which is the entire point of these two tests.
+ */
+async function addRowOffline(): Promise<string> {
+  supa.setScript({ setlist_items: offline() });
+  const before = queuedOps.length;
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: /^เพลง$/ }));
+  });
+  expect(queuedOps.length, "the offline add reached the outbox").toBe(before + 1);
+  const rows = (queuedOps[queuedOps.length - 1] as { rows: Array<{ id: string }> }).rows;
+  return rows[rows.length - 1].id;
 }
 
 const deletesOf = (s: SupabaseFake) => s.callsTo("setlist_items", "delete");
@@ -239,5 +278,46 @@ describe("SetlistBuilder — restoring a saved version", () => {
     // All four rows on screen: the duplication is visible, not hidden.
     expect(await screen.findByDisplayValue("Old A")).toBeTruthy();
     expect(screen.getByDisplayValue("Saved A")).toBeTruthy();
+  });
+
+  it("accepts a 0-row delete when EVERY old row is still local-only", async () => {
+    renderBuilder([]);
+    // Edited offline in the van: both rows exist only in this device's outbox.
+    const localA = await addRowOffline();
+    const localB = await addRowOffline();
+
+    // Back online, an Ar presses กู้คืน. The insert lands; the delete matches
+    // nothing because neither of those ids has ever reached the server.
+    scriptRestore(() => ok([]));
+    await runRestore();
+
+    const deletes = deletesOf(supa);
+    expect(idsIn(deletes[0])).toEqual([localA, localB]);
+    // THE FIX: one delete and no second one — a rollback here would take the
+    // snapshot rows that just inserted correctly straight back out.
+    expect(deletes).toHaveLength(1);
+    expect(toastSpy.error).not.toHaveBeenCalled();
+    expect(toastSpy.success).toHaveBeenCalledWith("กู้คืนเซ็ตลิสต์แล้ว");
+    expect(await screen.findByDisplayValue("Saved A")).toBeTruthy();
+  });
+
+  it("still rolls back when even ONE old row is a real server row", async () => {
+    renderBuilder([OLD[0]]);
+    const local = await addRowOffline();
+
+    // Delete #1 (one server row + one local-only row) touches nothing — the
+    // server row should have come back, so this is a genuine miss after all.
+    scriptRestore((call, nth) => (nth === 1 ? ok([]) : ok(idsIn(call).map((id) => ({ id })))));
+    await runRestore();
+
+    const deletes = deletesOf(supa);
+    expect(idsIn(deletes[0])).toEqual(["old-1", local]);
+    expect(deletes).toHaveLength(2);
+    expect(idsIn(deletes[1])).toEqual(["new-1", "new-2"]);
+    expect(toastSpy.error).toHaveBeenCalled();
+    expect(toastSpy.success).not.toHaveBeenCalledWith("กู้คืนเซ็ตลิสต์แล้ว");
+    // The server still holds the original setlist, and so does the screen.
+    expect(await screen.findByDisplayValue("Old A")).toBeTruthy();
+    expect(screen.queryByDisplayValue("Saved A")).toBeNull();
   });
 });

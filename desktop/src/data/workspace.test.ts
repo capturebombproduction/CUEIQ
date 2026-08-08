@@ -31,7 +31,11 @@ vi.mock("~/data/mgmt-outbox", () => ({
 }));
 
 import { loadWorkspace, WORKSPACE_AUTH_TIMEOUT_MS, WORKSPACE_READ_TIMEOUT_MS } from "./workspace";
-import { EVENTS_LIST_TIMEOUT_MS, loadEventsList } from "./events-list";
+import {
+  EVENTS_LIST_SESSION_TIMEOUT_MS,
+  EVENTS_LIST_TIMEOUT_MS,
+  loadEventsList,
+} from "./events-list";
 
 // ── fixtures ──────────────────────────────────────────────────────────────────
 
@@ -337,7 +341,10 @@ describe("loadEventsList — a request that never answers", () => {
 
   it("serves the cache when an empty read cannot be proven to have carried a token", async () => {
     // The anon-RLS lie plus a black-holed getSession(): hasLiveSession() hangs on
-    // the same dead network, so the second await needs the same bound as the first.
+    // the same dead network, so the second await needs a bound too — but its OWN,
+    // much shorter one. These bounds stack on the way to the dashboard, and this is
+    // a secondary probe on a network that has already answered once; a fresh full
+    // read budget here is what pushed the wait past the point operators force-quit.
     const before = seedEventsCache();
     supa.setScript({ events: ok([]) });
     supa.auth.hang("getSession");
@@ -347,7 +354,7 @@ describe("loadEventsList — a request that never answers", () => {
     await settleMicrotasks();
     expect(state.settled).toBe(false);
 
-    await vi.advanceTimersByTimeAsync(EVENTS_LIST_TIMEOUT_MS - 1);
+    await vi.advanceTimersByTimeAsync(EVENTS_LIST_SESSION_TIMEOUT_MS - 1);
     expect(state.settled).toBe(false);
 
     await vi.advanceTimersByTimeAsync(1);
