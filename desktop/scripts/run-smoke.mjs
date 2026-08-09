@@ -1,4 +1,4 @@
-// Launches the PACKAGED app, three times, and asserts what each boot arrived at.
+// Launches the PACKAGED app, four times, and asserts what each boot arrived at.
 //
 //   node desktop/scripts/run-smoke.mjs --exe <path-to-CueIQ.exe>
 //   node desktop/scripts/run-smoke.mjs --exe <path-to-CueIQ.exe> --only airplane
@@ -28,10 +28,17 @@
 // spinner forever with the whole cache sitting on disk.
 //
 // ── WHAT IT DOES NOT PROVE — read this before quoting a green run ────────────
-// Seeding cueiq:cache:* BYPASSES the code that writes those caches, so this proves
-// the offline READ path and the boot gate, not that an online session filled the
-// cache correctly before the wifi died. (Still true after the round-11 hardening —
-// re-checked against make-smoke-seed.mjs, which builds those entries by hand.)
+// The seeding limitation this section used to lead with is CLOSED, and the sentence
+// is kept so the closing is legible: "airplane" plants cueiq:cache entries by hand,
+// which BYPASSES the code that writes them, so on its own it proves the offline read
+// path and says nothing about whether an online session fills the cache correctly
+// before the wifi dies. Scenario "handover" now covers that half: nothing is planted
+// at all, the app types its own credentials into the real login form against a local
+// stub of the Supabase API (desktop/scripts/smoke-backend.mjs, served to the renderer
+// from the main process so the BUILD is untouched), makes its own reads, writes its
+// own caches — and only then is the network cut and the app cold-booted on them.
+// Both scenarios are kept: "airplane" is the faster, backend-free guard on the read
+// path, "handover" is the end-to-end one.
 //
 // Neither does it prove the INSTALLED app. On a `v*` tag desktop-build.yml runs this
 // against desktop/release/win-unpacked/CueIQ.exe, which is the packaged tree but not
@@ -175,6 +182,34 @@ const SCENARIOS = [
     seed: true,
   },
   {
+    name: "handover",
+    // THE OTHER HALF OF THE AIRPLANE TEST, and the limitation this file's header
+    // used to describe as unfixed: "airplane" reads caches the TEST wrote, so it
+    // proves the offline read path and says nothing about whether an ONLINE session
+    // fills those caches correctly before the wifi dies.
+    //
+    // Here nothing is hand-seeded but the session. The app boots online against a
+    // local stub of the Supabase API (desktop/scripts/smoke-backend.mjs, reached by
+    // a main-process redirect so the BUILD is untouched), makes its own reads, and
+    // writes its own cueiq:cache entries — including the events key, which is
+    // derived from the account's viewable groups and is exactly the kind of thing
+    // that goes quietly wrong. Only then is the network cut and the app cold-booted
+    // on what it wrote.
+    what: "online against a stub, app fills its OWN caches, THEN the network is cut",
+    env: {
+      CUEIQ_SMOKE_HANDOVER: "1",
+      CUEIQ_SMOKE_OFFLINE: "1",
+      CUEIQ_SMOKE_EXPECT: "signed-in",
+      CUEIQ_SMOKE_EXPECT_TENANT: SMOKE_TENANT_NAME,
+      CUEIQ_SMOKE_EXPECT_EVENTS: String(SMOKE_EVENT_COUNT),
+    },
+    // NOTHING is planted — not even the session. The app types its own credentials
+    // into the real login form, which is also the first half of the venue story:
+    // sign in at the hotel, drive to the show, lose the wifi.
+    seed: false,
+    backend: true,
+  },
+  {
     name: "quick-show-offline",
     // The break-glass runner every other screen's fallback points at: no account,
     // no network, still has to open. Nothing verified this in a packaged build.
@@ -190,7 +225,7 @@ const SCENARIOS = [
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-async function runScenario(s) {
+async function runScenario(s, extraEnv = {}) {
   // A FRESH profile per scenario. Without it the second launch inherits the first
   // one's localStorage and IndexedDB, so "cold boot" would be a lie and a later
   // scenario could pass on leftovers rather than on what it was given.
@@ -213,9 +248,12 @@ async function runScenario(s) {
   };
   if (s.seed) {
     const seedFile = path.join(work, "seed.json");
-    fs.writeFileSync(seedFile, JSON.stringify(buildSmokeSeed()), "utf8");
+    const options = typeof s.seed === "object" ? s.seed : {};
+    fs.writeFileSync(seedFile, JSON.stringify(buildSmokeSeed(options)), "utf8");
     env.CUEIQ_SMOKE_SEED_FILE = seedFile;
   }
+
+  Object.assign(env, extraEnv);
 
   console.log(`\n── smoke[${s.name}] ${s.what}`);
   const argv = appDir
@@ -367,7 +405,70 @@ if (only) {
 // already guaranteed by the loop, and a loop is easier to read than an assertion
 // about one.)
 const results = [];
-for (const s of chosen) results.push(await runScenario(s));
+for (const s of chosen) {
+  if (!s.backend) {
+    results.push(await runScenario(s));
+    continue;
+  }
+  // The stub Supabase, started only for the scenario that needs one and imported
+  // lazily so `--only control` does not pay for it. Started and stopped OUT HERE
+  // rather than inside runScenario: that function has half a dozen early returns for
+  // the ways a launch can fail, and a listening socket left behind by one of them
+  // would make the next run's port bind look like a flake.
+  const { startSmokeBackend, SMOKE_WORLD } = await import("./smoke-backend.mjs");
+  const backend = await startSmokeBackend();
+  const host = new URL(SMOKE_SUPABASE_URL).host;
+  console.log(`   stub Supabase at ${backend.url}, standing in for ${host}`);
+  let result;
+  try {
+    result = await runScenario(s, {
+      CUEIQ_SMOKE_BACKEND: backend.url,
+      CUEIQ_SMOKE_BACKEND_FOR: host,
+      CUEIQ_SMOKE_SIGN_IN: JSON.stringify({
+        loginId: SMOKE_WORLD.auth.loginId,
+        password: SMOKE_WORLD.auth.password,
+      }),
+    });
+  } finally {
+    await backend.close();
+  }
+  // ANTI-VACUITY. Everything else about this scenario is an assertion on the app;
+  // this one is an assertion on the test. If the app never actually reached the
+  // stub — a redirect that stopped matching, a session it refused, a build pointed
+  // somewhere else — the caches it "wrote" could only have come from somewhere the
+  // scenario does not control, and a pass would mean nothing.
+  const tables = new Set(
+    backend.requests
+      .filter((r) => r.path.startsWith("/rest/v1/"))
+      .map((r) => r.path.slice("/rest/v1/".length))
+  );
+  console.log(
+    `   stub served ${backend.requests.length} request(s) across ${tables.size} table(s): ` +
+      `${[...tables].join(", ") || "<none>"}`
+  );
+  // On a failure the request log is the whole diagnosis — "it cached nothing" and
+  // "it asked for nothing" and "it asked and got a 401" are three different bugs
+  // that look identical from the verdict alone.
+  if (!result?.ok) {
+    console.log("   what the stub actually saw:");
+    for (const r of backend.requests.slice(0, 40)) {
+      console.log(`      ${r.status} ${r.method} ${r.path}${r.search || ""}`);
+    }
+    if (backend.unimplementedPaths?.length) {
+      console.log(`   NOT IMPLEMENTED by the stub: ${backend.unimplementedPaths.join(", ")}`);
+    }
+  }
+  if (!tables.has("tenant_members") || !tables.has("events")) {
+    result = {
+      ...result,
+      ok: false,
+      failReason:
+        `the app never read tenant_members and events from the stub (saw: ${[...tables].join(", ") || "nothing"}). ` +
+        `Whatever it cached, it did not cache it from this test's backend.`,
+    };
+  }
+  results.push(result);
+}
 
 let failed = false;
 for (const r of results) {

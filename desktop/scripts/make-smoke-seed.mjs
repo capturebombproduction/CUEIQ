@@ -73,7 +73,18 @@ export function buildSmokeSeed({
   // the drive to the venue. auth-js reads expires_at, not the token's own claims,
   // but a syntactically valid JWT keeps every other code path on its normal branch.
   expiresAt = 1700000000,
+  // The handover scenario plants ONLY the session and lets the app fill every
+  // cueiq:cache entry itself against the local stub, which is the one thing
+  // hand-seeding can never prove. Same session, same ids, so both scenarios end up
+  // asserting against the same world.
+  authOnly = false,
+  // A session the app can actually USE, rather than one it can only recognise
+  // offline. The default is expired on purpose (that is what a laptop holds after
+  // the drive to the venue); the handover needs one that supabase-js will attach to
+  // a live read without first attempting a refresh it cannot complete.
+  live = false,
 } = {}) {
+  if (live) expiresAt = Math.floor(Date.now() / 1000) + 3600;
   const accessToken = [
     b64url({ alg: "HS256", typ: "JWT" }),
     b64url({ sub: userId, email, role: "authenticated", exp: expiresAt, aud: "authenticated" }),
@@ -115,7 +126,7 @@ export function buildSmokeSeed({
     groups: { name: group.name, color: group.color, exempt_from_deadline: false },
   });
 
-  return {
+  const session = {
     [`sb-${projectRef}-auth-token`]: JSON.stringify({
       access_token: accessToken,
       token_type: "bearer",
@@ -132,6 +143,12 @@ export function buildSmokeSeed({
         created_at: "2026-01-01T00:00:00.000Z",
       },
     }),
+  };
+  // The handover plants this and NOTHING else, then watches the app write the rest.
+  if (authOnly) return session;
+
+  return {
+    ...session,
     // ~/data/workspace.ts only serves this when cached.user.id === the stored
     // session's id — the shared-band-device owner check. The two ids MUST agree.
     "cueiq:cache:workspace": JSON.stringify({

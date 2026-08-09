@@ -128,7 +128,10 @@ jobs:
 
       # cold -> the login screen · airplane (expired session, DNS dead,
       # navigator.onLine false) -> the signed-in dashboard rendered from cache ·
-      # Quick Show -> opens with no account and no network. Plus TWO cross-checks:
+      # handover -> signs in for real against a local Supabase stub, lets the app
+      # write its OWN caches, and only then cuts the network (the half hand-seeding
+      # can never prove) · Quick Show -> opens with no account and no network.
+      # Plus TWO cross-checks:
       # the job fails if the cold and airplane boots land on the same screen (what
       # every silent seeding failure looks like), and it fails if the control boot
       # could not reach the Supabase host either — because "the network was cut" is
@@ -137,7 +140,7 @@ jobs:
       # ⚠️ TIMEOUT NESTING, outermost last: the app's own watchdog (main.cjs) fires at
       # --timeout minus 45s and is the ONLY one that reports a stage, run-smoke's
       # --timeout (135s default, per scenario) fires next, and this step is the
-      # backstop. 3 scenarios x 135s = ~7 min, so 15 keeps this strictly outermost
+      # backstop. 4 scenarios x 135s = ~9 min, so 15 keeps this strictly outermost
       # even if every scenario times out; it is here to kill a wedged runner, not to
       # pre-empt an answer the app was about to give.
       - name: Boot the app offline with a session

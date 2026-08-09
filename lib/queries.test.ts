@@ -200,6 +200,9 @@ describe("getWorkspace", () => {
     expect(ws.membership).toEqual({ tenant_id: TID, role: "member" });
     expect(ws.tenant?.name).toBe("A Lot Of Tone");
     expect(ws.groups.map((g) => g.id)).toEqual([GID]);
+    // A healthy workspace is a PLAIN object: the poison below exists only on the
+    // failure path, so spreads, JSON and toEqual behave exactly as they always did.
+    expect(Object.getOwnPropertyDescriptor(ws, "groups")?.get).toBeUndefined();
     expect(ws.groupRoles).toEqual([{ group_id: GID, role: "artist_manager" }]);
     expect(ws.perms).toEqual({
       tenantRole: "member",
@@ -242,20 +245,115 @@ describe("getWorkspace", () => {
     await expect(getWorkspace()).rejects.toThrow("ข้อมูลค่าย");
   });
 
-  it("THROWS when the groups read fails, instead of a label with no bands", async () => {
-    // The quiet one: `groups: []` is fed back into the next page's query as
-    // `.in("group_id", [])`, so the events read returns nothing AND succeeds.
-    supa.setTable("groups", fail("canceling statement due to statement timeout"));
+  it("names ONLY the read that failed", async () => {
+    supa.setTable("tenants", fail("503"));
 
-    await expect(getWorkspace()).rejects.toThrow("รายชื่อวง");
+    const err = await getWorkspace().catch((e: Error) => e);
+    expect((err as Error).message).toContain("ข้อมูลค่าย");
+    expect((err as Error).message).not.toContain("บทบาทในวง");
   });
 
-  it("names ONLY the read that failed", async () => {
+  it("names BOTH when one outage takes tenants and groups together", async () => {
+    // They go out in the same Promise.all, so a pooler hiccup fails both. Reporting
+    // only the fatal one sends the next reader looking for a tenants-specific cause.
+    supa.setTable("tenants", fail("503"));
     supa.setTable("groups", fail("503"));
 
     const err = await getWorkspace().catch((e: Error) => e);
+    expect((err as Error).message).toContain("ข้อมูลค่าย");
     expect((err as Error).message).toContain("รายชื่อวง");
-    expect((err as Error).message).not.toContain("ข้อมูลค่าย");
+  });
+
+  // ── READ 4: the poisoned field ──────────────────────────────────────────────
+  //
+  // Failing the whole workspace on a `groups` error was right about the data and
+  // wrong about the blast radius. `groups` is the only unbounded read of the four
+  // and NINE pages read it — but the (app) layout does not, and neither do the two
+  // routes that matter at a venue. When staff press เริ่ม, /api/notify fans a link
+  // to /events/[id]/run-order/live out to ~19 phones at once, and that page reads
+  // ws.membership, ws.tenant and ws.perms only. One statement timeout on a select
+  // those phones never use was taking the live show-caller down for all of them.
+  //
+  // So the failure now lives in the FIELD: reading ws.groups throws exactly what it
+  // threw before, and not reading it costs nothing. These tests pin both halves,
+  // because either one alone is a bug — a field that never throws is the discarded
+  // read this guard exists to stop, and a workspace that throws before anyone asks
+  // is the outage this change exists to stop.
+  describe("a failed groups read", () => {
+    beforeEach(() => {
+      supa.setTable("groups", fail("canceling statement due to statement timeout"));
+    });
+
+    it("THROWS on READ, instead of answering 'a label with no bands'", async () => {
+      // The quiet one: `groups: []` is fed back into the next page's query as
+      // `.in("group_id", [])`, so the events read returns nothing AND succeeds.
+      const ws = await getWorkspace();
+
+      expect(() => ws.groups).toThrow("รายชื่อวง");
+      expect(() => ws.groups).toThrow(
+        expect.objectContaining({ name: "ReadFailedError" }) as unknown as Error
+      );
+    });
+
+    it("throws the SAME error object on every read, so one cause gets one digest", async () => {
+      const ws = await getWorkspace();
+
+      const first = (() => {
+        try {
+          return ws.groups;
+        } catch (e) {
+          return e;
+        }
+      })();
+      const second = (() => {
+        try {
+          return ws.groups;
+        } catch (e) {
+          return e;
+        }
+      })();
+      expect(first).toBeInstanceOf(Error);
+      expect(first).toBe(second);
+    });
+
+    it("survives for a route that reads only membership, tenant and perms", async () => {
+      // /events/[id]/run-order/live, exactly: `if (!ws.membership || !ws.tenant)
+      // redirect(...)`, then `ws.membership.tenant_id` and `canApprove(ws.perms)`.
+      // The (app) layout above it reads ws.user, ws.membership and ws.perms — also
+      // none of them groups. Nothing here may throw.
+      const ws = await getWorkspace();
+
+      expect(ws.membership).toEqual({ tenant_id: TID, role: "member" });
+      expect(ws.tenant?.name).toBe("A Lot Of Tone");
+      expect(ws.user?.id).toBe(USER_ID);
+      expect(ws.perms).toEqual({
+        tenantRole: "member",
+        groupRoles: [{ group_id: GID, role: "artist_manager" }],
+      });
+      // perms is role + group_roles, both of which read fine. A poisoned band LIST
+      // must never make the permission answer unavailable.
+      expect(ws.groupRoles).toEqual([{ group_id: GID, role: "artist_manager" }]);
+    });
+
+    it("logs the cause even when nothing reads the field", async () => {
+      // The show-caller staying up must not make the outage invisible: production
+      // redacts the message, so this console line is the only tie from a report to a
+      // cause in the Vercel log — and on that route nobody ever triggers the throw.
+      const ws = await getWorkspace();
+      expect(ws.membership).not.toBeNull();
+
+      expect(logged.join("\n")).toContain("getWorkspace read failed");
+      expect(logged.join("\n")).toContain("statement timeout");
+      expect(logged.join("\n")).toContain("รายชื่อวง");
+    });
+
+    it("raises the real failure on a spread, rather than dropping the field", async () => {
+      // enumerable:true is load-bearing. A non-enumerable poison would make
+      // `{...ws}.groups` undefined and hand the next line a TypeError with no cause.
+      const ws = await getWorkspace();
+
+      expect(() => ({ ...ws })).toThrow("รายชื่อวง");
+    });
   });
 
   it("still shows a brand-new account the join screen (empty is not failure)", async () => {

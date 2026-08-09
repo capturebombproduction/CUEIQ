@@ -12,12 +12,22 @@ import type {
   Tenant,
 } from "@/lib/types";
 import { makePerms, type GroupRoleRow, type Perms } from "@/lib/permissions";
-import { assertReadsSucceeded } from "@/lib/read-guard";
+import { assertReadsSucceeded, readFailure } from "@/lib/read-guard";
 
 export interface Workspace {
   user: { id: string; email: string | null; name: string | null } | null;
   membership: { tenant_id: string; role: Role } | null;
   tenant: Tenant | null;
+  /** Every band in the tenant.
+   *
+   *  ⚠️ THE ONE FIELD HERE THAT CAN THROW WHEN YOU READ IT. If the `groups` select
+   *  failed, getWorkspace() still resolves (so routes that never touch this field —
+   *  the (app) layout, /events/[id], /events/[id]/run-order/live — keep working) and
+   *  this property raises the read failure instead of handing you `[]`. `[]` is fed
+   *  back into the events query as `.in("group_id", …)`, so a discarded failure
+   *  shows a band an empty day and passes its own honesty check. See READ 4 in
+   *  getWorkspace. Nothing to check and nothing to opt into: read it and you are
+   *  guarded, don't and you are unaffected. */
   groups: Group[];
   /** The user's per-band roles (group_roles rows the user owns). */
   groupRoles: GroupRoleRow[];
@@ -43,9 +53,11 @@ export interface Workspace {
  * can question; "บัญชียังไม่ได้รับสิทธิ์เข้าวง" looks like a settled fact about
  * their account, and there is nothing on screen to retry.
  *
- * So: all four reads are FATAL, each for the reason written at its guard below,
- * and none of them changes what an EMPTY-but-successful read does. Two notes on
- * that verdict, because "throw on everything" is the lazy version of it:
+ * So: no read here may be discarded, each for the reason written at its guard
+ * below, and none of them changes what an EMPTY-but-successful read does. Reads
+ * 1-3 throw ON SIGHT; read 4 (`groups`) throws ON ACCESS instead, for the reason
+ * argued at its guard. Two notes on the verdict, because "throw on everything" is
+ * the lazy version of it:
  *
  *  • It is what the desktop mirror already decided. desktop/src/data/workspace.ts
  *    folds tenants, groups AND group_roles into one `blipped` flag, refuses to
@@ -53,9 +65,9 @@ export interface Workspace {
  *    to the last good workspace; a SERVER render has no such fallback, so the web's
  *    only way to say "do not believe this" is to throw. Same invariant, and the
  *    same asymmetry lib/read-guard.ts already documents.
- *  • WHERE the throw lands is not the (app) card, and pretending otherwise would
- *    send the next reader to the wrong file. Next's error.tsx does not catch a
- *    throw from the layout in its own SEGMENT — verified in the shipped runtime,
+ *  • WHERE an ON-SIGHT throw lands is not the (app) card, and pretending otherwise
+ *    would send the next reader to the wrong file. Next's error.tsx does not catch
+ *    a throw from the layout in its own SEGMENT — verified in the shipped runtime,
  *    where create-component-tree passes the segment's error module as the `error`
  *    prop of the LayoutRouter that becomes that segment's CHILDREN — and the (app)
  *    layout is the first caller (React.cache memoises the rejection, so all 14
@@ -67,6 +79,9 @@ export interface Workspace {
  *    failed", which is what to grep in the Vercel log.
  *    ⚠️ Deleting or moving app/error.tsx silently sends this back to global-error
  *    with every gate green — app/error-boundary.test.tsx is the tripwire.
+ *    An ON-ACCESS throw (read 4) is raised by the PAGE, not the layout, so it lands
+ *    one boundary lower — app/(app)/error.tsx, same card, nav still on screen. It
+ *    carries the same name and the same Thai text; only the boundary differs.
  *
  * NOT covered here, deliberately: `supabase.auth.getUser()` below still discards
  * its error. For the two ordinary causes — no cookie, and a refresh token the
@@ -180,53 +195,124 @@ export const getWorkspace = cache(async (): Promise<Workspace> => {
       .order("created_at", { ascending: true }),
   ]);
 
-  // READ 3 — tenants. FATAL: four callers gate on `!ws.tenant` in the same breath as
-  // `!ws.membership` (`if (!ws.membership || !ws.tenant)`), so a null tenant IS the
-  // "not in a band" answer, with the same JoinDemo and the same silent
+  // READ 3 — tenants. FATAL ON SIGHT: four callers gate on `!ws.tenant` in the same
+  // breath as `!ws.membership` (`if (!ws.membership || !ws.tenant)`), so a null
+  // tenant IS the "not in a band" answer, with the same JoinDemo and the same silent
   // redirect("/dashboard") as read 1 — reached this time through a row we know
-  // exists, because the membership we just read points at it.
+  // exists, because the membership we just read points at it. Every route that gets
+  // past this line needs `tenant`, including the show-caller, so there is nothing to
+  // defer: throwing here and throwing at the first access are the same event.
   //
-  // READ 4 — groups. FATAL too, and this is the one worth arguing. An errored list
-  // becomes `[]`, i.e. "this label has no bands" — and it does not stop there,
-  // because `[]` is then fed BACK IN as a query filter: /dashboard and /overview
-  // both scope their events read with `.in("group_id", viewableGroupIds)`, so an
-  // empty groups list makes the event read return zero rows while SUCCEEDING, and
-  // each page's own assertReadsSucceeded then confirms that everything read fine. A
-  // band is shown an empty day by a board that has just verified its own honesty.
-  // Nothing downstream can catch that, because there is nothing wrong downstream.
+  // Read 4 is named alongside it when BOTH failed, which one pooler outage does:
+  // these two go out in the same Promise.all, and a log line that names only half of
+  // a double failure sends the next reader hunting for a tenants-specific cause.
+  if (tenantRead.error) {
+    assertReadsSucceeded("getWorkspace", {
+      "ข้อมูลค่าย": tenantRead,
+      "รายชื่อวง": groupsRead,
+    });
+  }
+
+  // READ 4 — groups. NOT fatal on sight, and NOT tolerated either: `ws.groups` comes
+  // back POISONED. Reading the property throws the identical ReadFailedError read 3
+  // would have thrown; not reading it costs nothing.
   //
-  // The counter-argument, stated so it is not rediscovered: `groups` is the only
-  // unbounded read of the four (a whole-tenant list, so the likeliest to time out)
-  // and the live show-caller never touches it, so failing it takes down a page for
-  // data it does not use. That loses to the paragraph above. There is no third
-  // option available from in here: the only "degrade" this function could return is
-  // `groups: []`, which is not less information, it is wrong information — and being
-  // down is recoverable in one tap while being wrong is not.
-  assertReadsSucceeded("getWorkspace", {
-    "ข้อมูลค่าย": tenantRead,
-    "รายชื่อวง": groupsRead,
-  });
+  // WHY IT MAY NOT BE DISCARDED (unchanged, and the reason this is not simply
+  // demoted to a warning). An errored list becomes `[]`, i.e. "this label has no
+  // bands" — and it does not stop there, because `[]` is then fed BACK IN as a query
+  // filter: /dashboard and /overview both scope their events read with
+  // `.in("group_id", viewableGroupIds)`, so an empty groups list makes the event read
+  // return zero rows while SUCCEEDING, and each page's own assertReadsSucceeded then
+  // confirms that everything read fine. A band is shown an empty day by a board that
+  // has just verified its own honesty. Nothing downstream can catch that, because
+  // there is nothing wrong downstream.
+  //
+  // WHY IT MAY NOT BE FATAL ON SIGHT EITHER, which is what shipped first and is the
+  // cost this change buys back. `groups` is the only unbounded read of the four (a
+  // whole-tenant list, so the likeliest to time out) and it is read by NINE pages —
+  // but not by the (app) layout, and not by the two routes that matter at a venue:
+  // /events/[id] and /events/[id]/run-order/live, which between them read
+  // ws.membership, ws.tenant and ws.perms and nothing else. When staff press เริ่ม,
+  // /api/notify fans a link to the show-caller out to ~19 phones at once. Failing on
+  // sight meant one statement timeout on a select those phones never use took the
+  // live show-caller down for all of them, mid-festival, on a page that rendered
+  // fine the round before. The other three reads have no such route: everything that
+  // gets past them needs them.
+  //
+  // WHY A POISONED FIELD AND NOT A `partial` FLAG. The flag was the obvious shape and
+  // it is this project's most common defect: a flag is only as good as the nine call
+  // sites that remember to check it, the tenth is written next month, and the tenth
+  // gets `[]` — the exact wrong answer above, now with a mechanism in the codebase
+  // that says it was considered. The poison inverts that. Forgetting to handle it is
+  // not possible: the failure lives in the DATA, so every reader is guarded by
+  // construction and every non-reader is provably unaffected, with no call-site edits
+  // to get right and none to keep right. A page that reads groups behaves exactly as
+  // it did before this change; a page that does not now survives.
+  //
+  // The honest cost, so it is weighed and not rediscovered: property access is
+  // normally safe, and this one is not. It is confined to the failure path — on a
+  // healthy read `groups` is an ordinary array with no getter, so spreads, JSON and
+  // toEqual behave as they always did — and it is `enumerable`, so a spread of a
+  // poisoned workspace raises the real error instead of quietly dropping the field.
+  const groupsFailure = readFailure({ "รายชื่อวง": groupsRead }, "getWorkspace");
+  if (groupsFailure) {
+    // Logged HERE rather than at the access, because the whole point of this change
+    // is that some routes never access it. The show-caller staying up must not also
+    // make the outage invisible — Next redacts the message in production, so this
+    // line is the only thing tying a report ("the dashboard is showing an error") to
+    // a cause in the Vercel log, and it must be written even when nobody threw.
+    console.error("[CueIQ] getWorkspace read failed:", groupsFailure.message);
+  }
 
   // Past the guards, an empty answer is a real one and keeps its old meaning: a
   // tenants row that is genuinely absent (deleted, or hidden by RLS) still yields
   // `tenant: null` → the join screen, and a label with no bands yet still yields
   // `groups: []` → "ยังไม่มีวง". Only `.error` decides, exactly as in read-guard.
   const tenant = tenantRead.data;
-  const groups = groupsRead.data;
   const groupRoles = (groupRoleRead.data ?? []) as GroupRoleRow[];
 
-  return {
+  const ws: Workspace = {
     user: base,
     membership: {
       tenant_id: memberRow.tenant_id as string,
       role,
     },
     tenant: (tenant as Tenant) ?? null,
-    groups: (groups ?? []) as Group[],
+    groups: (groupsRead.data ?? []) as Group[],
     groupRoles,
+    // NOT derived from `groups`: perms is role + group_roles, both of which read
+    // fine on this path. A poisoned band LIST does not make the permission answer
+    // unsafe, and callers that only ask "may I?" must not be taken down by it.
     perms: makePerms(role, groupRoles),
   };
+  if (groupsFailure) poisonField(ws, "groups", groupsFailure);
+  return ws;
 });
+
+/**
+ * Replace a resolved field with one that THROWS when it is read.
+ *
+ * The alternative to a flag nobody checks (see READ 4 above). Three properties are
+ * load-bearing and none of them is decoration:
+ *   • `enumerable: true` — a spread or a JSON.stringify of the workspace must raise
+ *     the real read failure, not silently omit the field and hand the next line an
+ *     `undefined` to call `.map()` on.
+ *   • `configurable: true` — a test (or a future caller building a derived
+ *     workspace) can still redefine it; a locked property would be a second, worse
+ *     kind of un-debuggable.
+ *   • The SAME Error instance every time, so a page that reads the field twice
+ *     reports one cause, and Next attaches one digest to it.
+ * Applied only on the failure path, so a healthy workspace is a plain object.
+ */
+function poisonField<K extends keyof Workspace>(ws: Workspace, key: K, err: Error): void {
+  Object.defineProperty(ws, key, {
+    get(): never {
+      throw err;
+    },
+    enumerable: true,
+    configurable: true,
+  });
+}
 
 export interface EventBundle {
   event: EventRow & { group: Group | null };

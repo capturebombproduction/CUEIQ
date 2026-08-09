@@ -20,7 +20,18 @@ const { pathToFileURL } = require("node:url");
 // the MAIN process's net.fetch as well as the renderer; the per-session layers in
 // cutTheNetworkForSmoke cannot.
 if (process.env.CUEIQ_SMOKE === "1" && process.env.CUEIQ_SMOKE_OFFLINE === "1") {
-  app.commandLine.appendSwitch("host-resolver-rules", "MAP * ~NOTFOUND");
+  // EXCLUDE localhost for the handover scenario, whose FIRST phase is an ordinary
+  // online boot against a stub Supabase on 127.0.0.1 — the whole point being that
+  // the app fills its own caches before anything is cut. Chromium is documented to
+  // short-circuit IP literals ahead of the resolver, which would make the exclusion
+  // redundant; it is written out anyway, because "documented to" is the kind of
+  // assumption that turns into a twenty-minute CI bisect when it stops holding, and
+  // the clause costs nothing for the scenarios that do not use it. Every real
+  // hostname still resolves to nothing, in the main process as well as the renderer.
+  app.commandLine.appendSwitch(
+    "host-resolver-rules",
+    "MAP * ~NOTFOUND , EXCLUDE 127.0.0.1 , EXCLUDE localhost"
+  );
 }
 
 // Single instance ONLY: two instances would share the same userData profile, and
@@ -87,6 +98,33 @@ const SMOKE_HASH = (SMOKE && process.env.CUEIQ_SMOKE_HASH) || "";
 // default here on purpose: a probe with nothing real to aim at is worse than no probe,
 // because it answers "cut" forever. Empty ⇒ the cut is UNCALIBRATED and the run fails.
 const SMOKE_PROBE_URL = process.env.CUEIQ_SMOKE_PROBE_URL || "";
+// ── The handover scenario: online first, THEN the network cut ────────────────
+// Everything above tests the app reading caches that the TEST wrote. That proves the
+// offline read path and the boot gate, and run-smoke's header has always said so —
+// but the other half of the founder's airplane test is the half nothing covered:
+// does an ONLINE session write those caches correctly before the wifi dies?
+//
+// CUEIQ_SMOKE_BACKEND points at a local stub of the Supabase HTTP API
+// (desktop/scripts/smoke-backend.mjs). The renderer cannot be told about it — the
+// Supabase URL is substituted into the bundle at BUILD time by vite's `define`, so
+// the string is baked into the artifact under test. Redirecting at the network layer
+// is therefore not a shortcut, it is the only way to swap the backend while still
+// launching the exact build that ships.
+//
+// `SMOKE &&` for the same reason as SMOKE_OFFLINE: without it a stray variable in the
+// show laptop's environment would silently point the real app at a dead localhost.
+const SMOKE_BACKEND = (SMOKE && process.env.CUEIQ_SMOKE_BACKEND) || "";
+// The host whose traffic gets redirected. Derived by the caller from the same place
+// the bundle got its URL, never guessed here.
+const SMOKE_BACKEND_FOR = (SMOKE && process.env.CUEIQ_SMOKE_BACKEND_FOR) || "";
+// Two phases in one launch: boot ONLINE against the stub, wait for the app to fill
+// its own caches, then cut the network and cold-boot again on what it wrote.
+const SMOKE_HANDOVER = SMOKE && process.env.CUEIQ_SMOKE_HANDOVER === "1";
+// {"loginId":"…","password":"…"} — typed into the real login form, because the
+// handover scenario is only worth having if NOTHING it later reads was planted by
+// the test. Signing in is also the first half of the venue story the whole test is
+// about: the operator logs in at the hotel and drives to the show.
+const SMOKE_SIGN_IN = (SMOKE && process.env.CUEIQ_SMOKE_SIGN_IN) || "";
 // Time-box the whole self-test. The caller owns this number because it also owns the
 // deadline it waits on, and the inner one must always fire first (run-smoke.mjs).
 const SMOKE_WATCHDOG_MS = Number(process.env.CUEIQ_SMOKE_WATCHDOG_MS) || 90_000;
@@ -337,6 +375,64 @@ function blockNetworkRequestsForSmoke(win) {
  *  ⚠️ MUST be called AFTER the first load. The debugger needs a live renderer to
  *  attach to; called before one exists it does not throw, it simply never answers —
  *  which showed up as a 90-second watchdog verdict with no cause attached. */
+/** Point the app's Supabase traffic at the local stub, without touching the build.
+ *
+ *  Installed BEFORE the first load and left in place for the whole run: the offline
+ *  phase cancels everything anyway (blockNetworkRequestsForSmoke registers its own
+ *  handler, and the LAST onBeforeRequest listener registered wins in Electron), so
+ *  this one does not need unwinding.
+ *
+ *  ⚠️ Redirect, do not proxy. A proxy would put this file in the business of
+ *  understanding PostgREST; a redirect leaves the renderer making its own real
+ *  requests, with its own real headers and its own real supabase-js, at a different
+ *  host. The only thing the test changes is where the packets go. */
+function serveSupabaseFromStub(win, host, backend) {
+  const ses = win.webContents.session;
+  const base = backend.replace(/\/+$/, "");
+
+  // ⚠️ SERVE IT, DO NOT REDIRECT IT — and the reason is a spec rule, not a quirk.
+  // The first cut used webRequest.onBeforeRequest with a redirectURL, and the stub
+  // logged `200 POST /auth/v1/token` immediately followed by `401 GET /auth/v1/user`.
+  // Sign-in worked (that call authenticates with a body and an apikey header) and the
+  // very next call, which authenticates with a Bearer token and nothing else, arrived
+  // naked: fetch strips Authorization, Cookie and Proxy-Authorization when a redirect
+  // crosses origins, and https://<project>.supabase.co → http://127.0.0.1:<port>
+  // crosses about as hard as it is possible to cross. Every read would have come back
+  // 401, phase one would have cached nothing, and the scenario would have reported
+  // "the app never wrote its caches" — true, and pointing at the wrong thing entirely.
+  // Carrying the header across by hand does not work either: onBeforeRequest runs
+  // BEFORE headers are computed, so the redirect happens before there is anything to
+  // capture.
+  //
+  // Handling the scheme instead keeps the renderer's request exactly as it was — same
+  // URL, same headers, same origin — and forwards it from the main process, where no
+  // browser rule applies. It also means the response comes back as if it came from
+  // Supabase, so the app's CORS story is unchanged too.
+  ses.protocol.handle("https", async (request) => {
+    const url = new URL(request.url);
+    if (url.host !== host) {
+      // Everything else is dead by design (host-resolver-rules), and answering
+      // rather than hanging keeps a stray request from eating the scenario's clock.
+      return new Response("smoke: only the Supabase host is served", { status: 502 });
+    }
+    try {
+      return await net.fetch(new Request(base + url.pathname + url.search, request), {
+        bypassCustomProtocolHandlers: true,
+      });
+    } catch (e) {
+      return new Response(`smoke stub unreachable: ${String(e)}`, { status: 502 });
+    }
+  });
+
+  // The realtime socket is NOT served: the stub speaks HTTP only, and every
+  // offline-capable path in this app is written to work without realtime. Cancelling
+  // is the honest simulation of "the socket never came up", which is also what a
+  // venue gets — and protocol.handle does not cover wss anyway.
+  ses.webRequest.onBeforeRequest({ urls: ["wss://*/*", "ws://*/*"] }, (_d, callback) =>
+    callback({ cancel: true })
+  );
+}
+
 async function emulateOfflineViaCdp(win) {
   const dbg = win.webContents.debugger;
   if (!dbg.isAttached()) dbg.attach("1.3");
@@ -592,6 +688,85 @@ function writeSmokeVerdict(verdict) {
   app.exit(verdict.ok ? 0 : 1);
 }
 
+/** Which cache entries the APP ITSELF has written, straight out of localStorage.
+ *
+ *  This is the whole point of the handover scenario. Every other assertion in this
+ *  file is about what the app READS; this one is about what it WROTE, and it is
+ *  deliberately a list of keys rather than a boolean so a verdict can show that the
+ *  workspace landed and the events list did not (the events cache key is derived
+ *  from the account's viewable groups, which is exactly the kind of thing that goes
+ *  quietly wrong). */
+const SMOKE_CACHE_KEYS = `JSON.stringify(
+  Object.keys(localStorage).filter((k) => k.indexOf('cueiq:cache:') === 0).sort()
+)`;
+
+/** Type credentials into the REAL login form and submit it.
+ *
+ *  ⚠️ The native value setter, not `el.value = …`. React tracks the last value it
+ *  wrote on the DOM node; assigning `.value` directly updates the input on screen
+ *  but leaves that tracker in step, so React's onChange never fires and the
+ *  component's state stays empty — the form then submits two blank fields and the
+ *  test reports "sign-in failed" for a reason that has nothing to do with the app.
+ *  Going through the prototype setter is what makes the tracker notice. */
+async function signInThroughTheForm(win, loginId, password) {
+  // Wait for the form. The app does not open ON the login screen — App.tsx resolves
+  // the session first and shows its boot card while it does — so typing immediately
+  // finds no field and reports a sign-in failure for a page that had simply not
+  // rendered yet.
+  const deadline = Date.now() + 20_000;
+  for (;;) {
+    const ready = await win.webContents.executeJavaScript(
+      `!!document.getElementById("loginId") && !!document.getElementById("password")`
+    );
+    if (ready) break;
+    if (Date.now() >= deadline) {
+      const screen = await win.webContents.executeJavaScript(
+        `document.querySelector('[data-cueiq-screen]')?.getAttribute('data-cueiq-screen') || "none"`
+      );
+      throw new Error(`the login form never appeared (screen was "${screen}")`);
+    }
+    await new Promise((r) => setTimeout(r, 250));
+  }
+
+  const script = `(() => {
+    const set = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+    const type = (id, value) => {
+      const el = document.getElementById(id);
+      if (!el) return false;
+      set.call(el, value);
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+      return true;
+    };
+    if (!type("loginId", ${JSON.stringify(loginId)})) return "no loginId field";
+    if (!type("password", ${JSON.stringify(password)})) return "no password field";
+    const form = document.querySelector("form");
+    if (!form) return "no form";
+    form.requestSubmit ? form.requestSubmit() : form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    return "submitted";
+  })()`;
+  const outcome = await win.webContents.executeJavaScript(script);
+  if (outcome !== "submitted") throw new Error(`could not drive the login form: ${outcome}`);
+}
+
+/** Phase 1 of the handover: wait until the ONLINE app has filled its own caches.
+ *
+ *  Waiting on the SCREEN would not do — the shell renders from an empty workspace
+ *  just as happily — so this waits on the artefact the offline phase is about to
+ *  depend on, and returns whatever it last saw so a failure can say which key was
+ *  missing rather than "it did not work". */
+async function pollUntilCachesWritten(win, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  let keys = [];
+  for (;;) {
+    keys = JSON.parse(await win.webContents.executeJavaScript(SMOKE_CACHE_KEYS));
+    const hasWorkspace = keys.includes("cueiq:cache:workspace");
+    const hasEvents = keys.some((k) => k.startsWith("cueiq:cache:events:"));
+    if (hasWorkspace && hasEvents) return { ok: true, keys };
+    if (Date.now() >= deadline) return { ok: false, keys };
+    await new Promise((r) => setTimeout(r, 250));
+  }
+}
+
 /** Poll rather than sleep: the answer usually arrives in well under a second, and
  *  a fixed sleep is either slower than it needs to be or shorter than the slowest
  *  CI runner — the two ways a smoke test becomes flaky. */
@@ -636,8 +811,17 @@ async function createWindow() {
   const smokeUnexpectedConsoleErrors = [];
   if (SMOKE) {
     smokeAt("window-created");
+    // The stub has to be reachable BEFORE the first load, because phase 1 of the
+    // handover is an ordinary online boot that happens to answer to localhost.
+    // (host-resolver-rules from the top of this file kills every real hostname and
+    // leaves the stub alone: Chromium's resolver never touches an IP literal.)
+    if (SMOKE_BACKEND && SMOKE_BACKEND_FOR) {
+      serveSupabaseFromStub(win, SMOKE_BACKEND_FOR, SMOKE_BACKEND);
+    }
     // Session-level only here; the CDP half waits until a renderer exists (below).
-    if (SMOKE_OFFLINE) blockNetworkRequestsForSmoke(win);
+    // DEFERRED for the handover: cancelling everything now would take the stub with
+    // it, and phase 1 is supposed to be online.
+    if (SMOKE_OFFLINE && !SMOKE_HANDOVER) blockNetworkRequestsForSmoke(win);
     win.webContents.on("console-message", (...args) => {
       // Electron moved this event's signature: it used to be
       // (event, level:number, message, line, sourceId) and is now (details) with
@@ -867,12 +1051,45 @@ async function createWindow() {
       // does not survive that reload (see emulateOfflineViaCdp) — so the only reading
       // that can mean anything is the one taken from the boot under test, which is
       // probe.onLine, which onLineHeld does assert.
-      if (SMOKE_OFFLINE) {
+      if (SMOKE_OFFLINE && !SMOKE_HANDOVER) {
         smokeAt("cdp-offline");
         await emulateOfflineViaCdp(win);
       }
 
-      if (SMOKE_SEED_FILE) {
+      // ── THE HANDOVER: online first, and the app writes its own caches ────────
+      // Phase 1 boots ONLINE against the stub with nothing but a session planted, so
+      // every cueiq:cache entry the offline phase then reads was written by the
+      // app's own code on its own reads. That is the half of the founder's airplane
+      // test that hand-seeding can never cover, and the half where a wrong cache KEY
+      // (derived from the account's viewable groups) hides.
+      let handover = null;
+      if (SMOKE_HANDOVER) {
+        if (SMOKE_SIGN_IN) {
+          // Nothing is planted at all on this path: the app signs itself in against
+          // the stub, and every cueiq:cache entry the offline phase reads is one it
+          // produced from its own reads with its own token.
+          smokeAt("handover:signing-in");
+          const creds = JSON.parse(SMOKE_SIGN_IN);
+          await signInThroughTheForm(win, creds.loginId, creds.password);
+        } else if (SMOKE_SEED_FILE) {
+          smokeAt("handover:seeding-session");
+          await plantSmokeSeed(win);
+        }
+        smokeAt("handover:online");
+        handover = await pollUntilCachesWritten(win, 30_000);
+        if (!handover.ok) {
+          throw new Error(
+            `the online phase never wrote its caches — localStorage held [${handover.keys.join(", ")}]. ` +
+              `Either the stub did not answer a read the app needs, or the sign-in it was given was not honoured.`
+          );
+        }
+        // NOW cut it, and only now.
+        smokeAt("handover:cutting");
+        blockNetworkRequestsForSmoke(win);
+        await emulateOfflineViaCdp(win);
+        smokeAt("handover:offline-boot");
+        await reloadAndWait(win, "into the offline boot");
+      } else if (SMOKE_SEED_FILE) {
         smokeAt("seeding");
         await plantSmokeSeed(win);
         smokeAt("seeded");
@@ -932,6 +1149,9 @@ async function createWindow() {
         ...context,
         ...probe,
         netProbe,
+        // The keys the APP wrote during the online phase — reported so a green
+        // handover run says WHAT it handed over, not merely that it did.
+        ...(handover ? { cacheKeysWrittenOnline: handover.keys } : {}),
         ...(failReason ? { failReason } : {}),
         consoleErrors: smokeConsoleErrors,
         unexpectedConsoleErrors: smokeUnexpectedConsoleErrors,

@@ -75,7 +75,15 @@ node desktop/scripts/run-smoke.mjs --exe desktop/release/win-unpacked/CueIQ.exe
 |------|----------|---------|
 | `control` | ไม่มี session, เน็ตปกติ | หน้า `login` |
 | `airplane` | session หมดอายุใน localStorage, DNS ตาย, request ถูก cancel, `navigator.onLine` = false | `#/dashboard` + หน้าจอ `shell` + ชื่อวงจากแคช + **จำนวนงานตรงเป๊ะ** |
+| **`handover`** | **ไม่ปลูกอะไรเลย** — แอปพิมพ์รหัสเข้าฟอร์มล็อกอินจริงใส่ Supabase จำลอง, อ่านเอง, **เขียนแคชเอง** → *แล้วค่อย* ตัดเน็ต → บูตเย็น | เหมือน `airplane` แต่แคชทุกไบต์เป็นของที่แอปผลิตเอง |
 | `quick-show-offline` | ไม่มีบัญชี ไม่มีเน็ต เปิดที่ `/my-show` | Quick Show เปิดได้ |
+
+`handover` คือครึ่งที่ `airplane` พิสูจน์ไม่ได้: การ seed แคชด้วยมือมัน**ข้าม**โค้ดที่เขียนแคช จึงบอกได้แค่ว่า
+"อ่านออฟไลน์ได้" ไม่ได้บอกว่า "ตอนออนไลน์เขียนถูกไหม" ตัวนี้ใช้ stub ของ Supabase (`desktop/scripts/smoke-backend.mjs`,
+node:http ล้วน ไม่มี dependency) ที่ main process **เสิร์ฟให้เอง** ผ่าน `ses.protocol.handle("https", …)` —
+ไม่ใช่ redirect เพราะ redirect ข้าม origin จะ**ถอด header `Authorization` ทิ้ง**ตามสเปก fetch (เจอมาแล้ว:
+`200 POST /auth/v1/token` ตามด้วย `401 GET /auth/v1/user`) และที่สำคัญคือ **build ไม่ถูกแตะเลย** เพราะ URL ของ
+Supabase ถูก bake เข้า bundle ตั้งแต่ตอน build
 
 **สามอย่างที่ทำให้เทสต์นี้โกหกไม่ได้** (ทั้งหมดอยู่ท้าย `run-smoke.mjs`):
 
@@ -95,8 +103,10 @@ node desktop/scripts/run-smoke.mjs --exe desktop/release/win-unpacked/CueIQ.exe
 
 ### สิ่งที่ smoke นี้ **ไม่ได้** พิสูจน์ — อ่านก่อนอ้างว่าเขียว
 
-- การ seed `cueiq:cache:*` **ข้าม** โค้ดที่เขียนแคชนั้น จึงพิสูจน์แค่ *เส้นทางอ่าน* ออฟไลน์กับประตูล็อกอิน
-  ไม่ได้พิสูจน์ว่า session ตอนออนไลน์เติมแคชถูกก่อนเน็ตจะหลุด
+- ~~การ seed แคชข้ามโค้ดที่เขียนแคช~~ — **ปิดช่องนี้แล้วด้วย `handover`** (ดูตารางด้านบน) `airplane`
+  ยังคง seed อยู่โดยตั้งใจ เพราะเป็นตัวเร็วที่ไม่ต้องมี backend คอยเฝ้าเส้นทางอ่าน
+- stub **ไม่ได้เสิร์ฟทุกอย่าง**: `staff_contacts` / `song_markers` / `practice_songs` และ *การเขียน* ทุกชนิด
+  ตอบ 501 พร้อมบอกชื่อ path — ถ้าวันหนึ่งมี scenario เดินไปถึง จะเห็นทันทีว่าขาดอะไร ไม่ใช่ผ่านแบบเงียบ ๆ
 - รัน `win-unpacked` ไม่ใช่ตัวที่ติดตั้งผ่าน NSIS — ปัญหาเฉพาะตอนติดตั้ง (path มีเว้นวรรค/ภาษาไทย,
   per-user install) ยังไม่ถูกทดสอบ
 - jsdom ไม่ decode เสียง ไม่บังคับ autoplay policy ไม่รันสองเครื่อง — เทสต์ฝั่งนั้นพิสูจน์ *เจตนา*

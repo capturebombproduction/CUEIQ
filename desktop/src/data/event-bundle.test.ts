@@ -22,6 +22,7 @@
 // wall-clock time, because the failure being pinned is precisely "a promise that
 // never settles" and a test that waited for one would be the same hang.
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import type { MgmtOp } from "@/lib/mgmt-outbox";
 import {
   anonEmpty,
   makeSession,
@@ -32,14 +33,21 @@ import {
   type SupabaseFake,
 } from "@/test/fakes/supabase";
 
-const h = vi.hoisted(() => ({ supa: null as unknown }));
+const h = vi.hoisted(() => ({ supa: null as unknown, ops: [] as unknown[] }));
 vi.mock("@/lib/supabase/client", () => ({ createClient: () => h.supa }));
 
-// The offline management outbox is IndexedDB and is not what these tests are
-// about; an empty queue is the "nothing pending" case every assertion below wants
-// (withPendingOverlay then returns the bundle untouched).
+// The offline management outbox is IndexedDB and is not what most of these tests
+// are about; `h.ops` is reset to an EMPTY queue in beforeEach, which is the
+// "nothing pending" case every assertion below wants (withPendingOverlay then
+// returns the bundle untouched).
+//
+// It is a settable box rather than a fixed `[]` for one reason, and it is the
+// reason the delete-vs-unreachable pair further down could not be written before:
+// with `pendingMgmtOps` hard-wired to `[]`, withPendingOverlay's queued-delete
+// branch was unreachable from this file, so the one answer that must NOT be
+// "unreachable" had no test at all.
 vi.mock("~/data/mgmt-outbox", () => ({
-  pendingMgmtOps: vi.fn(() => Promise.resolve([])),
+  pendingMgmtOps: vi.fn(() => Promise.resolve(h.ops)),
   listMgmtConflicts: vi.fn(() => Promise.resolve([])),
   MGMT_OUTBOX_EVENT: "cueiq:mgmt-outbox",
 }));
@@ -142,9 +150,21 @@ const answersAfter =
   () =>
     new Promise<ScriptResult>((resolve) => setTimeout(() => resolve(result), ms));
 
+/** A delete this DEVICE queued while offline — the one local answer that needs
+ *  neither the server nor the cache. `base` is the epoch-ms the row was read at and
+ *  `seq` the per-device counter; neither matters to the overlay, which filters on
+ *  `id` and branches on `kind`. */
+const queuedDelete = (id = EVENT_ID): MgmtOp => ({
+  kind: "event.delete",
+  id,
+  base: Date.parse("2026-08-09T10:00:00.000Z"),
+  seq: 1,
+});
+
 let supa: SupabaseFake;
 
 beforeEach(() => {
+  h.ops = [];
   // Only the timer functions the loader uses. fake-indexeddb and supabase-js both
   // schedule on setImmediate/queueMicrotask, and faking those turns an unrelated
   // hang into the thing the test appears to be proving.
@@ -394,6 +414,79 @@ describe("loadEventBundleStatus — the two answers that used to be one null", (
 
     expect(unreachable).toBe(false);
     expect(bundle?.event.name).toBe("fresh show");
+  });
+});
+
+// ── the third answer: a delete THIS DEVICE queued ─────────────────────────────
+//
+// Once "we could not reach it" was split off from "it is gone", the offline branch
+// marked EVERY empty answer unreachable — and that is a lie for exactly one case.
+// An operator deletes a show at the venue with no signal (the delete is queued in
+// the management outbox, ⭐#1 step 2), then taps back into it. The server was never
+// asked and the cache was deliberately emptied by the overlay, so the loader hands
+// back a null with `unreachable: true` — and pages/event.tsx offers ลองใหม่ for a
+// deletion this device performed, plus "ไม่มีสำเนาในเครื่องนี้" for a show it has a
+// copy of. Retrying can never change that answer, because there is no answer to get.
+//
+// Both directions are pinned here, because the distinction collapses just as
+// completely if it is fixed the other way (mark every null "gone" and a black-holed
+// hotspot becomes a false obituary — the finding the split was made for). The two
+// scenarios differ by ONE thing: whether a delete for THIS event is queued.
+describe("loadEventBundleStatus — a queued local delete is not an unreachable server", () => {
+  it("reports 'this is gone' for an event deleted offline and reopened offline", async () => {
+    setOnline(false);
+    // The device still HOLDS the bundle — this is the reopen, not a cold laptop.
+    // Serving it would be worse than the retry button: the show would open as if
+    // the delete never happened.
+    seedBundleCache();
+    h.ops = [queuedDelete()];
+
+    await expect(loadEventBundleStatus(EVENT_ID)).resolves.toEqual({
+      bundle: null,
+      unreachable: false,
+    });
+    // The delete is a local answer: it must cost no request even if the OS is wrong
+    // about being offline a moment later.
+    expect(supa.calls).toHaveLength(0);
+  });
+
+  it("still reports unreachable when the queued delete belongs to ANOTHER event", async () => {
+    // The mirror, kept one variable away from the test above so neither can be made
+    // to pass by widening the other: same offline, same empty cache for THIS id, a
+    // queue that is not empty — and the answer flips straight back to "retry".
+    setOnline(false);
+    h.ops = [queuedDelete(OTHER_EVENT_ID)];
+
+    await expect(loadEventBundleStatus(EVENT_ID)).resolves.toEqual({
+      bundle: null,
+      unreachable: true,
+    });
+  });
+
+  it("still reports unreachable offline with an EMPTY queue and no cache", async () => {
+    // The plainest form of the same mirror: nothing queued, nothing on disk. This is
+    // the venue laptop that never opened tonight's show, and it must keep its ลองใหม่.
+    setOnline(false);
+
+    await expect(loadEventBundleStatus(EVENT_ID)).resolves.toEqual({
+      bundle: null,
+      unreachable: true,
+    });
+  });
+
+  it("reports 'gone' for a queued delete even when the read never answers", async () => {
+    // navigator.onLine is the network the OS knows about; the venue case is the
+    // black-holed AP that reports itself online. The verdict must not depend on
+    // which of the two the device is in — the delete is local either way.
+    seedBundleCache();
+    h.ops = [queuedDelete()];
+    supa.setTable("events", neverAnswers);
+
+    const p = loadEventBundleStatus(EVENT_ID);
+    await settleMicrotasks();
+    await vi.advanceTimersByTimeAsync(EVENT_BUNDLE_TIMEOUT_MS);
+
+    await expect(p).resolves.toEqual({ bundle: null, unreachable: false });
   });
 });
 
