@@ -579,7 +579,30 @@ jobs:
           else
             gh release create "$tag" out/* --title "CueIQ $tag" "${create_latest[@]}" --notes-file notes.md
           fi
-          # isLatest is printed so the run's own log answers "did this move the
-          # pointer?" without anyone having to open the Releases page.
-          gh release view "$tag" --json isDraft,isLatest,tagName,assets \
-            --jq '"published: \(.tagName) draft=\(.isDraft) latest=\(.isLatest) assets=\([.assets[].name] | join(", "))"'
+          # ── Did this actually land? ──────────────────────────────────────────
+          # ⚠️ THIS BLOCK USED TO BE A PRINT, AND THE PRINT FAILED THE JOB. v0.1.9
+          # published perfectly — seven assets, not a draft, pointer moved from
+          # v0.1.8 — and then `gh release view --json isLatest` exited 1 with
+          # "Unknown JSON field: isLatest", because gh dropped that field. Under
+          # `set -e` a diagnostic line took a successful release down with it, and a
+          # red publish job on a good release is worse than no annotation at all: it
+          # teaches whoever reads it that red here does not mean anything.
+          #
+          # So the release read stays FATAL (if the release cannot be read back, the
+          # publish did not happen), the pointer is read through the REST API rather
+          # than a gh field that can be renamed again, and the whole thing is now an
+          # ASSERTION instead of an echo: we already decided above whether this tag
+          # should be Latest, so compare that decision with what GitHub actually did.
+          gh release view "$tag" --json isDraft,tagName,assets \
+            --jq '"published: \(.tagName) draft=\(.isDraft) assets=\([.assets[].name] | join(", "))"'
+
+          pointer=$(gh api "repos/$GH_REPO/releases/latest" --jq .tag_name 2>/dev/null || echo "<unreadable>")
+          echo "latest-pointer after publish: $pointer (this tag: $tag, decision was: $decision)"
+          if [ "$decision" = yes ] && [ "$pointer" != "$tag" ]; then
+            echo "::error::$tag was published and SHOULD hold the Latest pointer, but GitHub reports '$pointer'. electron-updater reads nothing but /releases/latest, so no installed copy will be offered this build."
+            exit 1
+          fi
+          if [ "$decision" = no ] && [ "$pointer" = "$tag" ]; then
+            echo "::error::$tag took the Latest pointer even though this run decided it must not. Every installed copy will now be offered it."
+            exit 1
+          fi
