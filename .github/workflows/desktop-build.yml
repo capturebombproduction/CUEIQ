@@ -185,18 +185,18 @@ jobs:
       #
       # ⚠️ TIMEOUT NESTING, outermost last: main.cjs's watchdog (the only one that
       # reports a stage) fires at --timeout minus 45s, run-smoke's per-scenario
-      # --timeout (135s, or 240s for the two-device pair) next, this step last.
-      # Worst case 4 x 135s + 240s = ~13 min, so this is 20 and stays strictly
+      # --timeout (135s, or 240s for each of the two PAIRS) next, this step last.
+      # Worst case 4 x 135s + 2 x 240s = ~17 min, so this is 25 and stays strictly
       # outermost — it must never pre-empt an answer the app was about to give.
       #
-      # The two-device pair runs HERE TOO, against the packaged tree: two copies of
-      # the real .exe, one running a show and one joining it over a socket. That is
-      # the closest a machine gets to the founder standing in a room with a laptop
-      # and a phone.
+      # Both PAIRS run HERE TOO, against the packaged tree: two copies of the real
+      # .exe talking over a socket, once with a device joining a running show and
+      # once with the show being HANDED to it. That is the closest a machine gets to
+      # the founder standing in a room with a laptop and a phone.
       - name: Smoke-launch the packaged app (cold, airplane, handover, two devices, Quick Show)
         if: runner.os == 'Windows' # see the note on the feed check above
         shell: bash
-        timeout-minutes: 20
+        timeout-minutes: 25
         run: node desktop/scripts/run-smoke.mjs --exe ./desktop/release/win-unpacked/CueIQ.exe
 
       # The .exe alone is not enough for auto-update: electron-updater reads

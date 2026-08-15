@@ -236,12 +236,47 @@ const SCENARIOS = [
     // sees every scenario in one place.
     name: "two-device",
     what: "PA starts a show, a second device joins -> one controller, one sound host",
-    pair: true,
+    // a = launched first and starts the show; b = joins mid-show. `controller`
+    // names which of the two must END with the show, and everything the pair is
+    // checked on is written in terms of that — so the handoff scenario below is the
+    // same code with one letter changed, rather than a second copy of it.
+    pair: {
+      a: { role: "main", expect: "live-controller" },
+      b: { role: "peer", expect: "live-viewer" },
+      controller: "a",
+    },
     seed: false,
     backend: true,
     // Most of this clock is spent WAITING: the PA holds while the peer signs in,
     // loads the bundle and settles its channel. The app's watchdog is derived from
     // this (see runScenario), so both move together.
+    timeoutSec: 240,
+    env: {
+      CUEIQ_SMOKE_REALTIME: "1",
+      CUEIQ_SMOKE_EXPECT: "live-controller", // per-device value; overridden below
+    },
+  },
+  {
+    // THE HANDOFF — "2-device handoff" is the exact phrase on the hand-run list.
+    // The PA runs the show; the second device does what an operator does when the
+    // desk moves: turns its OWN sound output on, then presses ขอควบคุม. The show,
+    // the audio and the item index all have to move together and land on one
+    // device — and the old PA has to go quiet, which is the half that has cost a
+    // real show before (two speakers, one of them a second behind).
+    //
+    // The button it presses is not visible until the sound is on: live-mode.tsx
+    // renders ขอควบคุม only for a device that is outputting, precisely so control
+    // can never be taken by a muted phone. That rule is now exercised by a machine
+    // pressing real buttons in a real window.
+    name: "two-device-handoff",
+    what: "the show, the audio and the control all move to the second device",
+    pair: {
+      a: { role: "main-yield", expect: "live-viewer" },
+      b: { role: "peer-take", expect: "live-controller" },
+      controller: "b",
+    },
+    seed: false,
+    backend: true,
     timeoutSec: 240,
     env: {
       CUEIQ_SMOKE_REALTIME: "1",
@@ -498,9 +533,9 @@ async function runTwoDeviceScenario(s) {
   // ⚠️ A HYPHEN, not a colon. The name becomes a temp DIRECTORY (runScenario gives
   // every device its own profile), and ":" is illegal in a Windows path — which is
   // the platform the show laptop and this dev box both run.
-  const device = (role, expect) => ({
+  const device = ({ role, expect }) => ({
     ...s,
-    name: `two-device-${role}`,
+    name: `${s.name}-${role}`,
     what: `${s.what} — ${role}`,
     env: { ...s.env, CUEIQ_SMOKE_LIVE: role, CUEIQ_SMOKE_EXPECT: expect },
   });
@@ -508,8 +543,9 @@ async function runTwoDeviceScenario(s) {
   let main;
   let peer;
   try {
-    // The PA first, and NOT awaited: it holds until the peer has settled.
-    const mainRun = runScenario(device("main", "live-controller"), shared);
+    // The device that starts the show, first and NOT awaited: it holds until the
+    // second one has done its part.
+    const mainRun = runScenario(device(s.pair.a), shared);
     let mainSettled = false;
     mainRun.then(() => {
       mainSettled = true;
@@ -539,9 +575,14 @@ async function runTwoDeviceScenario(s) {
     }
 
     console.log("   the PA is running the show — launching the second device");
-    peer = await runScenario(device("peer", "live-viewer"), shared);
-    // Release the PA: it re-reads its own live state and writes its verdict.
+    peer = await runScenario(device(s.pair.b), shared);
+    // Release the first device: it re-reads its own live state and writes its
+    // verdict. In the HANDOFF scenario it is usually already released — the peer
+    // sets "peer-took-control" itself the moment the show moves — and setting this
+    // one anyway is what stops a peer that DIED mid-handoff from leaving the other
+    // process hanging until its watchdog, which would report the wrong failure.
     backend.setMark("peer-settled");
+    backend.setMark("peer-took-control");
     main = await mainRun;
   } finally {
     await backend.close();
@@ -592,53 +633,72 @@ async function runTwoDeviceScenario(s) {
   }
 
   // ── THE PAIR ITSELF ─────────────────────────────────────────────────────────
-  const paState = main?.liveReport?.after;
-  const peerState = peer?.liveReport?.after;
-  if (!paState || !peerState) {
+  // Written against WHO MUST END UP DRIVING (s.pair.controller) rather than against
+  // "the PA", so the join scenario and the handoff scenario are the same five
+  // checks. The interesting property is identical in both: after two devices have
+  // finished negotiating, the room has one show on it.
+  const aState = main?.liveReport?.after;
+  const bState = peer?.liveReport?.after;
+  if (!aState || !bState) {
     // Name WHICH one, and say what that means. A device that reported no live state
     // did not merely fail an assertion — it never got far enough to make one, and
     // its own verdict (printed above) carries the reason.
-    const missing = [!paState && "the PA", !peerState && "the joining device"].filter(Boolean);
+    const missing = [
+      !aState && `the device that started the show (${s.pair.a.role})`,
+      !bState && `the second device (${s.pair.b.role})`,
+    ].filter(Boolean);
     pairFailures.push(
       `${missing.join(" and ")} reported no live state at all — see that device's own ` +
         `verdict above for why it never reached Live Mode`
     );
   } else {
-    // 1. EXACTLY ONE CONTROLLER. Two is the round-8 critical bug: a phone that had
-    //    merely opened the page re-asserted its own empty INITIAL state over a PA
-    //    that had reloaded mid-show, and the music stopped.
-    if (!paState.controller || peerState.controller) {
+    const driving = s.pair.controller === "a" ? aState : bState;
+    const following = s.pair.controller === "a" ? bState : aState;
+    const drivingName = s.pair.controller === "a" ? s.pair.a.role : s.pair.b.role;
+    const followingName = s.pair.controller === "a" ? s.pair.b.role : s.pair.a.role;
+
+    // 1. EXACTLY ONE CONTROLLER, and the RIGHT one. Two is the round-8 critical
+    //    bug: a phone that had merely opened the page re-asserted its own empty
+    //    INITIAL state over a PA that had reloaded mid-show, and the music stopped.
+    if (!driving.controller || following.controller) {
       pairFailures.push(
-        `controller went wrong: PA=${paState.controller}, peer=${peerState.controller} ` +
-          `(exactly one device must be in control, and it must be the one that started the show)`
+        `controller went wrong: ${drivingName}=${driving.controller}, ` +
+          `${followingName}=${following.controller} (exactly one device drives, and it must be ${drivingName})`
       );
     }
-    // 2. THE SHOW SURVIVED THE JOIN. `begun` false on the PA means the join reset it.
-    if (!paState.begun) pairFailures.push("the PA stopped being in a running show once the peer joined");
-    // 3. THE JOINER ADOPTED, IT DID NOT RESET. Same item index on both screens —
-    //    the fingerprint of the old bug was the peer showing item 0.
-    if (peerState.index !== paState.index) {
+    // 2. THE SHOW SURVIVED. `begun` false anywhere means one of them reset it.
+    if (!driving.begun || !following.begun) {
       pairFailures.push(
-        `the two screens disagree about where the show is: PA at item ${paState.index}, ` +
-          `peer at item ${peerState.index}`
+        `the show stopped being a running show somewhere: ${drivingName}.begun=${driving.begun}, ` +
+          `${followingName}.begun=${following.begun}`
       );
     }
-    // 4. เครื่องเสียงคุมคนเดียว — one sound host. Two is two PAs in one room.
-    if (!paState.sound || peerState.sound) {
+    // 3. BOTH SCREENS ON THE SAME ITEM. The fingerprint of the old bug was the
+    //    joining device showing item 0 — which is why the show is advanced past it
+    //    before the second device is ever launched.
+    if (driving.index !== following.index) {
       pairFailures.push(
-        `sound output went wrong: PA=${paState.sound}, peer=${peerState.sound} ` +
-          `(exactly one device may be sounding)`
+        `the two screens disagree about where the show is: ${drivingName} at item ` +
+          `${driving.index}, ${followingName} at item ${following.index}`
+      );
+    }
+    // 4. เครื่องเสียงคุมคนเดียว — one sound host, and it is whoever is driving.
+    //    Audio and control travel together; two sound hosts is two PAs in one room.
+    if (!driving.sound || following.sound) {
+      pairFailures.push(
+        `sound output went wrong: ${drivingName}=${driving.sound}, ` +
+          `${followingName}=${following.sound} (only the driving device may sound)`
       );
     }
     // 5. AND THE SERVER AGREES. The DOM says what each device believes; the
-    //    show_authority row says what the workspace would tell a THIRD device on
-    //    join. One row, and it names the PA.
+    //    show_authority row is what the workspace would tell a THIRD device on
+    //    join. One row, and it names the device that is actually driving.
     const claims = backend.tables.show_authority ?? [];
-    if (claims.length !== 1 || claims[0].device_id !== paState.deviceId) {
+    if (claims.length !== 1 || claims[0].device_id !== driving.deviceId) {
       pairFailures.push(
-        `show_authority holds ${claims.length} claim(s) (${claims
-          .map((c) => c.device_id)
-          .join(", ") || "none"}), expected exactly one for the PA (${paState.deviceId})`
+        `show_authority holds ${claims.length} claim(s) (${
+          claims.map((c) => c.device_id).join(", ") || "none"
+        }), expected exactly one for ${drivingName} (${driving.deviceId})`
       );
     }
   }
