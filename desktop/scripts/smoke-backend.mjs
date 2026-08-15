@@ -35,7 +35,17 @@
 // which the smoke's boot path never opens. If a future scenario does open them the
 // 501 names the table, which is exactly the signal wanted — far better than an
 // empty list that would let the smoke pass on a screen this file never served.
+//
+// ── WRITES, AND WHY THERE ARE NOW A FEW ─────────────────────────────────────
+// This file used to answer 501 to every non-GET, with the note "the offline smoke
+// fills caches by READING". The two-device scenario is the first one that does
+// something rather than merely arriving somewhere: opening Live Mode CLAIMS the
+// show_main role (lib/show-authority.ts), and a claim that always failed would
+// leave the scenario unable to tell "exactly one device holds the show" from
+// "neither does". So a named, tiny allowlist of tables accepts writes — see
+// WRITABLE_TABLES. Everything outside it still answers the loud 501.
 import http from "node:http";
+import { attachSmokeRealtime } from "./smoke-realtime.mjs";
 
 // ---------------------------------------------------------------------------
 // The fixture
@@ -319,6 +329,13 @@ export const SMOKE_WORLD = deepFreeze({
       },
     ],
 
+    // WRITTEN BY THE APP, not by this fixture: opening Live Mode claims the
+    // show_main role for the device, and the crash-recovery path reads the row
+    // back to ask whether another device already holds the show. Starts empty on
+    // purpose — a pre-seeded claim would hand the first device a "someone else is
+    // running this" it never earned. See WRITABLE_TABLES.
+    show_authority: [],
+
     // Two rows on a DATED festival plus one on a dateless one. The dateless row is
     // not decoration: ~/data/run-order.ts switches between `event_date=eq.<date>`
     // and `event_date=is.null` depending on the festival, and a fixture with no
@@ -502,7 +519,24 @@ function splitInList(body) {
 }
 
 /** Query-string keys PostgREST reads as something other than a filter. */
-const NON_FILTER_PARAMS = new Set(["select", "order", "limit", "offset"]);
+const NON_FILTER_PARAMS = new Set(["select", "order", "limit", "offset", "on_conflict"]);
+
+/**
+ * The only tables this stub will let the app WRITE, and the columns that identify
+ * a row for an upsert.
+ *
+ * Deliberately one entry. Live Mode's claim is the single write on the path any
+ * scenario here walks, and every other write in the app (setlist edits, จบโชว์,
+ * uploads) belongs to a screen no scenario opens — so a generic writable stub
+ * would be inventing behaviour nobody checks. `conflict` mirrors the onConflict
+ * the caller passes (lib/show-authority.ts: "event_id,kind"); a request whose
+ * on_conflict disagrees is refused rather than guessed at, because an upsert
+ * keyed on the wrong columns is exactly how two devices would BOTH end up holding
+ * a role that can only belong to one.
+ */
+const WRITABLE_TABLES = {
+  show_authority: { conflict: ["event_id", "kind"] },
+};
 
 function matchesFilter(row, column, raw) {
   const dot = raw.indexOf(".");
@@ -582,6 +616,81 @@ function applyOrder(rows, orderParam) {
     .map((entry) => entry.row);
 }
 
+/** Does this row satisfy every filter in the query string? Shared by reads and by
+ *  the PATCH/DELETE paths, so "which rows does this touch" is answered by one
+ *  piece of code — a second implementation is how a stub's update hits rows its
+ *  select would not have returned. */
+const rowMatches = (row, params) =>
+  [...params.entries()].every(([key, raw]) =>
+    NON_FILTER_PARAMS.has(key) ? true : matchesFilter(row, key, raw)
+  );
+
+/**
+ * Apply one write to a writable table, in place.
+ *
+ * PostgREST's real semantics, narrowed to what lib/show-authority.ts sends:
+ *   • POST + `Prefer: resolution=merge-duplicates` + `on_conflict=` — upsert.
+ *     A conflicting row is REPLACED rather than merged, which is what
+ *     `.upsert(row)` does when the row carries every column it means to set.
+ *   • POST without those — plain insert.
+ *   • PATCH — merge the body into every row the filters match.
+ *   • DELETE — drop every row the filters match.
+ * Returns the affected rows so `Prefer: return=representation` can answer with
+ * them; the app asks for none of them today, and answering [] instead would make
+ * a future caller's `.select()` silently empty.
+ */
+function applyWrite(rows, table, spec, { method, body, params, prefer }) {
+  if (method === "POST") {
+    const incoming = Array.isArray(body) ? body : [body];
+    const merge = prefer.includes("resolution=merge-duplicates");
+    const onConflict = params.get("on_conflict");
+    if (merge) {
+      if (!onConflict) {
+        throw unimplemented(
+          `an upsert of "${table}" with no on_conflict`,
+          "postgrest-js sends on_conflict when .upsert({ onConflict }) is used"
+        );
+      }
+      const asked = onConflict.split(",");
+      const expected = spec.conflict;
+      if (asked.length !== expected.length || asked.some((c, i) => c !== expected[i])) {
+        throw unimplemented(
+          `an upsert of "${table}" keyed on (${asked.join(", ")})`,
+          `this fixture models the unique constraint (${expected.join(", ")})`
+        );
+      }
+    }
+    const written = [];
+    for (const row of incoming) {
+      const at = merge
+        ? rows.findIndex((existing) => spec.conflict.every((c) => existing[c] === row[c]))
+        : -1;
+      if (at >= 0) rows[at] = { ...row };
+      else rows.push({ ...row });
+      written.push(at >= 0 ? rows[at] : rows[rows.length - 1]);
+    }
+    return written;
+  }
+  if (method === "PATCH") {
+    const touched = [];
+    for (let i = 0; i < rows.length; i++) {
+      if (!rowMatches(rows[i], params)) continue;
+      rows[i] = { ...rows[i], ...body };
+      touched.push(rows[i]);
+    }
+    return touched;
+  }
+  if (method === "DELETE") {
+    const kept = [];
+    const removed = [];
+    for (const row of rows) (rowMatches(row, params) ? removed : kept).push(row);
+    rows.length = 0;
+    rows.push(...kept);
+    return removed;
+  }
+  throw unimplemented(`the method ${method} on "${table}"`, "supported: POST, PATCH, DELETE");
+}
+
 /**
  * Resolve one `GET /rest/v1/<table>?…` against the fixture.
  *
@@ -602,11 +711,7 @@ function runQuery(world, table, params) {
 
   const { columns, embeds } = parseSelect(params.get("select") ?? "*");
 
-  let out = rows.filter((row) =>
-    [...params.entries()].every(([key, raw]) =>
-      NON_FILTER_PARAMS.has(key) ? true : matchesFilter(row, key, raw)
-    )
-  );
+  let out = rows.filter((row) => rowMatches(row, params));
 
   const order = params.get("order");
   if (order) out = applyOrder(out, order);
@@ -751,6 +856,7 @@ function firstValues(searchParams) {
  * @param {number} [options.latencyMs=0]   artificial delay before every response.
  * @param {number} [options.sessionTtlSeconds=3600]  access-token lifetime.
  * @param {boolean} [options.requireAuth=true]  see the note on SMOKE_ANON below.
+ * @param {boolean} [options.realtime=false]  serve the websocket too (see below).
  * @returns {Promise<{url: string, requests: object[], close: () => Promise<void>}>}
  */
 export async function startSmokeBackend(options = {}) {
@@ -760,7 +866,26 @@ export async function startSmokeBackend(options = {}) {
     latencyMs = 0,
     sessionTtlSeconds = 3600,
     requireAuth = true,
+    realtime = false,
   } = options;
+
+  // SMOKE_WORLD is deep-frozen, and a scenario that ran twice against a mutated
+  // fixture would be a scenario whose second run tests something else. So the
+  // writable tables get a mutable COPY, and reads go through the copy: an upsert
+  // must be visible to the next select or the app's own read-back of its claim
+  // would answer with the fixture's empty list.
+  const liveTables = { ...world.tables };
+  for (const name of Object.keys(WRITABLE_TABLES)) {
+    liveTables[name] = [...(world.tables[name] ?? [])];
+  }
+  const liveWorld = { ...world, tables: liveTables };
+
+  /** Rendezvous flags for multi-process scenarios — NOT part of the Supabase
+   *  surface, which is why they live under /smoke/. Two Electron processes and the
+   *  runner that spawned them need to agree on when phase one is over, and the
+   *  alternative is a sleep long enough to be slow and short enough to be flaky.
+   *  Namespaced away from /rest and /auth so a stray app request can never set one. */
+  const marks = new Set();
 
   /** Every request, in order: { method, path, query, search, params, authorized, status }.
    *  `query` holds the FIRST value of each key (what an assertion almost always
@@ -850,6 +975,18 @@ export async function startSmokeBackend(options = {}) {
         return;
       }
 
+      // ── the rendezvous (multi-process scenarios only) ────────────────────
+      if (url.pathname.startsWith("/smoke/mark/")) {
+        const name = url.pathname.slice("/smoke/mark/".length);
+        if (req.method === "POST") {
+          marks.add(name);
+          send(200, { mark: name, set: true });
+          return;
+        }
+        send(200, { mark: name, set: marks.has(name) });
+        return;
+      }
+
       // ── GoTrue ───────────────────────────────────────────────────────────
       if (url.pathname === "/auth/v1/token" && req.method === "POST") {
         const grant = url.searchParams.get("grant_type");
@@ -926,12 +1063,46 @@ export async function startSmokeBackend(options = {}) {
         record.authorized = Boolean(token && accessTokens.has(token));
 
         if (req.method !== "GET" && req.method !== "HEAD") {
-          send(501, {
-            code: "SMOKE_UNIMPLEMENTED",
-            message: `smoke-backend serves reads only; got ${req.method} ${url.pathname}`,
-            details: null,
-            hint: "the offline smoke fills caches by READING; add a writer here if a scenario needs one",
+          const spec = WRITABLE_TABLES[table];
+          if (!spec) {
+            send(501, {
+              code: "SMOKE_UNIMPLEMENTED",
+              message: `smoke-backend does not accept ${req.method} on "${table}"`,
+              details: null,
+              hint: `writable tables: ${Object.keys(WRITABLE_TABLES).join(", ")} — add one in desktop/scripts/smoke-backend.mjs if a scenario needs it`,
+            });
+            return;
+          }
+          // The same anon refusal as the read path, and for a sharper reason: a
+          // write that silently did nothing would let the two-device scenario
+          // report "no device holds the show" as if that were an app decision.
+          if (requireAuth && !record.authorized) {
+            send(401, {
+              code: "SMOKE_ANON",
+              message: `smoke-backend refused an unauthenticated ${req.method} of "${table}"`,
+              details: null,
+              hint: "sign in first; if sign-in succeeded, the Authorization header is being dropped on the way here",
+            });
+            return;
+          }
+          const raw = await readBody(req);
+          const affected = applyWrite(liveTables[table], table, spec, {
+            method: req.method,
+            body: raw ? JSON.parse(raw) : {},
+            params: url.searchParams,
+            prefer: String(req.headers.prefer ?? ""),
           });
+          if (String(req.headers.prefer ?? "").includes("return=representation")) {
+            send(200, affected, { "content-range": `0-${Math.max(affected.length - 1, 0)}/*` });
+            return;
+          }
+          // PostgREST's default: no body. 201 for an insert/upsert, 204 otherwise —
+          // postgrest-js treats any 2xx as success, but a stub that answered 200
+          // with an empty body for a POST would diverge from what a caller reading
+          // `status` sees in production.
+          record.status = req.method === "POST" ? 201 : 204;
+          res.writeHead(record.status, corsHeaders(req));
+          res.end();
           return;
         }
 
@@ -955,7 +1126,9 @@ export async function startSmokeBackend(options = {}) {
           return;
         }
 
-        const rows = runQuery(world, table, url.searchParams);
+        // liveWorld, not world: an upsert has to be visible to the very next read,
+        // or the app's read-back of its own claim answers with the frozen fixture.
+        const rows = runQuery(liveWorld, table, url.searchParams);
 
         // `.single()` (and anything else asking for the object media type) must get
         // ONE object, or a 406/PGRST116. Getting this wrong is the likeliest way a
@@ -1004,10 +1177,19 @@ export async function startSmokeBackend(options = {}) {
     }
   });
 
-  // Realtime. supabase-js opens a WebSocket for any subscribed channel; there is
-  // no realtime here, so refuse the upgrade immediately and RECORD it rather than
-  // letting the socket hang. The client treats it as a dropped connection and
-  // retries, which is harmless — but an unrecorded one would be invisible.
+  // Realtime, when a scenario asks for it. Attached AFTER the refusing handler
+  // below and takes it over (attachSmokeRealtime removes the existing listeners and
+  // restores them on close), so the default stays what it has always been: refuse.
+  //
+  // The default is not laziness — it is what the single-device scenarios want. An
+  // app at a venue has no socket, and every offline-capable path is written to work
+  // without one; serving realtime there would quietly test a friendlier world than
+  // the one those scenarios are named after.
+  //
+  // supabase-js opens a WebSocket for any subscribed channel; with no realtime here,
+  // refuse the upgrade immediately and RECORD it rather than letting the socket
+  // hang. The client treats it as a dropped connection and retries, which is
+  // harmless — but an unrecorded one would be invisible.
   server.on("upgrade", (req, socket) => {
     const url = new URL(req.url ?? "/", "http://127.0.0.1");
     requests.push({
@@ -1021,6 +1203,8 @@ export async function startSmokeBackend(options = {}) {
     });
     socket.destroy();
   });
+
+  const realtimeServer = realtime ? attachSmokeRealtime(server) : null;
 
   await new Promise((resolve, reject) => {
     server.once("error", reject);
@@ -1039,6 +1223,16 @@ export async function startSmokeBackend(options = {}) {
     requests,
     unimplementedPaths,
     world,
+    /** null unless `realtime: true` — the socket half, for the assertions that
+     *  prove two devices really talked THROUGH this process. */
+    realtime: realtimeServer,
+    /** The writable tables as they stand NOW. The two-device scenario reads
+     *  show_authority off this to ask how many devices hold the show — a question
+     *  neither device's own DOM can answer about the other. */
+    tables: liveTables,
+    /** Rendezvous, for the runner: set a flag a waiting app process polls. */
+    setMark: (name) => marks.add(name),
+    hasMark: (name) => marks.has(name),
     /** Resolves once the listener AND every keep-alive socket are gone. Without
      *  closeAllConnections() a client that kept a connection open (supabase-js
      *  does) leaves server.close() pending until its idle timeout, which reads as
@@ -1046,6 +1240,10 @@ export async function startSmokeBackend(options = {}) {
     close() {
       if (!closing) {
         closing = new Promise((resolve, reject) => {
+          // Before closeAllConnections: an attached realtime server holds raw
+          // sockets that http's own bookkeeping no longer tracks after an upgrade,
+          // so leaving them open is how server.close() hangs to its idle timeout.
+          realtimeServer?.close();
           server.closeAllConnections?.();
           server.close((err) => (err ? reject(err) : resolve()));
         });

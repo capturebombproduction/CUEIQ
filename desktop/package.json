@@ -27,6 +27,7 @@
       "buildResources": "build"
     },
     "artifactName": "CueIQ-Setup-${version}.${ext}",
+    "afterPack": "build/adhoc-sign-mac.cjs",
     "afterAllArtifactBuild": "build/rename-mac-arch.cjs",
     "win": {
       "target": "nsis",

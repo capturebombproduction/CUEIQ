@@ -1,4 +1,5 @@
-// Launches the PACKAGED app, four times, and asserts what each boot arrived at.
+// Launches the PACKAGED app — five scenarios, one of them TWO processes at once —
+// and asserts what each boot arrived at.
 //
 //   node desktop/scripts/run-smoke.mjs --exe <path-to-CueIQ.exe>
 //   node desktop/scripts/run-smoke.mjs --exe <path-to-CueIQ.exe> --only airplane
@@ -39,6 +40,17 @@
 // own caches — and only then is the network cut and the app cold-booted on them.
 // Both scenarios are kept: "airplane" is the faster, backend-free guard on the read
 // path, "handover" is the end-to-end one.
+//
+// ── WHAT THE TWO-DEVICE SCENARIO DOES *NOT* PROVE ───────────────────────────
+// It runs two REAL app processes against a REAL socket and settles a real
+// arbitration between them, and it fails loudly when that arbitration breaks
+// (verified by breaking it: the running-show rule in lib/live-arbitration.ts,
+// inverted, turns a four-broadcast conversation into 391,150 and the pair goes
+// red). What it is NOT: two machines. Both processes share one CPU, one clock and
+// one loopback interface, so it says nothing about wall-clock skew between a
+// laptop and a phone, about a wifi that drops one device and not the other, or
+// about audio — no sound is decoded here, and "one sound host" is an assertion
+// about a flag, not about a room. The physics still needs hands.
 //
 // Neither does it prove the INSTALLED app. On a `v*` tag desktop-build.yml runs this
 // against desktop/release/win-unpacked/CueIQ.exe, which is the packaged tree but not
@@ -210,6 +222,33 @@ const SCENARIOS = [
     backend: true,
   },
   {
+    // TWO PROCESSES, ONE SHOW — and the only scenario here that is not about one
+    // device. The remaining hand-run item this project has is พี่ standing in a
+    // room with a laptop and a phone; its arbitration is unit-tested and its wiring
+    // jsdom-tested, but nothing has ever run the two halves as two real apps over a
+    // real socket. The worst bug this app shipped lived exactly there: a phone that
+    // merely OPENED the live page could win the tie against a PA that had reloaded
+    // mid-show, re-assert its own empty INITIAL state, and stop the music.
+    //
+    // This one is orchestrated separately (see runTwoDeviceScenario) because both
+    // halves run at once and have to be sequenced against each other. The entry
+    // stays in this table so `--only two-device` works and so a reader of the list
+    // sees every scenario in one place.
+    name: "two-device",
+    what: "PA starts a show, a second device joins -> one controller, one sound host",
+    pair: true,
+    seed: false,
+    backend: true,
+    // Most of this clock is spent WAITING: the PA holds while the peer signs in,
+    // loads the bundle and settles its channel. The app's watchdog is derived from
+    // this (see runScenario), so both move together.
+    timeoutSec: 240,
+    env: {
+      CUEIQ_SMOKE_REALTIME: "1",
+      CUEIQ_SMOKE_EXPECT: "live-controller", // per-device value; overridden below
+    },
+  },
+  {
     name: "quick-show-offline",
     // The break-glass runner every other screen's fallback points at: no account,
     // no network, still has to open. Nothing verified this in a packaged build.
@@ -226,19 +265,28 @@ const SCENARIOS = [
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function runScenario(s, extraEnv = {}) {
-  // A FRESH profile per scenario. Without it the second launch inherits the first
-  // one's localStorage and IndexedDB, so "cold boot" would be a lie and a later
-  // scenario could pass on leftovers rather than on what it was given.
+  // A FRESH profile per scenario — and, in the two-device scenario, per DEVICE.
+  // Without it the second launch inherits the first one's localStorage and
+  // IndexedDB, so "cold boot" would be a lie and a later scenario could pass on
+  // leftovers rather than on what it was given. It is also what lets two of these
+  // run at once at all: app.requestSingleInstanceLock() keeps its lock file inside
+  // userData, so two processes sharing a profile would be one process.
   const work = fs.mkdtempSync(path.join(os.tmpdir(), `cueiq-smoke-${s.name}-`));
   const verdictFile = path.join(work, "verdict.json");
   const userDataDir = path.join(work, "userData");
   fs.mkdirSync(userDataDir);
 
+  // A scenario may buy itself more time (the two-device one spends most of its
+  // clock WAITING for the other device), and the app's own watchdog has to move
+  // with it — the inner deadline must always fire first, whatever the outer is.
+  const scenarioTimeoutSec = s.timeoutSec ?? timeoutSec;
+  const scenarioWatchdogMs = Math.max(15_000, (scenarioTimeoutSec - OUTER_MARGIN_SEC) * 1000);
+
   const env = {
     ...process.env,
     CUEIQ_SMOKE: "1",
     CUEIQ_SMOKE_OUT: verdictFile,
-    CUEIQ_SMOKE_WATCHDOG_MS: String(watchdogMs),
+    CUEIQ_SMOKE_WATCHDOG_MS: String(scenarioWatchdogMs),
     // The host the app really talks to, derived from the same file the bundle bakes
     // it in from. main.cjs has NO default for this on purpose: its old fallback was
     // "https://example.invalid", a reserved TLD that can never resolve, so the
@@ -267,7 +315,7 @@ async function runScenario(s, extraEnv = {}) {
 
   // The verdict FILE is the channel, not the exit code: a GUI-subsystem .exe on
   // Windows has no console to print to and can hand the shell back before it is done.
-  const deadline = Date.now() + timeoutSec * 1000;
+  const deadline = Date.now() + scenarioTimeoutSec * 1000;
   while (!fs.existsSync(verdictFile) && Date.now() < deadline && !spawnError) {
     await sleep(500);
   }
@@ -283,7 +331,7 @@ async function runScenario(s, extraEnv = {}) {
   if (!fs.existsSync(verdictFile)) {
     // A hang gets a NAMED failure rather than a missing file, so "no verdict" can
     // never be confused with "this scenario was never run".
-    return { name: s.name, ok: false, failReason: `no verdict within ${timeoutSec}s` };
+    return { name: s.name, ok: false, failReason: `no verdict within ${scenarioTimeoutSec}s` };
   }
 
   let verdict;
@@ -404,8 +452,212 @@ if (only) {
 // in the file that says so. Deleted rather than made true: the property it wanted is
 // already guaranteed by the loop, and a loop is easier to read than an assertion
 // about one.)
+/**
+ * The two-device scenario: two apps, one stub, one show.
+ *
+ * Sequenced on rendezvous marks the stub holds, never on sleeps — the PA must
+ * write its verdict AFTER the peer has joined, and the peer must join AFTER the
+ * show is running. A sleep long enough to be safe on a cold runner is long enough
+ * to be slow, and any sleep at all is the 2am-flake shape.
+ *
+ * Returns BOTH verdicts, and fails them as a PAIR: the interesting facts here —
+ * exactly one controller, exactly one sound host, the same item index on both
+ * screens — are invisible to either device alone, so they can only be checked out
+ * here where both reports have arrived.
+ */
+async function runTwoDeviceScenario(s) {
+  const { startSmokeBackend, SMOKE_WORLD } = await import("./smoke-backend.mjs");
+  // realtime: true — the ONE scenario that gets a socket. Everything else here is
+  // about an app with no network, where cancelling the upgrade is the honest thing.
+  const backend = await startSmokeBackend({ realtime: true });
+  const host = new URL(SMOKE_SUPABASE_URL).host;
+  console.log(`   stub Supabase (with realtime) at ${backend.url}, standing in for ${host}`);
+
+  const shared = {
+    CUEIQ_SMOKE_BACKEND: backend.url,
+    CUEIQ_SMOKE_BACKEND_FOR: host,
+    CUEIQ_SMOKE_SIGN_IN: JSON.stringify({
+      loginId: SMOKE_WORLD.auth.loginId,
+      password: SMOKE_WORLD.auth.password,
+    }),
+    // The rich event — the only fixture show with a setlist. Live Mode refuses to
+    // open on an empty one, which would fail this scenario for a reason that has
+    // nothing to do with two devices.
+    CUEIQ_SMOKE_LIVE_EVENT: SMOKE_WORLD.ids.richEvent,
+    // Probe the STUB, not the real project. Every other scenario aims this at the
+    // real Supabase host because it is asking "is the network cut"; this one runs
+    // online and real DNS is dead for it by design (see the host-resolver block in
+    // main.cjs), so aiming there would report a cut that says nothing about
+    // anything. The stub answers /auth/v1/health with a 501 — a RESPONSE, which is
+    // all "resolved" means.
+    CUEIQ_SMOKE_PROBE_URL: backend.url,
+  };
+  // Same scenario, same build, same account: the ONLY difference is which role each
+  // process plays and, therefore, what it expects to have become. Nothing about the
+  // arbitration may depend on the test telling either side who should win.
+  // ⚠️ A HYPHEN, not a colon. The name becomes a temp DIRECTORY (runScenario gives
+  // every device its own profile), and ":" is illegal in a Windows path — which is
+  // the platform the show laptop and this dev box both run.
+  const device = (role, expect) => ({
+    ...s,
+    name: `two-device-${role}`,
+    what: `${s.what} — ${role}`,
+    env: { ...s.env, CUEIQ_SMOKE_LIVE: role, CUEIQ_SMOKE_EXPECT: expect },
+  });
+
+  let main;
+  let peer;
+  try {
+    // The PA first, and NOT awaited: it holds until the peer has settled.
+    const mainRun = runScenario(device("main", "live-controller"), shared);
+    let mainSettled = false;
+    mainRun.then(() => {
+      mainSettled = true;
+    });
+
+    // Wait for the show to be RUNNING before the second device exists — otherwise
+    // the peer is not a device joining a show, it is a second device starting one,
+    // which is a different (and much easier) test.
+    const deadline = Date.now() + (s.timeoutSec ?? timeoutSec) * 1000;
+    while (!backend.hasMark("main-started") && !mainSettled && Date.now() < deadline) {
+      await sleep(250);
+    }
+    if (!backend.hasMark("main-started")) {
+      // The PA died or hung before starting. Await its verdict so the failure that
+      // gets reported is ITS explanation, not a fabricated one from out here.
+      main = await mainRun;
+      return [
+        {
+          ...main,
+          ok: false,
+          failReason:
+            main.failReason ??
+            `the PA never reported the show as started, so no second device was launched ` +
+              `(error=${main.error ?? "none"})`,
+        },
+      ];
+    }
+
+    console.log("   the PA is running the show — launching the second device");
+    peer = await runScenario(device("peer", "live-viewer"), shared);
+    // Release the PA: it re-reads its own live state and writes its verdict.
+    backend.setMark("peer-settled");
+    main = await mainRun;
+  } finally {
+    await backend.close();
+  }
+
+  // ── ANTI-VACUITY, first. Everything below is an assertion about the app; this is
+  // an assertion about the test. If nothing crossed the socket, whatever the two
+  // devices agreed on they agreed on somewhere else, and a green pair means
+  // nothing at all.
+  const relayed = backend.realtime?.broadcastsOf("state") ?? 0;
+  const joins = (backend.realtime?.messages ?? []).filter((m) => m.event === "phx_join").length;
+  const decodeErrors = (backend.realtime?.messages ?? []).filter(
+    (m) => m.event === "DECODE_ERROR" || m.event === "PARSE_ERROR"
+  );
+  console.log(
+    `   realtime: ${joins} channel join(s), ${relayed} live-state broadcast(s) relayed` +
+      (decodeErrors.length ? `, ${decodeErrors.length} UNDECODABLE` : "")
+  );
+  const pairFailures = [];
+  if (relayed === 0) {
+    pairFailures.push(
+      "no live-state broadcast was relayed between the two devices — they never talked, " +
+        "so whatever they agreed on was not agreed through this test"
+    );
+  }
+  // AND AN UPPER BOUND, which is not tidiness — it is the loudest symptom this
+  // scenario has. A healthy pair exchanges a handful of state broadcasts (measured:
+  // four). When the arbitration stops producing exactly one winner, the two devices
+  // re-assert at each other as fast as the socket allows: breaking the
+  // running-show rule in lib/live-arbitration.ts on purpose produced 391,150
+  // relayed broadcasts in the same run. A fight like that can end with both screens
+  // looking plausible, so the states alone would not always catch it.
+  if (relayed > 200) {
+    pairFailures.push(
+      `${relayed} live-state broadcasts were relayed between two devices — a healthy ` +
+        `pair sends a handful. The two are re-asserting control at each other, which ` +
+        `is what a broken arbitration looks like from the outside.`
+    );
+  }
+  if (decodeErrors.length > 0) {
+    // The realtime wire format is not ours: realtime-js encodes a broadcast push as
+    // packed binary. A bump that changes it shows up HERE first.
+    pairFailures.push(
+      `the stub could not decode ${decodeErrors.length} message(s): ${decodeErrors
+        .map((m) => m.error)
+        .join(" | ")}`
+    );
+  }
+
+  // ── THE PAIR ITSELF ─────────────────────────────────────────────────────────
+  const paState = main?.liveReport?.after;
+  const peerState = peer?.liveReport?.after;
+  if (!paState || !peerState) {
+    // Name WHICH one, and say what that means. A device that reported no live state
+    // did not merely fail an assertion — it never got far enough to make one, and
+    // its own verdict (printed above) carries the reason.
+    const missing = [!paState && "the PA", !peerState && "the joining device"].filter(Boolean);
+    pairFailures.push(
+      `${missing.join(" and ")} reported no live state at all — see that device's own ` +
+        `verdict above for why it never reached Live Mode`
+    );
+  } else {
+    // 1. EXACTLY ONE CONTROLLER. Two is the round-8 critical bug: a phone that had
+    //    merely opened the page re-asserted its own empty INITIAL state over a PA
+    //    that had reloaded mid-show, and the music stopped.
+    if (!paState.controller || peerState.controller) {
+      pairFailures.push(
+        `controller went wrong: PA=${paState.controller}, peer=${peerState.controller} ` +
+          `(exactly one device must be in control, and it must be the one that started the show)`
+      );
+    }
+    // 2. THE SHOW SURVIVED THE JOIN. `begun` false on the PA means the join reset it.
+    if (!paState.begun) pairFailures.push("the PA stopped being in a running show once the peer joined");
+    // 3. THE JOINER ADOPTED, IT DID NOT RESET. Same item index on both screens —
+    //    the fingerprint of the old bug was the peer showing item 0.
+    if (peerState.index !== paState.index) {
+      pairFailures.push(
+        `the two screens disagree about where the show is: PA at item ${paState.index}, ` +
+          `peer at item ${peerState.index}`
+      );
+    }
+    // 4. เครื่องเสียงคุมคนเดียว — one sound host. Two is two PAs in one room.
+    if (!paState.sound || peerState.sound) {
+      pairFailures.push(
+        `sound output went wrong: PA=${paState.sound}, peer=${peerState.sound} ` +
+          `(exactly one device may be sounding)`
+      );
+    }
+    // 5. AND THE SERVER AGREES. The DOM says what each device believes; the
+    //    show_authority row says what the workspace would tell a THIRD device on
+    //    join. One row, and it names the PA.
+    const claims = backend.tables.show_authority ?? [];
+    if (claims.length !== 1 || claims[0].device_id !== paState.deviceId) {
+      pairFailures.push(
+        `show_authority holds ${claims.length} claim(s) (${claims
+          .map((c) => c.device_id)
+          .join(", ") || "none"}), expected exactly one for the PA (${paState.deviceId})`
+      );
+    }
+  }
+
+  if (pairFailures.length === 0) return [main, peer];
+  // Attach the failure to BOTH verdicts: this scenario has no meaningful half.
+  const reason = pairFailures.join(" · ");
+  return [
+    { ...main, ok: false, failReason: main.failReason ?? reason },
+    { ...peer, ok: false, failReason: peer.failReason ?? reason },
+  ];
+}
+
 const results = [];
 for (const s of chosen) {
+  if (s.pair) {
+    results.push(...(await runTwoDeviceScenario(s)));
+    continue;
+  }
   if (!s.backend) {
     results.push(await runScenario(s));
     continue;

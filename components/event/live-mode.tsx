@@ -3094,7 +3094,29 @@ export function LiveMode({
   }
 
   return (
-    <div className="mx-auto max-w-2xl space-y-4 landscape:max-w-5xl">
+    <div
+      className="mx-auto max-w-2xl space-y-4 landscape:max-w-5xl"
+      // ── WHAT THIS DEVICE THINKS IT IS, readable from outside the process ──────
+      // The same convention as `data-cueiq-screen` on the desktop shell, and here
+      // for the same reason: the two-device smoke (desktop/scripts/run-smoke.mjs,
+      // scenario "two-device") runs the PA and the joining phone as two separate
+      // Electron processes, and the only thing it can read is the DOM. Every value
+      // below is one half of a distinction that decides whether a show survives a
+      // second device opening the page:
+      //   controller — who may drive. Two of these is the round-8 critical bug.
+      //   begun      — is a show RUNNING here. A joiner must adopt, never reset.
+      //   index      — where the show is. The joiner must not move it.
+      //   sound      — เครื่องเสียงคุมคนเดียว: exactly one device makes noise.
+      // Attributes, not text: every label on this screen is Thai and one wording
+      // change would silently stop a cross-process assertion from matching.
+      data-cueiq-live={eventId}
+      data-cueiq-live-controller={isController ? "1" : "0"}
+      data-cueiq-live-begun={state.begun ? "1" : "0"}
+      data-cueiq-live-index={String(state.currentIndex)}
+      data-cueiq-live-sound={soundOutput ? "1" : "0"}
+      data-cueiq-live-sync={syncStatus}
+      data-cueiq-live-settled={syncSettled ? "1" : "0"}
+    >
       {/* hidden file input */}
       <input
         ref={fileInputRef}

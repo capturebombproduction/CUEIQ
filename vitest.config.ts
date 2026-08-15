@@ -54,7 +54,7 @@ function desktopDepsPinnedToRoot(): Record<string, string> {
   return alias;
 }
 
-// THREE test projects, one command (`npm test`), because CI already runs that one
+// FOUR test projects, one command (`npm test`), because CI already runs that one
 // command and a second runner is a gate nobody remembers to add to the workflow.
 //
 //  • lib      — the original node project: PURE logic, no DOM, no network. Unchanged.
@@ -62,6 +62,17 @@ function desktopDepsPinnedToRoot(): Record<string, string> {
 //  • desktop  — the Electron renderer (desktop/src) under jsdom, resolved through the
 //               SAME aliases desktop/vite.config.ts uses, so a test imports exactly
 //               what the packaged app imports (shimmed supabase client included).
+//  • scripts  — the SMOKE HARNESS itself (desktop/scripts), in node. It is a project
+//               of its own for one concrete reason: those fixtures open real sockets,
+//               and A WEBSOCKET CLIENT CANNOT RUN UNDER JSDOM HERE. jsdom's WebSocket
+//               delegates to undici, whose EventTarget validates against Node's Event
+//               while `new Event()` resolves to jsdom's — two realms, one name, and
+//               the message says only "The 'event' argument must be an instance of
+//               Event. Received an instance of Event". Nothing about the app is
+//               involved; the packaged renderer has exactly one WebSocket.
+//               ⚠️ desktop/tsconfig.json's `include` carries "scripts" so these ARE
+//               typechecked. A test file that neither tsconfig covers is the trap the
+//               desktop project's comment below describes, and it would apply here.
 //
 // Why the jsdom projects exist at all: every one of the 395 tests we had covered a
 // pure function, and round 10's most common defect was a fix that COULD NOT EXECUTE
@@ -174,6 +185,18 @@ export default defineConfig({
         },
         ["./test/setup/dom.ts", "./test/setup/desktop-env.ts"]
       ),
+      {
+        // No setup files on purpose: test/setup/dom.ts is jsdom-only (it patches
+        // HTMLMediaElement and window.matchMedia at import), and a harness test that
+        // needed a DOM would be a harness test written in the wrong place.
+        resolve: { alias: { "@": repoRoot } },
+        test: {
+          name: "scripts",
+          environment: "node",
+          include: ["desktop/scripts/**/*.test.ts"],
+          exclude: ["**/node_modules/**"],
+        },
+      },
     ],
   },
 });

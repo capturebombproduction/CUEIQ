@@ -41,6 +41,11 @@
       "next/dynamic": ["./src/shims/next-dynamic.tsx"]
     }
   },
-  "include": ["src"],
+  // "scripts" as well as "src": the smoke harness has a TypeScript test of its own
+  // (scripts/smoke-realtime.test.ts, which runs in vitest's node project — see
+  // vitest.config.ts for why it cannot live under src/). Root tsconfig excludes
+  // "desktop" entirely, so without this entry that file would be typechecked by no
+  // program at all and could drift from the .mjs it tests in silence.
+  "include": ["src", "scripts"],
   "exclude": ["node_modules", "dist", "dist-electron"]
 }

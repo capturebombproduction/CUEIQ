@@ -12,13 +12,20 @@ npx vitest run --project web      # component ของเว็บ (jsdom)
 npx vitest run --project desktop  # renderer ของ Electron (jsdom)
 ```
 
-## สาม project — และเส้นแบ่งที่ห้ามข้าม
+## สี่ project — และเส้นแบ่งที่ห้ามข้าม
 
 | project   | environment | include | ใช้กับอะไร |
 |-----------|-------------|---------|-----------|
 | `lib`     | node        | `lib/**/*.test.{ts,tsx}` **ยกเว้น** `lib/**/*.dom.test.{ts,tsx}` | ฟังก์ชันบริสุทธิ์ ไม่แตะ DOM/เน็ต/สตอเรจ |
 | `web`     | jsdom       | `components/**/*.test.tsx`, `app/**/*.test.tsx`, `test/web/**/*.test.{ts,tsx}`, `lib/**/*.dom.test.{ts,tsx}` | คอมโพเนนต์ฝั่งเว็บ |
 | `desktop` | jsdom       | `desktop/src/**/*.test.{ts,tsx}` | หน้าจอ/data layer ของแอปที่ไปงานจริง |
+| `scripts` | node        | `desktop/scripts/**/*.test.ts` | ตัว harness ของ smoke เอง (stub ของ Supabase/Realtime) |
+
+⚠️ `scripts` แยกออกมาเพราะเหตุผลเดียว: **client ของ WebSocket รันใน jsdom ที่นี่ไม่ได้** — WebSocket ของ jsdom
+วิ่งผ่าน undici ซึ่งเช็ก `Event` ของ Node แต่ `new Event()` ในหน้าเว็บกลายเป็นของ jsdom สองโลกชื่อเดียวกัน
+ข้อความที่ได้คือ `The "event" argument must be an instance of Event. Received an instance of Event` — ไม่เกี่ยวกับแอปเลย
+(แอปจริงมี WebSocket ตัวเดียว) และ `desktop/tsconfig.json` ใส่ `"scripts"` ไว้ใน `include` แล้ว
+ไม่งั้นไฟล์เทสต์นี้จะไม่ถูก typecheck โดย tsconfig ตัวไหนเลย
 
 ⚠️ ทุก glob เป็น `{ts,tsx}` ทั้งคู่โดยตั้งใจ: เคยเป็น `.ts` อย่างเดียวฝั่งหนึ่งกับ `.tsx` อย่างเดียว
 อีกฝั่ง ผลคือ `lib/x.dom.test.tsx` ไปรันใน node และ `test/web/x.test.ts` **ไม่ถูกเก็บโดย project ไหนเลย**
@@ -69,13 +76,14 @@ node desktop/scripts/run-smoke.mjs \
 node desktop/scripts/run-smoke.mjs --exe desktop/release/win-unpacked/CueIQ.exe
 ```
 
-สามสถานการณ์:
+ห้าสถานการณ์ (อันสุดท้ายรันแอป **สองตัวพร้อมกัน**):
 
 | ชื่อ | เงื่อนไข | ต้องได้ |
 |------|----------|---------|
 | `control` | ไม่มี session, เน็ตปกติ | หน้า `login` |
 | `airplane` | session หมดอายุใน localStorage, DNS ตาย, request ถูก cancel, `navigator.onLine` = false | `#/dashboard` + หน้าจอ `shell` + ชื่อวงจากแคช + **จำนวนงานตรงเป๊ะ** |
 | **`handover`** | **ไม่ปลูกอะไรเลย** — แอปพิมพ์รหัสเข้าฟอร์มล็อกอินจริงใส่ Supabase จำลอง, อ่านเอง, **เขียนแคชเอง** → *แล้วค่อย* ตัดเน็ต → บูตเย็น | เหมือน `airplane` แต่แคชทุกไบต์เป็นของที่แอปผลิตเอง |
+| **`two-device`** | **สองโปรเซสจริงพร้อมกัน** ผ่านซ็อกเก็ตจริง (Realtime จำลอง): เครื่อง A เริ่มโชว์แล้วกด NEXT ไปเพลงที่ 3, เครื่อง B เพิ่งเปิดหน้าเดิมกลางโชว์ | **คนคุมมีคนเดียว** (A) · **เสียงออกเครื่องเดียว** (A) · B เห็น**เพลงเดียวกับ A** ไม่ใช่เพลงแรก · แถวใน `show_authority` มีแถวเดียวและเป็นของ A |
 | `quick-show-offline` | ไม่มีบัญชี ไม่มีเน็ต เปิดที่ `/my-show` | Quick Show เปิดได้ |
 
 `handover` คือครึ่งที่ `airplane` พิสูจน์ไม่ได้: การ seed แคชด้วยมือมัน**ข้าม**โค้ดที่เขียนแคช จึงบอกได้แค่ว่า
@@ -84,6 +92,26 @@ node:http ล้วน ไม่มี dependency) ที่ main process **เ�
 ไม่ใช่ redirect เพราะ redirect ข้าม origin จะ**ถอด header `Authorization` ทิ้ง**ตามสเปก fetch (เจอมาแล้ว:
 `200 POST /auth/v1/token` ตามด้วย `401 GET /auth/v1/user`) และที่สำคัญคือ **build ไม่ถูกแตะเลย** เพราะ URL ของ
 Supabase ถูก bake เข้า bundle ตั้งแต่ตอน build
+
+`two-device` คือรายการสุดท้ายในลิสต์ "ต้องมีคนถือเครื่องทดสอบ" ที่เครื่องรับไปทำแทนได้ ตัวที่จะ**พัง**คือ
+บั๊กที่แย่ที่สุดที่แอปนี้เคยปล่อยออกไป: มือถือที่แค่ *เปิด* หน้า Live ชนะการชิงสิทธิ์กับเครื่องเสียงที่รีโหลดกลางโชว์
+แล้วยัดสถานะเปล่าของตัวเองทับ → เพลงหยุด กลไกที่ใช้:
+
+- `desktop/scripts/smoke-realtime.mjs` — เซิร์ฟเวอร์ WebSocket เขียนเอง (node:http + node:crypto ล้วน)
+  ที่พูดโปรโตคอลของ Supabase Realtime ได้พอสำหรับ join / heartbeat / broadcast
+  ⚠️ **รูปแบบสายมีสองแบบ** realtime-js เข้ารหัสข้อความทั่วไปเป็น JSON array `[join_ref, ref, topic, event, payload]`
+  แต่ broadcast ฝั่ง client → server เป็น **ไบนารีอัดแน่น** (kind byte 3) — `desktop/scripts/smoke-realtime.test.ts`
+  จึงเอา serializer **ตัวจริง** มาเข้ารหัสแล้วให้ stub ถอด เพราะวันที่ dependency เปลี่ยนรูปแบบ ไม่มี build/lint/tsc ตัวไหนฟ้อง
+- ⚠️ **ซ็อกเก็ตเปลี่ยนปลายทางที่ตัว constructor ในหน้าเว็บ ไม่ใช่ที่ network layer** —
+  `protocol.handle` ไม่ครอบ websocket และ **redirect ของ `webRequest` ก็ไม่ทำงานกับ handshake ของ websocket**
+  (วัดมาแล้ว: แอปต่อไป Supabase **ตัวจริง** ด้วย JWT ปลอม โชคดีที่ของจริงตอบ `JwtSignatureError` ออกมาดัง ๆ)
+  ตอนนี้ทุก scenario ที่มี stub จะ**ฆ่า DNS จริงทิ้ง**ด้วย ไม่ว่าจะออนไลน์หรือไม่ — เทสต์ต้องแตะโปรเจกต์จริงไม่ได้เลย
+- ลำดับของสองเครื่องนัดกันผ่าน "mark" บน stub (`/smoke/mark/<ชื่อ>`) ไม่ใช่ `sleep` — A ต้องเขียนผลลัพธ์
+  *หลัง* B เข้ามาแล้วเท่านั้น
+
+**พิสูจน์แล้วว่ามันแดงได้จริง** (ไม่ใช่เทสต์ที่ผ่านตลอดกาล): กลับเงื่อนไข "โชว์ที่รันอยู่ชนะ" ใน
+`lib/live-arbitration.ts` แล้วรันใหม่ — จากที่คุยกัน 4 ข้อความกลายเป็น **391,150 ข้อความ** (สองเครื่องยิงทับกันไม่หยุด)
+และคู่นี้แดงทันที เลยเพิ่มเพดานไว้ด้วย: ถ้า relay เกิน 200 ข้อความ = สองเครื่องกำลังแย่งกัน ถือว่าแดง
 
 **สามอย่างที่ทำให้เทสต์นี้โกหกไม่ได้** (ทั้งหมดอยู่ท้าย `run-smoke.mjs`):
 
@@ -105,11 +133,15 @@ Supabase ถูก bake เข้า bundle ตั้งแต่ตอน build
 
 - ~~การ seed แคชข้ามโค้ดที่เขียนแคช~~ — **ปิดช่องนี้แล้วด้วย `handover`** (ดูตารางด้านบน) `airplane`
   ยังคง seed อยู่โดยตั้งใจ เพราะเป็นตัวเร็วที่ไม่ต้องมี backend คอยเฝ้าเส้นทางอ่าน
-- stub **ไม่ได้เสิร์ฟทุกอย่าง**: `staff_contacts` / `song_markers` / `practice_songs` และ *การเขียน* ทุกชนิด
-  ตอบ 501 พร้อมบอกชื่อ path — ถ้าวันหนึ่งมี scenario เดินไปถึง จะเห็นทันทีว่าขาดอะไร ไม่ใช่ผ่านแบบเงียบ ๆ
+- stub **ไม่ได้เสิร์ฟทุกอย่าง**: `staff_contacts` / `song_markers` / `practice_songs` ตอบ 501 พร้อมบอกชื่อ path
+  และ *การเขียน* ก็ยังปิดอยู่ทั้งหมด **ยกเว้นตารางเดียว** คือ `show_authority` (Live Mode จองสิทธิ์ตอนเปิดหน้า)
+  ถ้าวันหนึ่งมี scenario เดินไปถึงตารางอื่น จะเห็นทันทีว่าขาดอะไร ไม่ใช่ผ่านแบบเงียบ ๆ
 - รัน `win-unpacked` ไม่ใช่ตัวที่ติดตั้งผ่าน NSIS — ปัญหาเฉพาะตอนติดตั้ง (path มีเว้นวรรค/ภาษาไทย,
   per-user install) ยังไม่ถูกทดสอบ
-- jsdom ไม่ decode เสียง ไม่บังคับ autoplay policy ไม่รันสองเครื่อง — เทสต์ฝั่งนั้นพิสูจน์ *เจตนา*
+- `two-device` **ไม่ใช่สองเครื่องจริง**: สองโปรเซสใช้ซีพียูตัวเดียว นาฬิกาเรือนเดียว และ loopback เส้นเดียว
+  จึงไม่ได้พูดถึงนาฬิกาเหลื่อมกันระหว่างโน้ตบุ๊กกับมือถือ, wifi ที่หลุดเครื่องเดียว, หรือเสียงจริงเลย —
+  "เสียงออกเครื่องเดียว" ที่มันตรวจคือ *ค่าธง* ไม่ใช่เสียงในห้อง
+- jsdom ไม่ decode เสียง ไม่บังคับ autoplay policy — เทสต์ฝั่งนั้นพิสูจน์ *เจตนา*
   (สั่งถูกคำสั่ง, mute ถูกตัว, ส่ง prop ถูก) ไม่ใช่ *ฟิสิกส์* (เสียงออกลำโพงจริง)
 
 ## เครื่องนี้

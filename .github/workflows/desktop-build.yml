@@ -52,7 +52,9 @@
 # take each other down.
 #
 # ⚠️ Unsigned: the .dmg has no Apple Developer cert, so on first open a Mac user runs
-# `xattr -dr com.apple.quarantine /Applications/CueIQ.app`. Fine for internal use.
+# `xattr -cr /Applications/CueIQ.app`. Fine for internal use. The .app IS ad-hoc
+# signed at build time (desktop/build/adhoc-sign-mac.cjs) — that is not trust, it is
+# the minimum arm64 macOS needs to execute the binary at all.
 # macOS gets NO auto-update (Squirrel.Mac requires a signed app) — Mac users
 # re-download the .dmg from the Release.
 name: Desktop build
@@ -120,6 +122,11 @@ jobs:
       # exact command that builds cleanly locally; plain `npm run dist` on a tag
       # triggers electron-builder's implicit publish, which was failing.
       # CSC_IDENTITY_AUTO_DISCOVERY=false stops it hunting for a macOS signing cert.
+      # ⚠️ The .app is then AD-HOC signed by desktop/build/adhoc-sign-mac.cjs
+      # (afterPack). Not cosmetic: arm64 macOS refuses to run a binary carrying NO
+      # signature, so a completely unsigned build cannot be opened on an Apple
+      # Silicon Mac at all — clearing the quarantine attribute does not help, which
+      # is how 0.1.9 reached the founder's Mac and would not start.
       - name: Build installer
         run: npm run dist -- --publish never
         working-directory: desktop
@@ -178,12 +185,18 @@ jobs:
       #
       # ⚠️ TIMEOUT NESTING, outermost last: main.cjs's watchdog (the only one that
       # reports a stage) fires at --timeout minus 45s, run-smoke's per-scenario
-      # --timeout (135s) next, this step last. 3 x 135s = ~7 min, so 15 stays
-      # strictly outermost and never pre-empts an answer the app was about to give.
-      - name: Smoke-launch the packaged app (cold, airplane, Quick Show)
+      # --timeout (135s, or 240s for the two-device pair) next, this step last.
+      # Worst case 4 x 135s + 240s = ~13 min, so this is 20 and stays strictly
+      # outermost — it must never pre-empt an answer the app was about to give.
+      #
+      # The two-device pair runs HERE TOO, against the packaged tree: two copies of
+      # the real .exe, one running a show and one joining it over a socket. That is
+      # the closest a machine gets to the founder standing in a room with a laptop
+      # and a phone.
+      - name: Smoke-launch the packaged app (cold, airplane, handover, two devices, Quick Show)
         if: runner.os == 'Windows' # see the note on the feed check above
         shell: bash
-        timeout-minutes: 15
+        timeout-minutes: 20
         run: node desktop/scripts/run-smoke.mjs --exe ./desktop/release/win-unpacked/CueIQ.exe
 
       # The .exe alone is not enough for auto-update: electron-updater reads
@@ -563,7 +576,8 @@ jobs:
           ถ้ากด「ไว้ก่อน」จะ**ไม่โหลดอะไรเลย** แล้วถามใหม่รอบหน้า (ถ้าติ๊ก「ไม่ต้องถามเรื่องเวอร์ชันนี้อีก」ไว้ ต้องมาโหลด `.exe` จากหน้านี้เอง)
 
           **Mac** — ดาวน์โหลด `.dmg` ให้ตรงเครื่อง (Apple Silicon หรือ Intel) แล้วลากลง Applications
-          แอปยังไม่ได้เซ็นใบรับรอง เปิดครั้งแรกให้รัน `xattr -dr com.apple.quarantine /Applications/CueIQ.app`
+          แอปยังไม่ได้เซ็นใบรับรอง เปิดครั้งแรกให้รัน `xattr -cr /Applications/CueIQ.app`
+          ถ้ายังไม่ยอมเปิด (แมคชิป M ที่ลงเวอร์ชันเก่ากว่านี้) ให้รันเพิ่ม `codesign --force --deep --sign - /Applications/CueIQ.app`
           ฝั่ง Mac ยังไม่มีอัปเดตอัตโนมัติ (ต้องเซ็นใบรับรองก่อน) — โหลด `.dmg` ใหม่เอาเอง
           NOTES
           if [ "$decision" = no ]; then

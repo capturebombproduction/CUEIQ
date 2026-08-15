@@ -19,7 +19,17 @@ const { pathToFileURL } = require("node:url");
 // self-test exists to stop. Killing DNS process-wide is the one layer that reaches
 // the MAIN process's net.fetch as well as the renderer; the per-session layers in
 // cutTheNetworkForSmoke cannot.
-if (process.env.CUEIQ_SMOKE === "1" && process.env.CUEIQ_SMOKE_OFFLINE === "1") {
+// ⚠️ ALSO WHEN A STUB BACKEND IS IN PLAY, not only when the scenario is "offline".
+// The two-device scenario runs ONLINE against the local stub, and the first version
+// of it left real DNS alive: the renderer's realtime socket resolved the REAL
+// Supabase host and connected to PRODUCTION with a fixture JWT (it was refused —
+// "JwtSignatureError" — which is how it was noticed). A test must not be able to
+// reach the live project at all, whatever else it gets wrong. Everything the app
+// legitimately needs here is on 127.0.0.1, and those two EXCLUDEs keep it reachable.
+if (
+  process.env.CUEIQ_SMOKE === "1" &&
+  (process.env.CUEIQ_SMOKE_OFFLINE === "1" || process.env.CUEIQ_SMOKE_BACKEND)
+) {
   // EXCLUDE localhost for the handover scenario, whose FIRST phase is an ordinary
   // online boot against a stub Supabase on 127.0.0.1 — the whole point being that
   // the app fills its own caches before anything is cut. Chromium is documented to
@@ -125,6 +135,25 @@ const SMOKE_HANDOVER = SMOKE && process.env.CUEIQ_SMOKE_HANDOVER === "1";
 // the test. Signing in is also the first half of the venue story the whole test is
 // about: the operator logs in at the hotel and drives to the show.
 const SMOKE_SIGN_IN = (SMOKE && process.env.CUEIQ_SMOKE_SIGN_IN) || "";
+// ── The two-device scenario: two of these processes, one show ────────────────
+// Everything above is about ONE device. The last item on this project's hand-run
+// list that a machine can take over is the opposite: the PA running a show and a
+// second device opening the same live page. Its arbitration is unit-tested
+// (lib/live-arbitration.ts) and its wiring jsdom-tested, but until now nothing ran
+// the two halves as two processes over a socket — and the worst bug this app has
+// shipped lived exactly there (a phone that merely OPENED the page could win the
+// tie against a PA that had reloaded mid-show, and stop the music).
+//
+// CUEIQ_SMOKE_REALTIME=1 serves the websocket from the same stub instead of
+// cancelling it. Without this every channel stays down, which is right for the
+// offline scenarios and useless for this one.
+const SMOKE_REALTIME = SMOKE && process.env.CUEIQ_SMOKE_REALTIME === "1";
+// "main" = press START SHOW and hold it; "peer" = open the same show and adopt it.
+// The role decides what this process DOES, never what it is allowed to do: both
+// launch the identical build with the identical account, which is the point —
+// nothing about the arbitration may depend on the test knowing who should win.
+const SMOKE_LIVE = (SMOKE && process.env.CUEIQ_SMOKE_LIVE) || "";
+const SMOKE_LIVE_EVENT = (SMOKE && process.env.CUEIQ_SMOKE_LIVE_EVENT) || "";
 // Time-box the whole self-test. The caller owns this number because it also owns the
 // deadline it waits on, and the inner one must always fire first (run-smoke.mjs).
 const SMOKE_WATCHDOG_MS = Number(process.env.CUEIQ_SMOKE_WATCHDOG_MS) || 90_000;
@@ -424,13 +453,64 @@ function serveSupabaseFromStub(win, host, backend) {
     }
   });
 
-  // The realtime socket is NOT served: the stub speaks HTTP only, and every
-  // offline-capable path in this app is written to work without realtime. Cancelling
-  // is the honest simulation of "the socket never came up", which is also what a
-  // venue gets — and protocol.handle does not cover wss anyway.
-  ses.webRequest.onBeforeRequest({ urls: ["wss://*/*", "ws://*/*"] }, (_d, callback) =>
-    callback({ cancel: true })
-  );
+  // The realtime socket is NOT served by the code above: protocol.handle does not
+  // cover wss, and a webRequest redirect does not work on a websocket handshake
+  // either (measured — the app connected to the REAL Supabase regardless, which is
+  // also why real DNS is now dead for any scenario with a stub). The socket is
+  // pointed at the stub in the renderer instead, by patchWebSocketHostViaCdp.
+  //
+  // Here, the default: CANCEL. That is the honest simulation of "the socket never
+  // came up", which is what a venue gets and what every scenario but one is about;
+  // serving it there would quietly test a friendlier world. SMOKE_REALTIME leaves
+  // the socket alone so the patched constructor can reach 127.0.0.1.
+  if (!SMOKE_REALTIME) {
+    ses.webRequest.onBeforeRequest({ urls: ["wss://*/*", "ws://*/*"] }, (_d, callback) =>
+      callback({ cancel: true })
+    );
+  }
+}
+
+/**
+ * Point the renderer's WebSocket at the stub, from inside the renderer.
+ *
+ * ⚠️ THE THREE THINGS THAT DO NOT WORK, so nobody spends the afternoon again:
+ *   • `protocol.handle("wss")` — protocol handlers do not cover websockets.
+ *   • `webRequest.onBeforeRequest` with a redirectURL — a websocket handshake is
+ *     not redirected by it. The first cut of the two-device scenario did this and
+ *     the app connected to PRODUCTION realtime with a fixture JWT; the only reason
+ *     it was noticed is that the real server refused the signature out loud.
+ *   • Changing the URL in the build — the Supabase URL is baked in by vite's
+ *     `define`, and the whole point is to launch the artifact that ships.
+ *
+ * So patch the constructor, the same way navigator.onLine is patched for the
+ * airplane test, and for the same reason: it changes WHERE the bytes go and
+ * nothing else. Same client, same protocol, same messages — realtime-js does not
+ * know it happened. Page.addScriptToEvaluateOnNewDocument runs before any script
+ * in the document, so the app's very first channel is already pointed here.
+ */
+async function patchWebSocketHostViaCdp(win, host, httpBase) {
+  const wsBase = httpBase.replace(/\/+$/, "").replace(/^http/, "ws");
+  const dbg = win.webContents.debugger;
+  if (!dbg.isAttached()) dbg.attach("1.3");
+  await dbg.sendCommand("Page.enable");
+  await dbg.sendCommand("Page.addScriptToEvaluateOnNewDocument", {
+    source: `(() => {
+      const Native = window.WebSocket;
+      const rewrite = (url) => {
+        try {
+          const u = new URL(String(url));
+          if (u.host !== ${JSON.stringify(host)}) return url;
+          return ${JSON.stringify(wsBase)} + u.pathname + u.search;
+        } catch { return url; }
+      };
+      // A subclass, not a wrapper function: realtime-js reads WebSocket.OPEN and
+      // friends off the constructor, and those ride the prototype chain here.
+      class SmokeWebSocket extends Native {
+        constructor(url, protocols) { super(rewrite(url), protocols); }
+      }
+      window.WebSocket = SmokeWebSocket;
+    })();`,
+  });
 }
 
 async function emulateOfflineViaCdp(win) {
@@ -572,6 +652,192 @@ async function plantSmokeSeed(win) {
   await reloadAndWait(win, "after seeding");
 }
 
+// ─── the two-device driver (CUEIQ_SMOKE_LIVE only) ───────────────────────────
+
+/** Read/set a rendezvous flag on the stub.
+ *
+ *  Why a flag and not a sleep: the PA must write its verdict AFTER the second
+ *  device has joined, and the second device must join AFTER the show is running.
+ *  A sleep long enough to be safe on a cold CI runner is long enough to make the
+ *  scenario slow, and any sleep at all is a scenario that goes red at 2am for
+ *  reasons no log explains. The stub is the one thing all three processes (both
+ *  apps and the runner) can already reach. */
+async function smokeMark(name, { set = false } = {}) {
+  if (!SMOKE_BACKEND) throw new Error("smokeMark needs CUEIQ_SMOKE_BACKEND");
+  const res = await net.fetch(`${SMOKE_BACKEND.replace(/\/+$/, "")}/smoke/mark/${name}`, {
+    method: set ? "POST" : "GET",
+  });
+  const body = await res.json();
+  return body.set === true;
+}
+
+/** Poll a rendezvous flag until it is set, or fail NAMING the flag — a bare
+ *  timeout here would read as "the app hung" for a runner that simply never got
+ *  far enough to raise it. */
+async function waitForMark(name, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    if (await smokeMark(name)) return;
+    if (Date.now() >= deadline) {
+      throw new Error(`the rendezvous mark "${name}" was never set within ${timeoutMs}ms`);
+    }
+    await new Promise((r) => setTimeout(r, 200));
+  }
+}
+
+/** What Live Mode says this device currently is — read off the attributes
+ *  components/event/live-mode.tsx puts on its root. `null` until the page mounts.
+ *  Structural, never textual: every label on that screen is Thai, and a wording
+ *  change must not be able to break a cross-process assertion. */
+const SMOKE_LIVE_STATE = `(() => {
+  const el = document.querySelector('[data-cueiq-live]');
+  if (!el) return null;
+  return {
+    controller: el.getAttribute('data-cueiq-live-controller') === '1',
+    begun: el.getAttribute('data-cueiq-live-begun') === '1',
+    index: Number(el.getAttribute('data-cueiq-live-index')),
+    sound: el.getAttribute('data-cueiq-live-sound') === '1',
+    sync: el.getAttribute('data-cueiq-live-sync'),
+    settled: el.getAttribute('data-cueiq-live-settled') === '1',
+    // Who this device IS, as the app itself knows it (lib/device-id.ts). The
+    // two-device runner compares it against the device_id on the surviving
+    // show_authority row — which is how "one device holds the show" becomes an
+    // assertion about WHICH one, rather than a row count that a wrong winner
+    // would satisfy just as well.
+    deviceId: localStorage.getItem('cueiq:deviceId'),
+  };
+})()`;
+const SMOKE_LIVE_PROBE = `JSON.stringify(${SMOKE_LIVE_STATE})`;
+
+/** Poll Live Mode's own attributes until `done` accepts them. Reports the LAST
+ *  reading on failure: "it never started" and "it started and then stepped down"
+ *  are different bugs that look identical from a timeout. */
+async function pollLive(win, what, done, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  let last = null;
+  for (;;) {
+    last = JSON.parse(await win.webContents.executeJavaScript(SMOKE_LIVE_PROBE));
+    if (last && done(last)) return last;
+    if (Date.now() >= deadline) {
+      // The page probe as well as the live state: "Live Mode never mounted" and
+      // "Live Mode mounted and never settled" are different failures, and the first
+      // one is usually not about Live Mode at all — it is a route that bounced, a
+      // bundle that did not load, or a session that was not there yet. Without the
+      // screen and the hash, every one of those reads the same.
+      const page = await win.webContents.executeJavaScript(SMOKE_PROBE);
+      throw new Error(`${what} — live=${JSON.stringify(last)} page=${page}`);
+    }
+    await new Promise((r) => setTimeout(r, 200));
+  }
+}
+
+/**
+ * Drive this process's half of the two-device scenario.
+ *
+ * ROLE "main" — the PA. Opens the show, presses START SHOW, and then HOLDS while
+ * the runner starts the second device. What it asserts is not that it started —
+ * that is the easy half — but that it is still the controller, still begun, still
+ * on the same item and still the one making sound AFTER a second device joined.
+ *
+ * ROLE "peer" — the phone that opens the same page mid-show. It presses nothing.
+ * It must adopt the running show as a VIEWER: not controller, not sounding, and
+ * showing the PA's item rather than item 0. Every one of those was a real bug.
+ *
+ * Returns what rides the verdict; throws with a sentence, never a bare timeout.
+ */
+async function driveLiveScenario(win) {
+  if (!SMOKE_LIVE_EVENT) throw new Error("CUEIQ_SMOKE_LIVE needs CUEIQ_SMOKE_LIVE_EVENT");
+  // ⚠️ WAIT FOR THE SHELL FIRST. signInThroughTheForm returns as soon as the form
+  // is submitted, and the app is still on the login screen for a moment after that
+  // — navigating there sets a hash the auth-gate immediately replaces with #/login,
+  // and the symptom is "Live Mode never mounted", which points at the wrong file.
+  smokeAt(`live:${SMOKE_LIVE}:waiting-for-shell`);
+  {
+    const deadline = Date.now() + 40_000;
+    for (;;) {
+      const page = JSON.parse(await win.webContents.executeJavaScript(SMOKE_PROBE));
+      if (page.screen === "shell" && !page.loginVisible) break;
+      if (Date.now() >= deadline) {
+        throw new Error(`never reached the signed-in shell: ${JSON.stringify(page)}`);
+      }
+      await new Promise((r) => setTimeout(r, 250));
+    }
+  }
+  // In-page navigation, because the app is a HashRouter behind file:// — a
+  // loadURL would restart the whole renderer and throw away the session.
+  smokeAt(`live:${SMOKE_LIVE}:opening`);
+  await win.webContents.executeJavaScript(
+    `location.hash = ${JSON.stringify(`#/events/${SMOKE_LIVE_EVENT}/live`)}`
+  );
+  // The bundle has to load and the channel has to settle before START is even
+  // enabled (live-mode.tsx disables it on !syncSettled, precisely so a device
+  // cannot start a show that is already running elsewhere).
+  const mounted = await pollLive(win, "Live Mode never mounted", (l) => l.settled, 40_000);
+
+  if (SMOKE_LIVE === "main") {
+    smokeAt("live:main:starting");
+    const clicked = await win.webContents.executeJavaScript(
+      `(() => { const b = document.querySelector('[data-testid=start-show]');
+        if (!b) return 'no start button';
+        if (b.disabled) return 'start button disabled';
+        b.click(); return 'clicked'; })()`
+    );
+    if (clicked !== "clicked") throw new Error(`could not start the show: ${clicked}`);
+    await pollLive(win, "the show never started here", (l) => l.begun && l.controller, 20_000);
+    // ⚠️ ADVANCE THE SHOW BEFORE THE PEER EXISTS, and this is not decoration.
+    // "Both screens agree on the item" is a check that cannot fail while both sit
+    // at item 0 — which is exactly where a joiner that RESET the show would also
+    // be. Moving the PA to item 2 is what turns that assertion into the fingerprint
+    // of the bug it is looking for.
+    smokeAt("live:main:advancing");
+    for (let i = 0; i < 2; i++) {
+      const advanced = await win.webContents.executeJavaScript(
+        `(() => { const b = document.querySelector('[data-testid=next]');
+          if (!b) return 'no next button'; if (b.disabled) return 'next disabled';
+          b.click(); return 'clicked'; })()`
+      );
+      if (advanced !== "clicked") throw new Error(`could not advance the show: ${advanced}`);
+    }
+    const started = await pollLive(
+      win,
+      "the show never reached item 2",
+      (l) => l.begun && l.controller && l.index === 2,
+      20_000
+    );
+    // Tell the runner it may launch the second device — and only then.
+    await smokeMark("main-started", { set: true });
+    smokeAt("live:main:holding");
+    // The runner sets this once the peer has settled and written its own verdict.
+    await waitForMark("peer-settled", 90_000);
+    smokeAt("live:main:rechecking");
+    // ⚠️ Read the live state AGAIN rather than trusting `started`. The whole
+    // scenario is about what a second device DID to this one, and a reading taken
+    // before it joined cannot say.
+    const after = JSON.parse(await win.webContents.executeJavaScript(SMOKE_LIVE_PROBE));
+    return { role: "main", atStart: started, after, mountedSync: mounted.sync };
+  }
+
+  if (SMOKE_LIVE === "peer") {
+    smokeAt("live:peer:adopting");
+    // No press of anything. Adoption arrives over the socket: the PA answers this
+    // device's sync-request with its state, and live-mode.tsx's "adoptingRunningShow"
+    // branch is what must demote this page to a viewer.
+    // `begun` AND the PA's item: a device that adopted the show but sat at item 0
+    // has not adopted it, it has replaced it — and that difference is invisible
+    // while the show has never advanced, which is why the PA moves first.
+    const adopted = await pollLive(
+      win,
+      "this device never adopted the running show",
+      (l) => l.begun && l.index > 0,
+      45_000
+    );
+    await smokeMark("peer-joined", { set: true });
+    return { role: "peer", after: adopted, mountedSync: mounted.sync };
+  }
+
+  throw new Error(`CUEIQ_SMOKE_LIVE must be "main" or "peer", got "${SMOKE_LIVE}"`);
+}
+
 /** What the renderer is actually showing. Deliberately structural, not textual:
  *  the HashRouter's route and the presence of a password field say which screen
  *  the boot reached without pinning the test to any Thai string. */
@@ -585,6 +851,7 @@ const SMOKE_PROBE = `JSON.stringify({
   tenantName: document.querySelector('[data-cueiq-tenant]')?.getAttribute('data-cueiq-tenant') || null,
   eventRows: Number(document.querySelector('[data-cueiq-events]')?.getAttribute('data-cueiq-events') ?? -1),
   onLine: navigator.onLine,
+  live: ${SMOKE_LIVE_STATE},
 })`;
 
 /** Console errors an OFFLINE boot is allowed to produce. Anything else fails the run.
@@ -636,6 +903,19 @@ function smokeExpectationMet(p) {
   }
   if (SMOKE_EXPECT === "quick-show") {
     return p.screen === "quick-show";
+  }
+  // ── the two-device pair ──────────────────────────────────────────────────
+  // Both halves demand `begun`, which is what makes them a PAIR rather than two
+  // unrelated checks: the phone can only be a viewer OF something, and a PA that
+  // stopped being begun has lost the show whatever else it still claims.
+  if (SMOKE_EXPECT === "live-controller") {
+    return !!p.live && p.live.begun && p.live.controller;
+  }
+  if (SMOKE_EXPECT === "live-viewer") {
+    // NOT controller and NOT sounding: "เครื่องเสียงคุมคนเดียว" is a rule about the
+    // room, not about the screen, and a second device that quietly kept its own
+    // output on is two sound hosts on one stage.
+    return !!p.live && p.live.begun && !p.live.controller && !p.live.sound;
   }
   // A value nobody here understands is NEVER met — and neither is an absent one,
   // which is why there is no `return true` under this line any more. Falling through
@@ -1063,6 +1343,9 @@ async function createWindow() {
       // test that hand-seeding can never cover, and the half where a wrong cache KEY
       // (derived from the account's viewable groups) hides.
       let handover = null;
+      /** The two-device driver's report — what this device was before and after the
+       *  other one joined. Null in every single-device scenario. */
+      let liveResult = null;
       if (SMOKE_HANDOVER) {
         if (SMOKE_SIGN_IN) {
           // Nothing is planted at all on this path: the app signs itself in against
@@ -1089,6 +1372,29 @@ async function createWindow() {
         await emulateOfflineViaCdp(win);
         smokeAt("handover:offline-boot");
         await reloadAndWait(win, "into the offline boot");
+      } else if (SMOKE_LIVE) {
+        // ── THE TWO-DEVICE SCENARIO ──────────────────────────────────────────
+        // Online throughout, and two of these processes running at once. Sign in
+        // the same way the handover does — nothing planted, the real form — then
+        // hand over to the role driver, which opens the show and either runs it or
+        // joins it. Everything it learns rides the verdict for the runner to
+        // compare ACROSS the two processes, because the interesting facts (one
+        // controller, one sound host, one item index) are not visible to either
+        // device alone.
+        if (!SMOKE_SIGN_IN) throw new Error("CUEIQ_SMOKE_LIVE needs CUEIQ_SMOKE_SIGN_IN");
+        if (SMOKE_REALTIME) {
+          // Before the sign-in, and therefore before any channel is opened: the
+          // patched constructor only applies to documents created after it is
+          // installed, so the app has to boot once more on top of it. Nothing is
+          // lost in that reload — nothing has been planted and nobody has signed in.
+          smokeAt(`live:${SMOKE_LIVE}:pointing-the-socket-at-the-stub`);
+          await patchWebSocketHostViaCdp(win, SMOKE_BACKEND_FOR, SMOKE_BACKEND);
+          await reloadAndWait(win, "with the socket pointed at the stub");
+        }
+        smokeAt(`live:${SMOKE_LIVE}:signing-in`);
+        const creds = JSON.parse(SMOKE_SIGN_IN);
+        await signInThroughTheForm(win, creds.loginId, creds.password);
+        liveResult = await driveLiveScenario(win);
       } else if (SMOKE_SEED_FILE) {
         smokeAt("seeding");
         await plantSmokeSeed(win);
@@ -1152,6 +1458,10 @@ async function createWindow() {
         // The keys the APP wrote during the online phase — reported so a green
         // handover run says WHAT it handed over, not merely that it did.
         ...(handover ? { cacheKeysWrittenOnline: handover.keys } : {}),
+        // The two-device report. The runner cross-checks the pair — one controller,
+        // one sound host, the same item — which is the only place that comparison
+        // can happen: neither process can see the other's screen.
+        ...(liveResult ? { liveRole: liveResult.role, liveReport: liveResult } : {}),
         ...(failReason ? { failReason } : {}),
         consoleErrors: smokeConsoleErrors,
         unexpectedConsoleErrors: smokeUnexpectedConsoleErrors,

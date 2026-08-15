@@ -384,10 +384,15 @@ describe("what it refuses", () => {
     expect(backend.unimplementedPaths).toContain("GET /rest/v1/staff_contacts");
   });
 
-  it("answers a LOUD 501 for a write, naming the method and path", async () => {
+  it("answers a LOUD 501 for a write to a table outside the tiny writable list", async () => {
+    // Only the tables a scenario actually writes are writable (today: show_authority,
+    // claimed when Live Mode opens). Everything else has to stay refused BY NAME —
+    // a stub that accepted every write would let a screen no scenario opens appear
+    // to work.
     const { error, status } = await supabase.from("events").insert({ name: "nope" });
     expect(status).toBe(501);
-    expect(error?.message).toContain("POST /rest/v1/events");
+    expect(error?.message).toContain('does not accept POST on "events"');
+    expect(error?.hint).toContain("show_authority");
   });
 
   it("refuses an unauthenticated read by NAME rather than imitating an RLS empty", async () => {
@@ -400,6 +405,105 @@ describe("what it refuses", () => {
     expect(data).toBeNull();
     expect(status).toBe(401);
     expect(error?.code).toBe("SMOKE_ANON");
+  });
+
+  it("refuses an unauthenticated WRITE too", async () => {
+    // Sharper than the read case: a write that silently did nothing would let the
+    // two-device scenario report "no device holds the show" as though that were
+    // the app's decision rather than the stub's.
+    const anon = clientFor(backend.url, "smoke-backend-anon-write");
+    const { status, error } = await anon
+      .from("show_authority")
+      .upsert({ event_id: SMOKE_WORLD.ids.richEvent, kind: "show_main" }, { onConflict: "event_id,kind" });
+    expect(status).toBe(401);
+    expect(error?.code).toBe("SMOKE_ANON");
+  });
+});
+
+describe("the one thing it lets the app write: the show_main claim", () => {
+  // Live Mode claims show_main on open (lib/show-authority.ts), and the two-device
+  // scenario asks the stub how many devices hold it. That question only has an
+  // answer if the upsert behaves like the real unique constraint — one row per
+  // (event_id, kind), REPLACED on a second claim rather than appended.
+  const claim = (deviceId: string) => ({
+    tenant_id: SMOKE_WORLD.ids.tenant,
+    event_id: SMOKE_WORLD.ids.richEvent,
+    kind: "show_main",
+    device_id: deviceId,
+    device_label: null,
+    by_user_id: SMOKE_WORLD.ids.user,
+    by_role: "admin",
+    claimed_at: new Date().toISOString(),
+    heartbeat_at: new Date().toISOString(),
+  });
+
+  it("keeps exactly one row per (event_id, kind), whoever claimed last", async () => {
+    const first = await supabase.from("show_authority").upsert(claim("device-A"), {
+      onConflict: "event_id,kind",
+    });
+    expect(first.error).toBeNull();
+    const second = await supabase.from("show_authority").upsert(claim("device-B"), {
+      onConflict: "event_id,kind",
+    });
+    expect(second.error).toBeNull();
+
+    const { data } = await supabase
+      .from("show_authority")
+      .select("*")
+      .eq("event_id", SMOKE_WORLD.ids.richEvent);
+    expect(data).toHaveLength(1);
+    expect(data![0].device_id).toBe("device-B");
+  });
+
+  it("lets the claim holder heartbeat and release it", async () => {
+    const later = new Date(Date.now() + 60_000).toISOString();
+    const beat = await supabase
+      .from("show_authority")
+      .update({ heartbeat_at: later })
+      .eq("event_id", SMOKE_WORLD.ids.richEvent)
+      .eq("kind", "show_main")
+      .eq("device_id", "device-B");
+    expect(beat.error).toBeNull();
+    const after = await supabase
+      .from("show_authority")
+      .select("heartbeat_at")
+      .eq("event_id", SMOKE_WORLD.ids.richEvent);
+    expect(after.data![0].heartbeat_at).toBe(later);
+
+    // …and a release matching a DIFFERENT device must not drop it. That is the
+    // rule lib/show-authority.ts relies on to hand off without stealing.
+    const wrong = await supabase
+      .from("show_authority")
+      .delete()
+      .eq("event_id", SMOKE_WORLD.ids.richEvent)
+      .eq("device_id", "device-A");
+    expect(wrong.error).toBeNull();
+    expect(
+      (await supabase.from("show_authority").select("*").eq("event_id", SMOKE_WORLD.ids.richEvent))
+        .data
+    ).toHaveLength(1);
+
+    const right = await supabase
+      .from("show_authority")
+      .delete()
+      .eq("event_id", SMOKE_WORLD.ids.richEvent)
+      .eq("device_id", "device-B");
+    expect(right.error).toBeNull();
+    expect(
+      (await supabase.from("show_authority").select("*").eq("event_id", SMOKE_WORLD.ids.richEvent))
+        .data
+    ).toEqual([]);
+  });
+
+  it("refuses an upsert keyed on the wrong columns instead of inventing a constraint", async () => {
+    // An upsert on the wrong key is precisely how two devices would BOTH end up
+    // holding a role that can only belong to one — a stub that shrugged at it
+    // would hide the bug the two-device scenario exists to catch.
+    const { status, error } = await supabase
+      .from("show_authority")
+      .upsert(claim("device-C"), { onConflict: "device_id" });
+    expect(status).toBe(501);
+    expect(error?.message).toContain("device_id");
   });
 });
 

@@ -468,6 +468,50 @@ describe("LiveMode · two-device handoff", () => {
     expect(stateSends()).toHaveLength(1);
   });
 
+  // ── THE ATTRIBUTES THE TWO-DEVICE SMOKE READS ──────────────────────────────
+  // desktop/scripts/run-smoke.mjs's "two-device" scenario runs the PA and the
+  // joining phone as two separate Electron processes, and the ONLY thing it can
+  // read across that boundary is the DOM. `data-cueiq-live-*` is that boundary.
+  // Deleting or renaming one of these attributes would leave the smoke reporting
+  // "Live Mode never mounted" — a failure that names the wrong file, twenty
+  // minutes into a release. Here it is one red test, in three seconds, with the
+  // attribute named.
+  it("publishes what this device IS on the root, and keeps it in step", async () => {
+    await mountLive();
+    const root = () => document.querySelector("[data-cueiq-live]")!;
+    expect(root).not.toBeNull();
+    expect(root().getAttribute("data-cueiq-live-begun")).toBe("0");
+    expect(root().getAttribute("data-cueiq-live-controller")).toBe("1");
+    expect(root().getAttribute("data-cueiq-live-sound")).toBe("1");
+
+    const ts = await startShowFromUi();
+    expect(root().getAttribute("data-cueiq-live-begun")).toBe("1");
+    expect(root().getAttribute("data-cueiq-live-index")).toBe("0");
+
+    // …and they follow a demotion, which is the state the smoke's joining device
+    // asserts on: not controller, not sounding, and standing on the CONTROLLER's
+    // item rather than back at the first one.
+    await act(async () => {
+      live().emit("state", {
+        sender: "peer-device",
+        sentAt: Date.now(),
+        fromController: true,
+        begun: true,
+        running: true,
+        startedAt: ts,
+        itemStartedAt: ts,
+        itemElapsedAtPause: null,
+        currentIndex: 2,
+        mode: "manual",
+        controllerSince: ts + 10_000,
+        ended: false,
+      });
+    });
+    expect(root().getAttribute("data-cueiq-live-controller")).toBe("0");
+    expect(root().getAttribute("data-cueiq-live-sound")).toBe("0");
+    expect(root().getAttribute("data-cueiq-live-index")).toBe("2");
+  });
+
   it("THE JOINING PHONE: a peer with a NULL claim does not take the show", async () => {
     await mountLive();
     const ts = await startShowFromUi();
