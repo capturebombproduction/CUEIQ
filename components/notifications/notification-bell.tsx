@@ -10,6 +10,11 @@ import { applicationServerKeyMatches } from "@/lib/push-key-match";
 import { hasLiveSession } from "@/lib/auth-session";
 import { wroteNothing, noRowsMessage } from "@/lib/write-guard";
 import {
+  acknowledgeUnsavedWork,
+  commitFocusedField,
+  unsavedWorkMessage,
+} from "@/lib/dirty-guard";
+import {
   eventIdFromLink,
   mayMarkRead,
   notificationReachability,
@@ -383,7 +388,15 @@ export function NotificationBell({
     // n.link is server-set (always internal), but navigate only to an in-app path
     // as defense-in-depth — never follow an external URL from a stored row.
     const dest = safeInternalPath(n.link, "");
-    if (dest) router.push(dest);
+    if (!dest) return;
+    // router.push is programmatic, so the event workspace's anchor guard cannot
+    // see it — the same blind spot the sign-out button has. Opening a notification
+    // is a completely ordinary way to walk away from a half-saved call sheet.
+    commitFocusedField();
+    const unsaved = unsavedWorkMessage();
+    if (unsaved && !window.confirm(unsaved)) return;
+    if (unsaved) acknowledgeUnsavedWork();
+    router.push(dest);
   }
 
   async function markAllRead() {

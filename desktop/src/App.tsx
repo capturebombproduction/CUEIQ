@@ -19,6 +19,7 @@ import { Training } from "~/pages/training";
 import { PracticeRoom } from "~/pages/practice";
 import { Crew } from "~/pages/crew";
 import { Admin } from "~/pages/admin";
+import { Feedback } from "~/pages/feedback";
 import { MyShow } from "~/pages/my-show";
 import { Shell } from "~/components/shell";
 import { WorkspaceProvider } from "~/data/workspace-context";
@@ -197,6 +198,9 @@ export function App() {
         {/* Admin needs server-side secrets (service_role/R2) the renderer can't
             bundle, so it opens the web Admin in the system browser. */}
         <Route path="/admin" element={<Admin />} />
+        {/* Where the "ทีมงานตอบฟีดแบคของคุณแล้ว" notification lands. Without it
+            the catch-all below would bounce that click to the dashboard. */}
+        <Route path="/feedback" element={<Feedback />} />
       </Route>
 
       <Route path="*" element={<Navigate to="/" replace />} />

@@ -296,6 +296,7 @@ function nativeBridge() {
     pickAudioFile: vi.fn(async () => null),
     // the parameter is spelled out so `.mock.calls` is typed [boolean], not []
     setShowRunning: vi.fn(async (_running: boolean) => {}),
+    setUnloadReason: vi.fn(async (_reason: "show" | "unsaved" | null) => {}),
   };
   window.cueiqNative = bridge;
   return bridge;

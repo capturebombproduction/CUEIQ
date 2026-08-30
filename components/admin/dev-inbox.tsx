@@ -11,8 +11,15 @@ import {
   RefreshCw,
   AlertTriangle,
   X,
+  CornerDownRight,
+  Send,
+  User,
 } from "lucide-react";
+import { toast } from "sonner";
 import { createClient } from "@/lib/supabase/client";
+import { noRowsMessage, wroteNothing } from "@/lib/write-guard";
+import { notify } from "@/lib/notify-client";
+import { FeedbackImage } from "@/components/feedback-image";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -20,11 +27,15 @@ import { useConfirm } from "@/components/ui/confirm-dialog";
 
 interface FeedbackRow {
   id: string;
+  user_id: string | null;
   category: string;
   message: string;
   status: string;
   context: { path?: string | null; commit?: string | null; ua?: string | null } | null;
   created_at: string;
+  reply: string | null;
+  replied_at: string | null;
+  images: string[] | null;
 }
 interface ErrorRow {
   id: string;
@@ -100,9 +111,13 @@ function shortUrl(url: string | null): string | null {
   }
 }
 
-export function DevInbox() {
+export function DevInbox({ namesById = {} }: { namesById?: Record<string, string> }) {
   const confirm = useConfirm();
   const [fb, setFb] = useState<FeedbackRow[]>([]);
+  // The reply being typed, per feedback id. Kept out of the row objects so a
+  // reload() mid-typing cannot wipe what an admin has half-written.
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [sending, setSending] = useState<string | null>(null);
   const [errs, setErrs] = useState<ErrorRow[]>([]);
   const [showNoise, setShowNoise] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -123,7 +138,59 @@ export function DevInbox() {
   async function toggleDone(id: string, status: string) {
     const next = status === "done" ? "open" : "done";
     setFb((p) => p.map((r) => (r.id === id ? { ...r, status: next } : r)));
-    await createClient().from("feedback").update({ status: next }).eq("id", id);
+    const { data, error } = await createClient()
+      .from("feedback")
+      .update({ status: next })
+      .eq("id", id)
+      .select("id");
+    // A write that reported no error but touched no row did not happen
+    // (lib/write-guard.ts) — and this is the button whose entire job is to say
+    // "this one is handled", so it must not say it falsely.
+    if (error || wroteNothing(data)) {
+      setFb((p) => p.map((r) => (r.id === id ? { ...r, status } : r)));
+      toast.error("เปลี่ยนสถานะไม่สำเร็จ", {
+        description: error?.message ?? (await noRowsMessage()),
+      });
+    }
+  }
+
+  /**
+   * Answer one report. The reply lands on the row (0043) and the author is told —
+   * both halves matter: five people wrote in over two months and none of them ever
+   * heard anything, which is how a channel like this stops being used.
+   *
+   * The notify() call is fire-and-forget by design and swallows its own errors, so
+   * it is NOT what decides success here — the row write is.
+   */
+  async function sendReply(id: string) {
+    const text = (drafts[id] ?? "").trim();
+    if (text.length < 2) {
+      toast.error("พิมพ์คำตอบสักนิดครับ");
+      return;
+    }
+    setSending(id);
+    try {
+      const now = new Date().toISOString();
+      const { data, error } = await createClient()
+        .from("feedback")
+        .update({ reply: text.slice(0, 4000), replied_at: now, reply_seen_at: null })
+        .eq("id", id)
+        .select("id");
+      if (error) throw new Error(error.message);
+      if (wroteNothing(data)) throw new Error(await noRowsMessage());
+      setFb((p) =>
+        p.map((r) => (r.id === id ? { ...r, reply: text, replied_at: now } : r))
+      );
+      setDrafts((d) => ({ ...d, [id]: "" }));
+      notify("feedback_replied", { feedbackId: id });
+      toast.success("ส่งคำตอบแล้ว");
+    } catch (e) {
+      toast.error("ส่งคำตอบไม่สำเร็จ", {
+        description: e instanceof Error ? e.message : undefined,
+      });
+    } finally {
+      setSending(null);
+    }
   }
   async function delFb(id: string) {
     if (!(await confirm({ title: "ลบฟีดแบคนี้?", description: "ลบถาวร กู้คืนไม่ได้" }))) return;
@@ -189,12 +256,21 @@ export function DevInbox() {
         {fb.map((r) => {
           const Icon = CAT_ICON[r.category] ?? MessageCircle;
           const done = r.status === "done";
+          const who = r.user_id ? namesById[r.user_id] : null;
           return (
             <div key={r.id} className={`rounded-lg border bg-card p-3 ${done ? "opacity-50" : ""}`}>
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0 space-y-1">
-                  <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
                     <Icon className="h-3.5 w-3.5" />
+                    {/* Who wrote it. The inbox never showed this, so answering a
+                        report meant guessing who to talk to — and the reply below
+                        is worth much less if you cannot tell whose bug it was. */}
+                    {who && (
+                      <span className="inline-flex items-center gap-1 font-medium text-foreground">
+                        <User className="h-3.5 w-3.5" /> {who}
+                      </span>
+                    )}
                     <span>{when(r.created_at)}</span>
                     {r.context?.path && (
                       <span className="truncate font-mono">· {r.context.path}</span>
@@ -218,6 +294,52 @@ export function DevInbox() {
                     <Trash2 className="h-4 w-4" />
                   </Button>
                 </div>
+              </div>
+
+              {!!r.images?.length && (
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {r.images.map((k) => (
+                    <FeedbackImage key={k} objectKey={k} />
+                  ))}
+                </div>
+              )}
+
+              {r.reply && (
+                <div className="mt-2 rounded-md border-l-2 border-primary bg-muted/50 p-2">
+                  <p className="mb-1 flex items-center gap-1.5 text-xs font-medium text-primary">
+                    <CornerDownRight className="h-3.5 w-3.5" />
+                    ตอบไปแล้ว
+                    {r.replied_at && (
+                      <span className="font-normal text-muted-foreground">
+                        · {when(r.replied_at)}
+                      </span>
+                    )}
+                  </p>
+                  <p className="whitespace-pre-wrap text-sm">{r.reply}</p>
+                </div>
+              )}
+
+              <div className="mt-2 flex items-end gap-2">
+                <textarea
+                  value={drafts[r.id] ?? ""}
+                  onChange={(e) => setDrafts((d) => ({ ...d, [r.id]: e.target.value }))}
+                  rows={2}
+                  placeholder={r.reply ? "แก้คำตอบ / ตอบเพิ่ม…" : "ตอบกลับคนที่แจ้งมา…"}
+                  data-testid={`feedback-reply-input-${r.id}`}
+                  className="min-w-0 flex-1 rounded-md border bg-background p-2 text-base focus:outline-none focus:ring-2 focus:ring-ring sm:text-sm"
+                />
+                <Button
+                  size="sm"
+                  onClick={() => sendReply(r.id)}
+                  disabled={sending === r.id || !(drafts[r.id] ?? "").trim()}
+                >
+                  {sending === r.id ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Send className="h-4 w-4" />
+                  )}
+                  ตอบ
+                </Button>
               </div>
             </div>
           );

@@ -16,4 +16,9 @@ contextBridge.exposeInMainWorld("cueiqNative", {
   // Tell main a show has started/ended running, so it can hold the display awake
   // (electron powerSaveBlocker) for the duration — see desktop/electron/main.cjs.
   setShowRunning: (running) => ipcRenderer.invoke("cueiq:set-show-running", running),
+  // Which beforeunload guard is armed right now: "show" | "unsaved" | null. In a
+  // browser the guard's own text is shown; Electron replaces it with a native
+  // dialog whose words are written in main.cjs, so main has to be told which
+  // situation it is describing or it will say a show is running during an edit.
+  setUnloadReason: (reason) => ipcRenderer.invoke("cueiq:set-unload-reason", reason),
 });

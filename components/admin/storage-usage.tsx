@@ -22,7 +22,7 @@ export function StorageUsage({ bytes, count }: { bytes: number; count: number })
     <Card>
       <CardHeader>
         <CardTitle className="flex items-center gap-2 text-base">
-          <Database className="h-4 w-4" /> พื้นที่จัดเก็บไฟล์เสียง (Cloudflare R2)
+          <Database className="h-4 w-4" /> พื้นที่จัดเก็บไฟล์ (Cloudflare R2)
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-2 text-sm">

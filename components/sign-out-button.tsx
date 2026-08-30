@@ -6,6 +6,11 @@ import { toast } from "sonner";
 import { createClient } from "@/lib/supabase/client";
 import { cleanupPushOnSignOut } from "@/components/notifications/push-cleanup";
 import { isLiveShowActive } from "@/lib/live-guard";
+import {
+  acknowledgeUnsavedWork,
+  commitFocusedField,
+  unsavedWorkMessage,
+} from "@/lib/dirty-guard";
 import { Button } from "@/components/ui/button";
 
 /**
@@ -106,6 +111,14 @@ export function SignOutButton() {
         ) {
           return;
         }
+        // Same blind spot, different loss: an event edit that has not landed. The
+        // workspace's anchor guard cannot see a router.replace either, so ask here
+        // — after committing whatever field still holds focus, so the ordinary
+        // "typed, then hit sign out" saves instead of warning.
+        commitFocusedField();
+        const unsaved = unsavedWorkMessage("signout");
+        if (unsaved && !window.confirm(unsaved)) return;
+        if (unsaved) acknowledgeUnsavedWork();
         // Shared band machine: a desktop sign-out wipes the offline management
         // outbox, so writes made at a no-internet venue would vanish before they
         // ever reached the server. Nothing here is recoverable — ask first, and

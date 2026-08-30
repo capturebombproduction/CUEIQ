@@ -7,6 +7,7 @@ import { createClient } from "@/lib/supabase/client";
 import { newLocalRowId } from "@/lib/mgmt-outbox";
 import { OFFLINE_QUEUED_MESSAGE, tryQueueChildList } from "@/lib/mgmt-write";
 import { noRowsMessage, wroteNothing } from "@/lib/write-guard";
+import { SaveStatus, useSaveSignal } from "@/components/event/save-status";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useConfirm } from "@/components/ui/confirm-dialog";
@@ -38,6 +39,7 @@ export function MicMapEditor({
 }) {
   const supabase = createClient();
   const confirm = useConfirm();
+  const save = useSaveSignal();
   const [mics, setMics] = useState<MicAssignment[]>(initialMics);
   // In-flight guard for addMic/addHolder: a double-tap on the iPads the bands
   // actually use would compute the same max(...)+1 twice → two rows with an
@@ -83,22 +85,46 @@ export function MicMapEditor({
     return queued;
   }
 
+  // Reports into the same signal the setlist and schedule editors use — so the
+  // ผังไมค์ tab gets the บันทึกแล้ว receipt it never had, and so the leave-the-page
+  // warning (lib/dirty-guard.ts) can see a mic name that failed to save. Before
+  // this, a failed holder_name was a toast and nothing else.
   async function persist(id: string, partial: Partial<MicAssignment>) {
-    const { data, error } = await supabase
-      .from("mic_assignments")
-      .update(partial)
-      .eq("id", id)
-      .select("id");
-    if (error) {
-      const next = mics.map((m) => (m.id === id ? { ...m, ...partial } : m));
-      if (await queueOffline(next, error.message)) return;
-      toast.error("บันทึกไม่สำเร็จ", { description: error.message });
-      return;
-    }
-    // No error and no row = the write reached the server and changed nothing (sent
-    // anon after a failed token refresh, or the row is gone). See lib/write-guard.ts.
-    if (wroteNothing(data)) {
-      toast.error("ยังไม่ได้บันทึก", { description: await noRowsMessage() });
+    save.begin();
+    try {
+      const { data, error } = await supabase
+        .from("mic_assignments")
+        .update(partial)
+        .eq("id", id)
+        .select("id");
+      if (error) {
+        const next = mics.map((m) => (m.id === id ? { ...m, ...partial } : m));
+        // Queued offline IS saved — it is on disk and it will flush.
+        if (await queueOffline(next, error.message)) {
+          save.end(true);
+          return;
+        }
+        save.end(false);
+        toast.error("บันทึกไม่สำเร็จ", { description: error.message });
+        return;
+      }
+      // No error and no row = the write reached the server and changed nothing (sent
+      // anon after a failed token refresh, or the row is gone). See lib/write-guard.ts.
+      if (wroteNothing(data)) {
+        save.end(false);
+        toast.error("ยังไม่ได้บันทึก", { description: await noRowsMessage() });
+        return;
+      }
+      save.end(true);
+    } catch (e) {
+      // supabase-js reports most failures in `error`, but a fetch that throws
+      // (offline mid-flight, an aborted request) would otherwise leave this write
+      // counted as in-flight forever: the badge stuck on กำลังบันทึก… and every
+      // later exit warning about it.
+      save.end(false);
+      toast.error("บันทึกไม่สำเร็จ", {
+        description: e instanceof Error ? e.message : undefined,
+      });
     }
   }
 
@@ -370,6 +396,7 @@ export function MicMapEditor({
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
             <Mic2 className="h-5 w-5" /> Mic Map (ไมค์ → สมาชิก)
+            <SaveStatus state={save.state} className="ml-auto font-normal" />
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-3">

@@ -12,7 +12,16 @@ export type NotifyKind =
   | "song_pending"
   | "song_rejected"
   | "song_cleared"
-  | "run_order_live";
+  | "run_order_live"
+  | "feedback_replied";
+
+/** The subject the server should look up. Exactly one of these is used per kind;
+ *  the server never takes a recipient from the client. */
+export interface NotifyPayload {
+  eventId?: string;
+  songId?: string;
+  feedbackId?: string;
+}
 
 // The desktop SPA has no /api routes of its own — a relative fetch resolves
 // against file:// and silently dies. Same seam as lib/audio-remote's presign:
@@ -22,7 +31,7 @@ export type NotifyKind =
 // the web's cookies. /api/notify accepts either, like /api/audio/presign.
 async function send(
   kind: NotifyKind,
-  payload: { eventId?: string; songId?: string }
+  payload: NotifyPayload
 ): Promise<void> {
   const webOrigin = process.env.CUEIQ_WEB_ORIGIN;
   const headers: Record<string, string> = { "Content-Type": "application/json" };
@@ -39,10 +48,7 @@ async function send(
   });
 }
 
-export function notify(
-  kind: NotifyKind,
-  payload: { eventId?: string; songId?: string }
-): void {
+export function notify(kind: NotifyKind, payload: NotifyPayload): void {
   try {
     void send(kind, payload).catch(() => {});
   } catch {

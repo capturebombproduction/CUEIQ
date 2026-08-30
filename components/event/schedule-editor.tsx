@@ -104,6 +104,21 @@ export function ScheduleEditor({
 
   async function persist(id: string, partial: Partial<ScheduleItem>) {
     save.begin();
+    try {
+      await persistInner(id, partial);
+    } catch (e) {
+      // A fetch that THROWS (offline mid-flight, aborted) never reached the code
+      // below, so the badge stayed on กำลังบันทึก… forever with no toast — and the
+      // leave-the-page warning would count it as in flight for the rest of the
+      // session.
+      save.end(false);
+      toast.error("Save failed", {
+        description: e instanceof Error ? e.message : undefined,
+      });
+    }
+  }
+
+  async function persistInner(id: string, partial: Partial<ScheduleItem>) {
     const { data, error } = await supabase
       .from("schedule_items")
       .update(partial)

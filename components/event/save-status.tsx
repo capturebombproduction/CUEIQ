@@ -1,7 +1,8 @@
 "use client";
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Check, CloudOff, Loader2 } from "lucide-react";
+import { markAbandoned, markPending, markSettled } from "@/lib/dirty-guard";
 import { cn } from "@/lib/utils";
 
 /**
@@ -32,15 +33,31 @@ export function useSaveSignal() {
 
   const begin = useCallback(() => {
     inFlight.current += 1;
+    // The same write is reported to lib/dirty-guard.ts, which is what the
+    // leave-the-page warning reads. It is module-level on purpose: this hook's
+    // state dies when EventWorkspace re-keys a hidden tab, and the warning must
+    // not die with it.
+    markPending();
     setState("saving");
   }, []);
 
   const end = useCallback((ok: boolean) => {
     inFlight.current = Math.max(0, inFlight.current - 1);
+    markSettled(ok);
     // A failure wins over anything still in flight and stays put: the toast that
     // accompanies it is gone in seconds, and what is on screen afterwards has to
     // keep saying that something did not land.
     setState((prev) => (!ok || prev === "failed" ? "failed" : inFlight.current > 0 ? "saving" : "saved"));
+  }, []);
+
+  // An editor that unmounts mid-write (a tab re-key, or a navigation the guard
+  // already asked about) would otherwise leave its begin() counted forever, and
+  // every later exit would warn about a write nobody is waiting for.
+  useEffect(() => {
+    return () => {
+      markAbandoned(inFlight.current);
+      inFlight.current = 0;
+    };
   }, []);
 
   /** Wrap one write. Returns whatever the write returned. */

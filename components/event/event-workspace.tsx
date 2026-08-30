@@ -10,6 +10,8 @@ import { Button } from "@/components/ui/button";
 import { RefreshButton } from "@/components/refresh-button";
 import { ShareButton } from "@/components/event/share-button";
 import { EventSummary } from "@/components/event/event-summary";
+import { useLeaveGuard } from "@/components/event/use-leave-guard";
+import { commitFocusedField, hasUnsavedWork } from "@/lib/dirty-guard";
 import { type RunSeqLive } from "@/components/event/event-live-caller";
 
 // The per-tab editors are heavy (SetlistBuilder alone is ~700 lines) and aren't
@@ -120,21 +122,21 @@ export function EventWorkspace({
   // with it — but it costs nothing and covers the ordinary "I switched to LINE for
   // a second" case, which is most of them.
   useEffect(() => {
-    const commitFocused = () => {
-      const el = document.activeElement as HTMLElement | null;
-      if (!el) return;
-      if (el.tagName === "INPUT" || el.tagName === "TEXTAREA") el.blur();
-    };
     const onHide = () => {
-      if (document.visibilityState === "hidden") commitFocused();
+      if (document.visibilityState === "hidden") commitFocusedField();
     };
-    window.addEventListener("pagehide", commitFocused);
+    window.addEventListener("pagehide", commitFocusedField);
     document.addEventListener("visibilitychange", onHide);
     return () => {
-      window.removeEventListener("pagehide", commitFocused);
+      window.removeEventListener("pagehide", commitFocusedField);
       document.removeEventListener("visibilitychange", onHide);
     };
   }, []);
+
+  // …and the other half of the same request (2026-08-13): warn on the way OUT when
+  // something did not save. Only where there is something to lose — a read-only
+  // viewer and a template have no autosaving editors mounted.
+  useLeaveGuard(editable && !event.is_template);
   useEffect(() => {
     if (!editable || event.is_template || syncing.current) return;
     let next: GroupStatus | null = null;
@@ -286,8 +288,19 @@ export function EventWorkspace({
   // server data WITHOUT leaving the current tab and confirms with a toast.
   function confirmSaved() {
     setSaving(true);
+    // This button used to assert success unconditionally. Now that the app knows
+    // when a write did not land, saying "บันทึกเรียบร้อยแล้ว" over a failed one
+    // would be the same false receipt lib/write-guard.ts exists to stop — and the
+    // person pressing it is asking precisely because they are unsure.
+    commitFocusedField();
     router.refresh();
-    toast.success("บันทึกเรียบร้อยแล้ว");
+    if (hasUnsavedWork()) {
+      toast.error("ยังบันทึกไม่ครบ", {
+        description: "มีการแก้ไขที่ยังไม่ได้บันทึก — ลองแก้ช่องนั้นอีกครั้งแล้วคลิกออกจากช่อง",
+      });
+    } else {
+      toast.success("บันทึกเรียบร้อยแล้ว");
+    }
     setTimeout(() => setSaving(false), 800);
   }
 

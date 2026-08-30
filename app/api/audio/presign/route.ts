@@ -6,10 +6,10 @@
 // never pass through this serverless function. DELETE is performed server-side
 // (no body, tiny op, no CORS needed on the bucket for it).
 //
-// Authorization mirrors exactly what Supabase Storage RLS used to enforce
-// (supabase/migrations/0004): the tenant is the first segment of the object key,
-// and we reuse the SECURITY DEFINER predicates is_tenant_member (read) and
-// can_edit_tenant (write/delete) via the user's authenticated session.
+// Authorization mirrors what the matching RLS policy would say, and the RULE
+// ITSELF lives in lib/presign-authz.ts — key layouts, who may read, who may write,
+// and which SECURITY DEFINER predicate answers each. That module is pure and
+// exhaustively tested; this file signs URLs and nothing else.
 // ---------------------------------------------------------------------------
 
 import { NextResponse } from "next/server";
@@ -22,14 +22,14 @@ import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { createClient as createServerClient } from "@/lib/supabase/server";
 import { createClient as createTokenClient } from "@supabase/supabase-js";
 import { r2Client, r2Configured, R2_BUCKET } from "@/lib/r2";
+import { planPresign, type PresignOp } from "@/lib/presign-authz";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const URL_TTL = 60 * 15; // 15 min — generous for a big WAV over venue Wi-Fi
 
-type Op = "get" | "put" | "delete";
+type Op = PresignOp;
 
 // CORS — the WEB app calls this same-origin (these headers are inert there). The
 // DESKTOP app calls it cross-origin with a Bearer token (no cookies), so reflect
@@ -88,27 +88,6 @@ export async function POST(req: Request) {
 
   const key = (body.key ?? "").trim();
   const op = body.op as Op;
-  if (
-    !key ||
-    key.startsWith("/") ||
-    key.includes("..") ||
-    !["get", "put", "delete"].includes(op)
-  ) {
-    return json(req, { error: "bad request" }, 400);
-  }
-
-  // Key layout (see lib/audio-remote.ts buildAudioPath / buildSongAudioPath):
-  //   new:    <tenant>/<group>/<event>/<item>   and  <tenant>/<group>/songs/<song>
-  //   legacy: <tenant>/<event>/<item>           (pre-RBAC, no group segment)
-  // The first segment is always the tenant id; segment 1 is the band id when the
-  // key is the new 4-part form. Gate per-BAND when we have a group, so a member of
-  // one band can't fetch another band's audio (RBAC, supabase/migrations/0016).
-  const segs = key.split("/");
-  const tenantId = segs[0];
-  if (!UUID.test(tenantId)) {
-    return json(req, { error: "bad key" }, 400);
-  }
-  const groupId = segs.length >= 4 && UUID.test(segs[1]) ? segs[1] : null;
 
   const supabase = await callerClient(req);
   const {
@@ -118,22 +97,24 @@ export async function POST(req: Request) {
     return json(req, { error: "unauthorized" }, 401);
   }
 
-  // Reads need view rights; writes/deletes need edit rights — evaluated under the
-  // caller's auth.uid() via the SECURITY DEFINER RLS helpers. Group-scoped keys
-  // gate on the band; legacy keys fall back to the tenant-level predicates.
-  const { rpc, arg } = groupId
-    ? {
-        rpc: op === "get" ? "can_view_group" : "can_edit_group",
-        arg: { gid: groupId },
-      }
-    : {
-        rpc: op === "get" ? "is_tenant_member" : "can_edit_tenant",
-        arg: { tid: tenantId },
-      };
-  const { data: allowed, error: rpcErr } = await supabase.rpc(rpc, arg);
-  if (rpcErr) {
-    return json(req, { error: "permission check failed" }, 500);
+  // The whole rule — which key layouts exist and who may touch each — lives in
+  // lib/presign-authz.ts, exhaustively tested there. This handler only executes
+  // the plan it returns.
+  const plan = planPresign(key, op, user.id);
+  if (plan.decision === "bad-key") return json(req, { error: "bad request" }, 400);
+  if (plan.decision === "deny") return json(req, { error: "forbidden" }, 403);
+
+  let allowed: unknown = plan.decision === "allow";
+  if (plan.decision === "ask") {
+    // Evaluated under the CALLER'S auth.uid() via the SECURITY DEFINER RLS helpers,
+    // never with the service role.
+    const { data, error: rpcErr } = await supabase.rpc(plan.rpc, plan.arg);
+    if (rpcErr) {
+      return json(req, { error: "permission check failed" }, 500);
+    }
+    allowed = data;
   }
+
   if (!allowed) {
     return json(req, { error: "forbidden" }, 403);
   }

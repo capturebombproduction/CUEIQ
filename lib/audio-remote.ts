@@ -106,6 +106,38 @@ export function buildSongAudioPath(
   return `${tenantId}/${groupId}/songs/${songId}-${token()}.${extOf(fileName)}`;
 }
 
+/** Image types a feedback screenshot may be. Must stay in step with
+ *  FEEDBACK_IMAGE_FILE in lib/presign-authz.ts — a type this list allows but that
+ *  pattern does not is a 400 the user reads as "แนบรูปไม่ได้". A test pins them
+ *  together (lib/presign-authz.test.ts). */
+export const FEEDBACK_IMAGE_EXTS = ["png", "jpg", "jpeg", "webp", "gif", "heic"] as const;
+
+/**
+ * Object key for a screenshot attached to a feedback report:
+ *   <tenant>/feedback/<authorUserId>/<rand>.<ext>
+ *
+ * The AUTHOR'S id is a segment on purpose. `public.feedback` has no group_id, so
+ * there is no band to scope these to, and the tenant-level fallback the presign
+ * route used before 0043 was wrong in both directions (writes were admin-only, and
+ * reads were open to the whole label). With the author in the key, the route can
+ * answer "the author, or an admin" — exactly what feedback_select says about the
+ * row these bytes belong to — without reading anything.
+ *
+ * The random token is 16 chars rather than the audio builders' 8: these keys are
+ * guessable in shape and, unlike a song, the object is only ever fetched through a
+ * presigned URL an authorized caller minted, so the token is defence in depth, not
+ * the lock.
+ */
+export function buildFeedbackImagePath(
+  tenantId: string,
+  authorUserId: string,
+  fileName: string
+): string {
+  const ext = extOf(fileName);
+  const safe = (FEEDBACK_IMAGE_EXTS as readonly string[]).includes(ext) ? ext : "png";
+  return `${tenantId}/feedback/${authorUserId}/${token()}${token()}.${safe}`;
+}
+
 // ---------------------------------------------------------------------------
 // Timeouts + cancellation. Venue Wi-Fi doesn't only drop packets, it BLACK-HOLES
 // connections: a fetch with no signal then hangs forever, and withRetry used to
@@ -368,6 +400,27 @@ export async function uploadEventAudio(
     });
     if (!res.ok) throw httpError(`อัปโหลดไฟล์เสียงไม่สำเร็จ (${res.status})`, res.status);
   });
+}
+
+/**
+ * Fetch a small image object (a feedback screenshot) as a Blob.
+ *
+ * Deliberately NOT downloadEventAudio: that one is built for 27–88 MB masters and
+ * drags three retries, a 45 s no-progress stall clock, a visibilitychange ping and
+ * a byte-counting TransformStream along with it. A screenshot is one round trip.
+ *
+ * It does keep the one thing that matters on the desktop: under Electron the bytes
+ * come back through the main process (fetchBlobImpl), because the renderer's origin
+ * is file:// and a direct fetch of an R2 URL is CORS-blocked there. An <img src>
+ * would load — img tags are not subject to CORS — but the presigned URL dies after
+ * 15 minutes, and a Dev Inbox left open all afternoon would then show broken boxes.
+ */
+export async function fetchImageBlob(path: string): Promise<Blob> {
+  const url = await presign(path, "get");
+  if (fetchBlobImpl) return fetchBlobImpl(url);
+  const res = await fetch(url);
+  if (!res.ok) throw httpError(`โหลดรูปไม่สำเร็จ (${res.status})`, res.status);
+  return res.blob();
 }
 
 export async function downloadEventAudio(

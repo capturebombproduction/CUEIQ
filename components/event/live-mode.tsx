@@ -662,6 +662,9 @@ export function LiveMode({
     // live here, so they confirm before cutting it — the click/beforeunload guards
     // below can't see a programmatic sign-out navigation.
     setLiveShowActive(true);
+    // Electron replaces the browser's leave-confirm with its own dialog; say which
+    // guard this is so it does not describe an unsaved edit (see main.cjs).
+    window.cueiqNative?.setUnloadReason("show").catch(() => {});
     const livePath = `/events/${eventId}/live`;
     // Say what THIS device actually loses by leaving — a muted controller's audio
     // is not what stops, the show is.
@@ -691,6 +694,7 @@ export function LiveMode({
     window.addEventListener("beforeunload", onBeforeUnload);
     return () => {
       setLiveShowActive(false);
+      window.cueiqNative?.setUnloadReason(null).catch(() => {});
       document.removeEventListener("click", onClick, true);
       window.removeEventListener("beforeunload", onBeforeUnload);
     };

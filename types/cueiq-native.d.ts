@@ -11,6 +11,10 @@ interface CueiqNative {
   putAudio: (url: string, bytes: Uint8Array, contentType?: string) => Promise<void>;
   pickAudioFile: () => Promise<{ name: string; bytes: Uint8Array } | null>;
   setShowRunning: (running: boolean) => Promise<void>;
+  /** Which beforeunload guard is armed: a running show, an unsaved edit, or
+   *  neither. Electron swaps the browser's leave-confirm for a native dialog whose
+   *  wording lives in main.cjs, so it has to be told which one it is describing. */
+  setUnloadReason: (reason: "show" | "unsaved" | null) => Promise<void>;
 }
 
 interface Window {

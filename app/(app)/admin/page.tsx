@@ -45,6 +45,35 @@ async function listUsers(tenantId: string): Promise<ManagedUser[]> {
     .sort((a, b) => (a.email ?? "").localeCompare(b.email ?? ""));
 }
 
+/**
+ * Display names for the Dev Inbox, keyed by user id.
+ *
+ * Resolved SERVER-side with the service role, exactly as listUsers() above does,
+ * because `profiles` RLS is own-row-only with no admin exception — the inbox is a
+ * client component and can never join it. That is why a feedback note showed only
+ * a timestamp until now: nobody could tell whose bug it was, let alone answer it.
+ */
+async function feedbackNames(tenantId: string): Promise<Record<string, string>> {
+  if (!hasServiceRole()) return {};
+  const admin = createAdminClient();
+  const { data: members } = await admin
+    .from("tenant_members")
+    .select("user_id")
+    .eq("tenant_id", tenantId);
+  const ids = (members ?? []).map((m) => m.user_id as string);
+  if (!ids.length) return {};
+  const { data: profiles } = await admin
+    .from("profiles")
+    .select("id, email, full_name")
+    .in("id", ids);
+  const out: Record<string, string> = {};
+  for (const p of profiles ?? []) {
+    const name = (p.full_name as string | null) || (p.email as string | null);
+    if (name) out[p.id as string] = name;
+  }
+  return out;
+}
+
 export default async function AdminPage() {
   const ws = await getWorkspace();
   if (!ws.membership || !ws.tenant) redirect("/dashboard");
@@ -118,7 +147,7 @@ export default async function AdminPage() {
             ข้อความที่ทีมส่งเข้ามา + error ที่ระบบจับได้อัตโนมัติ (เห็นเฉพาะแอดมิน)
           </p>
         </div>
-        <DevInbox />
+        <DevInbox namesById={await feedbackNames(ws.membership.tenant_id)} />
       </section>
     </div>
   );

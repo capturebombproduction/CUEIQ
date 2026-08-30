@@ -24,11 +24,13 @@ type Kind =
   | "song_pending" // → approvers
   | "song_rejected" // → the band's Ar(s)
   | "song_cleared" // → the band's Ar(s)
-  | "run_order_live"; // → everyone in the tenant (the show just went live)
+  | "run_order_live" // → everyone in the tenant (the show just went live)
+  | "feedback_replied"; // → the ONE person who wrote the feedback
 
 const EVENT_KINDS = new Set<Kind>(["event_submitted", "event_approved", "event_rejected"]);
 const SONG_KINDS = new Set<Kind>(["song_pending", "song_rejected", "song_cleared"]);
 const RUN_ORDER_KINDS = new Set<Kind>(["run_order_live"]);
+const FEEDBACK_KINDS = new Set<Kind>(["feedback_replied"]);
 
 // CORS — the WEB app calls this same-origin (these headers are inert there). The
 // DESKTOP app calls it cross-origin with a Bearer token (no cookies), and the
@@ -90,9 +92,13 @@ export async function POST(req: Request) {
   const kind = body?.kind as Kind;
   const eventId = typeof body?.eventId === "string" ? body.eventId : null;
   const songId = typeof body?.songId === "string" ? body.songId : null;
+  const feedbackId = typeof body?.feedbackId === "string" ? body.feedbackId : null;
   if (
     !kind ||
-    (!EVENT_KINDS.has(kind) && !SONG_KINDS.has(kind) && !RUN_ORDER_KINDS.has(kind))
+    (!EVENT_KINDS.has(kind) &&
+      !SONG_KINDS.has(kind) &&
+      !RUN_ORDER_KINDS.has(kind) &&
+      !FEEDBACK_KINDS.has(kind))
   ) {
     return json(req, { error: "bad kind" }, 400);
   }
@@ -106,7 +112,9 @@ export async function POST(req: Request) {
   let title: string;
   let messageBody: string;
   let link: string;
-  let recipientRule: "approvers" | "band_ar" | "all_tenant";
+  let recipientRule: "approvers" | "band_ar" | "all_tenant" | "submitter";
+  // feedback_replied only — the single person the answer belongs to.
+  let submitterId = "";
   const meta: Record<string, unknown> = {};
   // run_order_live only — the festival identity + the event the board was opened
   // from, needed below to give each recipient a link THEY can open (see step 4c).
@@ -175,6 +183,43 @@ export async function POST(req: Request) {
     }
     link = "/library";
     messageBody = bandName ? `${name} · ${bandName}` : name;
+  } else if (FEEDBACK_KINDS.has(kind)) {
+    // feedback_replied — an admin answered someone's report in the Dev Inbox.
+    //
+    // Unlike every other kind here, this one has no public state to re-verify
+    // against: "an admin replied" IS the state. So it is authorized directly —
+    // the caller must be an admin of the report's tenant — and the reply must
+    // actually be on the row. Both checks run with the admin client so a member
+    // cannot use their own RLS view to make either come out differently.
+    if (!feedbackId) return json(req, { error: "no feedbackId" }, 400);
+    const { data: fb } = await admin
+      .from("feedback")
+      .select("id, tenant_id, user_id, reply, message")
+      .eq("id", feedbackId)
+      .maybeSingle();
+    if (!fb) return noOp(req);
+    if (!(fb.reply as string | null)?.trim()) return noOp(req); // nothing was said
+    if (!fb.user_id) return noOp(req); // author's account is gone
+    tenantId = fb.tenant_id as string;
+    submitterId = fb.user_id as string;
+    const { data: callerRole } = await admin
+      .from("tenant_members")
+      .select("role")
+      .eq("tenant_id", tenantId)
+      .eq("user_id", user.id)
+      .maybeSingle();
+    // can_admin_tenant's role set, evaluated here rather than through the rpc so it
+    // cannot be answered by the caller's own session.
+    if (!["admin", "platform_admin", "tenant_owner"].includes(String(callerRole?.role))) {
+      return json(req, { error: "forbidden" }, 403);
+    }
+    title = "💬 ทีมงานตอบฟีดแบคของคุณแล้ว";
+    // The first line of what they originally wrote, so the push says WHICH report.
+    const asked = (fb.message as string) ?? "";
+    messageBody = asked.length > 80 ? `${asked.slice(0, 80)}…` : asked;
+    link = "/feedback";
+    recipientRule = "submitter";
+    meta.feedback_id = fb.id;
   } else {
     // run_order_live — the festival's live board just started. Everyone in the
     // label watches the show, so notify the whole tenant. Anti-spoof: the festival
@@ -239,7 +284,9 @@ export async function POST(req: Request) {
 
   // 4) Resolve recipient user ids.
   let recipientIds: string[] = [];
-  if (recipientRule === "all_tenant") {
+  if (recipientRule === "submitter") {
+    recipientIds = [submitterId];
+  } else if (recipientRule === "all_tenant") {
     const { data } = await admin
       .from("tenant_members")
       .select("user_id")
@@ -279,13 +326,17 @@ export async function POST(req: Request) {
     ? "meta->>song_id"
     : kind === "run_order_live"
       ? "meta->>festival"
-      : "meta->>event_id";
+      : FEEDBACK_KINDS.has(kind)
+        ? "meta->>feedback_id"
+        : "meta->>event_id";
   const subjectId = String(
     SONG_KINDS.has(kind)
       ? meta.song_id
       : kind === "run_order_live"
         ? meta.festival
-        : meta.event_id
+        : FEEDBACK_KINDS.has(kind)
+          ? meta.feedback_id
+          : meta.event_id
   );
   const { data: already } = await admin
     .from("notifications")

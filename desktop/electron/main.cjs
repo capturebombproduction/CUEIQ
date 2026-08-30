@@ -271,7 +271,15 @@ function registerIpc() {
   ipcMain.handle("cueiq:set-show-running", (_e, running) =>
     running ? startShowPowerSaveBlocker() : stopShowPowerSaveBlocker()
   );
+  ipcMain.handle("cueiq:set-unload-reason", (_e, reason) => {
+    unloadReason = reason === "show" || reason === "unsaved" ? reason : null;
+  });
 }
+
+/** Why the renderer currently vetoes unload — set through the IPC above. Read by
+ *  the will-prevent-unload handler, which has to put a sentence in front of the
+ *  operator and only has one chance to get it right. */
+let unloadReason = null;
 
 /** Remembers the one version the operator said "ไว้ก่อน" to, so declining is not
  *  a decision they have to make again every single launch. */
@@ -1394,16 +1402,34 @@ async function createWindow() {
   // close instead — the ❌ button looks dead mid-show. Surface the choice natively:
   // ask, and if the user says leave, preventDefault() (which here means "ignore the
   // beforeunload veto and let the window close/reload proceed").
+  //
+  // ⚠️ TWO different guards can arm beforeunload now: a running show, and an event
+  // edit that has not saved (lib/dirty-guard.ts, added 2026-08-31). This dialog is
+  // the ONLY thing the operator sees, so it must not describe the wrong one — a
+  // "โชว์กำลังดำเนินอยู่" box shown while nothing is playing teaches people to
+  // dismiss it, and the next time it is true they will dismiss that too.
   win.webContents.on("will-prevent-unload", (event) => {
+    const copy =
+      unloadReason === "unsaved"
+        ? {
+            buttons: ["อยู่ต่อ (ยังบันทึกไม่เสร็จ)", "ปิดเลย"],
+            message: "ยังบันทึกไม่เสร็จ",
+            detail: "มีการแก้ไขที่ยังไม่ได้บันทึก — ปิดตอนนี้การแก้ไขนั้นจะหายไป",
+          }
+        : {
+            buttons: ["อยู่ต่อ (โชว์รันอยู่)", "ออกเลย"],
+            message: "โชว์กำลังดำเนินอยู่",
+            detail:
+              "ปิดตอนนี้เสียงจะหยุดทันที — เวลา/ตำแหน่งโชว์ถูกเก็บไว้ กลับเข้ามาต่อได้ภายใน 6 ชั่วโมง",
+          };
     const choice = dialog.showMessageBoxSync(win, {
       type: "warning",
-      buttons: ["อยู่ต่อ (โชว์รันอยู่)", "ออกเลย"],
+      buttons: copy.buttons,
       defaultId: 0,
       cancelId: 0,
       title: "CueIQ",
-      message: "โชว์กำลังดำเนินอยู่",
-      detail:
-        "ปิดตอนนี้เสียงจะหยุดทันที — เวลา/ตำแหน่งโชว์ถูกเก็บไว้ กลับเข้ามาต่อได้ภายใน 6 ชั่วโมง",
+      message: copy.message,
+      detail: copy.detail,
     });
     if (choice === 1) event.preventDefault();
   });

@@ -766,6 +766,22 @@ export function SetlistBuilder({
 
   async function persist(id: string, partial: Partial<SetlistItem>) {
     save.begin();
+    try {
+      await persistInner(id, partial);
+    } catch (e) {
+      // supabase-js reports nearly everything through `error`, but a fetch that
+      // THROWS (offline mid-flight, an aborted request) used to escape here: the
+      // badge stayed on กำลังบันทึก… forever, no toast appeared, and — since 0043 —
+      // the leave-the-page warning would have counted that write as in flight for
+      // the rest of the session.
+      save.end(false);
+      toast.error("บันทึกไม่สำเร็จ", {
+        description: e instanceof Error ? e.message : undefined,
+      });
+    }
+  }
+
+  async function persistInner(id: string, partial: Partial<SetlistItem>) {
     const { data, error } = await supabase
       .from("setlist_items")
       .update(partial)
