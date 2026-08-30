@@ -83,11 +83,35 @@ export function hasUnsavedWork(): boolean {
  * sign-out button, the bell — asks the same question in the same words.
  */
 export function unsavedWorkMessage(exit: "page" | "signout" = "page"): string | null {
+  return unsavedWorkMessageFor(unsavedWork(), exit);
+}
+
+/**
+ * The same sentence, but about a SNAPSHOT rather than about right now.
+ *
+ * ⚠️ THIS IS THE WHOLE REASON THE GUARD IS USABLE. Every editor here persists on
+ * BLUR, unconditionally — `onBlur={(e) => persist(it.id, { title: e.target.value })}`
+ * runs even when nothing was typed. And a click on a link blurs the focused field
+ * first (Chromium focuses the anchor on mousedown), so by the time the guard's own
+ * commitFocusedField() returns, `pending` is 1 because of the guard itself.
+ *
+ * Judged on the live counters, the dialog therefore appeared on EVERY navigation
+ * after so much as tapping into a field — over a save that lands 200 ms later and
+ * is not lost at all. A warning that fires when nothing is wrong is worse than no
+ * warning: the next one, the real one, gets dismissed on reflex.
+ *
+ * So each exit snapshots FIRST and asks about the snapshot. A write the exit
+ * gesture itself started is the save the user asked for, not work they are losing.
+ */
+export function unsavedWorkMessageFor(
+  work: UnsavedWork,
+  exit: "page" | "signout" = "page"
+): string | null {
   const leaving = exit === "signout" ? "ออกจากระบบตอนนี้" : "ออกจากหน้านี้ตอนนี้";
-  if (failed > 0) {
+  if (work.failed > 0) {
     return `มีการแก้ไขที่ยังบันทึกไม่สำเร็จ — ${leaving}จะหายไป ออกเลยไหม?`;
   }
-  if (pending > 0) {
+  if (work.pending > 0) {
     return `กำลังบันทึกอยู่ — ${leaving}อาจบันทึกไม่ครบ ออกเลยไหม?`;
   }
   return null;

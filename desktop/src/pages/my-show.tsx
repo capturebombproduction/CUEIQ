@@ -1202,12 +1202,20 @@ export function MyShow() {
   // the same question. (Crash-restore still covers a force-quit — within 6h.)
   useEffect(() => {
     if (!state.begun) return;
+    // Say WHICH guard this is: Electron replaces the browser confirm with its own
+    // dialog, and the default branch there talks about a running show. Asserting it
+    // rather than relying on the default means a stale "unsaved" from an earlier
+    // document can never describe this one (see main.cjs will-prevent-unload).
+    window.cueiqNative?.setUnloadReason("show").catch(() => {});
     const h = (e: BeforeUnloadEvent) => {
       e.preventDefault();
       e.returnValue = "";
     };
     window.addEventListener("beforeunload", h);
-    return () => window.removeEventListener("beforeunload", h);
+    return () => {
+      window.cueiqNative?.setUnloadReason(null).catch(() => {});
+      window.removeEventListener("beforeunload", h);
+    };
   }, [state.begun]);
 
   function exitToLogin() {

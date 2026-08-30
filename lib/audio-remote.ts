@@ -150,6 +150,8 @@ export function buildFeedbackImagePath(
 
 /** A presign POST is a few hundred bytes — past this the network is black-holed. */
 const PRESIGN_TIMEOUT_MS = 20_000;
+/** A feedback screenshot is a few hundred KB, not an 88 MB master: one flat cap. */
+const IMAGE_TIMEOUT_MS = 30_000;
 /**
  * Byte transfers are bounded on NO PROGRESS, not on a flat deadline: a 27–88 MB
  * master over venue Wi-Fi may legitimately take many minutes, but it should never
@@ -417,10 +419,25 @@ export async function uploadEventAudio(
  */
 export async function fetchImageBlob(path: string): Promise<Blob> {
   const url = await presign(path, "get");
-  if (fetchBlobImpl) return fetchBlobImpl(url);
-  const res = await fetch(url);
-  if (!res.ok) throw httpError(`โหลดรูปไม่สำเร็จ (${res.status})`, res.status);
-  return res.blob();
+  // BOUNDED ON BOTH BRANCHES. A screenshot is one small round trip, so a flat
+  // deadline is right — and both hops are otherwise unbounded: a bare fetch hangs
+  // for ever on a black-holed venue AP, and the Electron bridge takes no
+  // AbortSignal at all (its main-process net.fetch has no timeout either). Left
+  // open, the Dev Inbox and ที่ส่งไปแล้ว spin for ever instead of reaching the
+  // "โหลดรูปไม่ได้" placeholder that already exists for a rejected fetch.
+  if (fetchBlobImpl) {
+    return raceAbort(fetchBlobImpl(url), IMAGE_TIMEOUT_MS, undefined, {
+      timeoutMessage: "โหลดรูปไม่สำเร็จ (หมดเวลา)",
+    });
+  }
+  const t = boundedSignal(IMAGE_TIMEOUT_MS);
+  try {
+    const res = await fetch(url, { signal: t.signal });
+    if (!res.ok) throw httpError(`โหลดรูปไม่สำเร็จ (${res.status})`, res.status);
+    return await res.blob();
+  } finally {
+    t.done();
+  }
 }
 
 export async function downloadEventAudio(

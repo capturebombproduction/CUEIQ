@@ -3,6 +3,8 @@
 import { useCallback, useEffect, useState } from "react";
 import { Bug, Check, CornerDownRight, Lightbulb, Loader2, MessageCircle } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
+import { hasLiveSession } from "@/lib/auth-session";
+import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { FeedbackImage } from "@/components/feedback-image";
 
@@ -59,9 +61,11 @@ export function MyFeedbackList({
   onSeen?: (count: number) => void;
 }) {
   const [rows, setRows] = useState<MyFeedbackRow[] | null>(null);
+  const [loadFailed, setLoadFailed] = useState(false);
 
   const load = useCallback(async () => {
-    const { data } = await createClient()
+    setLoadFailed(false);
+    const { data, error } = await createClient()
       .from("feedback")
       .select(
         "id, category, message, status, created_at, reply, replied_at, reply_seen_at, images"
@@ -69,9 +73,19 @@ export function MyFeedbackList({
       .eq("user_id", userId)
       .order("created_at", { ascending: false })
       .limit(30);
-    // An empty read is not an empty table (lib/auth-session.ts). Nothing is
-    // asserted on the strength of this read — a failure shows the spinner's empty
-    // state, never "you have no feedback".
+    // AN EMPTY READ IS NOT AN EMPTY TABLE (lib/auth-session.ts). supabase-js
+    // substitutes the anon key after a failed token refresh and RLS then answers []
+    // with error: null — and this is the page a "ทีมงานตอบฟีดแบคของคุณแล้ว"
+    // notification lands on, so rendering "ยังไม่เคยส่งฟีดแบค" there would tell
+    // someone their report never existed at the very moment it was answered.
+    if (error) {
+      setLoadFailed(true);
+      return;
+    }
+    if (data && data.length === 0 && !(await hasLiveSession())) {
+      setLoadFailed(true);
+      return;
+    }
     if (data) setRows(data as MyFeedbackRow[]);
   }, [userId]);
 
@@ -108,6 +122,17 @@ export function MyFeedbackList({
     // onSeen is a callback prop; re-running on its identity would re-stamp forever.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rows]);
+
+  if (loadFailed) {
+    return (
+      <div className="space-y-2 rounded-lg border border-dashed py-8 text-center text-sm text-muted-foreground">
+        <p>โหลดรายการไม่สำเร็จ</p>
+        <Button variant="outline" size="sm" onClick={() => void load()}>
+          ลองอีกครั้ง
+        </Button>
+      </div>
+    );
+  }
 
   if (rows === null) {
     return (

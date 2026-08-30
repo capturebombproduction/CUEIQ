@@ -1,21 +1,37 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { render, cleanup } from "@testing-library/react";
+import { render, screen, cleanup } from "@testing-library/react";
 import { isGuardedNavigation, useLeaveGuard } from "@/components/event/use-leave-guard";
 import {
   markPending,
   markSettled,
   resetDirtyGuard,
   hasUnsavedWork,
+  unsavedWork,
 } from "@/lib/dirty-guard";
 
 // The other half of the 2026-08-13 request: "เวลาที่มีการแก้ไข แล้วจะเปลี่ยนหน้าไป
 // หน้าอื่น อยากให้มีการเตือนว่า ยังไม่ได้บันทึก". Round 13 shipped the badge and
 // missed this.
 
+/** An input that behaves like every editor here: blur ALWAYS persists, whether or
+ *  not anything was typed. That is what makes the guard's own commitFocusedField()
+ *  manufacture the write it would otherwise ask about. */
+function AutosavingField() {
+  return (
+    <input
+      data-testid="autosaving"
+      onBlur={() => {
+        markPending(); // what save.begin() does, synchronously, before any await
+      }}
+    />
+  );
+}
+
 function Harness({ enabled = true }: { enabled?: boolean }) {
   useLeaveGuard(enabled);
   return (
     <div>
+      <AutosavingField />
       <a href="/dashboard" data-testid="in-app">
         กลับหน้าหลัก
       </a>
@@ -178,8 +194,15 @@ describe("useLeaveGuard · clicking away", () => {
     const link = getByTestId("in-app");
     document.body.appendChild(link); // survive the unmount so it is still clickable
     unmount();
-    expect(clickAndSeeIfBlocked(link)).toBe(false);
-    expect(confirmSpy).not.toHaveBeenCalled();
+    try {
+      expect(clickAndSeeIfBlocked(link)).toBe(false);
+      expect(confirmSpy).not.toHaveBeenCalled();
+    } finally {
+      // Moved out of RTL's container, so cleanup() cannot reclaim it — and a second
+      // data-testid="in-app" left in the body makes every LATER getByTestId in this
+      // file throw "Found multiple elements".
+      link.remove();
+    }
   });
 });
 
@@ -224,5 +247,58 @@ describe("useLeaveGuard · closing the tab", () => {
     unmount();
     expect(setUnloadReason).toHaveBeenLastCalledWith(null);
     delete window.cueiqNative;
+  });
+});
+
+describe("useLeaveGuard · it must not warn about its own save", () => {
+  // The defect five independent review lenses agreed on. Every editor persists on
+  // BLUR unconditionally, and a click on a link blurs the focused field first —
+  // so judged on the live counters the dialog fired on essentially every
+  // navigation after so much as tapping into a field, over a save that lands
+  // fine. A warning that cries wolf is worse than no warning: the real one then
+  // gets dismissed on reflex.
+  it("stays silent when the ONLY pending write is the one its own blur started", () => {
+    const { getByTestId } = render(<Harness />);
+    const field = getByTestId("autosaving") as HTMLInputElement;
+    field.focus();
+    expect(unsavedWork().pending).toBe(0);
+    expect(clickAndSeeIfBlocked(getByTestId("in-app"))).toBe(false);
+    // …the blur really did start a write — the guard simply did not ask about it.
+    expect(unsavedWork().pending).toBe(1);
+    expect(confirmSpy).not.toHaveBeenCalled();
+  });
+
+  it("still warns when work was ALREADY outstanding before the click", () => {
+    const { getByTestId } = render(<Harness />);
+    markPending();
+    markSettled(false); // a real failure, from earlier
+    (getByTestId("autosaving") as HTMLInputElement).focus();
+    expect(clickAndSeeIfBlocked(getByTestId("in-app"))).toBe(true);
+    expect(String(confirmSpy.mock.calls[0][0])).toContain("ยังบันทึกไม่สำเร็จ");
+  });
+
+  it("lets the click through when the user confirms, instead of hard-navigating", () => {
+    // preventDefault + window.location.href is a full document load, which cancels
+    // every request in flight — including the save the blur just started. Letting
+    // the click proceed keeps the app's own client-side navigation.
+    confirmSpy.mockReturnValue(true);
+    const { getByTestId } = render(<Harness />);
+    markPending();
+    markSettled(false);
+    expect(clickAndSeeIfBlocked(getByTestId("in-app"))).toBe(false);
+    expect(confirmSpy).toHaveBeenCalledTimes(1);
+    // …and the acknowledged failure is not carried to the next page.
+    expect(unsavedWork().failed).toBe(0);
+  });
+
+  it("closing the TAB still counts the write the blur just started", () => {
+    // The click path can be generous because an SPA navigation does not kill the
+    // request. A real unload does, so here the live counters are the honest ones.
+    render(<Harness />);
+    const field = screen.getByTestId("autosaving") as HTMLInputElement;
+    field.focus();
+    const ev = new Event("beforeunload", { cancelable: true });
+    window.dispatchEvent(ev);
+    expect(ev.defaultPrevented).toBe(true);
   });
 });

@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import {
   acknowledgeUnsavedWork,
+  unsavedWorkMessageFor,
   hasUnsavedWork,
   markAbandoned,
   markPending,
@@ -137,5 +138,27 @@ describe("what must NOT warn", () => {
     markPending();
     markSettled(true); // ← what queueOffline() success does
     expect(hasUnsavedWork()).toBe(false);
+  });
+});
+
+describe("judging a SNAPSHOT rather than right now", () => {
+  // Why this exists: every editor persists on blur unconditionally, and each exit
+  // blurs the focused field itself before deciding. Judged live, the guard asks
+  // about the write IT started, on every single navigation.
+  it("says nothing about work that appeared after the snapshot", () => {
+    const before = unsavedWork();
+    markPending(); // ← what the exit's own commitFocusedField() causes
+    expect(unsavedWorkMessageFor(before)).toBeNull();
+    // …while the live view does see it, which is the trap.
+    expect(unsavedWorkMessage()).toContain("กำลังบันทึกอยู่");
+  });
+
+  it("still reports work that was outstanding AT the snapshot", () => {
+    markPending();
+    markSettled(false);
+    const before = unsavedWork();
+    markPending(); // the blur's write, on top of a real earlier failure
+    expect(unsavedWorkMessageFor(before)).toContain("ยังบันทึกไม่สำเร็จ");
+    expect(unsavedWorkMessageFor(before, "signout")).toContain("ออกจากระบบตอนนี้");
   });
 });

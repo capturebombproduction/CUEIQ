@@ -30,6 +30,13 @@ export function useSaveSignal() {
   // rest are still in flight — the exact false receipt this component exists to
   // stop giving.
   const inFlight = useRef(0);
+  // Set the moment this editor goes away. An abandoned write keeps running — the
+  // fetch is not aborted — and its end() closure is still live, so without this it
+  // would call markSettled() on the MODULE counters for a write markAbandoned has
+  // already accounted for: a double decrement that can cancel ANOTHER still-mounted
+  // editor's real pending count, and a late failure that plants a sticky warning
+  // about work nobody is waiting for. Abandonment has to be the last word.
+  const alive = useRef(true);
 
   const begin = useCallback(() => {
     inFlight.current += 1;
@@ -42,6 +49,7 @@ export function useSaveSignal() {
   }, []);
 
   const end = useCallback((ok: boolean) => {
+    if (!alive.current) return; // markAbandoned already counted this one out
     inFlight.current = Math.max(0, inFlight.current - 1);
     markSettled(ok);
     // A failure wins over anything still in flight and stays put: the toast that
@@ -55,6 +63,7 @@ export function useSaveSignal() {
   // every later exit would warn about a write nobody is waiting for.
   useEffect(() => {
     return () => {
+      alive.current = false;
       markAbandoned(inFlight.current);
       inFlight.current = 0;
     };

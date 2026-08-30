@@ -46,6 +46,9 @@ const CATS: { value: Category; label: string; icon: typeof Bug }[] = [
  *  label's audio also lives in. */
 const MAX_IMAGES = 3;
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
+/** Past this a screenshot upload is not coming back — do not hold the report (or
+ *  the modal, which covers the whole app) hostage to it. */
+const UPLOAD_TIMEOUT_MS = 60_000;
 
 /**
  * In-app feedback / bug-report channel — open to EVERY logged-in user (the point
@@ -176,7 +179,17 @@ export function FeedbackButton({
       for (const f of files) {
         const key = buildFeedbackImagePath(tenantId!, userId!, f.name);
         try {
-          await uploadEventAudio(key, f, f.type);
+          // BOUNDED. uploadEventAudio is built for 88 MB masters and its PUT takes
+          // no signal and no timeout; on a black-holed venue AP a screenshot upload
+          // would never settle, and this dialog would sit in front of the whole app
+          // — including a running show — with every way out disabled. A screenshot
+          // is a few hundred KB: past a minute it is not coming back.
+          await Promise.race([
+            uploadEventAudio(key, f, f.type),
+            new Promise((_, reject) =>
+              setTimeout(() => reject(new Error("upload timeout")), UPLOAD_TIMEOUT_MS)
+            ),
+          ]);
           keys.push(key);
         } catch {
           uploadFailures += 1;
@@ -278,7 +291,12 @@ export function FeedbackButton({
         </Button>
       )}
 
-      <Dialog open={open} onOpenChange={(o) => !busy && setOpen(o)}>
+      {/* NOT gated on `busy`. While an attachment was uploading, this modal sealed
+          itself shut — Escape, the overlay and the X all inert, both footer buttons
+          disabled — and its overlay covers the entire app, Live Mode included. The
+          send button stays disabled so closing cannot double-submit; the upload and
+          its toast simply finish in the background. */}
+      <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent className="max-h-[85vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>ส่งฟีดแบค / แจ้งปัญหา</DialogTitle>
@@ -419,8 +437,8 @@ export function FeedbackButton({
           )}
 
           <DialogFooter>
-            <Button variant="outline" onClick={() => setOpen(false)} disabled={busy}>
-              {tab === "mine" ? "ปิด" : "ยกเลิก"}
+            <Button variant="outline" onClick={() => setOpen(false)}>
+              {tab === "mine" ? "ปิด" : busy ? "ปิดหน้าต่าง" : "ยกเลิก"}
             </Button>
             {tab === "new" && (
               <Button onClick={submit} disabled={busy}>

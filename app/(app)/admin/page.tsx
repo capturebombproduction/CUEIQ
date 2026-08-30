@@ -147,7 +147,10 @@ export default async function AdminPage() {
             ข้อความที่ทีมส่งเข้ามา + error ที่ระบบจับได้อัตโนมัติ (เห็นเฉพาะแอดมิน)
           </p>
         </div>
-        <DevInbox namesById={await feedbackNames(ws.membership.tenant_id)} />
+        <DevInbox
+          namesById={await feedbackNames(ws.membership.tenant_id)}
+          adminUserId={ws.user?.id}
+        />
       </section>
     </div>
   );

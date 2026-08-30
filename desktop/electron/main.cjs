@@ -1475,6 +1475,11 @@ async function createWindow() {
   // isInPlace excludes normal in-app HashRouter navigation (no document reload).
   win.webContents.on("did-start-navigation", (_e, _url, isInPlace, isMainFrame) => {
     if (isMainFrame && !isInPlace) stopShowPowerSaveBlocker();
+    // …and forget WHY the old document was refusing to unload. It is gone; the new
+    // one re-asserts its own reason the same way it re-asserts the power blocker.
+    // Without this a reload out of an unsaved edit leaves "unsaved" latched, and the
+    // very next exit — from a page where a SHOW is running — shows the wrong box.
+    if (isMainFrame && !isInPlace) unloadReason = null;
   });
 
   // A dead renderer leaves a blank dark rectangle — no window navigate, no console,
@@ -1491,6 +1496,7 @@ async function createWindow() {
   win.webContents.on("render-process-gone", (_e, details) => {
     if (details.reason === "clean-exit" || details.reason === "killed") return;
     stopShowPowerSaveBlocker(); // the document that was holding it is gone either way
+    unloadReason = null; // …and so is whatever it was refusing to unload for
     const now = Date.now();
     recentReloads = recentReloads.filter((t) => now - t < RELOAD_WINDOW_MS);
     if (recentReloads.length >= MAX_RELOADS_PER_WINDOW) {

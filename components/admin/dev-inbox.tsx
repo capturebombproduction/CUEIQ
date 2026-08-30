@@ -19,6 +19,7 @@ import { toast } from "sonner";
 import { createClient } from "@/lib/supabase/client";
 import { noRowsMessage, wroteNothing } from "@/lib/write-guard";
 import { notify } from "@/lib/notify-client";
+import { removeEventAudio } from "@/lib/audio-remote";
 import { FeedbackImage } from "@/components/feedback-image";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
@@ -111,7 +112,14 @@ function shortUrl(url: string | null): string | null {
   }
 }
 
-export function DevInbox({ namesById = {} }: { namesById?: Record<string, string> }) {
+export function DevInbox({
+  namesById = {},
+  adminUserId,
+}: {
+  namesById?: Record<string, string>;
+  /** The signed-in admin, stamped onto each reply as replied_by. */
+  adminUserId?: string;
+}) {
   const confirm = useConfirm();
   const [fb, setFb] = useState<FeedbackRow[]>([]);
   // The reply being typed, per feedback id. Kept out of the row objects so a
@@ -173,7 +181,15 @@ export function DevInbox({ namesById = {} }: { namesById?: Record<string, string
       const now = new Date().toISOString();
       const { data, error } = await createClient()
         .from("feedback")
-        .update({ reply: text.slice(0, 4000), replied_at: now, reply_seen_at: null })
+        .update({
+          reply: text.slice(0, 4000),
+          replied_at: now,
+          // 0043 declares replied_by and the guard trigger protects it; without
+          // this nothing ever wrote it, so in a label with several admins every
+          // answer recorded WHEN but never WHO.
+          replied_by: adminUserId ?? null,
+          reply_seen_at: null,
+        })
         .eq("id", id)
         .select("id");
       if (error) throw new Error(error.message);
@@ -194,8 +210,17 @@ export function DevInbox({ namesById = {} }: { namesById?: Record<string, string
   }
   async function delFb(id: string) {
     if (!(await confirm({ title: "ลบฟีดแบคนี้?", description: "ลบถาวร กู้คืนไม่ได้" }))) return;
+    // Capture the attachment keys BEFORE the row goes: they exist nowhere else, so
+    // once it is deleted nothing can ever name those objects again and they sit in
+    // the bucket being counted by the Admin storage gauge for ever. Every other
+    // delete in this app reclaims its R2 objects (group-manager, song-library,
+    // setlist-builder); this path predates images and was missed when 0043 added
+    // them. Best-effort — a failed cleanup must not stop the delete the admin asked
+    // for, and "ลบถาวร" has to be true of the picture too.
+    const keys = fb.find((r) => r.id === id)?.images ?? [];
     setFb((p) => p.filter((r) => r.id !== id));
     await createClient().from("feedback").delete().eq("id", id);
+    await Promise.allSettled(keys.map((k) => removeEventAudio(k)));
   }
   async function delGroup(ids: string[]) {
     if (!ids.length) return;

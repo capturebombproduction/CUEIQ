@@ -5,7 +5,8 @@ import {
   acknowledgeUnsavedWork,
   commitFocusedField,
   hasUnsavedWork,
-  unsavedWorkMessage,
+  unsavedWork,
+  unsavedWorkMessageFor,
 } from "@/lib/dirty-guard";
 
 /**
@@ -75,27 +76,33 @@ export function useLeaveGuard(enabled: boolean): void {
     const onClick = (e: MouseEvent) => {
       const a = (e.target as HTMLElement)?.closest?.("a[href]") as HTMLAnchorElement | null;
       if (!a || !isGuardedNavigation(e, a)) return;
-      const href = a.getAttribute("href") ?? "";
 
-      // Give a field that still holds focus its normal blur → persist path BEFORE
-      // deciding. The common case ("I typed a stage time and clicked the logo")
-      // becomes a save rather than a dialog. The write it starts is synchronous up
-      // to markPending(), so hasUnsavedWork() sees it on the very next line.
+      // SNAPSHOT FIRST, then commit. Blurring the focused field starts a write, and
+      // this guard is the thing doing the blurring — judged on the live counters it
+      // would ask about its own save on every single navigation. Only work that was
+      // already outstanding counts. See unsavedWorkMessageFor.
+      const before = unsavedWork();
       commitFocusedField();
-      const message = unsavedWorkMessage();
+      const message = unsavedWorkMessageFor(before);
       if (!message) return;
 
-      e.preventDefault();
-      e.stopPropagation();
       if (window.confirm(message)) {
         acknowledgeUnsavedWork();
-        // The raw href works as-is on web (/path) and desktop (#/path).
-        window.location.href = href;
+        // Deliberately NOT preventDefault + window.location.href: that is a full
+        // document load, which cancels every request in flight — including the
+        // save we just started by blurring. Letting the click through keeps the
+        // app's own client-side navigation, and the write survives it.
+        return;
       }
+      e.preventDefault();
+      e.stopPropagation();
     };
 
     const onBeforeUnload = (e: BeforeUnloadEvent) => {
       commitFocusedField();
+      // NOT the click path's snapshot rule, on purpose: a real unload kills every
+      // request on the wire, so the save the blur above just started WOULD be lost.
+      // Here the live counters are the honest ones.
       if (!hasUnsavedWork()) return;
       native?.setUnloadReason("unsaved").catch(() => {});
       e.preventDefault();

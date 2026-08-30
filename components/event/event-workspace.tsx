@@ -11,7 +11,7 @@ import { RefreshButton } from "@/components/refresh-button";
 import { ShareButton } from "@/components/event/share-button";
 import { EventSummary } from "@/components/event/event-summary";
 import { useLeaveGuard } from "@/components/event/use-leave-guard";
-import { commitFocusedField, hasUnsavedWork } from "@/lib/dirty-guard";
+import { commitFocusedField, unsavedWork } from "@/lib/dirty-guard";
 import { type RunSeqLive } from "@/components/event/event-live-caller";
 
 // The per-tab editors are heavy (SetlistBuilder alone is ~700 lines) and aren't
@@ -286,22 +286,36 @@ export function EventWorkspace({
 
   // Reassurance "save" — data already auto-saves on edit; this just pulls fresh
   // server data WITHOUT leaving the current tab and confirms with a toast.
-  function confirmSaved() {
+  async function confirmSaved() {
     setSaving(true);
     // This button used to assert success unconditionally. Now that the app knows
     // when a write did not land, saying "บันทึกเรียบร้อยแล้ว" over a failed one
     // would be the same false receipt lib/write-guard.ts exists to stop — and the
     // person pressing it is asking precisely because they are unsure.
+    //
+    // ⚠️ BUT IT MUST WAIT FIRST. Pressing this button blurs the field you were just
+    // in, which STARTS a save; reading the counters on the next line would find
+    // that write in flight and call a perfectly healthy autosave "ยังไม่ได้บันทึก"
+    // — on the single most common path this button has. Only `failed` is an answer
+    // at this instant, so give the writes a moment to land and then judge on that.
     commitFocusedField();
     router.refresh();
-    if (hasUnsavedWork()) {
+    const deadline = Date.now() + 2500;
+    while (unsavedWork().pending > 0 && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    const { pending, failed } = unsavedWork();
+    if (failed > 0) {
       toast.error("ยังบันทึกไม่ครบ", {
         description: "มีการแก้ไขที่ยังไม่ได้บันทึก — ลองแก้ช่องนั้นอีกครั้งแล้วคลิกออกจากช่อง",
       });
+    } else if (pending > 0) {
+      // Still on the wire after 2.5s — say what is true rather than guessing.
+      toast.info("ยังบันทึกอยู่", { description: "เน็ตช้า — รอสักครู่แล้วดูป้าย “บันทึกแล้ว”" });
     } else {
       toast.success("บันทึกเรียบร้อยแล้ว");
     }
-    setTimeout(() => setSaving(false), 800);
+    setSaving(false);
   }
 
   return (

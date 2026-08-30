@@ -9,7 +9,8 @@ import { isLiveShowActive } from "@/lib/live-guard";
 import {
   acknowledgeUnsavedWork,
   commitFocusedField,
-  unsavedWorkMessage,
+  unsavedWork,
+  unsavedWorkMessageFor,
 } from "@/lib/dirty-guard";
 import { Button } from "@/components/ui/button";
 
@@ -115,10 +116,17 @@ export function SignOutButton() {
         // workspace's anchor guard cannot see a router.replace either, so ask here
         // — after committing whatever field still holds focus, so the ordinary
         // "typed, then hit sign out" saves instead of warning.
+        // Snapshot first: pressing this button blurs the field you were in, which
+        // STARTS a save. Asking about that write would put a dialog in front of
+        // every sign-out (see lib/dirty-guard.ts unsavedWorkMessageFor).
+        const beforeUnsaved = unsavedWork();
         commitFocusedField();
-        const unsaved = unsavedWorkMessage("signout");
+        const unsaved = unsavedWorkMessageFor(beforeUnsaved, "signout");
         if (unsaved && !window.confirm(unsaved)) return;
-        if (unsaved) acknowledgeUnsavedWork();
+        // NOT acknowledged yet — two branches below still abort the sign-out (the
+        // queued-outbox prompt, and a signOut that leaves the session alive). If
+        // the flag were cleared here, a person who backed out would still be in the
+        // app with a stage time that never saved and NOTHING would warn them again.
         // Shared band machine: a desktop sign-out wipes the offline management
         // outbox, so writes made at a no-internet venue would vanish before they
         // ever reached the server. Nothing here is recoverable — ask first, and
@@ -170,6 +178,9 @@ export function SignOutButton() {
             return;
           }
         }
+        // Past every bail-out: the sign-out is happening. Only NOW forget the
+        // failed write — the person has been told and has chosen to go.
+        if (unsaved) acknowledgeUnsavedWork();
         router.replace("/login");
         router.refresh();
       }}

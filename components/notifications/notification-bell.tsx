@@ -12,7 +12,8 @@ import { wroteNothing, noRowsMessage } from "@/lib/write-guard";
 import {
   acknowledgeUnsavedWork,
   commitFocusedField,
-  unsavedWorkMessage,
+  unsavedWork,
+  unsavedWorkMessageFor,
 } from "@/lib/dirty-guard";
 import {
   eventIdFromLink,
@@ -359,6 +360,22 @@ export function NotificationBell({
       });
       return;
     }
+    // ASK BEFORE ANY SIDE EFFECT. router.push is programmatic, so the event
+    // workspace's anchor guard cannot see it — the same blind spot the sign-out
+    // button has, and opening a notification is a completely ordinary way to walk
+    // away from a half-saved call sheet. It has to come BEFORE the panel closes and
+    // before the read_at write: cancelling the confirm after those would leave the
+    // item marked read for a navigation that never happened.
+    //
+    // Snapshot first, then commit — blurring the focused field starts a save, and
+    // asking about the guard's own write would put a dialog in front of every bell
+    // tap (see lib/dirty-guard.ts unsavedWorkMessageFor).
+    const beforeUnsaved = unsavedWork();
+    commitFocusedField();
+    const unsaved = unsavedWorkMessageFor(beforeUnsaved);
+    if (unsaved && !window.confirm(unsaved)) return;
+    if (unsaved) acknowledgeUnsavedWork();
+
     setOpen(false);
     // Still "unknown" after that wait (the probe errored, timed out, or was refused
     // as untrustworthy): navigate anyway — failing open is the documented behaviour
@@ -389,13 +406,6 @@ export function NotificationBell({
     // as defense-in-depth — never follow an external URL from a stored row.
     const dest = safeInternalPath(n.link, "");
     if (!dest) return;
-    // router.push is programmatic, so the event workspace's anchor guard cannot
-    // see it — the same blind spot the sign-out button has. Opening a notification
-    // is a completely ordinary way to walk away from a half-saved call sheet.
-    commitFocusedField();
-    const unsaved = unsavedWorkMessage();
-    if (unsaved && !window.confirm(unsaved)) return;
-    if (unsaved) acknowledgeUnsavedWork();
     router.push(dest);
   }
 
