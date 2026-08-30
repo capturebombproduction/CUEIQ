@@ -284,6 +284,37 @@ const SCENARIOS = [
     },
   },
   {
+    // THE ONE พี่ HAS ALWAYS HAD TO DO WITH HIS EARS.
+    //
+    // Every other scenario asserts on state: a screen, a flag, an index. This one
+    // plants a REAL WAV in the app's own audio cache, starts the show, and then
+    // measures the WAVEFORM leaving the audio element — because "playing" is not
+    // the same as "audible", and a decode that yields silence advances a playhead
+    // exactly as convincingly as one that does not.
+    //
+    // Realtime is ON, and that is a concession worth naming: with the socket
+    // refused, live-mode.tsx logs a CHANNEL_ERROR through console.error, and this
+    // scenario runs ONLINE — where the console allowlist (offline only, on purpose)
+    // does not apply, so a legitimate "there is no socket here" would fail the run
+    // for a reason that has nothing to do with sound. The no-socket audio path is
+    // not left unexamined: quick-show-offline and airplane both boot with the
+    // network genuinely cut.
+    //
+    // ⚠️ It measures INSIDE Chromium, before the operating system's mixer. It can
+    // say "the app produced a real signal"; it cannot say a speaker was plugged in.
+    name: "audible",
+    what: "a real file plays and a real waveform comes out of it",
+    seed: false,
+    backend: true,
+    audible: true,
+    timeoutSec: 180,
+    env: {
+      CUEIQ_SMOKE_LIVE: "audible",
+      CUEIQ_SMOKE_REALTIME: "1",
+      CUEIQ_SMOKE_EXPECT: "live-controller",
+    },
+  },
+  {
     name: "quick-show-offline",
     // The break-glass runner every other screen's fallback points at: no account,
     // no network, still has to open. Nothing verified this in a packaged build.
@@ -298,6 +329,45 @@ const SCENARIOS = [
 ];
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * A real, decodable audio file — 16-bit PCM WAV, mono, 44.1 kHz, a 440 Hz tone.
+ *
+ * Written by hand rather than checked in as a binary fixture, for one reason that
+ * matters more than repo size: a committed .wav is a file nobody re-reads, and a
+ * silent one (a bad export, a git-lfs pointer, a CRLF-mangled blob) would make the
+ * audible scenario fail with "no sound" while the app was working perfectly. These
+ * bytes are computed here, so what the app is asked to play is knowable from this
+ * file alone — including its amplitude, which is what the assertion downstream is
+ * ultimately comparing against.
+ *
+ * Half amplitude on purpose: full-scale would clip on any resampler in the way and
+ * makes "is this signal real" harder to reason about, not easier.
+ */
+function makeToneWav({ seconds = 6, hz = 440, rate = 44100, amplitude = 0.5 } = {}) {
+  const samples = Math.floor(seconds * rate);
+  const dataBytes = samples * 2; // mono, 16-bit
+  const buf = Buffer.alloc(44 + dataBytes);
+  buf.write("RIFF", 0);
+  buf.writeUInt32LE(36 + dataBytes, 4);
+  buf.write("WAVE", 8);
+  buf.write("fmt ", 12);
+  buf.writeUInt32LE(16, 16); // PCM header size
+  buf.writeUInt16LE(1, 20); // format = PCM
+  buf.writeUInt16LE(1, 22); // channels
+  buf.writeUInt32LE(rate, 24);
+  buf.writeUInt32LE(rate * 2, 28); // byte rate
+  buf.writeUInt16LE(2, 32); // block align
+  buf.writeUInt16LE(16, 34); // bits per sample
+  buf.write("data", 36);
+  buf.writeUInt32LE(dataBytes, 40);
+  for (let i = 0; i < samples; i++) {
+    const v = Math.sin((2 * Math.PI * hz * i) / rate) * amplitude;
+    buf.writeInt16LE(Math.round(v * 32767), 44 + i * 2);
+  }
+  return buf;
+}
+
 
 async function runScenario(s, extraEnv = {}) {
   // A FRESH profile per scenario — and, in the two-device scenario, per DEVICE.
@@ -712,8 +782,89 @@ async function runTwoDeviceScenario(s) {
   ];
 }
 
+/**
+ * The audible scenario: one device, one real file, one measurement.
+ *
+ * Kept beside runTwoDeviceScenario rather than folded into the generic backend
+ * path because it owns two things nothing else does — the WAV it generates, and
+ * the thresholds it judges the result by. Those thresholds live HERE, in the
+ * harness, rather than inside the app's own smoke code: what counts as "loud
+ * enough to be real" is a decision about the test, and it should be readable
+ * without opening main.cjs.
+ */
+async function runAudibleScenario(s) {
+  const { startSmokeBackend, SMOKE_WORLD } = await import("./smoke-backend.mjs");
+  const backend = await startSmokeBackend({ realtime: true });
+  const host = new URL(SMOKE_SUPABASE_URL).host;
+
+  const work = fs.mkdtempSync(path.join(os.tmpdir(), "cueiq-smoke-audio-"));
+  const wavPath = path.join(work, "tone.wav");
+  const wav = makeToneWav();
+  fs.writeFileSync(wavPath, wav);
+  console.log(`   stub Supabase at ${backend.url}; a ${(wav.length / 1024).toFixed(0)} KB 440 Hz tone at ${wavPath}`);
+
+  let result;
+  try {
+    result = await runScenario(s, {
+      CUEIQ_SMOKE_BACKEND: backend.url,
+      CUEIQ_SMOKE_BACKEND_FOR: host,
+      CUEIQ_SMOKE_SIGN_IN: JSON.stringify({
+        loginId: SMOKE_WORLD.auth.loginId,
+        password: SMOKE_WORLD.auth.password,
+      }),
+      CUEIQ_SMOKE_LIVE_EVENT: SMOKE_WORLD.ids.richEvent,
+      // The FIRST row of the setlist — the one Live Mode puts on air the instant
+      // the show starts. Any other row would be planted and never played.
+      CUEIQ_SMOKE_LIVE_ITEM: SMOKE_WORLD.ids.firstSetlistItem,
+      CUEIQ_SMOKE_AUDIO_FILE: wavPath,
+      CUEIQ_SMOKE_PROBE_URL: backend.url,
+    });
+  } finally {
+    await backend.close();
+  }
+
+  const heard = result?.liveReport?.audio;
+  console.log(`   what came out: ${JSON.stringify(heard ?? null)}`);
+  if (!heard) {
+    return { ...result, ok: false, failReason: result?.failReason ?? "the app reported no audio measurement at all" };
+  }
+  // ⚠️ THE RMS THRESHOLD IS THE WHOLE ASSERTION, so it is written down with its
+  // reasoning. The planted tone is a 0.5-amplitude sine, whose true RMS is
+  // 0.5/√2 ≈ 0.354. Anything above 0.05 is unmistakably that signal rather than
+  // dither, DC offset or a fade-in caught mid-ramp; anything at or near zero is
+  // silence however healthy the rest of the reading looks. Deliberately NOT
+  // "> 0": a denormal or a single stray sample would clear that bar.
+  const problems = [];
+  if (heard.error) problems.push(`the measurement itself failed: ${heard.error}`);
+  if (!heard.playing) problems.push("the audio element was not playing");
+  if (!(heard.advanced > 0.2)) {
+    problems.push(`the playhead advanced only ${heard.advanced}s in ~1.2s — the file is not really running`);
+  }
+  if (heard.muted || !(heard.volume > 0)) {
+    problems.push(`it was inaudible by its own settings (muted=${heard.muted}, volume=${heard.volume})`);
+  }
+  if (!(heard.rms > 0.05)) {
+    problems.push(
+      `the waveform was silent: peak RMS ${heard.rms} (a 0.5-amplitude tone reads ≈0.354). ` +
+        `The show ran and produced no signal.`
+    );
+  }
+  if (problems.length === 0) {
+    console.log(
+      `   ✔ real signal: peak RMS ${heard.rms} over ${heard.advanced}s of playback ` +
+        `(readyState ${heard.readyState}, ${heard.duration}s file)`
+    );
+    return result;
+  }
+  return { ...result, ok: false, failReason: problems.join(" · ") };
+}
+
 const results = [];
 for (const s of chosen) {
+  if (s.audible) {
+    results.push(await runAudibleScenario(s));
+    continue;
+  }
   if (s.pair) {
     results.push(...(await runTwoDeviceScenario(s)));
     continue;

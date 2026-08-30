@@ -185,8 +185,8 @@ jobs:
       #
       # ⚠️ TIMEOUT NESTING, outermost last: main.cjs's watchdog (the only one that
       # reports a stage) fires at --timeout minus 45s, run-smoke's per-scenario
-      # --timeout (135s, or 240s for each of the two PAIRS) next, this step last.
-      # Worst case 4 x 135s + 2 x 240s = ~17 min, so this is 25 and stays strictly
+      # --timeout (135s, 240s for each of the two PAIRS, 180s for `audible`) next,
+      # this step last. Worst case ~20 min, so this is 30 and stays strictly
       # outermost — it must never pre-empt an answer the app was about to give.
       #
       # Both PAIRS run HERE TOO, against the packaged tree: two copies of the real
@@ -196,7 +196,7 @@ jobs:
       - name: Smoke-launch the packaged app (cold, airplane, handover, two devices, Quick Show)
         if: runner.os == 'Windows' # see the note on the feed check above
         shell: bash
-        timeout-minutes: 25
+        timeout-minutes: 30
         run: node desktop/scripts/run-smoke.mjs --exe ./desktop/release/win-unpacked/CueIQ.exe
 
       # The .exe alone is not enough for auto-update: electron-updater reads

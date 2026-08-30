@@ -135,7 +135,10 @@ jobs:
       # and must stay a silent viewer, and one TAKES the show (sound output on, then
       # ขอควบคุม) and must end up holding all of it. Both end with exactly one
       # controller, one sound host and both screens on the same item ·
-      # Quick Show -> opens with no account and no network.
+      # audible -> plants a real WAV in the app's own audio cache, starts the show,
+      # and MEASURES THE WAVEFORM coming out of the player (a silent file fails it
+      # while every other reading stays green) · Quick Show -> opens with no account
+      # and no network.
       # Plus TWO cross-checks:
       # the job fails if the cold and airplane boots land on the same screen (what
       # every silent seeding failure looks like), and it fails if the control boot
@@ -144,12 +147,12 @@ jobs:
       #
       # ⚠️ TIMEOUT NESTING, outermost last: the app's own watchdog (main.cjs) fires at
       # --timeout minus 45s and is the ONLY one that reports a stage, run-smoke's
-      # --timeout (135s default per scenario, 240s for each of the two PAIRS, which
-      # spend most of their clock waiting for the other device) fires next, and this
-      # step is the backstop. Worst case is now 4 x 135s + 2 x 240s = ~17 min, so
-      # this is 25: it must stay strictly outermost even when everything times out,
-      # or CI kills a run the app was one second from explaining.
+      # --timeout (135s default per scenario, 240s for each of the two PAIRS, 180s
+      # for `audible`) fires next, and this step is the backstop. Worst case is now
+      # 4 x 135s + 2 x 240s + 180s = ~20 min, so this is 30: it must stay strictly
+      # outermost even when everything times out, or CI kills a run the app was one
+      # second from explaining.
       - name: Boot the app offline with a session
         shell: bash
-        timeout-minutes: 25
+        timeout-minutes: 30
         run: node desktop/scripts/run-smoke.mjs --app desktop

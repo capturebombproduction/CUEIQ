@@ -149,8 +149,12 @@ const scheduleItem = (n, eventId, kind, start, end, sortOrder) => ({
   sort_order: sortOrder,
 });
 
+/** Shared by the rows below and by `ids.firstSetlistItem`, so the id an assertion
+ *  reaches for cannot drift from the id the fixture actually serves. */
+const SETLIST_ID_PREFIX = "00000000-0000-4000-8000-00000000007";
+
 const setlistItem = (n, { kind, title, seconds, songId = null, sortOrder }) => ({
-  id: `00000000-0000-4000-8000-00000000007${n}`,
+  id: `${SETLIST_ID_PREFIX}${n}`,
   tenant_id: TENANT_ID,
   event_id: EVENT_1,
   kind,
@@ -246,6 +250,12 @@ export const SMOKE_WORLD = deepFreeze({
     richEvent: EVENT_1,
     /** Present in the table, and must never appear in a dashboard list. */
     templateEvent: EVENT_TEMPLATE,
+    /** The FIRST row of the rich event's setlist — a song row, sort_order 0, so it
+     *  is what Live Mode puts on air the moment the show starts. The audible smoke
+     *  seeds this row's audio cache with a real WAV and then listens for it, which
+     *  is the one assertion in this repo that needs a specific row rather than any
+     *  row. */
+    firstSetlistItem: `${SETLIST_ID_PREFIX}1`,
   },
 
   tables: {

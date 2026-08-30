@@ -154,6 +154,16 @@ const SMOKE_REALTIME = SMOKE && process.env.CUEIQ_SMOKE_REALTIME === "1";
 // nothing about the arbitration may depend on the test knowing who should win.
 const SMOKE_LIVE = (SMOKE && process.env.CUEIQ_SMOKE_LIVE) || "";
 const SMOKE_LIVE_EVENT = (SMOKE && process.env.CUEIQ_SMOKE_LIVE_EVENT) || "";
+// ── The audible scenario: does a real file actually make a real signal? ──────
+// Everything else in this file asserts on state — a flag, a screen, an index. The
+// one question พี่ has always had to answer with his own ears is whether sound
+// comes OUT. A machine cannot listen to a room, but it can watch the audio graph
+// inside the app: CUEIQ_SMOKE_AUDIO_FILE is a real WAV the runner generated, planted
+// into the app's OWN audio cache (IndexedDB, lib/audio-store's schema) for the
+// setlist row named by CUEIQ_SMOKE_LIVE_ITEM. The app then plays it through its own
+// code, and the probe measures the waveform leaving the element.
+const SMOKE_AUDIO_FILE = (SMOKE && process.env.CUEIQ_SMOKE_AUDIO_FILE) || "";
+const SMOKE_LIVE_ITEM = (SMOKE && process.env.CUEIQ_SMOKE_LIVE_ITEM) || "";
 // Time-box the whole self-test. The caller owns this number because it also owns the
 // deadline it waits on, and the inner one must always fire first (run-smoke.mjs).
 const SMOKE_WATCHDOG_MS = Number(process.env.CUEIQ_SMOKE_WATCHDOG_MS) || 90_000;
@@ -685,6 +695,164 @@ async function waitForMark(name, timeoutMs) {
   }
 }
 
+/**
+ * Keep a register of every audio element the app constructs.
+ *
+ * ⚠️ THE ELEMENTS ARE NOT IN THE DOCUMENT. live-mode.tsx builds its two players
+ * with `new Audio()` and never appends them, so `document.querySelectorAll("audio")`
+ * finds nothing and the first cut of the audible scenario reported "no audio element
+ * on the page" while the app was playing perfectly. Nothing about that is a bug —
+ * a detached element is the right way to own a playhead — but it means the probe
+ * has to be told where to look.
+ *
+ * A wrapper function, not `class extends Audio`: Audio is a legacy factory
+ * constructor and subclassing it is a good way to meet "Illegal constructor". A
+ * plain function that news the original and returns it is exactly equivalent from
+ * the caller's side, because a constructor returning an object yields that object.
+ */
+async function registerAudioElementsViaCdp(win) {
+  const dbg = win.webContents.debugger;
+  if (!dbg.isAttached()) dbg.attach("1.3");
+  await dbg.sendCommand("Page.enable");
+  await dbg.sendCommand("Page.addScriptToEvaluateOnNewDocument", {
+    source: `(() => {
+      const Native = window.Audio;
+      window.__cueiqSmokeAudio = [];
+      const Patched = function (...args) {
+        const el = new Native(...args);
+        window.__cueiqSmokeAudio.push(el);
+        return el;
+      };
+      Patched.prototype = Native.prototype;
+      window.Audio = Patched;
+    })();`,
+  });
+}
+
+/** Plant a real audio file in the app's OWN cache, under the app's own schema.
+ *
+ *  lib/audio-store.ts: database "cueiq-audio", store "files", key
+ *  `<eventId>::<itemId>`, value `{ blob, name, path }`. Written from outside rather
+ *  than through the app's uploader because the uploader would need R2 — and the
+ *  point here is the PLAYBACK path, not the download path (which the readiness
+ *  gate and the offline scenarios already cover).
+ *
+ *  ⚠️ A plain Blob, never a File. live-mode.tsx treats a File-valued record as a
+ *  dangling reference to a path on disk (that is what a picked file is in Chromium)
+ *  and deliberately re-pulls real bytes over it, so a File here would be discarded
+ *  by design and the show would play silence.
+ *
+ *  ⚠️ And it must run BEFORE Live Mode mounts: the restore is a mount effect.
+ */
+async function seedAudioForSmoke(win, eventId, itemId) {
+  const wav = fs.readFileSync(SMOKE_AUDIO_FILE).toString("base64");
+  const outcome = await win.webContents.executeJavaScript(`(() => new Promise((resolve) => {
+    try {
+      const bin = atob(${JSON.stringify(wav)});
+      const bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      const blob = new Blob([bytes], { type: "audio/wav" });
+      const req = indexedDB.open("cueiq-audio", 1);
+      req.onupgradeneeded = () => {
+        const db = req.result;
+        if (!db.objectStoreNames.contains("files")) db.createObjectStore("files");
+      };
+      req.onerror = () => resolve("open failed: " + String(req.error));
+      req.onsuccess = () => {
+        const db = req.result;
+        const tx = db.transaction("files", "readwrite");
+        tx.objectStore("files").put(
+          { blob, name: "smoke-tone.wav", path: ${JSON.stringify(`smoke/${itemId}.wav`)} },
+          ${JSON.stringify(`${eventId}::${itemId}`)}
+        );
+        tx.oncomplete = () => { db.close(); resolve("seeded " + blob.size + " bytes"); };
+        tx.onerror = () => { db.close(); resolve("write failed: " + String(tx.error)); };
+      };
+    } catch (e) { resolve("threw: " + String(e)); }
+  }))()`);
+  if (!String(outcome).startsWith("seeded")) {
+    throw new Error(`could not plant the audio file: ${outcome}`);
+  }
+  return outcome;
+}
+
+/** Listen to what the app is actually playing.
+ *
+ *  Three independent readings, because each one alone has a way of being satisfied
+ *  by silence:
+ *   • the element is playing and its playhead ADVANCED — a paused element reports a
+ *     stable currentTime, and an element that failed to decode never advances;
+ *   • it is not muted and its volume is not zero — Live Mode mutes viewers on
+ *     purpose, and "playing" says nothing about whether anyone would hear it;
+ *   • THE WAVEFORM. An AnalyserNode on the element's own output, sampled for about
+ *     a second, and the peak RMS of what came through. This is the only reading
+ *     that distinguishes "a file is playing" from "a signal exists": a silent WAV,
+ *     a decode that yielded zeros, or a gain node left at zero all advance the
+ *     playhead perfectly well.
+ *
+ *  ⚠️ What it CANNOT say: whether a speaker is connected, powered and unmuted. The
+ *  graph is measured inside Chromium, before the operating system's mixer. This
+ *  replaces "did the app try to play" with "the app produced a real signal" — it
+ *  does not replace a person in the room.
+ *
+ *  ⚠️ createMediaElementSource REROUTES the element into the graph, so the analyser
+ *  is connected straight on to ctx.destination. Without that the measurement itself
+ *  would silence the app.
+ */
+async function measureTheSound(win) {
+  return JSON.parse(
+    await win.webContents.executeJavaScript(`(async () => {
+      // The register first (live-mode.tsx's players are detached — see
+      // registerAudioElementsViaCdp), the document second so this keeps working if
+      // an element ever is appended.
+      const els = Array.from(window.__cueiqSmokeAudio || []).concat(
+        Array.from(document.querySelectorAll("audio"))
+      );
+      const el = els.find((a) => !a.paused && a.currentSrc) || els.find((a) => a.currentSrc) || els[0];
+      if (!el) {
+        return JSON.stringify({
+          error: "no audio element exists at all (registered: " + (window.__cueiqSmokeAudio || []).length + ")",
+        });
+      }
+      const before = el.currentTime;
+      let rms = 0;
+      let ctxState = "none";
+      try {
+        const ctx = new AudioContext();
+        const source = ctx.createMediaElementSource(el);
+        const analyser = ctx.createAnalyser();
+        analyser.fftSize = 2048;
+        source.connect(analyser);
+        analyser.connect(ctx.destination);
+        if (ctx.state === "suspended") await ctx.resume();
+        ctxState = ctx.state;
+        const buf = new Float32Array(analyser.fftSize);
+        const until = Date.now() + 1200;
+        while (Date.now() < until) {
+          analyser.getFloatTimeDomainData(buf);
+          let sum = 0;
+          for (let i = 0; i < buf.length; i++) sum += buf[i] * buf[i];
+          rms = Math.max(rms, Math.sqrt(sum / buf.length));
+          await new Promise((r) => setTimeout(r, 40));
+        }
+      } catch (e) {
+        return JSON.stringify({ error: "analyser: " + String(e), advanced: el.currentTime - before });
+      }
+      return JSON.stringify({
+        playing: !el.paused,
+        muted: el.muted,
+        volume: el.volume,
+        readyState: el.readyState,
+        duration: Number.isFinite(el.duration) ? Number(el.duration.toFixed(2)) : null,
+        advanced: Number((el.currentTime - before).toFixed(3)),
+        rms: Number(rms.toFixed(5)),
+        ctxState,
+        src: (el.currentSrc || "").slice(0, 12),
+      });
+    })()`)
+  );
+}
+
 /** What Live Mode says this device currently is — read off the attributes
  *  components/event/live-mode.tsx puts on its root. `null` until the page mounts.
  *  Structural, never textual: every label on that screen is Thai, and a wording
@@ -773,6 +941,45 @@ async function driveLiveScenario(win) {
   // enabled (live-mode.tsx disables it on !syncSettled, precisely so a device
   // cannot start a show that is already running elsewhere).
   const mounted = await pollLive(win, "Live Mode never mounted", (l) => l.settled, 40_000);
+
+  if (SMOKE_LIVE === "audible") {
+    // One device, no peer, and the only question is whether sound comes out.
+    // The seeding happened before this function opened the live page (see the
+    // caller) because the restore is a mount effect.
+    smokeAt("live:audible:starting");
+    // ⚠️ userGesture: true. Chromium's autoplay policy blocks audible playback
+    // until the page has been activated by a user, and a scripted `.click()` is
+    // NOT activation — without this flag the show starts, the playhead sits at
+    // zero, and the failure reads as "no audio" for a reason that has nothing to
+    // do with the app. This is the same permission a real press carries.
+    const clicked = await win.webContents.executeJavaScript(
+      `(() => { const b = document.querySelector('[data-testid=start-show]');
+        if (!b) return 'no start button';
+        if (b.disabled) return 'start button disabled';
+        b.click(); return 'clicked'; })()`,
+      true
+    );
+    if (clicked !== "clicked") throw new Error(`could not start the show: ${clicked}`);
+    const started = await pollLive(
+      win,
+      "the show never started here",
+      (l) => l.begun && l.controller,
+      20_000
+    );
+    // Give the element time to reach the file and get going before listening —
+    // and poll for it rather than sleeping, so a fast machine is not punished and
+    // a slow one is not failed.
+    smokeAt("live:audible:listening");
+    const deadline = Date.now() + 15_000;
+    let heard = null;
+    for (;;) {
+      heard = await measureTheSound(win);
+      if (heard.playing && heard.advanced > 0) break;
+      if (Date.now() >= deadline) break;
+      await new Promise((r) => setTimeout(r, 500));
+    }
+    return { role: "audible", after: started, audio: heard, mountedSync: mounted.sync };
+  }
 
   if (SMOKE_LIVE === "main" || SMOKE_LIVE === "main-yield") {
     smokeAt(`live:${SMOKE_LIVE}:starting`);
@@ -873,7 +1080,7 @@ async function driveLiveScenario(win) {
   }
 
   throw new Error(
-    `CUEIQ_SMOKE_LIVE must be main / main-yield / peer / peer-take, got "${SMOKE_LIVE}"`
+    `CUEIQ_SMOKE_LIVE must be main / main-yield / peer / peer-take / audible, got "${SMOKE_LIVE}"`
   );
 }
 
@@ -1421,6 +1628,13 @@ async function createWindow() {
         // controller, one sound host, one item index) are not visible to either
         // device alone.
         if (!SMOKE_SIGN_IN) throw new Error("CUEIQ_SMOKE_LIVE needs CUEIQ_SMOKE_SIGN_IN");
+        if (SMOKE_AUDIO_FILE) {
+          // Same shape as the socket patch below, and for the same reason: it only
+          // applies to documents created after it is installed, so the app has to
+          // boot once more on top of it. Nothing is lost — nobody has signed in yet.
+          smokeAt("live:audible:watching-for-players");
+          await registerAudioElementsViaCdp(win);
+        }
         if (SMOKE_REALTIME) {
           // Before the sign-in, and therefore before any channel is opened: the
           // patched constructor only applies to documents created after it is
@@ -1428,11 +1642,21 @@ async function createWindow() {
           // lost in that reload — nothing has been planted and nobody has signed in.
           smokeAt(`live:${SMOKE_LIVE}:pointing-the-socket-at-the-stub`);
           await patchWebSocketHostViaCdp(win, SMOKE_BACKEND_FOR, SMOKE_BACKEND);
-          await reloadAndWait(win, "with the socket pointed at the stub");
+        }
+        if (SMOKE_AUDIO_FILE || SMOKE_REALTIME) {
+          await reloadAndWait(win, "with the smoke's page patches installed");
         }
         smokeAt(`live:${SMOKE_LIVE}:signing-in`);
         const creds = JSON.parse(SMOKE_SIGN_IN);
         await signInThroughTheForm(win, creds.loginId, creds.password);
+        if (SMOKE_AUDIO_FILE) {
+          // Before driveLiveScenario, because that function opens Live Mode and the
+          // cache restore is one of its mount effects. Planting afterwards would be
+          // planting into a page that had already looked.
+          if (!SMOKE_LIVE_ITEM) throw new Error("CUEIQ_SMOKE_AUDIO_FILE needs CUEIQ_SMOKE_LIVE_ITEM");
+          smokeAt("live:audible:planting-the-file");
+          await seedAudioForSmoke(win, SMOKE_LIVE_EVENT, SMOKE_LIVE_ITEM);
+        }
         liveResult = await driveLiveScenario(win);
       } else if (SMOKE_SEED_FILE) {
         smokeAt("seeding");
