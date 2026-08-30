@@ -216,8 +216,9 @@ function parseInstantMs(v: string): number | null {
 }
 
 /**
- * Postgres unique violation (23505) — e.g. migration 0036's one-photo-per-event
- * partial index colliding with a schedule snapshot's upsert-before-delete replay.
+ * Postgres unique violation (23505) — e.g. migration 0042's one-photo-round-PER-NAME
+ * partial index (0036's one-per-event, relaxed once a real event needed two named
+ * rounds) colliding with a schedule snapshot's upsert-before-delete replay.
  */
 export function isUniqueViolation(
   code: string | null | undefined,

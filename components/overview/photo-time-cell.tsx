@@ -92,15 +92,22 @@ export function PhotoTimeCell({
           .select("id")
           .single();
         if (error) {
-          // One-photo-per-event unique index (mig 0036): a concurrent device
-          // already created the row. Adopt it and write our value in, rather than
-          // failing or leaving a duplicate.
+          // A concurrent device already created THIS round's row. Adopt it and
+          // write our value in, rather than failing or leaving a duplicate.
+          //
+          // ⚠️ MATCH THE ROUND, not merely the kind. Under mig 0036 an event had
+          // at most one photo row, so "the first photo row" and "the row we
+          // collided with" were the same thing. Since 0042 an event may hold
+          // several NAMED rounds, and a bare `.limit(1)` would happily adopt
+          // "ชุด 2" and overwrite its time with the one typed for "ถ่ายรูป".
+          // The key this insert collided on is the unnamed/"ถ่ายรูป" round.
           if (error.code !== "23505") throw error;
           const { data: existing, error: findErr } = await supabase
             .from("schedule_items")
             .select("id")
             .eq("event_id", eventId)
             .eq("kind", "photo")
+            .or("label.is.null,label.eq.ถ่ายรูป")
             .limit(1)
             .single();
           if (findErr || !existing) throw error;

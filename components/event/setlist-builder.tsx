@@ -50,6 +50,7 @@ import {
 import { cn } from "@/lib/utils";
 import { liveTopic, privateChannel } from "@/lib/realtime";
 import { noRowsMessage, wroteNothing } from "@/lib/write-guard";
+import { SaveStatus, useSaveSignal } from "@/components/event/save-status";
 import {
   SETLIST_KIND_LABELS,
   SETLIST_KIND_SHORT,
@@ -507,6 +508,9 @@ export function SetlistBuilder({
 }) {
   const supabase = createClient();
   const confirm = useConfirm();
+  // This builder has autosaved on blur since 2026-06-16 and never said so; the
+  // label asked twice for the feature it already had. See save-status.tsx.
+  const save = useSaveSignal();
   const [items, setItems] = useState<SetlistItem[]>(
     [...initialItems].sort((a, b) => a.sort_order - b.sort_order)
   );
@@ -761,6 +765,7 @@ export function SetlistBuilder({
   }
 
   async function persist(id: string, partial: Partial<SetlistItem>) {
+    save.begin();
     const { data, error } = await supabase
       .from("setlist_items")
       .update(partial)
@@ -768,7 +773,13 @@ export function SetlistBuilder({
       .select("id");
     if (error) {
       const next = items.map((it) => (it.id === id ? { ...it, ...partial } : it));
-      if (await queueOffline(next, error.message)) return;
+      // Queued offline IS saved — it is on disk and it will flush. Saying
+      // "ยังไม่ได้บันทึก" for a venue with no wifi would be the wrong receipt.
+      if (await queueOffline(next, error.message)) {
+        save.end(true);
+        return;
+      }
+      save.end(false);
       toast.error("บันทึกไม่สำเร็จ", { description: error.message });
       return;
     }
@@ -778,9 +789,11 @@ export function SetlistBuilder({
     // session of durations, reordering and mic slots sits on screen looking saved
     // and is simply not there — discovered at the venue. See lib/write-guard.ts.
     if (wroteNothing(data)) {
+      save.end(false);
       toast.error("ยังไม่ได้บันทึก", { description: await noRowsMessage() });
       return;
     }
+    save.end(true);
     notifyLive();
   }
 
@@ -1224,6 +1237,21 @@ export function SetlistBuilder({
           <div>
             <p className="text-xs text-muted-foreground">จำนวนรายการ</p>
             <p className="font-semibold tabular-nums">{items.length}</p>
+          </div>
+          {/* The receipt. Sits with the numbers the operator is already scanning,
+              rather than floating over the list — this is a standing statement
+              about the whole builder, not a per-row flourish. */}
+          <div>
+            <p className="text-xs text-muted-foreground">การบันทึก</p>
+            <p className="font-semibold">
+              {save.state === "idle" ? (
+                <span className="text-xs font-normal text-muted-foreground">
+                  บันทึกอัตโนมัติ
+                </span>
+              ) : (
+                <SaveStatus state={save.state} />
+              )}
+            </p>
           </div>
         </div>
         {hardOutSec != null &&

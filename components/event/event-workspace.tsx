@@ -341,6 +341,27 @@ export function EventWorkspace({
         )}
       </div>
 
+      {/* WHY the page is read-only, said once, where the reader is.
+          Reported through the in-app feedback channel as a BUG ("แก้ไขตารางเวลาไม่ได้",
+          2026-06-27, from a Label Staff account) — and it is not one: editing a
+          band's call sheet belongs to that band's Ar and to admins, while
+          label-wide staff review and approve. The rule stands (พี่'s call
+          2026-08-16); what was missing is that the app never said so. Disabled
+          fields with no explanation read as a broken page, and the person who
+          hits them has no way to tell which it is. */}
+      {!editable && (
+        <div
+          className="no-print rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:border-amber-500/40 dark:bg-amber-950/40 dark:text-amber-100"
+          data-testid="read-only-notice"
+        >
+          <span className="font-medium">ดูอย่างเดียว</span> — งานของวงแก้ได้โดย{" "}
+          <span className="font-medium">Ar ของวงนั้น</span> หรือ{" "}
+          <span className="font-medium">แอดมิน</span> เท่านั้น
+          {event.is_template ? " (และแม่แบบแก้ได้จากหน้าแม่แบบ)" : ""} — ถ้าต้องแก้จริง ๆ
+          ทักคนใดคนหนึ่งได้เลย
+        </div>
+      )}
+
       <Tabs value={view} onValueChange={changeView} className="w-full">
         <TabsList className="no-print flex h-auto w-full flex-wrap justify-start">
           <TabsTrigger value="setlist">Setlist + Run Time</TabsTrigger>

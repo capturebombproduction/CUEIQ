@@ -12,6 +12,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useConfirm } from "@/components/ui/confirm-dialog";
+import { SaveStatus, useSaveSignal } from "@/components/event/save-status";
 import {
   Select,
   SelectContent,
@@ -59,6 +60,9 @@ export function ScheduleEditor({
   const [busy, setBusy] = useState(false);
   const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
   const dragIndex = useRef<number | null>(null);
+  // Every field here autosaves on blur and always has; what was missing is any
+  // sign of it. See components/event/save-status.tsx.
+  const save = useSaveSignal();
 
   function setLocal(id: string, partial: Partial<ScheduleItem>) {
     setItems((prev) =>
@@ -88,22 +92,32 @@ export function ScheduleEditor({
     return queued;
   }
 
-  // One ถ่ายรูป (photo) item per event — enforced by mig 0036's unique index. A
-  // unique-violation (23505) means a duplicate photo row; show it in plain Thai.
+  // Several ถ่ายรูป rounds per event are allowed — each one needs its own NAME
+  // (mig 0042; 0036 used to cap it at one, which stopped a band with two costumes
+  // entering the second photo call). The unique key is the trimmed label, with an
+  // unnamed row treated as "ถ่ายรูป", so two devices filling the same round still
+  // collide exactly as before. A 23505 now means the NAME is taken.
   const DUP_PHOTO = {
-    title: "มีรายการถ่ายรูปอยู่แล้ว",
-    description: "ตั้งเวลาถ่ายรูปได้รายการเดียวต่อหนึ่งงาน",
+    title: "ชื่อรอบถ่ายรูปซ้ำ",
+    description: "มีรอบถ่ายรูปชื่อนี้อยู่แล้ว — ตั้งชื่อให้ต่างกัน เช่น “ชุด 1” / “ชุด 2”",
   };
 
   async function persist(id: string, partial: Partial<ScheduleItem>) {
+    save.begin();
     const { data, error } = await supabase
       .from("schedule_items")
       .update(partial)
       .eq("id", id)
       .select("id");
     if (error) {
+      // An offline queue is a SAVE, not a failure — the row is on disk and will
+      // flush. Reported as such below, once queueOffline has had its say.
       const next = items.map((it) => (it.id === id ? { ...it, ...partial } : it));
-      if (await queueOffline(next, error.message)) return;
+      if (await queueOffline(next, error.message)) {
+        save.end(true);
+        return;
+      }
+      save.end(false);
       if (error.code === "23505")
         toast.error(DUP_PHOTO.title, { description: DUP_PHOTO.description });
       else toast.error("Save failed", { description: error.message });
@@ -114,21 +128,25 @@ export function ScheduleEditor({
     // autosaves on blur, so staying silent means the call sheet sits on screen
     // looking saved and is simply not there. See lib/write-guard.ts.
     if (wroteNothing(data)) {
+      save.end(false);
       toast.error("ยังไม่ได้บันทึก", { description: await noRowsMessage() });
+      return;
     }
+    save.end(true);
   }
 
   async function addItem(kind: ScheduleKind = "other") {
-    // Guard the common case client-side so the band gets a clear message instead
-    // of a raw DB error (the index is the race-proof backstop).
-    if (kind === "photo" && items.some((i) => i.kind === "photo")) {
-      toast.error(DUP_PHOTO.title, { description: DUP_PHOTO.description });
-      return;
-    }
     setBusy(true);
     const sort = items.length
       ? Math.max(...items.map((i) => i.sort_order)) + 1
       : 1;
+    // A SECOND photo round arrives already named, because the rule that lets it
+    // exist is that it has one (mig 0042) — inserting another blank row would just
+    // collide with the first and hand the band a duplicate-name error for a button
+    // press they had no way to get right. "รอบ 2" is a starting point they can
+    // rename to whatever the day actually is ("ชุด 2", "ก่อนขึ้นเวที").
+    const photoRounds = items.filter((i) => i.kind === "photo").length;
+    const label = kind === "photo" && photoRounds > 0 ? `รอบ ${photoRounds + 1}` : null;
     const { data, error } = await supabase
       .from("schedule_items")
       .insert({
@@ -136,6 +154,7 @@ export function ScheduleEditor({
         event_id: eventId,
         kind,
         sort_order: sort,
+        ...(label ? { label } : {}),
       })
       .select("*")
       .single();
@@ -147,7 +166,7 @@ export function ScheduleEditor({
         tenant_id: tenantId,
         event_id: eventId,
         kind,
-        label: null,
+        label,
         location: null,
         start_time: null,
         end_time: null,
@@ -294,6 +313,8 @@ export function ScheduleEditor({
               {lastEnd && lastEnd !== firstStart ? `–${shortClock(lastEnd)}` : ""}
             </span>
           )}
+          {/* The receipt, at the end of the row the operator is already reading. */}
+          <SaveStatus state={save.state} className="ml-auto" />
         </div>
       )}
 
