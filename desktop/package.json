@@ -1,7 +1,7 @@
 {
   "name": "cueiq-desktop",
   "private": true,
-  "version": "0.1.11",
+  "version": "0.1.12",
   "type": "module",
   "description": "CueIQ Desktop — installable offline-first show runner (Electron + Vite). Syncs with the web app via the same Supabase.",
   "author": "Capture Bomb",
