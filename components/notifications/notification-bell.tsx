@@ -7,6 +7,8 @@ import { toast } from "sonner";
 import { createClient } from "@/lib/supabase/client";
 import { Button } from "@/components/ui/button";
 import { applicationServerKeyMatches } from "@/lib/push-key-match";
+import { urlBase64ToUint8Array, vapidPublicKey } from "@/lib/push-client";
+import { enablePush as subscribeToPush } from "@/lib/push-subscribe";
 import { hasLiveSession } from "@/lib/auth-session";
 import { wroteNothing, noRowsMessage } from "@/lib/write-guard";
 import {
@@ -42,18 +44,9 @@ type PushState = "unsupported" | "default" | "on" | "denied";
 const PROBE_WAIT_MS = 1500;
 
 // Read through a try/catch: the bundler inlines this literal (web = the build env,
-// desktop = vite `define`), but a build that misses it leaves a bare `process` —
-// which doesn't exist in the Electron renderer (contextIsolation on, node
-// integration off), so importing this bell there would throw at module eval and
-// white-screen the app instead of just leaving push "unsupported".
-function vapidPublicKey(): string | undefined {
-  try {
-    return process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY;
-  } catch {
-    return undefined;
-  }
-}
-
+// desktop = vite `define`) — see lib/push-client.ts for why reading it must stay
+// inside a function, and lib/push-subscribe.ts for the subscribe sequence this
+// component no longer owns alone.
 const VAPID_PUBLIC = vapidPublicKey();
 
 function relTime(iso: string): string {
@@ -66,15 +59,6 @@ function relTime(iso: string): string {
   const d = Math.floor(h / 24);
   if (d < 7) return `${d} วันก่อน`;
   return new Date(iso).toLocaleDateString("th-TH", { day: "numeric", month: "short" });
-}
-
-function urlBase64ToUint8Array(base64: string): Uint8Array {
-  const padding = "=".repeat((4 - (base64.length % 4)) % 4);
-  const b64 = (base64 + padding).replace(/-/g, "+").replace(/_/g, "/");
-  const raw = atob(b64);
-  const arr = new Uint8Array(raw.length);
-  for (let i = 0; i < raw.length; i++) arr[i] = raw.charCodeAt(i);
-  return arr;
 }
 
 export function NotificationBell({
@@ -437,6 +421,9 @@ export function NotificationBell({
     }
   }
 
+  // The sequence itself lives in lib/push-subscribe.ts — the nudge starts the same
+  // one, and two copies would drift (the shared-device retry in one and not the
+  // other is exactly the difference nobody notices until an iPad stops receiving).
   async function enablePush() {
     if (pushState === "unsupported" || !VAPID_PUBLIC) {
       toast.error("อุปกรณ์นี้ยังเปิดแจ้งเตือนเด้งไม่ได้ (ลองติดตั้งแอปลงหน้าจอโฮมก่อน)");
@@ -444,50 +431,23 @@ export function NotificationBell({
     }
     setPushBusy(true);
     try {
-      const perm = await Notification.requestPermission();
-      if (perm !== "granted") {
-        setPushState(perm === "denied" ? "denied" : "default");
+      const res = await subscribeToPush({ supabase, userId, tenantId });
+      if (res.ok) {
+        setPushState("on");
+        toast.success("เปิดแจ้งเตือนเด้งบนอุปกรณ์นี้แล้ว 🔔");
+        return;
+      }
+      if (res.reason === "denied") {
+        setPushState(Notification.permission === "denied" ? "denied" : "default");
         toast.error("ยังไม่ได้อนุญาตแจ้งเตือน");
         return;
       }
-      const reg = await navigator.serviceWorker.ready;
-      const subscribe = () =>
-        reg.pushManager.subscribe({
-          userVisibleOnly: true,
-          applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC) as BufferSource,
-        });
-      const save = (sub: PushSubscription) => {
-        const json = sub.toJSON() as { keys?: { p256dh?: string; auth?: string } };
-        return supabase.from("push_subscriptions").upsert(
-          {
-            user_id: userId,
-            tenant_id: tenantId,
-            endpoint: sub.endpoint,
-            p256dh: json.keys?.p256dh ?? "",
-            auth: json.keys?.auth ?? "",
-            user_agent: navigator.userAgent.slice(0, 200),
-          },
-          { onConflict: "endpoint" }
-        );
-      };
-      let sub = await subscribe();
-      let { error } = await save(sub);
-      if (error) {
-        // The endpoint row likely belongs to a PREVIOUS user of this shared device
-        // (RLS blocks the conflict-update). Drop the browser subscription to mint a
-        // fresh endpoint and retry; the orphaned row is pruned server-side on the
-        // next send ("gone").
-        await sub.unsubscribe().catch(() => {});
-        sub = await subscribe();
-        ({ error } = await save(sub));
-        if (error) throw error;
+      if (res.reason === "unsupported") {
+        setPushState("unsupported");
+        toast.error("อุปกรณ์นี้ยังเปิดแจ้งเตือนเด้งไม่ได้ (ลองติดตั้งแอปลงหน้าจอโฮมก่อน)");
+        return;
       }
-      setPushState("on");
-      toast.success("เปิดแจ้งเตือนเด้งบนอุปกรณ์นี้แล้ว 🔔");
-    } catch (e) {
-      toast.error("เปิดแจ้งเตือนเด้งไม่สำเร็จ", {
-        description: e instanceof Error ? e.message : undefined,
-      });
+      toast.error("เปิดแจ้งเตือนเด้งไม่สำเร็จ", { description: res.message });
     } finally {
       setPushBusy(false);
     }

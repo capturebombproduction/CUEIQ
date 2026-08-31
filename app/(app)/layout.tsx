@@ -4,6 +4,7 @@ import { SiteHeader } from "@/components/site-header";
 import { ErrorMonitor, AppErrorBoundary } from "@/components/error-monitor";
 import { ConfirmProvider } from "@/components/ui/confirm-dialog";
 import { FeedbackButton } from "@/components/feedback-button";
+import { PushNudge } from "@/components/notifications/push-nudge";
 
 export const dynamic = "force-dynamic";
 
@@ -36,6 +37,10 @@ export default async function AppLayout({
       {/* Prominent, always-reachable "แจ้งปัญหา" — band members report in-app (page
           + build auto-attached) instead of messaging with no context. */}
       <FeedbackButton userId={ws.user.id} tenantId={tenantId} floating />
+      {/* Asks ONCE, per device, and never over a running show — the only way to
+          turn push on used to be a button inside the bell dropdown, and eighteen
+          of nineteen accounts never found it. */}
+      <PushNudge userId={ws.user.id} tenantId={tenantId} />
     </div>
   );
 }
