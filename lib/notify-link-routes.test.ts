@@ -1,8 +1,8 @@
 // ---------------------------------------------------------------------------
 // EVERY NOTIFICATION MUST OPEN SOMETHING — IN BOTH APPS.
 //
-// /api/notify stamps a `link` on the row; the bell navigates to whatever the row
-// says. There are two routers behind that one string: Next's file tree on the web,
+// /api/notify and the daily reminder cron both stamp a `link` on the row; the bell
+// navigates to whatever the row says. There are two routers behind that one string: Next's file tree on the web,
 // and desktop/src/App.tsx's <Route> table in the .exe, whose catch-all is
 // `<Route path="*" element={<Navigate to="/" replace />} />`.
 //
@@ -34,7 +34,7 @@ function normalize(literal: string): string {
 }
 
 /**
- * Every destination the notify route can put on a row.
+ * Every destination either producer can put on a row.
  *
  * `link = "…"` / `link = \`…\`` are taken verbatim. `link = IDENTIFIER` is NOT
  * guessed: the identifier has to be resolvable from the small table below, and an
@@ -42,7 +42,12 @@ function normalize(literal: string): string {
  * destination is the bug this file is about.
  */
 function notifyLinkShapes(): string[] {
-  const routeSrc = read("app/api/notify/route.ts");
+  // BOTH producers of notification rows. The cron was added to this list on
+  // 2026-08-31 when it grew a third block: it writes the same `notifications`
+  // table and its link is followed by the same bell, so a destination it invents
+  // has exactly the same two routers to satisfy.
+  const routeSrc =
+    read("app/api/notify/route.ts") + read("app/api/cron/reminders/route.ts");
   const deadLinkSrc = read("lib/dead-link.ts");
 
   // Constants and helpers the route assigns to `link` instead of a literal.
@@ -61,7 +66,7 @@ function notifyLinkShapes(): string[] {
   const shapes = new Set<string>([normalize(liveLink![1])]);
 
   const assignments = [...routeSrc.matchAll(/\blink = (`[^`]*`|"[^"]*"|[A-Za-z_$][\w$]*)/g)];
-  expect(assignments.length, "no `link =` assignments found — did the route change shape?")
+  expect(assignments.length, "no `link =` assignments found — did a route change shape?")
     .toBeGreaterThan(0);
 
   for (const [, raw] of assignments) {
@@ -72,7 +77,7 @@ function notifyLinkShapes(): string[] {
     const known = resolved[raw];
     expect(
       known,
-      `app/api/notify/route.ts assigns link = ${raw}, which this test cannot resolve. ` +
+      `A notification producer assigns link = ${raw}, which this test cannot resolve. ` +
         `Add it to the table in lib/notify-link-routes.test.ts and make sure BOTH routers ` +
         `can open it — an unroutable link bounces to the dashboard on the desktop.`
     ).toBeTruthy();
@@ -112,7 +117,7 @@ function webRouteExists(link: string): boolean {
 describe("notification links open a real page in BOTH apps", () => {
   const shapes = notifyLinkShapes();
 
-  it("finds every destination the notify route can set", () => {
+  it("finds every destination a notification can carry", () => {
     // Pinned so that ADDING a kind without thinking about its destination shows up
     // here as a diff rather than sliding through the loops below.
     expect(shapes).toEqual([

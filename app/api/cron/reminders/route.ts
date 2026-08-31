@@ -2,11 +2,14 @@ import { NextResponse } from "next/server";
 import { createAdminClient, hasServiceRole } from "@/lib/supabase/admin";
 import { pushToUsers } from "@/lib/notify-server";
 import { cronSecretMatches, reportCronFailure } from "@/lib/cron-report";
+import { approvalNagBody, approvalsNeedingNag } from "@/lib/approval-nag";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-// Daily reminder job (Vercel Cron → see vercel.json). Vercel sends
+// Daily reminder job (Vercel Cron → see vercel.json). Three blocks: a show today
+// or tomorrow, a deadline inside two days, and an approval request nobody has
+// answered. Vercel sends
 // `Authorization: Bearer ${CRON_SECRET}` to cron paths, so we gate on that
 // (constant-time — see cronSecretMatches). Idempotent: re-running within ~20h
 // won't double-notify (dedupe on type+event).
@@ -149,6 +152,56 @@ async function runReminders(): Promise<Response> {
       "⏰ ใกล้ถึงกำหนดส่งงาน",
       band ? `${ev.name} · ${band}` : (ev.name as string)
     );
+  }
+
+  // 3) Submissions the approvers have not answered. THE ONE THAT CAME FROM REAL
+  // DATA: "Gorya seitan sai" was submitted 2026-07-15 for a 2026-07-19 show and
+  // was still pending_review six weeks later. /api/notify tells the approvers
+  // ONCE, at submit time, and nothing has ever mentioned it again — so a show
+  // went ahead with a call sheet no admin had checked. The whole rule (grace
+  // period, and the deliberate silence once the show has passed) lives in
+  // lib/approval-nag.ts, tested there and proven red.
+  const { data: pending } = await admin
+    .from("events")
+    .select("id, name, group_id, tenant_id, event_date, status, updated_at, groups(name)")
+    .eq("is_template", false)
+    .eq("is_practice", false)
+    .eq("status", "pending_review")
+    .gte("event_date", today);
+  const waiting = approvalsNeedingNag(
+    (pending ?? []).map((e) => ({
+      id: e.id as string,
+      status: e.status as string,
+      event_date: (e.event_date as string | null) ?? null,
+      updated_at: e.updated_at as string,
+    })),
+    now,
+    today
+  );
+  if (waiting.length) {
+    // Approvers are tenant-wide (admin / label_staff), the same set /api/notify
+    // reaches for event_submitted — NOT the band's own Ar, who is the person
+    // waiting for the answer and would only be told about their own patience.
+    const { data: approvers } = await admin
+      .from("tenant_members")
+      .select("user_id, tenant_id")
+      .in("role", ["admin", "label_staff"]);
+    for (const row of waiting) {
+      const ev = (pending ?? []).find((e) => e.id === row.id);
+      if (!ev) continue;
+      const ids = (approvers ?? [])
+        .filter((a) => a.tenant_id === ev.tenant_id)
+        .map((a) => a.user_id as string);
+      await fan(
+        ev.id as string,
+        ev.group_id as string,
+        ev.tenant_id as string,
+        ids,
+        "event_awaiting_approval",
+        "\u{1F7E0} มีงานรออนุมัติ",
+        approvalNagBody(row, now, bandName(ev.groups), ev.name as string)
+      );
+    }
   }
 
   return NextResponse.json({ ok: true, inserted, pushed });
