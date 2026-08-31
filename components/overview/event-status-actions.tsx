@@ -25,10 +25,16 @@ export function EventStatusActions({
   eventId,
   initialStatus,
   eventName,
+  onChanged,
 }: {
   eventId: string;
   initialStatus: GroupStatus;
   eventName?: string;
+  /** Fired ONLY after a write that actually landed, so a parent counting these
+   *  (the Overview's "รออนุมัติ N" chip) can never show a number that a failed or
+   *  zero-row update invented. Deliberately not called on the optimistic set or
+   *  the revert — see the branches below. */
+  onChanged?: (next: GroupStatus) => void;
 }) {
   const [status, setStatus] = useState<GroupStatus>(initialStatus);
   const [busy, setBusy] = useState(false);
@@ -58,6 +64,7 @@ export function EventStatusActions({
     } else {
       toast.success(next === "approved" ? "อนุมัติแล้ว" : "ปฏิเสธแล้ว");
       notify(next === "approved" ? "event_approved" : "event_rejected", { eventId });
+      onChanged?.(next);
       setOpen(false);
     }
   }

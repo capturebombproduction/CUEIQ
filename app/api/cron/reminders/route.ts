@@ -55,6 +55,12 @@ export async function GET(req: Request) {
 async function runReminders(): Promise<Response> {
   const admin = createAdminClient();
   const now = new Date();
+  // ⚠️ THE UTC DATE, and that is load-bearing for block 3 below. vercel.json runs
+  // this at 01:00 UTC = 08:00 in Bangkok, so the UTC calendar day and the label's
+  // are the same day at the moment it runs. Move the schedule EARLIER than 07:00
+  // Bangkok and they diverge: `event_date < today` would then read a show on its
+  // own day as already past and go silent on the last morning anyone could
+  // approve it. Change the cron expression and this line together, or not at all.
   const today = now.toISOString().slice(0, 10);
   const tomorrow = new Date(now.getTime() + 86_400_000).toISOString().slice(0, 10);
   const in2days = new Date(now.getTime() + 2 * 86_400_000).toISOString();

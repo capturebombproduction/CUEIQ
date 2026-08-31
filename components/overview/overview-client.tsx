@@ -22,6 +22,7 @@ import {
   ListOrdered,
   ChevronDown,
   ChevronUp,
+  Inbox,
 } from "lucide-react";
 import { EventStatusActions } from "@/components/overview/event-status-actions";
 import { PhotoTimeCell } from "@/components/overview/photo-time-cell";
@@ -344,15 +345,18 @@ function DeadlineCell({ ev }: { ev: OverviewEvent }) {
 function StatusCell({
   ev,
   canApproveEvents,
+  onStatusChanged,
 }: {
   ev: OverviewEvent;
   canApproveEvents: boolean;
+  onStatusChanged?: (id: string, next: GroupStatus) => void;
 }) {
   return canApproveEvents ? (
     <EventStatusActions
       eventId={ev.id}
       initialStatus={ev.status}
       eventName={ev.name}
+      onChanged={(next) => onStatusChanged?.(ev.id, next)}
     />
   ) : (
     <StatusBadge status={ev.status} />
@@ -467,12 +471,14 @@ function ActivityTables({
   canOpenDetail,
   isLabelWide,
   canApproveEvents,
+  onStatusChanged,
 }: {
   events: OverviewEvent[];
   showBandColumn: boolean;
   canOpenDetail: boolean;
   isLabelWide: boolean;
   canApproveEvents: boolean;
+  onStatusChanged?: (id: string, next: GroupStatus) => void;
 }) {
   const stageRows = useMemo(
     () => [...events].sort((a, b) => stageMinutes(a) - stageMinutes(b)),
@@ -640,7 +646,11 @@ function ActivityTables({
                   <td className="px-3 py-2">
                     <div className="flex items-center justify-end gap-2">
                       <DeadlineCell ev={ev} />
-                      <StatusCell ev={ev} canApproveEvents={canApproveEvents} />
+                      <StatusCell
+                        ev={ev}
+                        canApproveEvents={canApproveEvents}
+                        onStatusChanged={onStatusChanged}
+                      />
                     </div>
                   </td>
                 </tr>
@@ -960,6 +970,8 @@ export function OverviewClient({
   );
   const [mode, setMode] = useState<ViewMode>("band");
   const [bandFilter, setBandFilter] = useState<string>("all");
+  // "show me only what is waiting for me". See the chip and the filter below.
+  const [queueOnly, setQueueOnly] = useState(false);
   const [dateFilter, setDateFilter] = useState<string>("all"); // "all" or an ISO date
   const [exporting, setExporting] = useState(false);
   const exportRef = useRef<HTMLDivElement>(null);
@@ -984,15 +996,27 @@ export function OverviewClient({
     ) => setPhotoEdits((prev) => ({ ...prev, [eventId]: next })),
     []
   );
+  // Approvals made from the board, kept here for the same reason photoEdits are:
+  // EventStatusActions holds its own badge state and the server rows do not change
+  // under us, so without this the "รออนุมัติ N" chip below would keep counting a
+  // show that was approved thirty seconds ago. Only writes that actually landed
+  // reach this (see EventStatusActions' onChanged).
+  const [statusEdits, setStatusEdits] = useState<Record<string, GroupStatus>>({});
+  const handleStatusChanged = useCallback((id: string, next: GroupStatus) => {
+    setStatusEdits((prev) => ({ ...prev, [id]: next }));
+  }, []);
+
   const mergedEvents = useMemo(
     () =>
       events.map((e) => {
         const edit = photoEdits[e.id];
+        const status = statusEdits[e.id] ?? e.status;
+        const withStatus = status === e.status ? e : { ...e, status };
         return edit
-          ? { ...e, photo: edit.start, photoEnd: edit.end, photoItemId: edit.itemId }
-          : e;
+          ? { ...withStatus, photo: edit.start, photoEnd: edit.end, photoItemId: edit.itemId }
+          : withStatus;
       }),
-    [events, photoEdits]
+    [events, photoEdits, statusEdits]
   );
 
   // Order the whole schedule by date, then by each show's STAGE time — staff read a
@@ -1025,14 +1049,37 @@ export function OverviewClient({
     [byBand]
   );
 
+  // ── THE APPROVAL QUEUE, AS A PLACE YOU CAN LOOK ──────────────────────────
+  // On 2026-08-31 "Gorya seitan sai" was found still at pending_review, submitted
+  // 15 July for a 19 July show. It had been sitting on THIS BOARD the whole time,
+  // visible and one tap from approval — inside a fifty-row list with nothing that
+  // said how many were waiting. The daily cron now reminds approvers about future
+  // shows, but a reminder is a push: it cannot help a submission whose date has
+  // already passed, and it cannot be looked up when someone wonders. This chip is
+  // the pull half, and it is deliberately the cheap kind — a count and a filter
+  // over rows already in hand, no query, no notification, no new channel.
+  //
+  // Counted over EVERY row in scope, never over `filtered`: a queue a band filter
+  // can hide is the same bug one step along.
+  const pendingCount = useMemo(
+    () => mergedEvents.filter((e) => e.status === "pending_review").length,
+    [mergedEvents]
+  );
+  // Derived, not stored, so approving the last one cannot strand the viewer on an
+  // empty board with the chip already gone and no way to switch it off.
+  const queueActive = queueOnly && pendingCount > 0;
+
   // Apply the date filter on top of the band filter. Guard against a stale date
   // (e.g. after switching band) by falling back to the whole band scope.
   const filtered = useMemo(() => {
+    // The queue ignores the band and date filters on purpose: it must always show
+    // exactly what the count promises, or it is lying about the size of the queue.
+    if (queueActive) return sortedEvents.filter((e) => e.status === "pending_review");
     if (dateFilter === "all" || !byBand.some((e) => e.event_date === dateFilter)) {
       return byBand;
     }
     return byBand.filter((e) => e.event_date === dateFilter);
-  }, [byBand, dateFilter]);
+  }, [byBand, dateFilter, queueActive, sortedEvents]);
 
   const bandFilterLabel =
     bandFilter === "all"
@@ -1169,6 +1216,45 @@ export function OverviewClient({
           ))}
         </div>
         <div className="ml-auto flex flex-wrap items-center gap-2">
+          {/* Only approvers see it, and only when something is actually waiting —
+              a chip reading "รออนุมัติ 0" is furniture. */}
+          {canApproveEvents && pendingCount > 0 && (
+            <button
+              type="button"
+              data-testid="approval-queue-chip"
+              aria-pressed={queueActive}
+              onClick={() => {
+                // Switching the queue ON clears the band and date filters. `filtered`
+                // already ignores them, but the BUCKETS are built from `bandFilter`
+                // (in รายวง mode the board renders one section per selected band), so
+                // without this a band filter still hid rows the chip was counting —
+                // the very bug the count exists to prevent, one level down. Clearing
+                // them also makes the two selects SAY "ทุกวง / ทุกวัน", so the
+                // controls agree with what is on screen instead of contradicting it.
+                setQueueOnly((v) => {
+                  if (!v) {
+                    setBandFilter("all");
+                    setDateFilter("all");
+                  }
+                  return !v;
+                });
+              }}
+              title={
+                queueActive
+                  ? "กลับไปดูตารางทั้งหมด"
+                  : "ดูเฉพาะงานที่รออนุมัติ (รวมงานที่วันงานผ่านไปแล้ว)"
+              }
+              className={cn(
+                "inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm font-medium transition-colors",
+                queueActive
+                  ? "border-warning bg-warning text-warning-foreground"
+                  : "border-warning/60 text-warning hover:bg-warning/10"
+              )}
+            >
+              <Inbox className="h-4 w-4" />
+              รออนุมัติ {pendingCount}
+            </button>
+          )}
           {availableDates.length > 1 && (
             <select
               value={dateFilter}
@@ -1265,6 +1351,7 @@ export function OverviewClient({
                   canOpenDetail={canOpenDetail}
                   isLabelWide={isLabelWide}
                   canApproveEvents={canApproveEvents}
+                  onStatusChanged={handleStatusChanged}
                 />
               )}
 
@@ -1300,9 +1387,9 @@ export function OverviewClient({
           <div className="border-b pb-3">
             <h2 className="text-xl font-bold leading-tight">{labelName}</h2>
             <p className="text-sm text-muted-foreground">
-              ตารางงาน · {modeLabel} · {bandFilterLabel}
-              {dateActive ? ` · ${fmtDateWd(dateFilter)}` : ""} · {filtered.length}{" "}
-              งาน
+              {queueActive ? "งานที่รออนุมัติ" : `ตารางงาน · ${modeLabel} · ${bandFilterLabel}`}
+              {!queueActive && dateActive ? ` · ${fmtDateWd(dateFilter)}` : ""} ·{" "}
+              {filtered.length} งาน
             </p>
           </div>
           {/* Mirror the on-screen grouping (buckets follow the current view mode)
