@@ -41,6 +41,21 @@ function isDevOrigin(url?: string | null, stack?: string | null): boolean {
   return false;
 }
 
+/**
+ * @returns whether the row actually reached the server. Nothing about capture
+ * changes on a false — this stays best-effort and still never throws — but the
+ * ANSWER now exists, because something downstream tells the user "ระบบบันทึก
+ * ปัญหานี้ไว้ให้แล้ว" and that sentence had never been checked against anything.
+ * A promise nobody verifies is the write-guard class of bug (lib/write-guard.ts),
+ * one step worse: it is told to a person.
+ *
+ * ⚠️ SUCCESS IS `!error`, DELIBERATELY NOT A ROW COUNT. The house rule is that a
+ * write returning no error and no row did not happen — but it cannot be applied
+ * here, because `client_errors_select` is `can_admin_tenant(tenant_id)` BY DESIGN:
+ * an ordinary member may INSERT and may not read back. `.select()` would therefore
+ * return zero rows on a perfectly good insert for eighteen of nineteen accounts,
+ * and we would answer "not saved" every time it actually was.
+ */
 export async function logClientError(args: {
   userId: string;
   tenantId: string | null;
@@ -48,20 +63,20 @@ export async function logClientError(args: {
   message: string;
   stack?: string | null;
   url?: string | null;
-}): Promise<void> {
+}): Promise<boolean> {
   try {
     const message = (args.message || "").slice(0, 2000).trim();
-    if (!message) return;
-    if (IGNORE.some((re) => re.test(message))) return;
-    if (isDevOrigin(args.url, args.stack)) return;
-    if (logged >= MAX_PER_SESSION) return;
+    if (!message) return false;
+    if (IGNORE.some((re) => re.test(message))) return false;
+    if (isDevOrigin(args.url, args.stack)) return false;
+    if (logged >= MAX_PER_SESSION) return false;
     const key = `${args.kind}:${message}`;
-    if (seen.has(key)) return; // captured this exact error already this session
+    if (seen.has(key)) return false; // captured this exact error already this session
     seen.add(key);
     logged++;
 
     const supabase = createClient();
-    await supabase.from("client_errors").insert({
+    const { error } = await supabase.from("client_errors").insert({
       tenant_id: args.tenantId,
       user_id: args.userId,
       kind: args.kind,
@@ -72,7 +87,9 @@ export async function logClientError(args: {
         typeof navigator !== "undefined" ? navigator.userAgent.slice(0, 400) : null,
       app_version: APP_VERSION,
     });
+    return !error;
   } catch {
     /* logging must never throw */
+    return false;
   }
 }
