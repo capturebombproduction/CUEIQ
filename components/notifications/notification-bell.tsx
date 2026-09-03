@@ -1,8 +1,8 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { useRouter } from "next/navigation";
-import { Bell, Check, BellRing, Loader2, Ban } from "lucide-react";
+import { Bell, Check, BellRing, Loader2, Ban, ChevronRight } from "lucide-react";
 import { toast } from "sonner";
 import { createClient } from "@/lib/supabase/client";
 import { Button } from "@/components/ui/button";
@@ -308,6 +308,40 @@ export function NotificationBell({
     return () => document.removeEventListener("mousedown", onDown);
   }, [open]);
 
+  // WHERE THE PANEL GOES ON A PHONE, measured rather than assumed.
+  //
+  // It used to be `absolute right-0 w-80`, anchored to the bell BUTTON — and the
+  // bell is the LEFTMOST of six right-aligned header icons, so on a 390px phone its
+  // right edge sits around x=174 and a 320px panel started at x=-146. It ran off
+  // the left of the screen: titles were sheared ("นุมัติ" for "รออนุมัติ") and the
+  // rows, which are full-width buttons, could not be tapped where they were cut off.
+  // That is why tapping a notification appeared to do nothing — openItem() was never
+  // reached, not broken. `max-w-[calc(100vw-1.5rem)]` did not save it: it caps WIDTH
+  // (366px > 320px, so it never applied) and says nothing about POSITION.
+  //
+  // On phones the panel is therefore `fixed` to the viewport instead, and the only
+  // thing it needs from the button is where to start vertically. From `sm` up the
+  // old anchored behaviour is restored by the `sm:` classes — there the icon row has
+  // room and the panel has always been fine.
+  const [anchorTop, setAnchorTop] = useState(0);
+  useEffect(() => {
+    if (!open) return;
+    const measure = () => {
+      const r = rootRef.current?.getBoundingClientRect();
+      if (r) setAnchorTop(r.bottom + 8);
+    };
+    measure();
+    // The header is sticky and the phone row can reflow (rotation, keyboard), so
+    // re-measure rather than trusting the first read. Capture phase: the scroll that
+    // matters may be on an inner container, not the window.
+    window.addEventListener("resize", measure);
+    window.addEventListener("scroll", measure, true);
+    return () => {
+      window.removeEventListener("resize", measure);
+      window.removeEventListener("scroll", measure, true);
+    };
+  }, [open]);
+
   async function openItem(n: NotifRow) {
     // A dead target must not be able to destroy the item. The old order was
     // mark-read-then-navigate, so clicking one of these cleared it from the unread
@@ -472,7 +506,11 @@ export function NotificationBell({
       </Button>
 
       {open && (
-        <div className="absolute right-0 top-full z-50 mt-2 w-80 max-w-[calc(100vw-1.5rem)] overflow-hidden rounded-lg border bg-popover text-popover-foreground shadow-lg">
+        <div
+          data-testid="notification-panel"
+          style={{ "--bell-top": `${anchorTop}px` } as CSSProperties}
+          className="fixed inset-x-3 top-[var(--bell-top)] z-50 overflow-hidden rounded-lg border bg-popover text-popover-foreground shadow-lg sm:absolute sm:inset-x-auto sm:right-0 sm:top-full sm:mt-2 sm:w-80"
+        >
           <div className="flex items-center justify-between border-b px-3 py-2">
             <span className="text-sm font-semibold">การแจ้งเตือน</span>
             {unread > 0 && (
@@ -518,6 +556,14 @@ export function NotificationBell({
                       <span className={cn("flex-1 text-sm", !n.read_at && "font-medium")}>
                         {n.title}
                       </span>
+                      {/* Tapping a row has ALWAYS opened the thing it is about, and
+                          nothing on the row ever said so — asked for by name on
+                          2026-09-04 as if it were a missing feature. A row that is
+                          openable now looks openable. Hidden on a dead one, where
+                          promising a destination would be the lie. */}
+                      {!gone && (
+                        <ChevronRight className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
+                      )}
                     </div>
                     {n.body && (
                       <span className="pl-4 text-xs text-muted-foreground">{n.body}</span>
