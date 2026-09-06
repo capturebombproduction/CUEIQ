@@ -42,7 +42,13 @@ export const dynamic = "force-dynamic";
 // (401) branch is deliberately NOT reported this way — see reportCronFailure's
 // doc comment for why.
 //
-// TABLES = every public base table. Refresh the list when the schema grows:
+// TABLES = every public base table. ⚠️ Do NOT rely on remembering to refresh this
+// when the schema grows — app/api/cron/backup/tables.test.ts checks it against the
+// migrations on every CI run, because the failure mode is silent: a missed table
+// still produces a successful job and a healthy-looking snapshot, and is only
+// discovered while restoring. Verified end to end on 2026-09-06 by pulling the
+// newest snapshot from R2 and counting all 25 tables against the live database.
+// To regenerate by hand:
 //   select string_agg(table_name, ',' order by table_name) from
 //   information_schema.tables where table_schema='public' and table_type='BASE TABLE';
 const TABLES = [

@@ -132,7 +132,12 @@ export default defineConfig({
         "web",
         [
           "components/**/*.test.tsx",
-          "app/**/*.test.tsx",
+          // `{ts,tsx}`, not `.tsx`: app/ also holds route handlers and cron jobs,
+          // whose tests are plain `.ts`. Written against a `.tsx`-only glob, such a
+          // file is collected by NO project and reported missing by none — exactly
+          // the silent skip the note below warns about. It cost one on 2026-09-06
+          // (app/api/cron/backup/tables.test.ts).
+          "app/**/*.test.{ts,tsx}",
           // `{ts,tsx}` on both of the next two: a `test/web/*.test.ts` or a
           // `lib/*.dom.test.tsx` written against a `.tsx`-only / `.ts`-only glob is
           // collected by NO project and NO project reports it missing — it simply

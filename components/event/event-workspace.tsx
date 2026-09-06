@@ -57,6 +57,12 @@ import {
   type Song,
 } from "@/lib/types";
 
+/** A workspace tab that still reads as a control when nothing is selected — see
+ *  the note at the TabsList. Border + foreground text carry it; the active state
+ *  keeps Radix's own solid treatment on top. */
+const TAB_CLS =
+  "border border-border bg-background/60 text-foreground data-[state=active]:border-primary data-[state=active]:bg-primary data-[state=active]:text-primary-foreground";
+
 export function EventWorkspace({
   event,
   eventId,
@@ -390,11 +396,33 @@ export function EventWorkspace({
       )}
 
       <Tabs value={view} onValueChange={changeView} className="w-full">
-        <TabsList className="no-print flex h-auto w-full flex-wrap justify-start">
-          <TabsTrigger value="setlist">Setlist + Run Time</TabsTrigger>
-          <TabsTrigger value="schedule">นัดหมาย</TabsTrigger>
-          {modules.micMap && <TabsTrigger value="mic">Mic Map</TabsTrigger>}
-          <TabsTrigger value="lineup">รายชื่อวันนี้</TabsTrigger>
+        {/* ⚠️ THESE HAVE TO LOOK LIKE BUTTONS EVEN WHEN NONE IS SELECTED.
+            Reported from a phone on 2026-09-06: "แก้เซ็ตลิสต์ในงานไม่ได้ กดตรงไหน"
+            — not broken, unfindable. The default view is `summary`, which is NOT
+            one of these tabs, so on arrival NOTHING here is active: Radix leaves
+            every trigger at `text-muted-foreground` on the list's own `bg-muted`,
+            i.e. grey text on grey, with no selected sibling to contrast against.
+            Measured in a browser at 375px, it reads as a row of headings. The big
+            white "สรุปงาน" button directly above makes it worse by being the only
+            thing on screen that looks pressable.
+            So each trigger carries its own border and readable colour, and turns
+            solid when chosen. `data-[state=active]` still does the selected look;
+            this only fixes the UNSELECTED one, which was the invisible half. */}
+        <TabsList className="no-print flex h-auto w-full flex-wrap justify-start gap-1.5">
+          <TabsTrigger value="setlist" className={TAB_CLS}>
+            Setlist + Run Time
+          </TabsTrigger>
+          <TabsTrigger value="schedule" className={TAB_CLS}>
+            นัดหมาย
+          </TabsTrigger>
+          {modules.micMap && (
+            <TabsTrigger value="mic" className={TAB_CLS}>
+              Mic Map
+            </TabsTrigger>
+          )}
+          <TabsTrigger value="lineup" className={TAB_CLS}>
+            รายชื่อวันนี้
+          </TabsTrigger>
         </TabsList>
 
         <TabsContent value="summary">
