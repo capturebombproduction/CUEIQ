@@ -15,6 +15,17 @@ export function isStandalone(): boolean {
 }
 
 /**
+ * A chat / social app's built-in browser (LINE, Facebook, Messenger, Instagram).
+ * In Thailand most links are opened from a LINE chat, and on iOS those in-app
+ * browsers have no "Add to Home Screen" — so any "install it" advice has to start
+ * with "open it in Safari".
+ */
+export function isInAppBrowser(): boolean {
+  if (typeof navigator === "undefined") return false;
+  return /\bLine\/|FBAN|FBAV|MessengerForiOS|Instagram/i.test(navigator.userAgent);
+}
+
+/**
  * iOS or iPadOS, whatever browser is wrapped around it — every engine on the
  * platform is WebKit, so the limitations are the same in Safari and in Chrome-iOS.
  */

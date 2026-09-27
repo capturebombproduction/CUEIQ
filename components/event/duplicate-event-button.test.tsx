@@ -89,6 +89,20 @@ describe("DuplicateEventButton", () => {
     expect(toastSuccess).toHaveBeenCalledWith("ก๊อปงานเรียบร้อย — เปิดงานใหม่ให้แล้ว");
   });
 
+  // Review finding 6: a stage time typed then cancelled used to wait in the form
+  // and move the whole day of the NEXT copy made from the same card.
+  it("opens with a fresh form — a cancelled stage time does not come back", async () => {
+    mount();
+    fireEvent.click(screen.getByRole("button", { name: /ก๊อปงาน Sourgrumy/ }));
+    fireEvent.change(screen.getByLabelText(/เวลาขึ้นเวที/), { target: { value: "17:30" } });
+    fireEvent.click(screen.getByRole("button", { name: "ยกเลิก" }));
+    fireEvent.click(screen.getByRole("button", { name: /ก๊อปงาน Sourgrumy/ }));
+    expect((screen.getByLabelText(/เวลาขึ้นเวที/) as HTMLInputElement).value).toBe("");
+    fireEvent.click(screen.getByRole("button", { name: /^ก๊อปงาน$/ }));
+    await waitFor(() => expect(push).toHaveBeenCalled());
+    expect(calls.stageStart).toEqual([undefined]);
+  });
+
   it("nothing pressed in the dialog reaches the card underneath", async () => {
     mount();
     fireEvent.click(screen.getByRole("button", { name: /ก๊อปงาน Sourgrumy/ }));

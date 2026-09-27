@@ -42,7 +42,13 @@ vi.mock("@/lib/practice-audio", () => ({
     }
   },
 }));
-vi.mock("@/lib/song-cache", () => ({ getSongBlob: async (path: string) => ({ path }) }));
+const blob = vi.hoisted(() => ({
+  // per-path override: a rejection, or a promise the test resolves itself
+  special: new Map<string, () => Promise<unknown>>(),
+}));
+vi.mock("@/lib/song-cache", () => ({
+  getSongBlob: (path: string) => blob.special.get(path)?.() ?? Promise.resolve({ path }),
+}));
 vi.mock("@/lib/local-source", () => ({
   getLocalSource: async () => null,
   listLocalSourceIds: async () => [],
@@ -96,6 +102,7 @@ const items = [{ id: "p1", song_id: "other", sort_order: 1 } as PracticeSong];
 beforeEach(() => {
   h.engines = [];
   toastSuccess.mockClear();
+  blob.special.clear();
   h.shows = [
     {
       id: "show-1",
@@ -160,6 +167,53 @@ describe("PracticePlayer — ซ้อมตามเซ็ตลิสต์", 
     end();
     await new Promise((r) => setTimeout(r, 30));
     expect(engine().loads).toEqual(["boot.wav", "other.wav"]);
+  });
+
+  // Review finding 1: a failed load mid-set used to leave the card claiming
+  // "เพลงที่ 2/3" over a player still holding song 1.
+  it("a song that fails to load stops the set instead of pointing at nothing", async () => {
+    blob.special.set("neon.wav", () => Promise.reject(new Error("offline")));
+    mount();
+    fireEvent.click(await screen.findByRole("button", { name: /เล่นทั้งเซ็ต/ }));
+    await waitFor(() => expect(engine().loads).toEqual(["boot.wav"]));
+    end();
+    await waitFor(() => expect(screen.getByRole("button", { name: /เล่นทั้งเซ็ต/ })).toBeTruthy());
+    expect(screen.queryByRole("button", { name: /หยุดเล่นต่อ/ })).toBeNull();
+    end(); // the old song ending again must not resume the set
+    await new Promise((r) => setTimeout(r, 30));
+    expect(engine().loads).toEqual(["boot.wav"]);
+  });
+
+  // Review finding 4: tap a row in the last seconds of a song; that song ending
+  // while the tapped one downloads must not overrule the tap.
+  it("a row tapped while the current song runs out wins over the auto-advance", async () => {
+    let release!: () => void;
+    blob.special.set("neon.wav", () => new Promise((r) => (release = () => r({ path: "neon.wav" }))));
+    mount();
+    fireEvent.click(await screen.findByRole("button", { name: /เล่นทั้งเซ็ต/ }));
+    await waitFor(() => expect(engine().loads).toEqual(["boot.wav"]));
+    // row 2 (NOT the last — a last row has nothing after it to wrongly jump to)
+    fireEvent.click(screen.getByRole("button", { name: /Neon Lullaby/ }));
+    end(); // boot runs out while neon is still downloading
+    await new Promise((r) => setTimeout(r, 30));
+    release();
+    await new Promise((r) => setTimeout(r, 30));
+    // without the guard the end would move the set to row 3 and play iam instead
+    expect(engine().loads).toEqual(["boot.wav", "neon.wav"]);
+  });
+
+  // Review finding 3: looking at another show mid-set must not hide the stop.
+  it("keeps the stop button when another show is picked in the dropdown mid-set", async () => {
+    h.shows = [
+      ...h.shows,
+      { id: "show-2", name: "Next week", event_date: bkkTodayKey(), setlist_items: [row("x", 1, "neon")] },
+    ];
+    mount();
+    fireEvent.click(await screen.findByRole("button", { name: /เล่นทั้งเซ็ต/ }));
+    await waitFor(() => expect(engine().loads).toEqual(["boot.wav"]));
+    fireEvent.change(screen.getByLabelText("เลือกงานที่จะซ้อม"), { target: { value: "show-2" } });
+    expect(screen.getByRole("button", { name: /หยุดเล่นต่อ/ })).toBeTruthy();
+    expect(screen.getByText(/กำลังเล่นตามเซ็ตของ “Thailand hobbyfestival”/)).toBeTruthy();
   });
 
   it("a song ending with no run going does nothing", async () => {

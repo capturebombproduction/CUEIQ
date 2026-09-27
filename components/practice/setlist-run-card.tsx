@@ -43,8 +43,8 @@ export function SetlistRunCard({
   groupId: string;
   songsById: Map<string, Song>;
   playable: (s: Song) => boolean;
-  /** The run in progress, if any: which show and which position in its queue. */
-  running: { showId: string; index: number } | null;
+  /** The run in progress, if any: which show, where in its queue, and how long it is. */
+  running: { showId: string; index: number; total: number } | null;
   loadingSongId: string | null;
   onPlay: (showId: string, queue: QueueEntry[], index: number) => void;
   onStop: () => void;
@@ -152,10 +152,17 @@ export function SetlistRunCard({
         </p>
       )}
 
-      {runningHere ? (
+      {/* Shown for ANY run, not only the selected show's: picking another show in
+          the dropdown just to look at it must not hide the only stop button for a
+          set that keeps auto-advancing underneath. */}
+      {running ? (
         <div className="flex flex-wrap items-center justify-between gap-2">
           <span className="text-xs text-muted-foreground">
-            กำลังเล่นเพลงที่ {runningHere.index + 1}/{queue.length} — จบแล้วเล่นเพลงถัดไปเอง
+            {runningHere
+              ? `กำลังเล่นเพลงที่ ${running.index + 1}/${running.total} — จบแล้วเล่นเพลงถัดไปเอง`
+              : `กำลังเล่นตามเซ็ตของ “${
+                  shows.find((s) => s.id === running.showId)?.name ?? "อีกงาน"
+                }” อยู่ (เพลงที่ ${running.index + 1}/${running.total})`}
           </span>
           <Button variant="outline" size="sm" onClick={onStop}>
             <Square className="h-3.5 w-3.5" /> หยุดเล่นต่อ

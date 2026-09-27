@@ -111,6 +111,11 @@ export function DuplicateEventButton({
         onClick={(e) => {
           e.preventDefault(); // the card is a <Link> — don't navigate
           e.stopPropagation();
+          // A fresh form every time: a stage time typed, cancelled and forgotten
+          // must not quietly move the whole day of a later copy.
+          setName("");
+          setDate("");
+          setStageStart("");
           setOpen(true);
         }}
         disabled={busy}
@@ -142,7 +147,7 @@ export function DuplicateEventButton({
                 <DialogTitle>ก๊อปงานนี้เป็นงานใหม่</DialogTitle>
                 <DialogDescription>
                   คัดลอกคิว เซ็ตลิสต์ ผังไมค์ และรายชื่อคนมาจาก “{eventName}” เป็นงานใหม่
-                  (ฉบับร่าง) — ไม่รวมไฟล์เพลง
+                  (ฉบับร่าง) — ไม่รวมไฟล์เพลง · รายชื่อคนมาเป็นของงานเดิม เช็คอีกทีว่างานนี้ใครมา
                 </DialogDescription>
               </DialogHeader>
               <div className="space-y-3">

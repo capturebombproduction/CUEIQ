@@ -5,7 +5,7 @@ import { BellRing, Share, X } from "lucide-react";
 import { toast } from "sonner";
 import { createClient } from "@/lib/supabase/client";
 import { isLiveShowActive } from "@/lib/live-guard";
-import { isIOS, isStandalone } from "@/lib/platform";
+import { isInAppBrowser, isIOS, isStandalone } from "@/lib/platform";
 import { enablePush, pushAvailability } from "@/lib/push-subscribe";
 import { Button } from "@/components/ui/button";
 
@@ -95,6 +95,8 @@ export function PushNudge({
   // where push cannot exist until the app is opened from the home screen — say how.
   const [mode, setMode] = useState<"push" | "install" | null>(null);
   const [busy, setBusy] = useState(false);
+  // Read with the rest of the platform probes, after mount (never during render).
+  const [inApp, setInApp] = useState(false);
 
   useEffect(() => {
     if (!userId) return;
@@ -112,7 +114,10 @@ export function PushNudge({
         const availability = await pushAvailability();
         if (!alive || isLiveShowActive()) return;
         if (availability === "available" && askPush) setMode("push");
-        else if (availability === "unsupported" && askInstall) setMode("install");
+        else if (availability === "unsupported" && askInstall) {
+          setInApp(isInAppBrowser());
+          setMode("install");
+        }
       })();
     }, DELAY_MS);
     return () => {
@@ -169,6 +174,11 @@ export function PushNudge({
               บน iPhone / iPad แจ้งเตือนเด้งได้เฉพาะตอนเปิด CueIQ จากไอคอนบนหน้าจอโฮม:
             </p>
             <ol className="mt-1.5 list-decimal space-y-0.5 pl-4 text-xs">
+              {inApp && (
+                <li>
+                  ตอนนี้เปิดอยู่ในแอปแชท (เช่น LINE) — กดปุ่ม ⋯ แล้วเลือก “เปิดใน Safari” ก่อน
+                </li>
+              )}
               <li>
                 กดปุ่มแชร์{" "}
                 <Share className="inline h-3.5 w-3.5 -translate-y-px" aria-label="แชร์" />{" "}

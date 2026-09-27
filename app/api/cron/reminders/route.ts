@@ -81,7 +81,13 @@ async function runReminders(): Promise<Response> {
       now: now.toISOString(),
     });
   } catch (e) {
-    await reportCronFailure("reminders", e instanceof Error ? e.message : String(e));
+    // Its OWN report key: reportCronFailure dedupes per key for 6 h, so filing a
+    // housekeeping hiccup under "reminders" would silence the real "run failed"
+    // report if the reminders themselves then broke in the same run.
+    await reportCronFailure(
+      "reminders/expiry",
+      e instanceof Error ? e.message : String(e)
+    );
   }
 
   // Insert + push a reminder to recipients who haven't already gotten this one.

@@ -377,8 +377,16 @@ export function PracticePlayer({
     } catch (err) {
       if (token !== selectTokenRef.current) return; // superseded — don't toast
       toast.error("โหลดเพลงไม่สำเร็จ", {
-        description: err instanceof Error ? err.message : undefined,
+        description: err instanceof Error
+          ? `${err.message}${opts?.fromRun ? " — หยุดเล่นตามเซ็ตไว้ก่อน" : ""}`
+          : opts?.fromRun
+          ? "หยุดเล่นตามเซ็ตไว้ก่อน"
+          : undefined,
       });
+      // A set whose next song never loaded must not keep claiming "กำลังเล่นเพลงที่
+      // N": the previous song is still the loaded one, so replaying it and letting
+      // it end would silently skip the song that failed.
+      if (opts?.fromRun) setRun(null);
     } finally {
       // a stale call must not clear the spinner of the tap that superseded it
       if (token === selectTokenRef.current) setLoadingId(null);
@@ -392,7 +400,16 @@ export function PracticePlayer({
     setRun({ showId, queue, pos: index });
     const engine = engineRef.current;
     if (engine && entry.song.id === currentId) {
-      // already loaded — start it over rather than toggling it off
+      // already loaded — start it over rather than toggling it off. Clear an A-B
+      // loop left from drilling it (onTime would keep seeking back and the song,
+      // so the set, would never end), and take the select token so a hand-picked
+      // song still downloading cannot land on top of the set afterwards.
+      ++selectTokenRef.current;
+      setLoadingId(null);
+      loopRef.current = { a: null, b: null, on: false };
+      setLoopA(null);
+      setLoopB(null);
+      setLoopOn(false);
       engine.unlock();
       engine.seek(0);
       void engine.play();
@@ -405,6 +422,9 @@ export function PracticePlayer({
   // current run and the current selectSong.
   onEndedRef.current = () => {
     if (!run) return;
+    // A newer song is already on its way (a row tapped in the last seconds of
+    // this one): the old song ending must not overrule that tap.
+    if (loadingId) return;
     const next = run.pos + 1;
     if (next >= run.queue.length) {
       setRun(null);
@@ -858,7 +878,9 @@ export function PracticePlayer({
         groupId={groupId}
         songsById={songsById}
         playable={playable}
-        running={run ? { showId: run.showId, index: run.pos } : null}
+        running={
+          run ? { showId: run.showId, index: run.pos, total: run.queue.length } : null
+        }
         loadingSongId={loadingId}
         onPlay={playFromRun}
         onStop={() => setRun(null)}

@@ -48,15 +48,19 @@ export type CloneResult = {
 // organiser, is the one to check). That used to be five time fields retyped, twice
 // a week.
 
-/** Where the source show sits on the clock: its earliest stage row, else the
- *  event's own show start. Null when it has neither. */
+/** Where the source show sits on the clock: the event's own show start — the time
+ *  the copy dialog prints as "เดิม …", so "type the new one" means exactly that —
+ *  else its earliest stage row. Null when it has neither. (Measuring from the stage
+ *  row first put the anchor somewhere the dialog never showed whenever the two
+ *  differed: stage 13:00, show start 13:05, type 17:35 → show start 17:40.) */
 export function stageAnchorSeconds(schedule: Row[], event: Row): number | null {
+  const showStart = parseClockToSeconds(event.show_start_time as string | null);
+  if (showStart != null) return showStart;
   const stages = schedule
     .filter((r) => r.kind === "stage")
     .map((r) => parseClockToSeconds(r.start_time as string | null))
     .filter((s): s is number => s != null);
-  if (stages.length) return Math.min(...stages);
-  return parseClockToSeconds(event.show_start_time as string | null);
+  return stages.length ? Math.min(...stages) : null;
 }
 
 /** A time-of-day moved by `deltaSec`, wrapped to the day ("HH:MM:SS"). A value

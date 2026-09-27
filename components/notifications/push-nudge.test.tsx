@@ -27,10 +27,11 @@ vi.mock("@/lib/push-subscribe", () => ({
 }));
 vi.mock("@/lib/supabase/client", () => ({ createClient: () => ({}) }));
 vi.mock("sonner", () => ({ toast: { success: h.success, error: h.error } }));
-const device = vi.hoisted(() => ({ ios: false, standalone: false }));
+const device = vi.hoisted(() => ({ ios: false, standalone: false, inApp: false }));
 vi.mock("@/lib/platform", () => ({
   isIOS: () => device.ios,
   isStandalone: () => device.standalone,
+  isInAppBrowser: () => device.inApp,
 }));
 
 import { PushNudge } from "@/components/notifications/push-nudge";
@@ -70,6 +71,7 @@ beforeEach(() => {
   h.enable.mockResolvedValue({ ok: true });
   device.ios = false;
   device.standalone = false;
+  device.inApp = false;
 });
 afterEach(() => {
   vi.useRealTimers();
@@ -201,6 +203,21 @@ describe("PushNudge", () => {
       mount();
       await elapse();
       expect(screen.queryByTestId("push-install-nudge")).toBeNull();
+    });
+
+    // Most links in Thailand are opened from a LINE chat, whose in-app browser has
+    // no "Add to Home Screen" — the steps must start by getting to Safari.
+    it("opened inside LINE / Facebook, says to open it in Safari first", async () => {
+      device.inApp = true;
+      mount();
+      await elapse();
+      expect(screen.getByTestId("push-install-nudge")).toHaveTextContent("เปิดใน Safari");
+    });
+
+    it("in Safari itself, does not tell anyone to open Safari", async () => {
+      mount();
+      await elapse();
+      expect(screen.getByTestId("push-install-nudge")).not.toHaveTextContent("เปิดใน Safari");
     });
 
     it("says nothing about installing once it IS the installed app", async () => {

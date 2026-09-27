@@ -216,13 +216,18 @@ describe("cloneEvent — moving the day to a new stage time", () => {
 });
 
 describe("stageAnchorSeconds / shiftClock", () => {
-  it("measures from the EARLIEST stage row on a two-stage day, before the show start", () => {
+  it("measures from the show start — the time the dialog shows as เดิม", () => {
+    // stage row 13:00, show start 13:05: typing 17:35 must put the show at 17:35
+    const rows = [{ kind: "stage", start_time: "13:00:00" }];
+    expect(stageAnchorSeconds(rows, { show_start_time: "13:05:00" })).toBe(13 * 3600 + 5 * 60);
+  });
+
+  it("with no show start, falls back to the EARLIEST stage row of a two-stage day", () => {
     const rows = [
       { kind: "stage", start_time: "17:40:00" },
       { kind: "stage", start_time: "14:00:00" },
     ];
-    expect(stageAnchorSeconds(rows, { show_start_time: "09:00:00" })).toBe(14 * 3600);
-    expect(stageAnchorSeconds([], { show_start_time: "09:00:00" })).toBe(9 * 3600);
+    expect(stageAnchorSeconds(rows, { show_start_time: null })).toBe(14 * 3600);
     expect(stageAnchorSeconds([], { show_start_time: null })).toBeNull();
   });
 
