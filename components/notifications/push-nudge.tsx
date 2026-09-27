@@ -1,10 +1,11 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { BellRing, X } from "lucide-react";
+import { BellRing, Share, X } from "lucide-react";
 import { toast } from "sonner";
 import { createClient } from "@/lib/supabase/client";
 import { isLiveShowActive } from "@/lib/live-guard";
+import { isIOS, isStandalone } from "@/lib/platform";
 import { enablePush, pushAvailability } from "@/lib/push-subscribe";
 import { Button } from "@/components/ui/button";
 
@@ -42,6 +43,23 @@ import { Button } from "@/components/ui/button";
  */
 
 const DISMISS_KEY = "cueiq:push-nudge-dismissed";
+/**
+ * The iPhone/iPad variant: SEPARATE memory, because it is a different question.
+ *
+ * Measured 2026-09-28, four weeks after this nudge shipped: still one push
+ * subscription in the whole label, and it is พี่'s. The two people who actually
+ * use the app every week (seishin-ar, seishin-mem) had none. Their feedback comes
+ * from WebKit — and Safari on an iPhone or iPad has no PushManager at all in an
+ * ordinary tab; push exists only in an app opened from the home-screen icon. So
+ * availability came back "unsupported" and the nudge stayed silent, exactly on the
+ * devices the bands use. The one sentence saying "install it first" was inside
+ * the bell dropdown — the hiding place this whole component was written to end.
+ *
+ * So on iOS, in a tab, it now says how. Once installed, the home-screen app has
+ * its own storage (iOS keeps it apart from Safari's), so the push question is
+ * asked there fresh — by the variant above.
+ */
+const INSTALL_DISMISS_KEY = "cueiq:push-install-nudge-dismissed";
 /** Long enough that the page has settled and the user has chosen what they came to
  *  do; short enough to still be in the same visit. */
 const DELAY_MS = 8000;
@@ -50,16 +68,16 @@ const DELAY_MS = 8000;
  *  windows, and the Electron renderer where this never runs anyway). A storage
  *  failure must leave the nudge SILENT, not stuck on: an un-dismissable banner is
  *  worse than a missing one. */
-function wasDismissed(): boolean {
+function wasDismissed(key = DISMISS_KEY): boolean {
   try {
-    return localStorage.getItem(DISMISS_KEY) === "1";
+    return localStorage.getItem(key) === "1";
   } catch {
     return true;
   }
 }
-function rememberDismissed(): void {
+function rememberDismissed(key = DISMISS_KEY): void {
   try {
-    localStorage.setItem(DISMISS_KEY, "1");
+    localStorage.setItem(key, "1");
   } catch {
     // Nothing to do — the banner is closing either way, and re-asking next visit
     // on a device that cannot remember is the lesser harm.
@@ -73,19 +91,28 @@ export function PushNudge({
   userId: string;
   tenantId: string | null;
 }) {
-  const [show, setShow] = useState(false);
+  // "push": ask to switch push on. "install": this is an iPhone/iPad browser tab,
+  // where push cannot exist until the app is opened from the home screen — say how.
+  const [mode, setMode] = useState<"push" | "install" | null>(null);
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
-    if (!userId || wasDismissed()) return;
+    if (!userId) return;
+    const askPush = !wasDismissed(DISMISS_KEY);
+    // Decided up front, so a device that has already answered both never even
+    // asks the browser what it supports.
+    const askInstall = !wasDismissed(INSTALL_DISMISS_KEY) && isIOS() && !isStandalone();
+    if (!askPush && !askInstall) return;
     let alive = true;
     const timer = setTimeout(() => {
       void (async () => {
         // Re-checked HERE rather than at mount: a show can start during the delay,
         // and the whole point is that this never appears over a running set.
         if (!alive || isLiveShowActive()) return;
-        if ((await pushAvailability()) !== "available") return;
-        if (alive && !isLiveShowActive()) setShow(true);
+        const availability = await pushAvailability();
+        if (!alive || isLiveShowActive()) return;
+        if (availability === "available" && askPush) setMode("push");
+        else if (availability === "unsupported" && askInstall) setMode("install");
       })();
     }, DELAY_MS);
     return () => {
@@ -95,9 +122,9 @@ export function PushNudge({
   }, [userId]);
 
   const dismiss = useCallback(() => {
-    rememberDismissed();
-    setShow(false);
-  }, []);
+    rememberDismissed(mode === "install" ? INSTALL_DISMISS_KEY : DISMISS_KEY);
+    setMode(null);
+  }, [mode]);
 
   async function accept() {
     setBusy(true);
@@ -124,7 +151,51 @@ export function PushNudge({
     }
   }
 
-  if (!show) return null;
+  if (!mode) return null;
+
+  if (mode === "install") {
+    return (
+      <div
+        data-testid="push-install-nudge"
+        role="region"
+        aria-label="วิธีเปิดแจ้งเตือนบน iPhone/iPad"
+        className="no-print fixed inset-x-2 bottom-2 z-50 mx-auto max-w-md rounded-lg border bg-card p-3 shadow-lg sm:inset-x-auto sm:right-4 sm:mx-0"
+      >
+        <div className="flex items-start gap-3">
+          <BellRing className="mt-0.5 h-5 w-5 shrink-0 text-primary" />
+          <div className="min-w-0 flex-1">
+            <p className="text-sm font-medium">อยากให้แจ้งเตือนเด้งบนเครื่องนี้ไหมครับ</p>
+            <p className="mt-0.5 text-xs text-muted-foreground">
+              บน iPhone / iPad แจ้งเตือนเด้งได้เฉพาะตอนเปิด CueIQ จากไอคอนบนหน้าจอโฮม:
+            </p>
+            <ol className="mt-1.5 list-decimal space-y-0.5 pl-4 text-xs">
+              <li>
+                กดปุ่มแชร์{" "}
+                <Share className="inline h-3.5 w-3.5 -translate-y-px" aria-label="แชร์" />{" "}
+                (สี่เหลี่ยมมีลูกศรชี้ขึ้น)
+              </li>
+              <li>เลือก “เพิ่มไปยังหน้าจอโฮม”</li>
+              <li>เปิด CueIQ จากไอคอนนั้น เข้าสู่ระบบอีกครั้ง แล้วแอปจะถามเรื่องแจ้งเตือนเอง</li>
+            </ol>
+            <div className="mt-2">
+              <Button size="sm" variant="ghost" onClick={dismiss}>
+                เข้าใจแล้ว
+              </Button>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={dismiss}
+            title="ปิด"
+            aria-label="ปิด"
+            className="shrink-0 rounded-md p-1 text-muted-foreground hover:bg-muted"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div

@@ -27,6 +27,11 @@ vi.mock("@/lib/push-subscribe", () => ({
 }));
 vi.mock("@/lib/supabase/client", () => ({ createClient: () => ({}) }));
 vi.mock("sonner", () => ({ toast: { success: h.success, error: h.error } }));
+const device = vi.hoisted(() => ({ ios: false, standalone: false }));
+vi.mock("@/lib/platform", () => ({
+  isIOS: () => device.ios,
+  isStandalone: () => device.standalone,
+}));
 
 import { PushNudge } from "@/components/notifications/push-nudge";
 
@@ -63,6 +68,8 @@ beforeEach(() => {
   setLiveShowActive(false);
   h.availability.mockResolvedValue("available");
   h.enable.mockResolvedValue({ ok: true });
+  device.ios = false;
+  device.standalone = false;
 });
 afterEach(() => {
   vi.useRealTimers();
@@ -159,6 +166,56 @@ describe("PushNudge", () => {
     expect(h.error).toHaveBeenCalled();
     expect(screen.queryByTestId("push-nudge")).toBeNull();
     expect(localStorage.getItem(DISMISS_KEY)).toBe("1");
+  });
+
+  // THE CASE THAT KEPT PUSH AT ONE SUBSCRIPTION. Safari on an iPhone/iPad has no
+  // PushManager in a tab, so availability is "unsupported" and the nudge used to
+  // stay silent on exactly the devices the bands use. Measured 2026-09-28: the
+  // two weekly users had never subscribed, four weeks after the nudge shipped.
+  describe("on an iPhone / iPad", () => {
+    const INSTALL_KEY = "cueiq:push-install-nudge-dismissed";
+    beforeEach(() => {
+      device.ios = true;
+      h.availability.mockResolvedValue("unsupported");
+    });
+
+    it("in a browser tab, says how to get push instead of staying silent", async () => {
+      mount();
+      await elapse();
+      const nudge = screen.getByTestId("push-install-nudge");
+      expect(nudge).toHaveTextContent("เพิ่มไปยังหน้าจอโฮม");
+      expect(screen.queryByTestId("push-nudge")).toBeNull();
+    });
+
+    it("เข้าใจแล้ว is remembered on its own key, so the push question is still asked once installed", async () => {
+      mount();
+      await elapse();
+      fireEvent.click(screen.getByText("เข้าใจแล้ว"));
+      expect(screen.queryByTestId("push-install-nudge")).toBeNull();
+      expect(localStorage.getItem(INSTALL_KEY)).toBe("1");
+      expect(localStorage.getItem(DISMISS_KEY)).toBeNull();
+    });
+
+    it("is not repeated on a device that already read it", async () => {
+      localStorage.setItem(INSTALL_KEY, "1");
+      mount();
+      await elapse();
+      expect(screen.queryByTestId("push-install-nudge")).toBeNull();
+    });
+
+    it("says nothing about installing once it IS the installed app", async () => {
+      device.standalone = true;
+      mount();
+      await elapse();
+      expect(screen.queryByTestId("push-install-nudge")).toBeNull();
+    });
+
+    it("never appears over a running show either", async () => {
+      setLiveShowActive(true);
+      mount();
+      await elapse();
+      expect(screen.queryByTestId("push-install-nudge")).toBeNull();
+    });
   });
 
   // A private window throws on localStorage. Silent is the safe direction: a
