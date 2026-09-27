@@ -47,6 +47,8 @@ import {
 } from "@/components/ui/dialog";
 import { BreakTimer } from "@/components/practice/break-timer";
 import { Metronome } from "@/components/practice/metronome";
+import { SetlistRunCard } from "@/components/practice/setlist-run-card";
+import type { QueueEntry } from "@/lib/practice-setlist";
 import { cn } from "@/lib/utils";
 import { MARKER_PRESETS, type Song, type SongMarker, type PracticeSong } from "@/lib/types";
 
@@ -100,6 +102,7 @@ function mmss(sec: number) {
  */
 export function PracticePlayer({
   eventId,
+  groupId,
   currentUserId,
   songs,
   items,
@@ -111,6 +114,7 @@ export function PracticePlayer({
   onRunLogged,
 }: {
   eventId: string;
+  groupId: string; // the band — "ซ้อมตามเซ็ตลิสต์" lists this band's shows
   currentUserId: string;
   songs: Song[]; // the band's full library — the pool the "add song" picker offers
   // The practice list lives in PracticeMode (the parent) so it SURVIVES a tab switch
@@ -204,6 +208,13 @@ export function PracticePlayer({
   });
   loopRef.current = { a: loopA, b: loopB, on: loopOn };
 
+  // "ซ้อมตามเซ็ตลิสต์": the queue being played through, and where in it we are.
+  // While set, a song reaching its end starts the next one (see onEndedRef).
+  const [run, setRun] = useState<{ showId: string; queue: QueueEntry[]; pos: number } | null>(
+    null
+  );
+  const onEndedRef = useRef<() => void>(() => {});
+
   const current = currentId ? songsById.get(currentId) ?? null : null;
   const curMarkers = useMemo(
     () =>
@@ -270,6 +281,8 @@ export function PracticePlayer({
       }
     };
     engine.onPreparing = (p) => setPreparing(p);
+    // Through a ref: this effect runs once, and the run it must advance is state.
+    engine.onEnded = () => onEndedRef.current();
     // The engine couldn't decode this song for slow-down and dropped back to 1×
     // native playback — follow it with the speed buttons so the UI isn't lying.
     engine.onStretchFailed = () => {
@@ -317,16 +330,18 @@ export function PracticePlayer({
   // the song the user picked LAST (nor zero its run accounting).
   const selectTokenRef = useRef(0);
 
-  async function selectSong(song: Song) {
+  async function selectSong(song: Song, opts?: { fromRun?: boolean }) {
     const engine = engineRef.current;
     // A song with no online master is still playable when THIS device holds the
     // file (⭐#1 step 7) — the local-source read below is the one that finds it.
     if (!engine || !(song.audio_path || localSongIds.has(song.id))) return;
     engine.unlock(); // sync, inside the tap — unlocks audio on iOS Safari
     if (song.id === currentId) {
-      engine.toggle();
+      engine.toggle(); // pausing mid-set is not leaving the set
       return;
     }
+    // Picking some other song by hand leaves the setlist run behind.
+    if (!opts?.fromRun) setRun(null);
     const token = ++selectTokenRef.current;
     flushRun(); // finalize the previous song's practice time
     setLoadingId(song.id);
@@ -369,6 +384,36 @@ export function PracticePlayer({
       if (token === selectTokenRef.current) setLoadingId(null);
     }
   }
+
+  /** Start (or jump within) a setlist run at `index`. */
+  function playFromRun(showId: string, queue: QueueEntry[], index: number) {
+    const entry = queue[index];
+    if (!entry) return;
+    setRun({ showId, queue, pos: index });
+    const engine = engineRef.current;
+    if (engine && entry.song.id === currentId) {
+      // already loaded — start it over rather than toggling it off
+      engine.unlock();
+      engine.seek(0);
+      void engine.play();
+      return;
+    }
+    void selectSong(entry.song, { fromRun: true });
+  }
+
+  // Re-pointed every render so the once-registered engine.onEnded always sees the
+  // current run and the current selectSong.
+  onEndedRef.current = () => {
+    if (!run) return;
+    const next = run.pos + 1;
+    if (next >= run.queue.length) {
+      setRun(null);
+      toast.success("ซ้อมครบทั้งเซ็ตแล้ว");
+      return;
+    }
+    setRun({ ...run, pos: next });
+    void selectSong(run.queue[next].song, { fromRun: true });
+  };
 
   function togglePlay() {
     const engine = engineRef.current;
@@ -808,6 +853,16 @@ export function PracticePlayer({
           </p>
         )}
       </div>
+
+      <SetlistRunCard
+        groupId={groupId}
+        songsById={songsById}
+        playable={playable}
+        running={run ? { showId: run.showId, index: run.pos } : null}
+        loadingSongId={loadingId}
+        onPlay={playFromRun}
+        onStop={() => setRun(null)}
+      />
 
       {/* Practice list — only the songs chosen for this room. Any band member
           curates it (add from library / take out) and plays. For a timed run-through

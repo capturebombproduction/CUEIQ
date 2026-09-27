@@ -124,6 +124,7 @@ export function PracticeMode({
         <TabsContent value="player" className="mt-4">
           <PracticePlayer
             eventId={eventId}
+            groupId={groupId}
             currentUserId={currentUserId}
             songs={songs}
             items={practiceItems}
