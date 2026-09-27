@@ -1270,18 +1270,52 @@ export function SetlistBuilder({
             </p>
           </div>
         </div>
-        {hardOutSec != null &&
-          (timing.isOver ? (
-            <Badge variant="destructive" className="gap-1 px-3 py-1.5 text-sm">
-              <AlarmClock className="h-4 w-4" /> เกิน Hard Out{" "}
-              {formatDuration(timing.overBy)}
-            </Badge>
-          ) : (
-            <Badge variant="success" className="gap-1 px-3 py-1.5 text-sm">
-              <CheckCircle2 className="h-4 w-4" /> อยู่ในเวลา · เหลือ{" "}
-              {formatDuration(Math.max(0, timing.hardOutSec! - timing.endSec))}
-            </Badge>
-          ))}
+        {hardOutSec != null && (
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            {timing.isOver ? (
+              <Badge variant="destructive" className="gap-1 px-3 py-1.5 text-sm">
+                <AlarmClock className="h-4 w-4" /> เกิน Hard Out{" "}
+                {formatDuration(timing.overBy)}
+              </Badge>
+            ) : (
+              <Badge variant="success" className="gap-1 px-3 py-1.5 text-sm">
+                <CheckCircle2 className="h-4 w-4" /> อยู่ในเวลา · เหลือ{" "}
+                {formatDuration(Math.max(0, timing.hardOutSec! - timing.endSec))}
+              </Badge>
+            )}
+            {/* The same "เวลาที่เหลือ" the last row has, put where the mismatch is
+                SHOWN. Measured 2026-09-28: in 10 of Seishin Kakumei's 25 shows the
+                closing row (ถ่ายรูป / MC) was filled to the second — so the button
+                is wanted — and in 12 the set ended 18–34 s short or over, almost
+                always a show copied from one that fitted and then had a song
+                swapped. The only button was down on the last row, often below the
+                fold of a long set, while the number saying "doesn't fit" is up here. */}
+            {(() => {
+              const lastIdx = items.length - 1;
+              const last = items[lastIdx];
+              const lastRow = timing.rows[lastIdx];
+              const off = Math.round(timing.hardOutSec! - timing.endSec) !== 0;
+              if (!last || !lastRow || !off || !editable || liveItemId === last.id) return null;
+              return (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() =>
+                    fillRemaining(last.id, lastRow.startSec, last.buffer_after_seconds)
+                  }
+                  title="ตั้งความยาวแถวสุดท้าย = เวลาที่เหลือจนถึง Hard Out"
+                  className="h-8 max-w-full gap-1 text-xs"
+                >
+                  <AlarmClock className="h-3.5 w-3.5 shrink-0" />
+                  <span className="truncate">
+                    ให้ “{last.title?.trim() || "แถวสุดท้าย"}” เติมให้พอดี
+                  </span>
+                </Button>
+              );
+            })()}
+          </div>
+        )}
       </div>
 
       {items.length === 0 && (
