@@ -485,7 +485,11 @@ export function EventsList({
           className="flex flex-wrap items-center gap-x-5 gap-y-3 rounded-xl border border-l-4 bg-card p-4 shadow-sm"
           style={nextShow.groups?.color ? { borderLeftColor: nextShow.groups.color } : undefined}
         >
-          <div className="min-w-0 flex-1">
+          {/* min-w, not min-w-0: with a zero floor this block was the only thing in
+              the row allowed to shrink, so on a phone it gave way before anything
+              wrapped — the name came out as "A…" and the label stacked one word
+              per line. At 14rem it takes a row of its own once space runs out. */}
+          <div className="min-w-[14rem] flex-1">
             <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
               งานถัดไป
             </div>
@@ -503,7 +507,7 @@ export function EventsList({
               {countdownLabel(daysUntil(nextShow.event_date))}
             </div>
           </div>
-          <div className="flex shrink-0 gap-2">
+          <div className="ml-auto flex shrink-0 gap-2">
             <Link
               href={`/events/${nextShow.id}`}
               className="rounded-md border px-3 py-1.5 text-sm font-medium transition hover:bg-muted"
