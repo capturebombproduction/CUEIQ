@@ -8,6 +8,7 @@ import {
   ExternalLink,
 } from "lucide-react";
 import { PrintButton } from "@/components/print-button";
+import { LineupHeadline } from "@/components/event/lineup-headline";
 import { BandSkin } from "@/components/band-skin";
 import { createClient } from "@/lib/supabase/server";
 import { cn } from "@/lib/utils";
@@ -306,11 +307,7 @@ export default async function SharePage({ params }: { params: Promise<{ token: s
               as the in-app summary: the ones not on this show are struck out.
               An empty lineup means it was never chosen, so everyone shows —
               which is also what an old payload (pre-0039) falls back to. */}
-          {lineup.length > 0 && (
-            <p className="text-xs text-muted-foreground">
-              มางานนี้ {lineup.length}/{members.length} คน
-            </p>
-          )}
+          <LineupHeadline members={members} lineup={lineup} />
           <div className="flex flex-wrap gap-2">
             {members.map((m) => {
               const present = lineup.length === 0 || lineup.includes(m.id);

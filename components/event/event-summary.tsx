@@ -48,6 +48,7 @@ import {
 import { captureElementToImage } from "@/lib/export-image";
 import { type CompletenessResult } from "@/lib/completeness";
 import { EventRunStatusCard } from "@/components/event/event-run-status";
+import { LineupHeadline } from "@/components/event/lineup-headline";
 import { type RunSeqLive } from "@/components/event/event-live-caller";
 
 function fmtDate(date: string | null): string {
@@ -567,13 +568,14 @@ export function EventSummary({
           )}
         </Section>
 
-        {members.length > 0 && !isCapturing && (
-          <Section title="Members & Mics">
-            {lineup.length > 0 && (
-              <p className="mb-1.5 text-xs text-muted-foreground">
-                มางานนี้ {lineup.length}/{members.length} คน
-              </p>
-            )}
+        {/* Captured too. It was left out of the JPG (16c3570) back when it was only
+            the band's member list, two days before the per-event lineup moved into
+            it — so the image never said who was coming, while the app did. */}
+        {members.length > 0 && (
+          <Section title="Lineup & Mics">
+            <div className="mb-1.5">
+              <LineupHeadline members={members} lineup={lineup} />
+            </div>
             <div className="flex flex-wrap gap-1.5">
               {members.map((m) => {
                 const present = lineup.length === 0 || lineup.includes(m.id);
