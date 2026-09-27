@@ -18,6 +18,29 @@ import {
   type SetlistItem,
   type ScheduleKind,
 } from "@/lib/types";
+import { lineupStatus } from "@/lib/lineup";
+
+/**
+ * Does everyone on this show have a mic of their own?
+ *
+ * Measured 2026-09-28: every Seishin Kakumei draft since mid-July had EVERY
+ * required field except "ตำแหน่งไมค์" — the band stopped filling per-song mics once
+ * each member had a standing mic number (all 7 do), which is what the run sheet,
+ * the JPG and the Excel export already print. So the gate demanded something the
+ * rest of the app had stopped needing, and no show of theirs was auto-sent for
+ * approval for two and a half months. พี่ decided the member numbers count.
+ *
+ * Performers = the chosen lineup, or the whole band when none is chosen (the
+ * same rule every sheet uses — lib/lineup.ts). Anyone without a number means the
+ * mic plan is genuinely unknown, so it does not count; nor does an empty band.
+ */
+export function performersHaveMics(
+  members: { id: string; mic_number: number | null }[],
+  lineup: string[]
+): boolean {
+  const { present } = lineupStatus(members, lineup);
+  return present.length > 0 && present.every((m) => m.mic_number != null);
+}
 
 export interface MissingItem {
   key: string;
@@ -67,6 +90,9 @@ export function eventCompleteness(args: {
   // granular. Without this the gate nagged "ขาด Mic Map" even after a band assigned
   // every song's mics in the setlist (the two were never linked).
   hasSongMics?: boolean;
+  // …and so does every performer having a mic number of their OWN (members.
+  // mic_number) — see performersHaveMics below for why this was the whole story.
+  memberMics?: boolean;
 }): CompletenessResult {
   const { event, schedule, setlist, micCount } = args;
   const modules = EVENT_TYPES[event.event_type]?.modules ?? EVENT_TYPES.idol.modules;
@@ -142,8 +168,11 @@ export function eventCompleteness(args: {
       label: `เพลงใน Setlist ที่ยังไม่ได้ใส่ชื่อ (${untitled} แถว)`,
     });
 
-  if (modules.micMap && micCount < 1 && !args.hasSongMics)
-    missing.push({ key: "mic", label: "ตำแหน่งไมค์ (Mic Map หรือไมค์ในเพลง)" });
+  if (modules.micMap && micCount < 1 && !args.hasSongMics && !args.memberMics)
+    missing.push({
+      key: "mic",
+      label: "ตำแหน่งไมค์ (Mic Map, ไมค์ในเพลง หรือเลขไมค์ประจำตัวสมาชิก)",
+    });
   if (modules.costume && !filled(event.costume_theme))
     missing.push({ key: "costume", label: "ธีมการแต่งกาย (Costume)" });
 

@@ -1,5 +1,26 @@
 import { describe, expect, it } from "vitest";
-import { eventCompleteness } from "./completeness";
+import { eventCompleteness, performersHaveMics } from "./completeness";
+
+describe("performersHaveMics", () => {
+  const band = [
+    { id: "yuki", mic_number: 1 },
+    { id: "cherrie", mic_number: 2 },
+    { id: "guest", mic_number: null },
+  ];
+  it("is true when everyone on THIS show has a number, even if someone off it has none", () => {
+    expect(performersHaveMics(band, ["yuki", "cherrie"])).toBe(true);
+  });
+  it("is false when a performer has no number — the mic plan is genuinely unknown", () => {
+    expect(performersHaveMics(band, ["yuki", "guest"])).toBe(false);
+  });
+  it("with no lineup chosen it asks the whole band, like every sheet does", () => {
+    expect(performersHaveMics(band, [])).toBe(false);
+    expect(performersHaveMics(band.slice(0, 2), [])).toBe(true);
+  });
+  it("a band with no members has no mic plan", () => {
+    expect(performersHaveMics([], [])).toBe(false);
+  });
+});
 
 // Derive the exact arg shape from the function so fixtures can't drift from it.
 type Args = Parameters<typeof eventCompleteness>[0];
@@ -105,6 +126,17 @@ describe("setlist + mic + costume", () => {
     a.micCount = 0;
     a.hasSongMics = true;
     expect(keys(a)).not.toContain("mic");
+  });
+  // 2026-09-28: every Seishin Kakumei draft since mid-July was complete except
+  // for this — its 7 members all have standing mic numbers, which every sheet
+  // already prints. พี่ decided they count.
+  it("members' own mic numbers ALSO satisfy the mic gate", () => {
+    const a = completeIdol();
+    a.micCount = 0;
+    a.hasSongMics = false;
+    a.memberMics = true;
+    expect(keys(a)).not.toContain("mic");
+    expect(eventCompleteness(a).complete).toBe(true);
   });
   it("flags a missing costume theme for idol", () => {
     const a = completeIdol();

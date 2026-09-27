@@ -16,7 +16,11 @@ import {
   type OverviewEvent,
   type OverviewBand,
 } from "@/components/overview/overview-client";
-import { eventCompleteness, type CompletenessSetlistItem } from "@/lib/completeness";
+import {
+  eventCompleteness,
+  performersHaveMics,
+  type CompletenessSetlistItem,
+} from "@/lib/completeness";
 import { assertReadsSucceeded } from "@/lib/read-guard";
 import {
   type EventRow,
@@ -255,7 +259,7 @@ export default async function OverviewPage() {
     return failed ?? { data: parts.flatMap((p) => p.data ?? []), error: null };
   };
 
-  const [schedRes, slRes, roRes, micRes] = await Promise.all([
+  const [schedRes, slRes, roRes, micRes, lineupRes] = await Promise.all([
     readForEvents<SchedRow>("schedule_items", eventIds, (ids, from, to) =>
       supabase
         .from("schedule_items")
@@ -289,6 +293,20 @@ export default async function OverviewPage() {
         .order("id", { ascending: true })
         .range(from, to)
     ),
+    // Lineups — with the members' own mic numbers, these are the mic plan most
+    // shows actually have (lib/completeness.ts performersHaveMics).
+    readForEvents<{ event_id: string; member_id: string }>(
+      "event_members",
+      eventIds,
+      (ids, from, to) =>
+        supabase
+          .from("event_members")
+          .select("event_id, member_id", { count: "exact" })
+          .eq("tenant_id", tid)
+          .in("event_id", ids)
+          .order("id", { ascending: true })
+          .range(from, to)
+    ),
   ]);
 
   // Same rule for the per-event phase, and this is where it bites hardest. A failed
@@ -302,6 +320,7 @@ export default async function OverviewPage() {
     "เซ็ตลิสต์": slRes,
     "ลำดับคิวงาน": roRes,
     "ผังไมค์": micRes,
+    "รายชื่อคนมา": lineupRes,
   });
 
   // Types only — see the note on the first guard above.
@@ -340,6 +359,14 @@ export default async function OverviewPage() {
   // source of truth eventCompleteness() so the Overview agrees with the event Summary.
   const micByEvent = new Map<string, number>();
   for (const m of micRows) micByEvent.set(m.event_id, (micByEvent.get(m.event_id) ?? 0) + 1);
+  const lineupByEvent = new Map<string, string[]>();
+  for (const r of (lineupRes.data ?? []) as { event_id: string; member_id: string }[]) {
+    lineupByEvent.set(r.event_id, [...(lineupByEvent.get(r.event_id) ?? []), r.member_id]);
+  }
+  const membersByGroup = new Map<string, Member[]>();
+  for (const m of members) {
+    membersByGroup.set(m.group_id, [...(membersByGroup.get(m.group_id) ?? []), m]);
+  }
   // `title` is OPTIONAL here and stays that way all the way into eventCompleteness.
   // Do NOT put a `?? ""` back on the push below. lib/completeness.ts:118-121 makes
   // `title: undefined` load-bearing — it means "the caller did not tell us", which
@@ -383,6 +410,10 @@ export default async function OverviewPage() {
       })) as CompletenessSetlistItem[],
       micCount: micByEvent.get(e.id) ?? 0,
       hasSongMics: songMicByEvent.get(e.id) ?? false,
+      memberMics: performersHaveMics(
+        membersByGroup.get(e.group_id) ?? [],
+        lineupByEvent.get(e.id) ?? []
+      ),
     });
 
   const groupById = new Map(viewableGroups.map((g) => [g.id, g]));

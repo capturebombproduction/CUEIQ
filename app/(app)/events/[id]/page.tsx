@@ -13,7 +13,7 @@ import { getEventBundle, getWorkspace } from "@/lib/queries";
 import { canEditGroup, canViewGroup, canApprove } from "@/lib/permissions";
 import { createClient } from "@/lib/supabase/server";
 import { assertReadsSucceeded } from "@/lib/read-guard";
-import { eventCompleteness } from "@/lib/completeness";
+import { eventCompleteness, performersHaveMics } from "@/lib/completeness";
 import { EVENT_TYPES, type EventType, type GroupStatus } from "@/lib/types";
 import { shortClock, deadlineInfo } from "@/lib/time";
 import { cn } from "@/lib/utils";
@@ -71,6 +71,7 @@ export default async function EventPage({
     setlist: bundle.setlist,
     micCount: bundle.micMap.length,
     hasSongMics: bundle.setlist.some((s) => (s.mic_slots?.length ?? 0) > 0),
+    memberMics: performersHaveMics(bundle.members, bundle.lineup),
   });
 
   // Editing is NOT gated by approval — whoever may edit the band (admin / Ar) can

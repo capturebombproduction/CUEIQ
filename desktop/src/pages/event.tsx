@@ -16,7 +16,7 @@ import { EventCopyrightPanel } from "@/components/event/event-copyright-panel";
 import type { RunSeqLive } from "@/components/event/event-live-caller";
 import { createClient } from "@/lib/supabase/client";
 import { canApprove, canEditGroup, canViewGroup } from "@/lib/permissions";
-import { eventCompleteness } from "@/lib/completeness";
+import { eventCompleteness, performersHaveMics } from "@/lib/completeness";
 import { EVENT_TYPES, type EventType, type GroupStatus } from "@/lib/types";
 import { shortClock, deadlineInfo } from "@/lib/time";
 import { cn } from "@/lib/utils";
@@ -257,6 +257,7 @@ export function EventPage() {
     setlist: bundle.setlist,
     micCount: bundle.micMap.length,
     hasSongMics: bundle.setlist.some((s) => (s.mic_slots?.length ?? 0) > 0),
+    memberMics: performersHaveMics(bundle.members, bundle.lineup),
   });
   const canEdit = !!ws && canEditGroup(ws.perms, event.group_id);
   // Editing is not gated by approval — edit any time, any status (approval is just a

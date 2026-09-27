@@ -12,6 +12,7 @@ import { ShareButton } from "@/components/event/share-button";
 import { EventSummary } from "@/components/event/event-summary";
 import { useLeaveGuard } from "@/components/event/use-leave-guard";
 import { commitFocusedField, unsavedWork } from "@/lib/dirty-guard";
+import { bkkTodayKey } from "@/lib/time";
 import { type RunSeqLive } from "@/components/event/event-live-caller";
 
 // The per-tab editors are heavy (SetlistBuilder alone is ~700 lines) and aren't
@@ -151,7 +152,18 @@ export function EventWorkspace({
     // there however complete it got, and never reached an approver. (One real
     // production event has been sitting in it.) It means the same thing draft does
     // — being worked on — so it advances the same way, and self-heals on open.
-    if ((status === "draft" || status === "in_progress") && completeness.complete)
+    // …but never for a show that has already happened. When members' own mic
+    // numbers started counting (2026-09-28) every one of Seishin Kakumei's past
+    // drafts became "complete" at once, and this effect runs whenever an editor
+    // merely OPENS a show — so browsing last month would have sent twenty
+    // approval requests for shows nobody can approve any more, and pinged the
+    // approvers for each. An approval is a question about a show still to come.
+    const alreadyHappened = !!event.event_date && event.event_date < bkkTodayKey();
+    if (
+      (status === "draft" || status === "in_progress") &&
+      completeness.complete &&
+      !alreadyHappened
+    )
       next = "pending_review";
     else if (status === "pending_review" && !completeness.complete) next = "draft";
     if (!next) return;
@@ -181,7 +193,15 @@ export function EventWorkspace({
       if (target === "pending_review") notify("event_submitted", { eventId });
       router.refresh();
     })();
-  }, [editable, status, completeness.complete, eventId, router, event.is_template]);
+  }, [
+    editable,
+    status,
+    completeness.complete,
+    eventId,
+    router,
+    event.is_template,
+    event.event_date,
+  ]);
   // remember the tab in the URL so a reload returns here (not back to Summary).
   // Web: the route is a real path, so the hash is a free slot (#setlist).
   // Desktop (HashRouter): the WHOLE route lives in the hash (#/events/<id>) —

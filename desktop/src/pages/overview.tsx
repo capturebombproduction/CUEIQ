@@ -20,7 +20,11 @@ import {
   type StaffContact,
   type ScheduleItem,
 } from "@/lib/types";
-import { eventCompleteness, type CompletenessSetlistItem } from "@/lib/completeness";
+import {
+  eventCompleteness,
+  performersHaveMics,
+  type CompletenessSetlistItem,
+} from "@/lib/completeness";
 import {
   OverviewClient,
   type OverviewEvent,
@@ -253,7 +257,7 @@ export function Overview() {
         return failed ?? { data: parts.flatMap((p) => p.data ?? []), error: null };
       };
 
-      const [schedRes, slRes, roRes, micRes] = await Promise.all([
+      const [schedRes, slRes, roRes, micRes, lineupRes] = await Promise.all([
         readForEvents<SchedRow>("schedule_items", eventIds, (evIds, from, to) =>
           sb
             .from("schedule_items")
@@ -284,11 +288,25 @@ export function Overview() {
             .order("id", { ascending: true })
             .range(from, to)
         ),
+        // Lineups — with the members' own mic numbers, the mic plan most shows
+        // actually have (lib/completeness.ts performersHaveMics). Same as the web.
+        readForEvents<{ event_id: string; member_id: string }>(
+          "event_members",
+          eventIds,
+          (evIds, from, to) =>
+            sb
+              .from("event_members")
+              .select("event_id, member_id", { count: "exact" })
+              .eq("tenant_id", tid)
+              .in("event_id", evIds)
+              .order("id", { ascending: true })
+              .range(from, to)
+        ),
       ]);
 
       // Same rule for the scoped child reads (a page that failed mid-way through
       // an event's schedule is exactly the silent-partial board this all guards).
-      if ([schedRes, slRes, roRes, micRes].some((r) => r.error)) {
+      if ([schedRes, slRes, roRes, micRes, lineupRes].some((r) => r.error)) {
         if (alive) setLoadError(true);
         return;
       }
@@ -325,6 +343,14 @@ export function Overview() {
       // desktop Overview agrees with the web Overview + the event Summary.
       const micByEvent = new Map<string, number>();
       for (const m of micRows) micByEvent.set(m.event_id, (micByEvent.get(m.event_id) ?? 0) + 1);
+      const lineupByEvent = new Map<string, string[]>();
+      for (const r of (lineupRes.data ?? []) as { event_id: string; member_id: string }[]) {
+        lineupByEvent.set(r.event_id, [...(lineupByEvent.get(r.event_id) ?? []), r.member_id]);
+      }
+      const membersByGroup = new Map<string, Member[]>();
+      for (const m of members) {
+        membersByGroup.set(m.group_id, [...(membersByGroup.get(m.group_id) ?? []), m]);
+      }
       // `title` is OPTIONAL and must stay optional — no `?? ""`. Mirrors
       // app/(app)/overview/page.tsx; the reasoning is written out there and in
       // lib/completeness.ts:118-121. Short version: `undefined` means "not told"
@@ -360,6 +386,10 @@ export function Overview() {
           })) as CompletenessSetlistItem[],
           micCount: micByEvent.get(e.id) ?? 0,
           hasSongMics: songMicByEvent.get(e.id) ?? false,
+          memberMics: performersHaveMics(
+            membersByGroup.get(e.group_id) ?? [],
+            lineupByEvent.get(e.id) ?? []
+          ),
         });
 
       const groupById = new Map(viewable.map((g) => [g.id, g]));

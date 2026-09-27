@@ -83,6 +83,8 @@ const READS = [
   "setlist_items",
   "run_sequence",
   "mic_assignments",
+  // lineups — members' own mic numbers count as the mic plan (2026-09-28)
+  "event_members",
 ];
 
 let supa: SupabaseFake;
@@ -98,6 +100,7 @@ beforeEach(() => {
       setlist_items: ok([]),
       run_sequence: ok([]),
       mic_assignments: ok([]),
+      event_members: ok([]),
     },
   });
   h.supa = supa;
@@ -132,7 +135,7 @@ describe("OverviewPage — a failed read is not a zero count", () => {
     });
   }
 
-  it("covers every table the page reads — a ninth read must fail this test", async () => {
+  it("covers every table the page reads — one more read must fail this test", async () => {
     await OverviewPage();
     const touched = Array.from(new Set(supa.calls.map((c) => c.table))).sort();
     expect(touched).toEqual([...READS].sort());
