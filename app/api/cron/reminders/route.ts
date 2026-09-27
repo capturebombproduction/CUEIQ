@@ -3,6 +3,7 @@ import { createAdminClient, hasServiceRole } from "@/lib/supabase/admin";
 import { pushToUsers } from "@/lib/notify-server";
 import { cronSecretMatches, reportCronFailure } from "@/lib/cron-report";
 import { approvalNagBody, approvalsNeedingNag } from "@/lib/approval-nag";
+import { expireSupersededDailyNotifications } from "@/lib/notification-expiry";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -68,6 +69,20 @@ async function runReminders(): Promise<Response> {
 
   let inserted = 0;
   let pushed = 0;
+
+  // 0) Yesterday's reminders are superseded by today's (or about something that
+  // is over) — stop them counting as unread, or the bell sits at "9+" for good and
+  // buries the rows that matter. See lib/notification-expiry.ts. Housekeeping
+  // must never cost the day's reminders, so a failure here is reported and passed.
+  let expired = 0;
+  try {
+    expired = await expireSupersededDailyNotifications(admin, {
+      before: dedupeSince,
+      now: now.toISOString(),
+    });
+  } catch (e) {
+    await reportCronFailure("reminders", e instanceof Error ? e.message : String(e));
+  }
 
   // Insert + push a reminder to recipients who haven't already gotten this one.
   async function fan(
@@ -210,5 +225,5 @@ async function runReminders(): Promise<Response> {
     }
   }
 
-  return NextResponse.json({ ok: true, inserted, pushed });
+  return NextResponse.json({ ok: true, inserted, pushed, expired });
 }
