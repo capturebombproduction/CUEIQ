@@ -5,67 +5,56 @@ import { useRouter } from "next/navigation";
 import { Copy, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { createClient } from "@/lib/supabase/client";
+import { cloneEvent } from "@/lib/clone-event";
+import { reportClone } from "@/components/event/clone-outcome";
 import { useConfirm } from "@/components/ui/confirm-dialog";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+  DialogFooter,
+} from "@/components/ui/dialog";
 
-// Idol groups run the same show repeatedly, so let an editor clone an event with
-// its schedule + setlist + mic map in one click. Audio files are NOT copied: a
-// setlist item's audio lives at an event-scoped Storage path, and sharing the path
-// across two events would mean deleting one show's file breaks the other.
+// Idol groups run the same show again and again — Seishin Kakumei enters about
+// two a week, and each one is the last one with the date, the name, a few times
+// and a couple of songs changed. So this is the most-used way a show gets made,
+// and it asks for the two things that ALWAYS change (name, date) up front instead
+// of opening a "… (สำเนา)" with no date that then has to be edited. Schedule,
+// setlist, mic map and lineup all come across (lib/clone-event.ts); audio bytes
+// never do.
 
-type Row = Record<string, unknown>;
-
-function childRows(rows: Row[] | null, drop: string[], eventId: string): Row[] {
-  return (rows ?? []).map((row) => {
-    const o: Row = { ...row };
-    for (const k of drop) delete o[k];
-    o.event_id = eventId;
-    return o;
-  });
-}
-
-export function DuplicateEventButton({ eventId }: { eventId: string }) {
+export function DuplicateEventButton({
+  eventId,
+  eventName,
+}: {
+  eventId: string;
+  eventName: string;
+}) {
   const router = useRouter();
   const confirm = useConfirm();
+  const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [name, setName] = useState("");
+  const [date, setDate] = useState("");
 
-  async function duplicate(e: React.MouseEvent) {
-    e.preventDefault(); // the card is a <Link> — don't navigate
-    e.stopPropagation();
+  async function duplicate() {
     if (busy) return;
-    // Duplicating writes a whole new event (plus its schedule, setlist and mics)
-    // and then navigates to it. That is too much to happen from one tap with no
-    // question asked — especially on a phone, where this button sits on top of a
-    // card people tap to open.
-    const ok = await confirm({
-      title: "ทำสำเนางานนี้?",
-      description:
-        "จะสร้างงานใหม่ชื่อ “… (สำเนา)” เป็นฉบับร่าง พร้อมคิว / เซ็ตลิสต์ / ไมค์ชุดเดียวกัน แล้วเปิดงานสำเนาให้เลย",
-      confirmText: "ทำสำเนา",
-    });
-    if (!ok) return;
     setBusy(true);
     const supabase = createClient();
+    const finalName = name.trim() || `${eventName} (สำเนา)`;
     try {
-      const { data: src, error: srcErr } = await supabase
-        .from("events")
-        .select("*")
-        .eq("id", eventId)
-        .single();
-      if (srcErr || !src) throw srcErr ?? new Error("ไม่พบงานต้นฉบับ");
-      const ev = src as Row;
-
-      const [sched, setl, mic] = await Promise.all([
-        supabase.from("schedule_items").select("*").eq("event_id", eventId),
-        supabase.from("setlist_items").select("*").eq("event_id", eventId),
-        supabase.from("mic_assignments").select("*").eq("event_id", eventId),
-      ]);
-
-      const { data: created, error: insErr } = await supabase
-        .from("events")
-        .insert({
+      const result = await cloneEvent(supabase, {
+        sourceId: eventId,
+        sourceLabel: "งานต้นฉบับ",
+        buildEvent: (ev) => ({
           tenant_id: ev.tenant_id,
           group_id: ev.group_id,
-          name: `${ev.name ?? "งาน"} (สำเนา)`,
+          name: finalName,
           event_type: ev.event_type,
           venue: ev.venue,
           show_start_time: ev.show_start_time,
@@ -74,33 +63,21 @@ export function DuplicateEventButton({ eventId }: { eventId: string }) {
           map_url: ev.map_url,
           costume_theme: ev.costume_theme,
           status: "draft",
-          event_date: null, // a new show sets its own date
-        })
-        .select("id")
-        .single();
-      if (insErr || !created) throw insErr ?? new Error("สร้างงานใหม่ไม่สำเร็จ");
-      const newId = created.id as string;
-
-      const children: [string, Row[]][] = [
-        ["schedule_items", childRows(sched.data as Row[] | null, ["id", "event_id"], newId)],
-        [
-          "setlist_items",
-          childRows(
-            setl.data as Row[] | null,
-            ["id", "event_id", "audio_path", "audio_name"],
-            newId
-          ),
-        ],
-        ["mic_assignments", childRows(mic.data as Row[] | null, ["id", "event_id", "created_at"], newId)],
-      ];
-      for (const [table, rows] of children) {
-        if (!rows.length) continue;
-        const { error } = await supabase.from(table).insert(rows);
-        if (error) throw error;
-      }
-
-      toast.success("ก๊อปงานเรียบร้อย — เปิดงานใหม่ให้แล้ว");
-      router.push(`/events/${newId}`);
+          event_date: date || null,
+        }),
+      });
+      const opened = await reportClone(result, {
+        name: finalName,
+        supabase,
+        confirm,
+        open: (id) => router.push(`/events/${id}`),
+        text: {
+          success: "ก๊อปงานเรียบร้อย — เปิดงานใหม่ให้แล้ว",
+          failed: "ก๊อปงานไม่สำเร็จ",
+          partial: "ก๊อปงานสำเร็จบางส่วน",
+        },
+      });
+      if (!opened) setBusy(false);
     } catch (err) {
       toast.error("ก๊อปงานไม่สำเร็จ", {
         description: err instanceof Error ? err.message : undefined,
@@ -110,18 +87,84 @@ export function DuplicateEventButton({ eventId }: { eventId: string }) {
   }
 
   return (
-    <button
-      onClick={duplicate}
-      disabled={busy}
-      title="ก๊อปงานนี้เป็นงานใหม่ (รวมคิว / เซ็ตลิสต์ / ไมค์ — ไม่รวมไฟล์เพลง)"
-      // Was `opacity-0 group-hover:opacity-100`: a touch device never hovers, so
-      // this control was permanently invisible on the iPads the bands use — and
-      // still tappable, sitting over the bottom-right corner of a card that is
-      // itself a link. Reveal-on-hover only where hover exists; everywhere else it
-      // is simply visible.
-      className="absolute bottom-2 right-2 z-10 flex h-9 w-9 items-center justify-center rounded-md border bg-background/80 text-muted-foreground shadow-sm backdrop-blur transition hover:text-primary focus:opacity-100 disabled:opacity-100 [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover:opacity-100"
-    >
-      {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Copy className="h-4 w-4" />}
-    </button>
+    <>
+      <button
+        onClick={(e) => {
+          e.preventDefault(); // the card is a <Link> — don't navigate
+          e.stopPropagation();
+          setOpen(true);
+        }}
+        disabled={busy}
+        aria-label={`ก๊อปงาน ${eventName} เป็นงานใหม่`}
+        title="ก๊อปงานนี้เป็นงานใหม่ (รวมคิว / เซ็ตลิสต์ / ไมค์ / รายชื่อคนมา — ไม่รวมไฟล์เพลง)"
+        // Was `opacity-0 group-hover:opacity-100`: a touch device never hovers, so
+        // this control was permanently invisible on the iPads the bands use — and
+        // still tappable, sitting over the bottom-right corner of a card that is
+        // itself a link. Reveal-on-hover only where hover exists; everywhere else it
+        // is simply visible.
+        className="absolute bottom-2 right-2 z-10 flex h-9 w-9 items-center justify-center rounded-md border bg-background/80 text-muted-foreground shadow-sm backdrop-blur transition hover:text-primary focus:opacity-100 disabled:opacity-100 [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover:opacity-100"
+      >
+        {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Copy className="h-4 w-4" />}
+      </button>
+      {/* The dialog renders in a portal, but React still bubbles its events up
+          THIS tree — through the card's <Link>. Without this, pressing anything in
+          the dialog (or its backdrop) would also open the show being copied. */}
+      <span className="contents" onClick={(e) => e.stopPropagation()}>
+        <Dialog open={open} onOpenChange={(o) => !busy && setOpen(o)}>
+          <DialogContent>
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                duplicate();
+              }}
+              className="space-y-4"
+            >
+              <DialogHeader>
+                <DialogTitle>ก๊อปงานนี้เป็นงานใหม่</DialogTitle>
+                <DialogDescription>
+                  คัดลอกคิว เซ็ตลิสต์ ผังไมค์ และรายชื่อคนมาจาก “{eventName}” เป็นงานใหม่
+                  (ฉบับร่าง) — ไม่รวมไฟล์เพลง
+                </DialogDescription>
+              </DialogHeader>
+              <div className="space-y-3">
+                <div className="space-y-1.5">
+                  <Label htmlFor={`dup-name-${eventId}`}>ชื่องานใหม่</Label>
+                  <Input
+                    id={`dup-name-${eventId}`}
+                    value={name}
+                    onChange={(e) => setName(e.target.value)}
+                    placeholder={`${eventName} (สำเนา)`}
+                    autoFocus
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor={`dup-date-${eventId}`}>วันที่งาน (เว้นว่างได้)</Label>
+                  <Input
+                    id={`dup-date-${eventId}`}
+                    type="date"
+                    value={date}
+                    onChange={(e) => setDate(e.target.value)}
+                  />
+                </div>
+              </div>
+              <DialogFooter>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => setOpen(false)}
+                  disabled={busy}
+                >
+                  ยกเลิก
+                </Button>
+                <Button type="submit" disabled={busy}>
+                  {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Copy className="h-4 w-4" />}
+                  ก๊อปงาน
+                </Button>
+              </DialogFooter>
+            </form>
+          </DialogContent>
+        </Dialog>
+      </span>
+    </>
   );
 }
