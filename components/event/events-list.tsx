@@ -14,6 +14,7 @@ import {
   HardDriveDownload,
   Loader2,
   DownloadCloud,
+  ChevronDown,
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { StatusBadge } from "@/components/status-badge";
@@ -35,7 +36,13 @@ import {
   type EventType,
   type GroupStatus,
 } from "@/lib/types";
-import { shortClock, deadlineInfo, formatDuration, bkkTodayKey } from "@/lib/time";
+import {
+  shortClock,
+  deadlineInfo,
+  formatDuration,
+  bkkTodayKey,
+  monthBeforeKey,
+} from "@/lib/time";
 import { cn } from "@/lib/utils";
 
 type EventWithGroup = EventRow & {
@@ -267,7 +274,7 @@ export function EventsList({
   // dashboard, where it stays fully featured.
   const native = typeof window !== "undefined" ? window.cueiqNative : undefined;
 
-  const { upcoming, past } = useMemo(() => {
+  const { upcoming, past, old } = useMemo(() => {
     const needle = q.trim().toLowerCase();
     const matched = needle
       ? items.filter((e) =>
@@ -295,10 +302,24 @@ export function EventsList({
           ? d
           : (b.show_start_time ?? "").localeCompare(a.show_start_time ?? "");
       });
-    return { upcoming: up, past: pa };
+    // "งานไหนเลยเกิน 1 เดือนไปแล้ว ลบทิ้งเลย รก" (พี่, 2026-09-28) — then, shown
+    // the cost (37 of 52 events, every approved show among them, setlists and
+    // run times with them), chose to fold them away rather than delete. Nothing
+    // leaves the database; they just stop filling the page.
+    const cutoff = monthBeforeKey(today);
+    return {
+      upcoming: up,
+      past: pa.filter((e) => e.event_date! >= cutoff),
+      old: pa.filter((e) => e.event_date! < cutoff),
+    };
   }, [items, q]);
 
-  const noResults = upcoming.length === 0 && past.length === 0;
+  const [oldOpen, setOldOpen] = useState(false);
+  // A search that matches only folded events must not read as "ไม่พบ" — the one
+  // way a hidden-by-default list goes wrong is by hiding the answer.
+  const showOld = oldOpen || q.trim() !== "";
+
+  const noResults = upcoming.length === 0 && past.length === 0 && old.length === 0;
   // soonest dated upcoming event (upcoming is already sorted soonest-first)
   const nextShow = !q.trim() ? upcoming.find((e) => !!e.event_date) : undefined;
 
@@ -571,6 +592,42 @@ export function EventsList({
                   />
                 ))}
               </div>
+            </section>
+          )}
+          {old.length > 0 && (
+            <section className="space-y-3">
+              {q.trim() ? (
+                <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+                  งานเก่า (เกิน 1 เดือน) · {old.length}
+                </h2>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => setOldOpen((v) => !v)}
+                  aria-expanded={showOld}
+                  className="flex w-full items-center justify-between gap-3 rounded-lg border bg-muted/40 px-4 py-3 text-left text-sm font-semibold text-muted-foreground transition-colors hover:bg-muted"
+                >
+                  <span>งานเก่า (เกิน 1 เดือน) · {old.length}</span>
+                  <span className="flex shrink-0 items-center gap-1 text-xs font-medium">
+                    {showOld ? "ซ่อน" : "กดดู"}
+                    <ChevronDown
+                      className={cn("h-4 w-4 transition-transform", showOld && "rotate-180")}
+                    />
+                  </span>
+                </button>
+              )}
+              {showOld && (
+                <div className="grid grid-cols-1 gap-4 opacity-80 sm:grid-cols-2 lg:grid-cols-3">
+                  {old.map((ev) => (
+                    <EventCard
+                      key={ev.id}
+                      ev={ev}
+                      editable={canEditEvent(ev)}
+                      onDeleted={handleDeleted}
+                    />
+                  ))}
+                </div>
+              )}
             </section>
           )}
         </>

@@ -212,3 +212,18 @@ export function bkkTodayKey(date = new Date()): string {
     date
   );
 }
+
+/**
+ * The same calendar day one month earlier, as "YYYY-MM-DD" — clamped to the end
+ * of a shorter month (03-31 → 02-28), never rolled forward into the next one the
+ * way `setMonth(m - 1)` does (03-31 → 03-03). String in, string out: hand it
+ * bkkTodayKey() and the cutoff is a Bangkok date, not a UTC one.
+ */
+export function monthBeforeKey(key: string): string {
+  const [y, m, d] = key.split("-").map(Number);
+  const py = m === 1 ? y - 1 : y;
+  const pm = m === 1 ? 12 : m - 1;
+  const daysInPm = new Date(Date.UTC(py, pm, 0)).getUTCDate();
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${py}-${pad(pm)}-${pad(Math.min(d, daysInPm))}`;
+}

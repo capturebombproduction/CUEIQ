@@ -5,6 +5,7 @@ import {
   formatClockOfDay,
   formatCountdown,
   formatDuration,
+  monthBeforeKey,
   pad2,
   parseClockToSeconds,
   parseDurationToSeconds,
@@ -208,5 +209,17 @@ describe("computeSetlistTimes — the run-sheet engine", () => {
     expect(over.isOver).toBe(true);
     expect(over.overBy).toBe(1);
     expect(over.rows[0].overHardOut).toBe(true);
+  });
+});
+
+describe("monthBeforeKey", () => {
+  it("steps back one calendar month", () => {
+    expect(monthBeforeKey("2026-09-28")).toBe("2026-08-28");
+    expect(monthBeforeKey("2026-01-15")).toBe("2025-12-15");
+  });
+  it("clamps to the end of a shorter month instead of rolling forward", () => {
+    expect(monthBeforeKey("2026-03-31")).toBe("2026-02-28");
+    expect(monthBeforeKey("2024-03-31")).toBe("2024-02-29");
+    expect(monthBeforeKey("2026-05-31")).toBe("2026-04-30");
   });
 });
