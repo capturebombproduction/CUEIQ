@@ -6,6 +6,7 @@ import { Copy, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { createClient } from "@/lib/supabase/client";
 import { cloneEvent } from "@/lib/clone-event";
+import { shortClock } from "@/lib/time";
 import { reportClone } from "@/components/event/clone-outcome";
 import { useConfirm } from "@/components/ui/confirm-dialog";
 import { Button } from "@/components/ui/button";
@@ -23,17 +24,27 @@ import {
 // Idol groups run the same show again and again — Seishin Kakumei enters about
 // two a week, and each one is the last one with the date, the name, a few times
 // and a couple of songs changed. So this is the most-used way a show gets made,
-// and it asks for the two things that ALWAYS change (name, date) up front instead
-// of opening a "… (สำเนา)" with no date that then has to be edited. Schedule,
+// and it asks for the things that ALWAYS change (name, date, and the stage time —
+// which moves the whole day with it, see lib/clone-event.ts) up front instead of
+// opening a "… (สำเนา)" with no date that then has to be edited. Schedule,
 // setlist, mic map and lineup all come across (lib/clone-event.ts); audio bytes
 // never do.
+
+/** "+2:00" / "−0:30" — how far the day moved, for the toast. */
+function fmtShift(sec: number): string {
+  const m = Math.abs(Math.round(sec / 60));
+  return `${sec < 0 ? "−" : "+"}${Math.floor(m / 60)}:${String(m % 60).padStart(2, "0")}`;
+}
 
 export function DuplicateEventButton({
   eventId,
   eventName,
+  showStartTime,
 }: {
   eventId: string;
   eventName: string;
+  /** The source's show start ("HH:MM:SS") — shown as "เดิม …" beside the new one. */
+  showStartTime?: string | null;
 }) {
   const router = useRouter();
   const confirm = useConfirm();
@@ -41,6 +52,7 @@ export function DuplicateEventButton({
   const [busy, setBusy] = useState(false);
   const [name, setName] = useState("");
   const [date, setDate] = useState("");
+  const [stageStart, setStageStart] = useState("");
 
   async function duplicate() {
     if (busy) return;
@@ -65,14 +77,21 @@ export function DuplicateEventButton({
           status: "draft",
           event_date: date || null,
         }),
+        stageStart: stageStart || undefined,
       });
+      const success =
+        result.shiftedBy === null
+          ? "ก๊อปงานเรียบร้อย — แต่งานต้นฉบับไม่มีเวลาขึ้นเวที เลยยังไม่ได้เลื่อนคิว"
+          : result.shiftedBy
+          ? `ก๊อปงานเรียบร้อย — เลื่อนคิวทั้งวัน ${fmtShift(result.shiftedBy)} แล้ว (เช็คเวลาบูธอีกที)`
+          : "ก๊อปงานเรียบร้อย — เปิดงานใหม่ให้แล้ว";
       const opened = await reportClone(result, {
         name: finalName,
         supabase,
         confirm,
         open: (id) => router.push(`/events/${id}`),
         text: {
-          success: "ก๊อปงานเรียบร้อย — เปิดงานใหม่ให้แล้ว",
+          success,
           failed: "ก๊อปงานไม่สำเร็จ",
           partial: "ก๊อปงานสำเร็จบางส่วน",
         },
@@ -145,6 +164,26 @@ export function DuplicateEventButton({
                     value={date}
                     onChange={(e) => setDate(e.target.value)}
                   />
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor={`dup-stage-${eventId}`}>
+                    เวลาขึ้นเวที (เว้นว่างได้)
+                    {showStartTime && (
+                      <span className="ml-1.5 font-normal text-muted-foreground">
+                        เดิม {shortClock(showStartTime)}
+                      </span>
+                    )}
+                  </Label>
+                  <Input
+                    id={`dup-stage-${eventId}`}
+                    type="time"
+                    value={stageStart}
+                    onChange={(e) => setStageStart(e.target.value)}
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    ใส่แล้วคิวทั้งวัน (ถึงสถานที่ / ห้องแต่งตัว / ถ่ายรูป / STB / บูธ) เลื่อนตามไปเท่ากัน
+                    — ส่วนบูธเช็คกับตารางผู้จัดอีกที
+                  </p>
                 </div>
               </div>
               <DialogFooter>

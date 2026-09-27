@@ -11,13 +11,24 @@ const push = vi.fn();
 vi.mock("next/navigation", () => ({ useRouter: () => ({ push, refresh: vi.fn() }) }));
 vi.mock("@/lib/supabase/client", () => ({ createClient: () => ({}) }));
 
-const calls = vi.hoisted(() => ({ built: [] as Record<string, unknown>[] }));
+const calls = vi.hoisted(() => ({
+  built: [] as Record<string, unknown>[],
+  stageStart: [] as (string | undefined)[],
+}));
 vi.mock("@/lib/clone-event", () => ({
-  cloneEvent: async (_s: unknown, o: { buildEvent: (r: Record<string, unknown>) => Record<string, unknown> }) => {
+  cloneEvent: async (
+    _s: unknown,
+    o: { buildEvent: (r: Record<string, unknown>) => Record<string, unknown>; stageStart?: string }
+  ) => {
     calls.built.push(o.buildEvent({ tenant_id: "t1", group_id: "g1", event_type: "idol" }));
-    return { newId: "new-1", failed: [], attempted: 4 };
+    calls.stageStart.push(o.stageStart);
+    // the real clone measures from the source's stage; 13:00 here
+    const shiftedBy = o.stageStart === "17:30" ? 4.5 * 3600 : 0;
+    return { newId: "new-1", failed: [], attempted: 4, shiftedBy };
   },
 }));
+const toastSuccess = vi.hoisted(() => vi.fn());
+vi.mock("sonner", () => ({ toast: { success: toastSuccess, error: vi.fn(), info: vi.fn() } }));
 
 import { DuplicateEventButton } from "./duplicate-event-button";
 
@@ -33,6 +44,8 @@ const mount = () =>
 
 beforeEach(() => {
   calls.built = [];
+  calls.stageStart = [];
+  toastSuccess.mockClear();
   cardClick.mockClear();
   push.mockClear();
 });
@@ -55,6 +68,25 @@ describe("DuplicateEventButton", () => {
     fireEvent.click(screen.getByRole("button", { name: /^ก๊อปงาน$/ }));
     await waitFor(() => expect(push).toHaveBeenCalled());
     expect(calls.built[0]).toMatchObject({ name: "Sourgrumy (สำเนา)", event_date: null });
+  });
+
+  it("a new stage time is handed to the clone, and the toast says how far the day moved", async () => {
+    mount();
+    fireEvent.click(screen.getByRole("button", { name: /ก๊อปงาน Sourgrumy/ }));
+    fireEvent.change(screen.getByLabelText(/เวลาขึ้นเวที/), { target: { value: "17:30" } });
+    fireEvent.click(screen.getByRole("button", { name: /^ก๊อปงาน$/ }));
+    await waitFor(() => expect(push).toHaveBeenCalledWith("/events/new-1"));
+    expect(calls.stageStart).toEqual(["17:30"]);
+    expect(toastSuccess).toHaveBeenCalledWith(expect.stringContaining("+4:30"));
+  });
+
+  it("no stage time → the clone is not asked to move anything", async () => {
+    mount();
+    fireEvent.click(screen.getByRole("button", { name: /ก๊อปงาน Sourgrumy/ }));
+    fireEvent.click(screen.getByRole("button", { name: /^ก๊อปงาน$/ }));
+    await waitFor(() => expect(push).toHaveBeenCalled());
+    expect(calls.stageStart).toEqual([undefined]);
+    expect(toastSuccess).toHaveBeenCalledWith("ก๊อปงานเรียบร้อย — เปิดงานใหม่ให้แล้ว");
   });
 
   it("nothing pressed in the dialog reaches the card underneath", async () => {

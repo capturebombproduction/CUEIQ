@@ -1,5 +1,6 @@
 import type { createClient } from "@/lib/supabase/client";
 import { hasLiveSession } from "@/lib/auth-session";
+import { formatClockOfDay, parseClockToSeconds } from "@/lib/time";
 
 type Client = ReturnType<typeof createClient>;
 type Row = Record<string, unknown>;
@@ -33,7 +34,37 @@ export type CloneResult = {
   failed: string[];
   /** How many parts had rows to copy at all. */
   attempted: number;
+  /** Seconds the whole day was moved by (0 = not asked); null = asked, but the
+   *  source had no stage time to measure from, so nothing moved. */
+  shiftedBy: number | null;
 };
+
+// ─── moving the day ──────────────────────────────────────────────────────────
+// Measured 2026-09-28 over Seishin Kakumei's 27 shows: the rows BEFORE the stage
+// sit at nearly the same distance from it every time — arrive and dressing room
+// 120 min before, photo 60–70, STB 10–15 — whatever the stage time is. So a copy
+// of last week's show only needs the NEW stage time; move every row by the same
+// amount and four of the five come out right (the booth, which follows the
+// organiser, is the one to check). That used to be five time fields retyped, twice
+// a week.
+
+/** Where the source show sits on the clock: its earliest stage row, else the
+ *  event's own show start. Null when it has neither. */
+export function stageAnchorSeconds(schedule: Row[], event: Row): number | null {
+  const stages = schedule
+    .filter((r) => r.kind === "stage")
+    .map((r) => parseClockToSeconds(r.start_time as string | null))
+    .filter((s): s is number => s != null);
+  if (stages.length) return Math.min(...stages);
+  return parseClockToSeconds(event.show_start_time as string | null);
+}
+
+/** A time-of-day moved by `deltaSec`, wrapped to the day ("HH:MM:SS"). A value
+ *  that is not a clock time (null, blank) is left exactly as it was. */
+export function shiftClock<T>(value: T, deltaSec: number): T | string {
+  const sec = parseClockToSeconds(value as unknown as string | null);
+  return sec == null ? value : formatClockOfDay(sec + deltaSec, true);
+}
 
 function reparent(rows: Row[], drop: readonly string[], eventId: string): Row[] {
   return rows.map((row) => {
@@ -60,11 +91,16 @@ export async function cloneEvent(
     sourceId,
     sourceLabel,
     buildEvent,
+    stageStart,
   }: {
     sourceId: string;
     /** What the source is called in an error: "งานต้นฉบับ" / "แม่แบบ". */
     sourceLabel: string;
     buildEvent: (source: Row) => Row;
+    /** The copy's stage time ("HH:MM"). Given, the whole day — every schedule
+     *  row, the show start and the hard out — moves by the same amount, so the
+     *  run of the day and the setlist's slot keep their shape. */
+    stageStart?: string;
   }
 ): Promise<CloneResult> {
   const { data: src, error: srcErr } = await supabase
@@ -100,9 +136,33 @@ export async function cloneEvent(
     );
   }
 
+  let shiftedBy: number | null = 0;
+  const target = stageStart ? parseClockToSeconds(stageStart) : null;
+  if (target != null) {
+    const scheduleRows = reads.find((r) => r.part.table === "schedule_items")?.rows ?? [];
+    const anchor = stageAnchorSeconds(scheduleRows, src as Row);
+    shiftedBy = anchor == null ? null : target - anchor;
+  }
+
+  const eventRow = buildEvent(src as Row);
+  if (shiftedBy) {
+    for (const k of ["show_start_time", "hard_out_time"]) {
+      if (k in eventRow) eventRow[k] = shiftClock(eventRow[k], shiftedBy);
+    }
+    for (const r of reads) {
+      if (r.part.table !== "schedule_items") continue;
+      const by = shiftedBy;
+      r.rows = r.rows.map((row) => ({
+        ...row,
+        start_time: shiftClock(row.start_time, by),
+        end_time: shiftClock(row.end_time, by),
+      }));
+    }
+  }
+
   const { data: created, error: insErr } = await supabase
     .from("events")
-    .insert(buildEvent(src as Row))
+    .insert(eventRow)
     .select("id")
     .single();
   if (insErr || !created) {
@@ -120,5 +180,5 @@ export async function cloneEvent(
       .insert(reparent(rows, part.drop, newId));
     if (error) failed.push(part.label);
   }
-  return { newId, failed, attempted };
+  return { newId, failed, attempted, shiftedBy };
 }

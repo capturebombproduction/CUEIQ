@@ -166,7 +166,11 @@ function EventCard({
       >
         {editable && (
           <>
-            <DuplicateEventButton eventId={ev.id} eventName={ev.name} />
+            <DuplicateEventButton
+              eventId={ev.id}
+              eventName={ev.name}
+              showStartTime={ev.show_start_time}
+            />
             <DeleteEventButton eventId={ev.id} eventName={ev.name} onDeleted={onDeleted} />
           </>
         )}
