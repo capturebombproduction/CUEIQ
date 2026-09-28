@@ -826,12 +826,24 @@ async function measureTheSound(win) {
       let rms = 0;
       let ctxState = "none";
       try {
-        const ctx = new AudioContext();
-        const source = ctx.createMediaElementSource(el);
-        const analyser = ctx.createAnalyser();
-        analyser.fftSize = 2048;
-        source.connect(analyser);
-        analyser.connect(ctx.destination);
+        // ONE tap per element, kept across calls. The caller polls, and an element
+        // can only ever be handed to createMediaElementSource once — so a first look
+        // that came before the file got going used to poison every retry with
+        // "already connected", and a slow runner failed the scenario on its own
+        // measurement while the app played fine.
+        const taps = (window.__cueiqSmokeTaps = window.__cueiqSmokeTaps || new WeakMap());
+        let tap = taps.get(el);
+        if (!tap) {
+          const ctx = new AudioContext();
+          const source = ctx.createMediaElementSource(el);
+          const analyser = ctx.createAnalyser();
+          analyser.fftSize = 2048;
+          source.connect(analyser);
+          analyser.connect(ctx.destination);
+          tap = { ctx, analyser };
+          taps.set(el, tap);
+        }
+        const { ctx, analyser } = tap;
         if (ctx.state === "suspended") await ctx.resume();
         ctxState = ctx.state;
         const buf = new Float32Array(analyser.fftSize);
