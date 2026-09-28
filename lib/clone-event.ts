@@ -145,7 +145,11 @@ export async function cloneEvent(
   if (target != null) {
     const scheduleRows = reads.find((r) => r.part.table === "schedule_items")?.rows ?? [];
     const anchor = stageAnchorSeconds(scheduleRows, src as Row);
-    shiftedBy = anchor == null ? null : target - anchor;
+    // The nearer way round the clock: a 23:00 set moved to 01:00 is "+2:00", not
+    // "−22:00". Every row lands on the same clock time either way (shiftClock
+    // wraps at midnight) — only what the toast reports changes.
+    shiftedBy =
+      anchor == null ? null : ((((target - anchor) % 86400) + 86400 + 43200) % 86400) - 43200;
   }
 
   const eventRow = buildEvent(src as Row);

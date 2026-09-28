@@ -191,6 +191,32 @@ describe("cloneEvent — moving the day to a new stage time", () => {
     expect(inserted.schedule_items.find((s) => s.kind === "on_location")!.start_time).toBe("08:45:00");
   });
 
+  it("past midnight counts the short way round — rows land the same, the reported shift is sane", async () => {
+    const { client, inserted } = fakeDb(realDay());
+    const r = await cloneEvent(client, {
+      sourceId: SRC,
+      sourceLabel: "งานต้นฉบับ",
+      buildEvent: copyRow,
+      stageStart: "02:30", // stage 13:00 → 02:30: 10½ h earlier, not 13½ h later
+    });
+    expect(r.shiftedBy).toBe(-10.5 * 3600);
+    expect(inserted.events[0]).toMatchObject({ show_start_time: "02:30:00" });
+    expect(inserted.schedule_items.find((s) => s.kind === "on_location")!.start_time).toBe("00:30:00");
+    expect(inserted.schedule_items.find((s) => s.kind === "booth")!.start_time).toBe("03:50:00");
+  });
+
+  it("a late set moved past midnight reports +, not −22 h", async () => {
+    const { client } = fakeDb(realDay());
+    // realDay's stage is 13:00; 00:45 is 11¾ h later the near way, 12¼ h earlier the far way
+    const r = await cloneEvent(client, {
+      sourceId: SRC,
+      sourceLabel: "งานต้นฉบับ",
+      buildEvent: copyRow,
+      stageStart: "00:45",
+    });
+    expect(r.shiftedBy).toBe(11.75 * 3600);
+  });
+
   it("no stage time asked for → nothing moves", async () => {
     const { client, inserted } = fakeDb(realDay());
     const r = await cloneEvent(client, { sourceId: SRC, sourceLabel: "งานต้นฉบับ", buildEvent: copyRow });
