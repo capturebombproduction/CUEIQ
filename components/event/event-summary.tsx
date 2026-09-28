@@ -387,9 +387,17 @@ export function EventSummary({
         ref={captureRef}
         className={cn(
           "print-flat space-y-5 rounded-lg border bg-card p-6 text-foreground",
-          event.group?.color && "border-t-4"
+          event.group?.color && "band-bar border-t-4"
         )}
-        style={event.group?.color ? { borderTopColor: event.group.color } : undefined}
+        style={
+          event.group?.color
+            ? ({
+                borderTopColor: event.group.color,
+                // read by the print rule in globals.css (.print-flat.band-bar)
+                "--band-color": event.group.color,
+              } as React.CSSProperties)
+            : undefined
+        }
       >
         {/* Heading */}
         <div className="space-y-1 border-b pb-3">

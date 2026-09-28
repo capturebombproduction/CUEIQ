@@ -253,3 +253,32 @@ describe("PracticePlayer — ซ้อมตามเซ็ตลิสต์", 
     expect(engine().loads).toEqual(["other.wav"]);
   });
 });
+
+// Review 2026-09-28: clearing a song's markers folded the tools away under the tap.
+describe("PracticePlayer — tools opened by use stay open", () => {
+  it("keeps the section tools open after the song's markers are cleared", async () => {
+    const withMarkers = { boot: [{ id: "m1", song_id: "boot", label: "Intro", position_seconds: 5 } as never] };
+    const view = (markers: Record<string, never[]>) => (
+      <ConfirmProvider>
+        <PracticePlayer
+          eventId="room"
+          groupId="g1"
+          currentUserId="u1"
+          songs={songs}
+          items={items}
+          setItems={() => {}}
+          markers={markers}
+          setMarkers={() => {}}
+          canManage={false}
+          canCurate={false}
+        />
+      </ConfirmProvider>
+    );
+    const { rerender } = render(view(withMarkers));
+    fireEvent.click(await screen.findByRole("button", { name: /เล่นทั้งเซ็ต/ }));
+    await waitFor(() => expect(engine().loads).toEqual(["boot.wav"]));
+    expect(screen.queryByRole("button", { name: /วนท่อน \/ ท่อนเพลง/ })).toBeNull(); // open
+    rerender(view({})); // "ล้างทั้งหมด" → no markers left
+    expect(screen.queryByRole("button", { name: /วนท่อน \/ ท่อนเพลง/ })).toBeNull(); // still open
+  });
+});

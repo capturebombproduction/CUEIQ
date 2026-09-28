@@ -851,10 +851,18 @@ export function SetlistBuilder({
   // Items whose folded "เล่นซ้อน / เผื่อเวลา" the user opened on a phone. An item
   // that already uses either is always shown open — a set value never hides.
   const [timingOpen, setTimingOpen] = useState<Set<string>>(new Set());
-  const showTiming = (it: SetlistItem) =>
-    (it.buffer_before_seconds ?? 0) !== 0 ||
-    (it.buffer_after_seconds ?? 0) !== 0 ||
-    timingOpen.has(it.id);
+  const hasTiming = (it: SetlistItem) =>
+    (it.buffer_before_seconds ?? 0) !== 0 || (it.buffer_after_seconds ?? 0) !== 0;
+  const showTiming = (it: SetlistItem) => hasTiming(it) || timingOpen.has(it.id);
+  // Once shown open, an item STAYS open: clearing a buffer to 0 (or typing 0 into
+  // the overlap) used to fold both fields away mid-edit, under the thumb.
+  useEffect(() => {
+    const opened = items.filter(hasTiming).map((i) => i.id);
+    if (opened.some((id) => !timingOpen.has(id))) {
+      setTimingOpen((prev) => new Set([...prev, ...opened]));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [items]);
 
   // Set this item's duration to all the time left until Hard Out (e.g. final MC).
   // startSec is this row's clock-of-day start (already includes its buffer_before).
@@ -1303,7 +1311,21 @@ export function SetlistBuilder({
               const last = items[lastIdx];
               const lastRow = timing.rows[lastIdx];
               const off = Math.round(timing.hardOutSec! - timing.endSec) !== 0;
-              if (!last || !lastRow || !off || !editable || liveItemId === last.id) return null;
+              // Not without a show start (the times count from 00:00 then, and the
+              // "fill" would make the last row ~19 hours long), and not when the set
+              // ends on a SONG — that length is the track's real length; stretching
+              // it to fill slack would put Live Mode's countdown out of step with
+              // the audio. The closing MC / photo row is what this is for.
+              if (
+                !last ||
+                !lastRow ||
+                !off ||
+                !editable ||
+                !hasClock ||
+                last.kind === "song" ||
+                liveItemId === last.id
+              )
+                return null;
               return (
                 <Button
                   type="button"
@@ -1508,6 +1530,7 @@ export function SetlistBuilder({
                       only makes sense for the closing row (e.g. final MC). */}
                   {rowEditable &&
                     hardOutSec != null &&
+                    hasClock && // no show start = times from 00:00 = a nonsense fill
                     t &&
                     idx === items.length - 1 && (
                       <Button

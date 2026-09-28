@@ -177,3 +177,17 @@ describe("ScheduleEditor · folding the rarely-used fields on a phone", () => {
     expect(folded(locations()[0])).toBe(false);
   });
 });
+
+// Review 2026-09-28: a row open only BECAUSE it had a location folded itself away
+// the moment that location was cleared — mid-edit, under the thumb — and the rest
+// of the typing went nowhere.
+describe("ScheduleEditor · a field being edited never folds away", () => {
+  it("keeps location / notes open after the value that opened them is cleared", () => {
+    mount([row("a", { kind: "stage", location: "Main Stage" })]);
+    const input = screen.getByDisplayValue("Main Stage");
+    fireEvent.change(input, { target: { value: "" } });
+    const box = screen.getAllByPlaceholderText("e.g. Main Stage")[0].closest("div.space-y-1")!;
+    expect(box.className.split(" ")).not.toContain("hidden");
+    expect(screen.queryByRole("button", { name: /\+ สถานที่ \/ โน้ต/ })).toBeNull();
+  });
+});

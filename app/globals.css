@@ -121,6 +121,13 @@ body {
     box-shadow: none !important;
     border-color: hsl(220 13% 80%) !important;
   }
+  /* The run sheet's band-colour top bar (event-summary.tsx): the rule above would
+     otherwise turn it into a thick GREY bar on paper / PDF. */
+  .print-flat.band-bar {
+    border-top-color: var(--band-color) !important;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
   table tr,
   li,
   section,

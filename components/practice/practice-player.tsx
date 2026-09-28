@@ -227,8 +227,13 @@ export function PracticePlayer({
     [markers, currentId]
   );
   // Never folded while it is in use: a song with markers, or a loop being set.
-  const showDrill =
-    drillOpen || curMarkers.length > 0 || loopA != null || loopB != null || loopOn;
+  const drillInUse = curMarkers.length > 0 || loopA != null || loopB != null || loopOn;
+  const showDrill = drillOpen || drillInUse;
+  // …and once opened by use it stays open: "ล้างทั้งหมด" on a song's markers used
+  // to fold the tools away under the very tap that cleared them.
+  useEffect(() => {
+    if (drillInUse && !drillOpen) setDrillOpen(true);
+  }, [drillInUse, drillOpen]);
 
   // --- auto-log accounting (refs so the stable audio listeners can mutate them) ---
   const runRef = useRef<{

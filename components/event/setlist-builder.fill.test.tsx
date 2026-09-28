@@ -125,3 +125,47 @@ describe("SetlistBuilder — folding the timing tweaks on a phone", () => {
     expect(isFolded(boxes[1])).toBe(true); // row 2 uses neither
   });
 });
+
+// Review 2026-09-28, round two.
+describe("SetlistBuilder — review fixes", () => {
+  const overlapBoxes = () =>
+    screen.getAllByText("เล่นซ้อน (วิ · เริ่มก่อนเพลงก่อนจบ)").map((l) => l.closest("div.space-y-1")!);
+
+  it("clearing a buffer to 0 does not fold the timing fields away mid-edit", () => {
+    const items = set(118);
+    items[0] = { ...items[0], buffer_after_seconds: 5 };
+    mount(items);
+    const buffer = screen.getAllByDisplayValue("5")[0];
+    fireEvent.change(buffer, { target: { value: "" } });
+    expect(overlapBoxes()[0].className.split(" ")).not.toContain("hidden");
+  });
+
+  const mountWith = (items: SetlistItem[], showStartTime: string | null) =>
+    render(
+      <ConfirmProvider>
+        <SetlistBuilder
+          eventId={EVENT_ID}
+          tenantId={TENANT_ID}
+          editable
+          initialItems={items}
+          showStartTime={showStartTime}
+          hardOutTime="13:20:00"
+          members={[]}
+          songs={[]}
+          eventName="Test show"
+        />
+      </ConfirmProvider>
+    );
+
+  it("offers no fill without a show start (times would count from 00:00)", () => {
+    mountWith(set(100), null);
+    expect(fillButton()).toBeNull();
+    expect(screen.queryByRole("button", { name: /เวลาที่เหลือ/ })).toBeNull();
+  });
+
+  it("offers no banner fill when the set ends on a SONG — that length is the track's", () => {
+    const items = set(100).slice(0, 4); // ends on "Overclock Strike", with slack
+    mountWith(items, "13:00:00");
+    expect(screen.queryByRole("button", { name: /เติมให้พอดี/ })).toBeNull();
+  });
+});

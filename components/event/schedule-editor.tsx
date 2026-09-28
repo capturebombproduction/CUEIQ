@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { GripVertical, Trash2, Plus, Clock, ChevronUp, ChevronDown } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
@@ -62,8 +62,18 @@ export function ScheduleEditor({
   // Rows whose folded location / notes the user opened on a phone. A row that
   // already HAS either is always shown open — nothing typed ever hides.
   const [extraOpen, setExtraOpen] = useState<Set<string>>(new Set());
-  const showExtra = (it: ScheduleItem) =>
-    !!it.location?.trim() || !!it.notes?.trim() || extraOpen.has(it.id);
+  const hasExtra = (it: ScheduleItem) => !!it.location?.trim() || !!it.notes?.trim();
+  const showExtra = (it: ScheduleItem) => hasExtra(it) || extraOpen.has(it.id);
+  // …and once a row has been shown open, it STAYS open. Otherwise clearing a
+  // location to retype it (the usual fix on a copied show) emptied the field,
+  // folded it away under the thumb, and the rest of the typing went nowhere.
+  useEffect(() => {
+    const opened = items.filter(hasExtra).map((i) => i.id);
+    if (opened.some((id) => !extraOpen.has(id))) {
+      setExtraOpen((prev) => new Set([...prev, ...opened]));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [items]);
   const dragIndex = useRef<number | null>(null);
   // Every field here autosaves on blur and always has; what was missing is any
   // sign of it. See components/event/save-status.tsx.
