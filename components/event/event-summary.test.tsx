@@ -82,6 +82,13 @@ describe("EventSummary — the JPG says who is coming", () => {
     expect(img).not.toContain("ขาด");
   });
 
+  // Versions of a sheet pile up in the group chat; the image says when it was made.
+  it("stamps the image with when it was exported — and only the image", async () => {
+    const img = await exportImageText(["m1", "m2", "m3"]);
+    expect(img).toContain("ส่งออกเมื่อ");
+    expect(screen.queryByText(/ส่งออกเมื่อ/)).toBeNull(); // gone again on screen
+  });
+
   it("an unchosen lineup is said out loud, never passed off as full attendance", async () => {
     const img = await exportImageText([]);
     expect(img).toContain("ยังไม่ได้เลือกรายชื่อคนมา");

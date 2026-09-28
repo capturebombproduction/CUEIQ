@@ -171,6 +171,7 @@ export function EventSummary({
   const captureRef = useRef<HTMLDivElement>(null);
   const [exporting, setExporting] = useState(false);
   const [isCapturing, setIsCapturing] = useState(false);
+  const [exportedAt, setExportedAt] = useState<Date | null>(null);
 
   const showStartSec = parseClockToSeconds(event.show_start_time);
   const hardOutSec = parseClockToSeconds(event.hard_out_time);
@@ -269,6 +270,7 @@ export function EventSummary({
     const el = captureRef.current;
     if (!el) return;
     setExporting(true);
+    setExportedAt(new Date());
     setIsCapturing(true); // swap iframe → static map
     await new Promise((r) => setTimeout(r, 120)); // wait for re-render
     try {
@@ -378,9 +380,16 @@ export function EventSummary({
         )}
 
       {/* Captured summary — also the printable run sheet */}
+      {/* The band colour across the top — the same mark its cards carry in the
+          app — so a sheet forwarded into a group chat reads as whose it is at a
+          glance, next to other bands' sheets. */}
       <div
         ref={captureRef}
-        className="print-flat space-y-5 rounded-lg border bg-card p-6 text-foreground"
+        className={cn(
+          "print-flat space-y-5 rounded-lg border bg-card p-6 text-foreground",
+          event.group?.color && "border-t-4"
+        )}
+        style={event.group?.color ? { borderTopColor: event.group.color } : undefined}
       >
         {/* Heading */}
         <div className="space-y-1 border-b pb-3">
@@ -447,7 +456,16 @@ export function EventSummary({
           ) : (
             timeline.map((e) => <TimelineLine key={e.key} e={e} />)
           )}
-          <Line label="ธีมชุด" value={event.costume_theme} />
+          {/* In the timeline's own columns (104px + gap-3), not <Line/>'s 120px —
+              on the sheet the theme sat a little right of every row above it. */}
+          {event.costume_theme?.trim() && (
+            <div className="flex gap-3 text-sm">
+              <span className="min-w-[104px] shrink-0 font-medium text-muted-foreground">
+                ธีมชุด
+              </span>
+              <span className="min-w-0 font-medium">{event.costume_theme}</span>
+            </div>
+          )}
         </Section>
 
         {/* Setlist — detailed table */}
@@ -495,7 +513,7 @@ export function EventSummary({
                         during capture; on-screen the phone gets them inlined under
                         the title instead (below). */}
                     <TableHead className={`w-16 py-2 text-right text-xs ${isCapturing ? "" : "hidden sm:table-cell"}`}>Duration</TableHead>
-                    <TableHead className={`w-20 py-2 text-right text-xs ${isCapturing ? "" : "hidden sm:table-cell"}`}>Running Time</TableHead>
+                    <TableHead className={`w-20 whitespace-nowrap py-2 text-right text-xs ${isCapturing ? "" : "hidden sm:table-cell"}`}>Running Time</TableHead>
                     <TableHead className={`w-40 py-2 text-xs ${isCapturing ? "hidden" : "hidden lg:table-cell"}`}>Mic Assignment</TableHead>
                   </TableRow>
                 </TableHeader>
@@ -609,6 +627,25 @@ export function EventSummary({
               })}
             </div>
           </Section>
+        )}
+
+        {/* When THIS image was made, printed on the image only. A sheet gets
+            re-exported whenever a time moves, and every version then lives on in
+            the group chat it was sent to — with nothing on it saying which is the
+            latest, staff at the venue work off whichever they scroll to first. */}
+        {isCapturing && exportedAt && (
+          <p className="border-t pt-3 text-right text-xs text-muted-foreground">
+            ส่งออกเมื่อ{" "}
+            {exportedAt.toLocaleString("en-GB", {
+              weekday: "short",
+              day: "numeric",
+              month: "short",
+              hour: "2-digit",
+              minute: "2-digit",
+              hour12: false,
+            })}{" "}
+            · ถ้ามีหลายรูป ให้ยึดรูปที่ใหม่ที่สุด
+          </p>
         )}
       </div>
 
