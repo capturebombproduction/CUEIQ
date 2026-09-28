@@ -80,6 +80,24 @@ describe("EventsList — events more than a month past fold away", () => {
     expect(screen.queryByText("โชว์เดือนกรกฎา")).toBeNull();
   });
 
+  // 2026-09-28: the ONLY card under กำลังจะถึง was a dateless test event from July.
+  it("a show with no date sits under its own heading, not under กำลังจะถึง", () => {
+    render(
+      <ConfirmProvider>
+        <EventsList
+          events={[...events, ev("nodate", "เทสงานค่าย", null as unknown as string)]}
+          editableGroupIds={[]}
+        />
+      </ConfirmProvider>
+    );
+    const upcomingHeading = screen.getByText(/^กำลังจะถึง · 1$/);
+    const undatedHeading = screen.getByText(/^ยังไม่ได้ใส่วันที่ · 1$/);
+    const card = screen.getByText("เทสงานค่าย");
+    // the card belongs to the undated section, not the upcoming one
+    expect(undatedHeading.closest("section")!.contains(card)).toBe(true);
+    expect(upcomingHeading.closest("section")!.contains(card)).toBe(false);
+  });
+
   it("a search that matches only a folded event shows it instead of 'ไม่พบ'", () => {
     mount();
     fireEvent.change(screen.getByPlaceholderText(/ค้นหางาน/), {

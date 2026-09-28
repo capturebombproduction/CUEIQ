@@ -278,7 +278,7 @@ export function EventsList({
   // dashboard, where it stays fully featured.
   const native = typeof window !== "undefined" ? window.cueiqNative : undefined;
 
-  const { upcoming, past, old } = useMemo(() => {
+  const { upcoming, undated, past, old } = useMemo(() => {
     const needle = q.trim().toLowerCase();
     const matched = needle
       ? items.filter((e) =>
@@ -312,7 +312,12 @@ export function EventsList({
     // leaves the database; they just stop filling the page.
     const cutoff = monthBeforeKey(today);
     return {
-      upcoming: up,
+      // A show with no date is not "coming up" — it is unfinished. Filed under
+      // กำลังจะถึง it headed the page: on 2026-09-28 the ONLY upcoming card was a
+      // dateless test event from July, and a copy made without a date lands there
+      // too. It gets its own heading, which is also the nudge to set one.
+      upcoming: up.filter((e) => !!e.event_date),
+      undated: up.filter((e) => !e.event_date),
       past: pa.filter((e) => e.event_date! >= cutoff),
       old: pa.filter((e) => e.event_date! < cutoff),
     };
@@ -323,7 +328,8 @@ export function EventsList({
   // way a hidden-by-default list goes wrong is by hiding the answer.
   const showOld = oldOpen || q.trim() !== "";
 
-  const noResults = upcoming.length === 0 && past.length === 0 && old.length === 0;
+  const noResults =
+    upcoming.length === 0 && undated.length === 0 && past.length === 0 && old.length === 0;
   // soonest dated upcoming event (upcoming is already sorted soonest-first)
   const nextShow = !q.trim() ? upcoming.find((e) => !!e.event_date) : undefined;
 
@@ -574,6 +580,24 @@ export function EventsList({
               </h2>
               <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
                 {upcoming.map((ev) => (
+                  <EventCard
+                    key={ev.id}
+                    ev={ev}
+                    editable={canEditEvent(ev)}
+                    readiness={readiness[ev.id]}
+                    onDeleted={handleDeleted}
+                  />
+                ))}
+              </div>
+            </section>
+          )}
+          {undated.length > 0 && (
+            <section className="space-y-3">
+              <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+                ยังไม่ได้ใส่วันที่ · {undated.length}
+              </h2>
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                {undated.map((ev) => (
                   <EventCard
                     key={ev.id}
                     ev={ev}
