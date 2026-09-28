@@ -95,7 +95,7 @@ export default async function DashboardPage() {
         </div>
       </div>
 
-      <WhatsNew />
+      <WhatsNew canEdit={editableGroupIds.length > 0} />
 
       {events.length === 0 ? (
         <Card>

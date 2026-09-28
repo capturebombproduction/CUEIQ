@@ -90,9 +90,8 @@ export function Dashboard() {
         )}
       </div>
 
-      {/* Same card as the web dashboard (components/whats-new.tsx); its iPhone
-          item filters itself out here. */}
-      <WhatsNew />
+      {/* Same card as the web dashboard (components/whats-new.tsx). */}
+      <WhatsNew canEdit={editableGroupIds.length > 0} />
 
       {events === null ? (
         <p className="py-16 text-center text-sm text-muted-foreground">กำลังโหลดงาน…</p>

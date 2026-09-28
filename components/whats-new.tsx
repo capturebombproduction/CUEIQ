@@ -3,7 +3,6 @@
 import { useEffect, useState } from "react";
 import { Sparkles, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { isIOS, isStandalone } from "@/lib/platform";
 
 /**
  * "มีอะไรใหม่" — a short card on All Events, once per device per round of changes.
@@ -19,25 +18,31 @@ import { isIOS, isStandalone } from "@/lib/platform";
  * good on "เข้าใจแล้ว", and SILENT when the browser will not remember — a card that
  * reappears on every visit is how people learn to ignore the next one.
  *
+ * Only what the reader can use: an item about an editor's button is left out for
+ * someone who will never see that button — telling a member about it invites the
+ * very "it doesn't work" report this card exists to prevent. (The iPhone "add to
+ * home screen" step is deliberately NOT here: PushNudge owns it, and knows to say
+ * "open in Safari first" inside LINE, where that step does not exist.)
+ *
  * To announce a later round: change ROUND and ITEMS. A new ROUND shows again on
  * every device; the old key is simply never read.
  */
 const ROUND = "2026-09-28";
 const KEY = "cueiq:whats-new-seen";
 
-type Item = { text: string; only?: () => boolean };
+type Item = { text: string; editorsOnly?: boolean };
 
 const ITEMS: Item[] = [
   {
     text: "ก๊อปงาน: ใส่ชื่อ วันที่ และเวลาขึ้นเวทีได้ในหน้าเดียว — คิวทั้งวันเลื่อนตามให้เอง และรายชื่อคนมาติดมาด้วย",
+    editorsOnly: true,
   },
-  { text: "Setlist: ปุ่ม “เติมให้พอดี” ข้างเวลารวม — แถวปิดท้ายพอดีช่วงขึ้นเวทีในแตะเดียว" },
+  {
+    text: "Setlist: ปุ่ม “เติมให้พอดี” ข้างเวลารวม — แถวปิดท้ายพอดีช่วงขึ้นเวทีในแตะเดียว",
+    editorsOnly: true,
+  },
   { text: "รูปสรุป: บอกว่ามากี่คน ขาดใคร และมีเวลาที่ส่งออกท้ายรูป (หลายรูปในกลุ่ม ให้ใช้รูปใหม่สุด)" },
   { text: "ห้องซ้อม: “ซ้อมตามเซ็ตลิสต์” — กดเล่นทั้งเซ็ต จบเพลงแล้วเล่นเพลงถัดไปเอง" },
-  {
-    text: "อยากให้แจ้งเตือนเด้งบน iPhone/iPad: ปุ่มแชร์ → “เพิ่มไปยังหน้าจอโฮม” แล้วเปิด CueIQ จากไอคอนนั้น",
-    only: () => isIOS() && !isStandalone(),
-  },
 ];
 
 function seen(): boolean {
@@ -48,15 +53,17 @@ function seen(): boolean {
   }
 }
 
-export function WhatsNew() {
+/** `canEdit`: this account can edit at least one band's shows — the editor-only
+ *  items are about buttons that exist only for them. */
+export function WhatsNew({ canEdit }: { canEdit: boolean }) {
   const [items, setItems] = useState<string[] | null>(null);
 
-  // After mount only: the web dashboard is server-rendered, and both the storage
-  // read and the platform probes need the browser.
+  // After mount only: the web dashboard is server-rendered, and the storage read
+  // needs the browser.
   useEffect(() => {
     if (seen()) return;
-    setItems(ITEMS.filter((i) => !i.only || i.only()).map((i) => i.text));
-  }, []);
+    setItems(ITEMS.filter((i) => canEdit || !i.editorsOnly).map((i) => i.text));
+  }, [canEdit]);
 
   const dismiss = () => {
     try {
@@ -67,7 +74,7 @@ export function WhatsNew() {
     setItems(null);
   };
 
-  if (!items) return null;
+  if (!items || items.length === 0) return null;
   return (
     <section
       data-testid="whats-new"

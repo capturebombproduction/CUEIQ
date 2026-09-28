@@ -1,28 +1,19 @@
 // "มีอะไรใหม่" — said once per device per round, never nagging. The restraint is
-// what is pinned: gone for good after "เข้าใจแล้ว", silent when storage refuses,
-// and the iPhone-only item only where it applies.
+// what is pinned: gone for good after "เข้าใจแล้ว", back for a NEW round, silent
+// when storage refuses, and editor-only items only for editors.
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, act } from "@testing-library/react";
-
-const device = vi.hoisted(() => ({ ios: false, standalone: false }));
-vi.mock("@/lib/platform", () => ({
-  isIOS: () => device.ios,
-  isStandalone: () => device.standalone,
-}));
-
 import { WhatsNew } from "./whats-new";
 
 const KEY = "cueiq:whats-new-seen";
 
 beforeEach(() => {
   localStorage.clear();
-  device.ios = false;
-  device.standalone = false;
 });
 
-const mount = async () => {
+const mount = async (canEdit = true) => {
   await act(async () => {
-    render(<WhatsNew />);
+    render(<WhatsNew canEdit={canEdit} />);
   });
 };
 
@@ -38,17 +29,23 @@ describe("WhatsNew", () => {
     await mount();
     fireEvent.click(screen.getByRole("button", { name: "เข้าใจแล้ว" }));
     expect(screen.queryByTestId("whats-new")).toBeNull();
-    expect(localStorage.getItem(KEY)).toBeTruthy();
-  });
-
-  it("stays away on a device that has already read this round", async () => {
-    await mount();
-    fireEvent.click(screen.getByRole("button", { name: "ปิด" }));
-    const round = localStorage.getItem(KEY)!;
-    localStorage.setItem(KEY, round);
     document.body.innerHTML = "";
     await mount();
     expect(screen.queryByTestId("whats-new")).toBeNull();
+  });
+
+  it("the X closes it for good too", async () => {
+    await mount();
+    fireEvent.click(screen.getByRole("button", { name: "ปิด" }));
+    document.body.innerHTML = "";
+    await mount();
+    expect(screen.queryByTestId("whats-new")).toBeNull();
+  });
+
+  it("comes back for a NEW round on a device that closed an older one", async () => {
+    localStorage.setItem(KEY, "2020-01-01"); // an earlier round, already read
+    await mount();
+    expect(screen.getByTestId("whats-new")).toBeInTheDocument();
   });
 
   it("stays silent when the browser refuses storage — never a card on every visit", async () => {
@@ -60,12 +57,11 @@ describe("WhatsNew", () => {
     spy.mockRestore();
   });
 
-  it("mentions the home-screen step only in Safari on an iPhone/iPad", async () => {
-    await mount();
-    expect(screen.getByTestId("whats-new")).not.toHaveTextContent("หน้าจอโฮม");
-    document.body.innerHTML = "";
-    device.ios = true;
-    await mount();
-    expect(screen.getByTestId("whats-new")).toHaveTextContent("หน้าจอโฮม");
+  it("does not tell someone who cannot edit about editors' buttons", async () => {
+    await mount(false);
+    const card = screen.getByTestId("whats-new");
+    expect(card).not.toHaveTextContent("ก๊อปงาน");
+    expect(card).not.toHaveTextContent("เติมให้พอดี");
+    expect(card).toHaveTextContent("ซ้อมตามเซ็ตลิสต์"); // members practise
   });
 });

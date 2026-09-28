@@ -485,7 +485,7 @@ export function ScheduleEditor({
                     draggable
                     onDragStart={() => { dragIndex.current = idx; }}
                     onDragEnd={() => { dragIndex.current = null; setDragOverIndex(null); }}
-                    className="hidden shrink-0 cursor-grab rounded p-1.5 text-muted-foreground hover:bg-muted active:cursor-grabbing [@media(hover:hover)]:block"
+                    className="hidden shrink-0 cursor-grab rounded p-1.5 text-muted-foreground hover:bg-muted active:cursor-grabbing lg:[@media(hover:hover)]:block"
                     title="ลากเพื่อสลับลำดับ (เดสก์ท็อป) — มือถือใช้ปุ่ม ▲▼"
                     aria-label="Drag to reorder"
                   >
