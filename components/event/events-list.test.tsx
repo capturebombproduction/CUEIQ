@@ -98,6 +98,20 @@ describe("EventsList — events more than a month past fold away", () => {
     expect(upcomingHeading.closest("section")!.contains(card)).toBe(false);
   });
 
+  // The desktop's offline dashboard renders cached rows that may lack event_type;
+  // shortening the type label once called .split() on undefined and took the
+  // whole list down (caught by the airplane smoke boot, 2026-09-28).
+  it("renders a card whose row has no event_type instead of crashing", () => {
+    const bare = { ...ev("bare", "แคชไม่มีประเภทงาน", "2026-10-05") } as Record<string, unknown>;
+    delete bare.event_type;
+    render(
+      <ConfirmProvider>
+        <EventsList events={[bare as never]} editableGroupIds={[]} />
+      </ConfirmProvider>
+    );
+    expect(screen.getAllByText("แคชไม่มีประเภทงาน").length).toBeGreaterThan(0);
+  });
+
   it("a search that matches only a folded event shows it instead of 'ไม่พบ'", () => {
     mount();
     fireEvent.change(screen.getByPlaceholderText(/ค้นหางาน/), {

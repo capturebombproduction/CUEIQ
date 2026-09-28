@@ -213,7 +213,10 @@ function EventCard({
                   for the dropdown that picks it; on a card it ran the band line
                   onto a second row, for a word every one of the band's cards
                   repeats. */}
-              {(EVENT_TYPES[ev.event_type as EventType]?.label ?? ev.event_type).split(" (")[0]}
+              {/* `?? ""`: a cached row can come without event_type (the desktop's
+                  offline dashboard does — the airplane smoke boot caught this
+                  crashing the list), and the old code merely printed nothing. */}
+              {(EVENT_TYPES[ev.event_type as EventType]?.label ?? ev.event_type ?? "").split(" (")[0]}
             </p>
             {ev.last_run_seconds != null && (
               <p className="flex items-center gap-2">
