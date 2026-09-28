@@ -41,6 +41,7 @@ import {
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogTitle,
@@ -174,6 +175,12 @@ function OverlapInput({
 }
 
 // ---- Mic Preset helpers (localStorage, per-event) --------------------------
+/** Cut a long title for a one-line mention (song titles here run to 80+ chars). */
+function clip(s: string, n: number): string {
+  const chars = Array.from(s);
+  return chars.length > n ? chars.slice(0, n - 1).join("") + "…" : s;
+}
+
 function presetKey(eventId: string) {
   return `cueiq:mic-preset:${eventId}`;
 }
@@ -413,12 +420,31 @@ function LibraryPickerDialog({
   songs,
   onPick,
   disabled,
+  inSet,
+  open: openProp,
+  onOpenChange,
+  heading = "เลือกเพลงจากคลัง",
+  hint,
 }: {
   songs: Song[];
   onPick: (song: Song) => void;
   disabled?: boolean;
+  /** song ids already in this setlist — marked, never blocked (a set can repeat a song). */
+  inSet?: ReadonlySet<string>;
+  /** Controlled: no trigger button is rendered; the caller opens it. */
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
+  heading?: string;
+  hint?: string;
 }) {
-  const [open, setOpen] = useState(false);
+  const [openState, setOpenState] = useState(false);
+  const controlled = openProp !== undefined;
+  const open = controlled ? openProp : openState;
+  const setOpen = (o: boolean) => {
+    if (!o) setQ("");
+    if (controlled) onOpenChange?.(o);
+    else setOpenState(o);
+  };
   const [q, setQ] = useState("");
   const filtered = songs.filter((s) =>
     s.title.toLowerCase().includes(q.trim().toLowerCase())
@@ -426,14 +452,17 @@ function LibraryPickerDialog({
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
-      <DialogTrigger asChild>
-        <Button type="button" variant="outline" disabled={disabled}>
-          <ListMusic className="h-4 w-4" /> จากคลัง
-        </Button>
-      </DialogTrigger>
+      {!controlled && (
+        <DialogTrigger asChild>
+          <Button type="button" variant="outline" disabled={disabled}>
+            <ListMusic className="h-4 w-4" /> จากคลัง
+          </Button>
+        </DialogTrigger>
+      )}
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>เลือกเพลงจากคลัง</DialogTitle>
+          <DialogTitle>{heading}</DialogTitle>
+          {hint && <DialogDescription>{hint}</DialogDescription>}
         </DialogHeader>
         {songs.length === 0 ? (
           <p className="py-6 text-center text-sm text-muted-foreground">
@@ -467,7 +496,14 @@ function LibraryPickerDialog({
                       setOpen(false);
                     }}
                   >
-                    <span className="font-medium">{s.title}</span>
+                    <span className="min-w-0">
+                      <span className="font-medium">{s.title}</span>
+                      {inSet?.has(s.id) && (
+                        <span className="ml-2 whitespace-nowrap text-xs text-muted-foreground">
+                          · อยู่ในเซ็ตแล้ว
+                        </span>
+                      )}
+                    </span>
                     <span className="shrink-0 tabular-nums text-muted-foreground">
                       {s.duration_seconds
                         ? formatDuration(s.duration_seconds)
@@ -998,6 +1034,35 @@ export function SetlistBuilder({
     if (added) toast.success(`เพิ่ม "${song.title}" จากคลังแล้ว`);
   }
 
+  // Swapping one song for another IN PLACE. Measured 2026-09-28 over Seishin's
+  // last 18 shows: 60 songs came in, 52 of them mid-set — and the only way was
+  // delete (+confirm) → "จากคลัง" (appended last) → ▲ once per row to climb back,
+  // about ten taps a song. The row keeps its place, its mic formation and its
+  // notes: on real song rows those are the band's standing mics and cues for the
+  // SLOT ("เล่นต่อเนื่อง", "พูดชื่อเพลง"), not facts about the old song. It takes
+  // the new song's title, length and audio link (song_id wins over any legacy
+  // per-row audio — lib/audio-targets.ts).
+  const [replacing, setReplacing] = useState<SetlistItem | null>(null);
+  function replaceFromLibrary(song: Song) {
+    const it = replacing;
+    setReplacing(null);
+    if (!it) return;
+    // The dialog was open while the show moved on — the row went on air.
+    if (liveItemId === it.id) {
+      toast.error("แถวนี้กำลังเล่นอยู่บนเวที — ยังเปลี่ยนเพลงไม่ได้");
+      return;
+    }
+    update(it.id, {
+      title: song.title,
+      duration_seconds: song.duration_seconds,
+      song_id: song.id,
+    });
+  }
+  const songIdsInSet = useMemo(
+    () => new Set(items.map((i) => i.song_id).filter((x): x is string => !!x)),
+    [items]
+  );
+
   /** Clone a row (appended at the end — drag into place). Audio is not copied. */
   async function duplicateItem(it: SetlistItem) {
     const added = await insertItem({
@@ -1441,19 +1506,35 @@ export function SetlistBuilder({
                     </SelectContent>
                   </Select>
                 </div>
-                <Input
-                  // grow + basis rather than flex-1: Tailwind emits flex-basis
-                  // before flex, so flex-1 (basis:0%) would win over basis-full and
-                  // the row would never wrap.
-                  className="min-w-0 grow basis-full sm:basis-0"
-                  value={it.title}
-                  disabled={!rowEditable}
-                  placeholder="ชื่อเพลง / หัวข้อ"
-                  onChange={(e) => setLocal(it.id, { title: e.target.value })}
-                  onBlur={(e) => persist(it.id, { title: e.target.value })}
-                />
+                {/* grow + basis rather than flex-1: Tailwind emits flex-basis
+                    before flex, so flex-1 (basis:0%) would win over basis-full and
+                    the row would never wrap. order-2 below sm: the title takes the
+                    second line and the row buttons ride up beside the kind select,
+                    where 212px sat empty — measured at 390px, three lines a row
+                    became two. */}
+                <div className="order-2 flex min-w-0 grow basis-full items-center gap-2 sm:order-none sm:basis-0">
+                  <Input
+                    className="min-w-0 flex-1"
+                    value={it.title}
+                    disabled={!rowEditable}
+                    placeholder="ชื่อเพลง / หัวข้อ"
+                    onChange={(e) => setLocal(it.id, { title: e.target.value })}
+                    onBlur={(e) => persist(it.id, { title: e.target.value })}
+                  />
+                  {rowEditable && it.kind === "song" && songs.length > 0 && (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="h-10 shrink-0 px-2.5"
+                      title="เปลี่ยนเป็นเพลงอื่นจากคลัง — ตำแหน่ง ไมค์ และโน้ตคงเดิม"
+                      onClick={() => setReplacing(it)}
+                    >
+                      <ListMusic className="h-4 w-4" /> เปลี่ยน
+                    </Button>
+                  )}
+                </div>
                 {rowEditable && (
-                  <div className="flex shrink-0">
+                  <div className="order-1 ml-auto flex shrink-0 sm:order-none sm:ml-0">
                     <Button
                       type="button"
                       variant="ghost"
@@ -1654,6 +1735,18 @@ export function SetlistBuilder({
             songs={songs}
             onPick={addFromLibrary}
             disabled={inserting}
+            inSet={songIdsInSet}
+          />
+          <LibraryPickerDialog
+            songs={songs}
+            onPick={replaceFromLibrary}
+            inSet={songIdsInSet}
+            open={replacing !== null}
+            onOpenChange={(o) => !o && setReplacing(null)}
+            heading={`เปลี่ยนเพลงแถวที่ ${
+              replacing ? items.findIndex((i) => i.id === replacing.id) + 1 : ""
+            }`}
+            hint={`แทน “${clip(replacing?.title?.trim() || "เพลงนี้", 40)}” — อยู่ตำแหน่งเดิม ไมค์กับโน้ตคงไว้`}
           />
           <Button
             type="button"
