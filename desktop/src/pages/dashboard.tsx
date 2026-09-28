@@ -16,6 +16,7 @@ import {
 import { useWorkspace } from "~/data/workspace-context";
 import { loadEventsList, type EventWithGroup } from "~/data/events-list";
 import { warmSongLibrary } from "~/data/song-library";
+import { WhatsNew } from "@/components/whats-new";
 
 export function Dashboard() {
   const { ws } = useWorkspace();
@@ -88,6 +89,10 @@ export function Dashboard() {
           </Button>
         )}
       </div>
+
+      {/* Same card as the web dashboard (components/whats-new.tsx); its iPhone
+          item filters itself out here. */}
+      <WhatsNew />
 
       {events === null ? (
         <p className="py-16 text-center text-sm text-muted-foreground">กำลังโหลดงาน…</p>

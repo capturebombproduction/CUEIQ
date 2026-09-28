@@ -10,6 +10,7 @@ import { EventsList } from "@/components/event/events-list";
 import { CreateFromTemplateButton } from "@/components/event/create-from-template-button";
 import { canCreateAnyEvent, canEditGroup, viewableGroups } from "@/lib/permissions";
 import { type EventRow } from "@/lib/types";
+import { WhatsNew } from "@/components/whats-new";
 
 export const dynamic = "force-dynamic";
 
@@ -93,6 +94,8 @@ export default async function DashboardPage() {
           )}
         </div>
       </div>
+
+      <WhatsNew />
 
       {events.length === 0 ? (
         <Card>
