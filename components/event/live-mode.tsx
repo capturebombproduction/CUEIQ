@@ -3160,6 +3160,16 @@ export function LiveMode({
             </span>
           )}
         </div>
+        {/* Landscape only: the running total sits up here beside the clock instead
+            of taking a full-width row of its own under the cards. On an iPad in
+            landscape (1180×820) that row, the app header and the two cards put
+            the START / NEXT button ~940px down — below the screen, so the
+            operator scrolled before every press (2026-09-28). Portrait keeps its
+            own box, unchanged. */}
+        <div className="hidden shrink-0 text-right landscape:block">
+          <p className="text-xs text-muted-foreground">เวลาสะสม</p>
+          <p className="font-semibold tabular-nums">{formatDuration(totalElapsed)}</p>
+        </div>
         <div className="shrink-0 text-right">
           <p className="text-xs text-muted-foreground">เวลาจริง</p>
           <p className="font-semibold tabular-nums" suppressHydrationWarning>
@@ -3482,9 +3492,12 @@ export function LiveMode({
       </div>
 
         {/* NEXT-UP prep card — shown in landscape so the team can ready mics/props
-            for what's coming while the current item is still playing */}
-        <div className="hidden rounded-2xl border bg-card p-5 text-left shadow-sm landscape:flex landscape:flex-col">
-          <div className="mb-3 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+            for what's coming while the current item is still playing. Spacing
+            tightened 2026-09-28: this card sets the height of the whole card row,
+            which pushed the START / NEXT button below an iPad's screen. Content
+            unchanged. */}
+        <div className="hidden rounded-2xl border bg-card p-4 text-left shadow-sm landscape:flex landscape:flex-col">
+          <div className="mb-2 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
             <SkipForward className="h-3.5 w-3.5" /> รายการถัดไป
           </div>
           {next ? (
@@ -3497,12 +3510,12 @@ export function LiveMode({
                   {state.currentIndex + 2} / {items.length}
                 </span>
               </div>
-              <h3 className="mb-3 break-words text-xl font-bold leading-tight">
+              <h3 className="mb-2 break-words text-lg font-bold leading-tight">
                 {next.title || "—"}
               </h3>
               {/* time slot — the FULL block (buffers included) + the bare song length */}
-              <div className="mb-3 grid grid-cols-2 gap-2">
-                <div className="rounded-lg bg-muted/50 px-3 py-2">
+              <div className="mb-2 grid grid-cols-2 gap-2">
+                <div className="rounded-lg bg-muted/50 px-3 py-1.5">
                   <p className="text-[10px] text-muted-foreground">
                     เวลาเต็ม (รวมบัฟเฟอร์)
                   </p>
@@ -3510,7 +3523,7 @@ export function LiveMode({
                     {formatDuration(blockSeconds(next))}
                   </p>
                 </div>
-                <div className="rounded-lg bg-muted/50 px-3 py-2">
+                <div className="rounded-lg bg-muted/50 px-3 py-1.5">
                   <p className="text-[10px] text-muted-foreground">ความยาวเพลง</p>
                   <p className="text-lg font-bold tabular-nums">
                     {formatDuration(next.duration_seconds)}
@@ -3536,14 +3549,14 @@ export function LiveMode({
                 </p>
               )}
               {next.notes && (
-                <p className="mt-3 rounded-lg bg-muted/60 px-3 py-2 text-sm">
+                <p className="mt-2 rounded-lg bg-muted/60 px-3 py-1.5 text-sm">
                   📝 {next.notes}
                 </p>
               )}
               {/* pre-set the next track's volume — syncs to the speaker device so the
                   crew can dial the next song's level before it even starts */}
-              <div className="mt-3">
-                <div className="mb-1.5 flex items-center justify-between">
+              <div className="mt-2">
+                <div className="mb-1 flex items-center justify-between">
                   <p className="flex items-center gap-1 text-xs font-medium text-muted-foreground">
                     <Volume1 className="h-3 w-3" /> ตั้งความดังล่วงหน้า
                   </p>
@@ -3570,7 +3583,7 @@ export function LiveMode({
                   )}
                 />
               </div>
-              <p className="mt-auto pt-4 text-xs text-muted-foreground">
+              <p className="mt-auto pt-2 text-xs text-muted-foreground">
                 {audioUrls[next.id] ? (
                   <>
                     <Music2 className="mr-1 inline h-3 w-3" /> ไฟล์เพลงพร้อมบนเครื่องนี้
@@ -3595,8 +3608,9 @@ export function LiveMode({
         </div>
       </div>
 
-      {/* stats */}
-      <div className="grid grid-cols-2 gap-3 landscape:grid-cols-1">
+      {/* stats — portrait only now: in landscape the total rides in the top bar
+          and the next title is in the prep card, so this row held nothing new. */}
+      <div className="grid grid-cols-2 gap-3 landscape:hidden">
         <div className="rounded-xl border bg-card p-4 text-center">
           <p className="text-xs text-muted-foreground">เวลาสะสม (Accumulated)</p>
           <p className="text-2xl font-bold tabular-nums">
