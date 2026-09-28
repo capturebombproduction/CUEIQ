@@ -26,10 +26,15 @@ export function EventStatusActions({
   initialStatus,
   eventName,
   onChanged,
+  trigger = "badge",
 }: {
   eventId: string;
   initialStatus: GroupStatus;
   eventName?: string;
+  /** "badge" (the board: the status pill IS the button, rows stay clean) or
+   *  "button" (the event page: a plain อนุมัติ / ปฏิเสธ button for someone who
+   *  arrived from a "มีงานรออนุมัติ" reminder and should not have to guess). */
+  trigger?: "badge" | "button";
   /** Fired ONLY after a write that actually landed, so a parent counting these
    *  (the Overview's "รออนุมัติ N" chip) can never show a number that a failed or
    *  zero-row update invented. Deliberately not called on the optimistic set or
@@ -71,15 +76,21 @@ export function EventStatusActions({
 
   return (
     <>
-      <button
-        type="button"
-        onClick={() => setOpen(true)}
-        title="แตะเพื่อเปลี่ยนสถานะ (อนุมัติ / ปฏิเสธ)"
-        className="inline-flex items-center gap-0.5 rounded-md transition-opacity hover:opacity-80 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
-      >
-        <StatusBadge status={status} className="px-2 py-0 text-[11px]" />
-        <ChevronDown className="h-3 w-3 text-muted-foreground" />
-      </button>
+      {trigger === "button" ? (
+        <Button variant="success" onClick={() => setOpen(true)} disabled={busy}>
+          <Check className="h-4 w-4" /> อนุมัติ / ปฏิเสธ
+        </Button>
+      ) : (
+        <button
+          type="button"
+          onClick={() => setOpen(true)}
+          title="แตะเพื่อเปลี่ยนสถานะ (อนุมัติ / ปฏิเสธ)"
+          className="inline-flex items-center gap-0.5 rounded-md transition-opacity hover:opacity-80 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
+        >
+          <StatusBadge status={status} className="px-2 py-0 text-[11px]" />
+          <ChevronDown className="h-3 w-3 text-muted-foreground" />
+        </button>
+      )}
 
       <Dialog open={open} onOpenChange={(o) => !busy && setOpen(o)}>
         <DialogContent>

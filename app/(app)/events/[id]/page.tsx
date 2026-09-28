@@ -20,6 +20,7 @@ import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { StatusBadge } from "@/components/status-badge";
 import { ApprovalControl } from "@/components/event/approval-control";
+import { EventApproveButton } from "@/components/event/event-approve-button";
 import { EventWorkspace } from "@/components/event/event-workspace";
 import { type RunSeqLive } from "@/components/event/event-live-caller";
 import { ExportButton } from "@/components/event/export-button";
@@ -213,6 +214,13 @@ export default async function EventPage({
               status={event.status as GroupStatus}
               canResubmit={canResubmit}
             />
+            {canApprove(ws.perms) && (
+              <EventApproveButton
+                eventId={event.id}
+                eventName={event.name}
+                status={event.status as GroupStatus}
+              />
+            )}
           </div>
         </div>
       </div>
