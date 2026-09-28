@@ -24,6 +24,7 @@ import {
   X,
   ListMusic,
   Trash2,
+  ChevronDown,
 } from "lucide-react";
 import { toast } from "sonner";
 import { createClient } from "@/lib/supabase/client";
@@ -214,6 +215,8 @@ export function PracticePlayer({
     null
   );
   const onEndedRef = useRef<() => void>(() => {});
+  // Phone-only fold of the section-drilling tools (see the note at the fold).
+  const [drillOpen, setDrillOpen] = useState(false);
 
   const current = currentId ? songsById.get(currentId) ?? null : null;
   const curMarkers = useMemo(
@@ -223,6 +226,9 @@ export function PracticePlayer({
         .sort((a, b) => a.position_seconds - b.position_seconds),
     [markers, currentId]
   );
+  // Never folded while it is in use: a song with markers, or a loop being set.
+  const showDrill =
+    drillOpen || curMarkers.length > 0 || loopA != null || loopB != null || loopOn;
 
   // --- auto-log accounting (refs so the stable audio listeners can mutate them) ---
   const runRef = useRef<{
@@ -744,6 +750,23 @@ export function PracticePlayer({
               />
             </div>
 
+            {/* Section drilling (A-B loop + markers), folded on a PHONE until asked
+                for. Measured 2026-09-28: 0 markers and 0 slowed runs in 96 logged
+                practice runs — the band plays songs and sets straight through — yet
+                on a phone these two blocks were ~250px between the song playing and
+                the set list saying what comes next. Open by itself whenever the song
+                has markers or a loop is set; from sm up always open, as before. */}
+            {!showDrill && (
+              <button
+                type="button"
+                onClick={() => setDrillOpen(true)}
+                className="mt-3 flex w-full items-center justify-center gap-1.5 border-t pt-3 text-xs font-medium text-muted-foreground hover:text-foreground sm:hidden"
+              >
+                <Repeat className="h-3.5 w-3.5" /> วนท่อน / ท่อนเพลง
+                <ChevronDown className="h-3.5 w-3.5" />
+              </button>
+            )}
+            <div className={showDrill ? "" : "hidden sm:block"}>
             {/* A-B loop */}
             <div className="mt-3 flex flex-wrap items-center gap-2 border-t pt-3">
               <span className="flex items-center gap-1 text-xs font-medium text-muted-foreground">
@@ -866,10 +889,11 @@ export function PracticePlayer({
                 </div>
               )}
             </div>
+            </div>
           </>
         ) : (
           <p className="py-6 text-center text-sm text-muted-foreground">
-            ยังไม่ได้เลือกเพลง — แตะเพลงด้านล่างเพื่อเริ่มซ้อม
+            ยังไม่ได้เลือกเพลง — แตะเพลงด้านล่าง หรือกด “เล่นทั้งเซ็ต” เพื่อเริ่มซ้อม
           </p>
         )}
       </div>

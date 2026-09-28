@@ -293,9 +293,14 @@ export function EventSummary({
     <div className="space-y-4">
       {/* Action bar — not included in the exported image / print */}
       <div className="no-print flex flex-wrap items-center gap-2">
+        {/* Short labels below sm, so the three share one line on a phone (they
+            wrapped to two, under a header that already took four). */}
         <Button asChild>
           <Link href={`/events/${event.id}/live`}>
-            <Radio className="h-4 w-4" /> เข้า Live Mode
+            <Radio className="h-4 w-4" />
+            <span>
+              <span className="hidden sm:inline">เข้า </span>Live Mode
+            </span>
           </Link>
         </Button>
         <Button variant="outline" onClick={exportJpg} disabled={exporting}>
@@ -304,9 +309,18 @@ export function EventSummary({
           ) : (
             <ImageDown className="h-4 w-4" />
           )}
-          บันทึกเป็นรูป (JPG)
+          <span className="sm:hidden">รูป JPG</span>
+          <span className="hidden sm:inline">บันทึกเป็นรูป (JPG)</span>
         </Button>
-        <PrintButton altHint="หรือกด “บันทึกเป็นรูป (JPG)” ที่อยู่ข้าง ๆ" />
+        <PrintButton
+          label={
+            <>
+              <span className="sm:hidden">PDF</span>
+              <span className="hidden sm:inline">พิมพ์ / บันทึก PDF</span>
+            </>
+          }
+          altHint="หรือกด “บันทึกเป็นรูป (JPG)” ที่อยู่ข้าง ๆ"
+        />
         <p className="self-center text-xs text-muted-foreground">
           หน้านี้เป็นสรุปอย่างเดียว — แก้ข้อมูลที่แท็บ/ปุ่มด้านล่าง
         </p>

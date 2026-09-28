@@ -382,7 +382,14 @@ export function EventWorkspace({
           onClick={() => changeView("summary")}
           className="font-semibold"
         >
-          <ClipboardList className="h-5 w-5" /> สรุปงาน (Summary)
+          {/* The English half is dropped on a phone so this row, the refresh and
+              the share button fit on ONE line — on a 390px screen the header used to
+              stack six rows of buttons before the show itself appeared. */}
+          <ClipboardList className="h-5 w-5" />
+          {/* one text node for the button's flex gap, or the halves drift apart */}
+          <span>
+            สรุปงาน<span className="hidden sm:inline"> (Summary)</span>
+          </span>
         </Button>
         <RefreshButton />
         {editable && (
@@ -430,7 +437,7 @@ export function EventWorkspace({
             this only fixes the UNSELECTED one, which was the invisible half. */}
         <TabsList className="no-print flex h-auto w-full flex-wrap justify-start gap-1.5">
           <TabsTrigger value="setlist" className={TAB_CLS}>
-            Setlist + Run Time
+            Setlist<span className="hidden sm:inline">&nbsp;+ Run Time</span>
           </TabsTrigger>
           <TabsTrigger value="schedule" className={TAB_CLS}>
             นัดหมาย

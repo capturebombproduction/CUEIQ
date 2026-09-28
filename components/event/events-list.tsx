@@ -209,7 +209,11 @@ function EventCard({
             <p className="flex items-center gap-2">
               <Music2 className="h-4 w-4 shrink-0" />
               {ev.groups?.name ?? "—"} ·{" "}
-              {EVENT_TYPES[ev.event_type as EventType]?.label ?? ev.event_type}
+              {/* Just the type's name. The full "Idol / Artist (ไอดอล/ศิลปิน)" is
+                  for the dropdown that picks it; on a card it ran the band line
+                  onto a second row, for a word every one of the band's cards
+                  repeats. */}
+              {(EVENT_TYPES[ev.event_type as EventType]?.label ?? ev.event_type).split(" (")[0]}
             </p>
             {ev.last_run_seconds != null && (
               <p className="flex items-center gap-2">

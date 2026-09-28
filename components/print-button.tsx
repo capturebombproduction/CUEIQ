@@ -22,7 +22,8 @@ export function PrintButton({
    *  no JPG export, so pointing at one would send the reader hunting. */
   altHint,
 }: {
-  label?: string;
+  /** Text, or text that changes with the screen (a shorter one on a phone). */
+  label?: React.ReactNode;
   altHint?: string;
 }) {
   const [dead, setDead] = useState(false);

@@ -216,6 +216,34 @@ describe("PracticePlayer — ซ้อมตามเซ็ตลิสต์", 
     expect(screen.getByText(/กำลังเล่นตามเซ็ตของ “Thailand hobbyfestival”/)).toBeTruthy();
   });
 
+  // Phone layout (2026-09-28): the loop + marker tools fold behind one button —
+  // 0 markers and 0 slowed runs in 96 real practice runs — so the set list stays
+  // on the first screen. Pinned: a song that HAS markers never folds them.
+  it("folds the section tools for a song without markers, never for one with them", async () => {
+    const { rerender } = mount();
+    fireEvent.click(await screen.findByRole("button", { name: /เล่นทั้งเซ็ต/ }));
+    await waitFor(() => expect(engine().loads).toEqual(["boot.wav"]));
+    expect(screen.getByRole("button", { name: /วนท่อน \/ ท่อนเพลง/ })).toBeTruthy();
+
+    rerender(
+      <ConfirmProvider>
+        <PracticePlayer
+          eventId="room"
+          groupId="g1"
+          currentUserId="u1"
+          songs={songs}
+          items={items}
+          setItems={() => {}}
+          markers={{ boot: [{ id: "m1", song_id: "boot", label: "Intro", position_seconds: 5 } as never] }}
+          setMarkers={() => {}}
+          canManage={false}
+          canCurate={false}
+        />
+      </ConfirmProvider>
+    );
+    expect(screen.queryByRole("button", { name: /วนท่อน \/ ท่อนเพลง/ })).toBeNull();
+  });
+
   it("a song ending with no run going does nothing", async () => {
     mount();
     fireEvent.click(await screen.findByRole("button", { name: /Transmission Failure/ }));
