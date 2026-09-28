@@ -174,12 +174,23 @@ function EventCard({
             <DeleteEventButton eventId={ev.id} eventName={ev.name} onDeleted={onDeleted} />
           </>
         )}
-        <CardContent className="space-y-3 p-5">
+        {/* On a touch screen the copy / delete buttons are always showing (there is
+            no hover to reveal them), pinned to the bottom-right corner — where they
+            sat on top of the card's last line ("…(ไอดอล/ศิลปิน)" was unreadable on
+            a phone). Leave them their own strip there. */}
+        <CardContent
+          className={cn("space-y-3 p-5", editable && "[@media(hover:none)]:pb-14")}
+        >
           <div className="flex items-start justify-between gap-2">
             <h2 className="font-semibold leading-tight group-hover:text-primary">
               {ev.name}
             </h2>
-            <StatusBadge status={ev.status as GroupStatus} />
+            {/* shrink-0 + nowrap: beside a long show name the pill used to be
+                squeezed until its dot and its word stacked on two lines. */}
+            <StatusBadge
+              status={ev.status as GroupStatus}
+              className="shrink-0 whitespace-nowrap"
+            />
           </div>
           <div className="space-y-1.5 text-sm text-muted-foreground">
             <p className="flex items-center gap-2">

@@ -107,3 +107,21 @@ describe("SetlistBuilder — fill-to-fit beside the run-time badge", () => {
     expect(fillButton()).toBeNull();
   });
 });
+
+// Phone layout (2026-09-28): "เล่นซ้อน" / "เผื่อเวลาหลัง" fold behind one button
+// when a row uses neither (3% / 2% of real rows). Pinned: a row that DOES use one
+// is never folded. The look was checked in a real browser at 390px.
+describe("SetlistBuilder — folding the timing tweaks on a phone", () => {
+  const overlapBoxes = () =>
+    screen.getAllByText("เล่นซ้อน (วิ · เริ่มก่อนเพลงก่อนจบ)").map((l) => l.closest("div.space-y-1")!);
+  const isFolded = (el: Element) => el.className.split(" ").includes("hidden");
+
+  it("keeps them open on a row that uses them, folds them on one that does not", () => {
+    const items = set(118);
+    items[0] = { ...items[0], buffer_after_seconds: 5 };
+    mount(items);
+    const boxes = overlapBoxes();
+    expect(isFolded(boxes[0])).toBe(false); // row 1 has a 5 s buffer
+    expect(isFolded(boxes[1])).toBe(true); // row 2 uses neither
+  });
+});

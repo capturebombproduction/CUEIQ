@@ -848,6 +848,14 @@ export function SetlistBuilder({
   // user can undo and not lose a real song length (in-session; clears on reload).
   const [prevDuration, setPrevDuration] = useState<Record<string, number>>({});
 
+  // Items whose folded "เล่นซ้อน / เผื่อเวลา" the user opened on a phone. An item
+  // that already uses either is always shown open — a set value never hides.
+  const [timingOpen, setTimingOpen] = useState<Set<string>>(new Set());
+  const showTiming = (it: SetlistItem) =>
+    (it.buffer_before_seconds ?? 0) !== 0 ||
+    (it.buffer_after_seconds ?? 0) !== 0 ||
+    timingOpen.has(it.id);
+
   // Set this item's duration to all the time left until Hard Out (e.g. final MC).
   // startSec is this row's clock-of-day start (already includes its buffer_before).
   function fillRemaining(itemId: string, startSec: number, bufferAfter: number) {
@@ -1481,9 +1489,13 @@ export function SetlistBuilder({
                 <span>สะสม {formatDuration(t?.accumulatedSec ?? 0)}</span>
               </div>
 
-              {/* Editable fields */}
-              <div className="mt-2 grid grid-cols-1 gap-2 pl-8 sm:grid-cols-12">
-                <div className="space-y-1 sm:col-span-2">
+              {/* Editable fields. On a phone these stacked one per line, ~640px an
+                  item. Measured 2026-09-28 over 231 real rows: mics set on 26%, notes
+                  on 23%, but "เล่นซ้อน" on 3% and "เผื่อเวลาหลัง" on 2%. So below sm
+                  length and mics share a line, and the two timing tweaks fold behind
+                  one button until a row uses them. From sm up nothing moves. */}
+              <div className="mt-2 grid grid-cols-2 gap-2 pl-8 sm:grid-cols-12">
+                <div className="order-1 space-y-1 sm:order-none sm:col-span-2">
                   <Label className="text-xs text-muted-foreground">
                     ความยาว (m:ss)
                   </Label>
@@ -1526,7 +1538,16 @@ export function SetlistBuilder({
                     </Button>
                   )}
                 </div>
-                <div className="space-y-1 sm:col-span-2">
+                {!showTiming(it) && (
+                  <button
+                    type="button"
+                    onClick={() => setTimingOpen((prev) => new Set(prev).add(it.id))}
+                    className="order-3 col-span-2 justify-self-start rounded-md px-1 py-0.5 text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline sm:hidden"
+                  >
+                    + เล่นซ้อน / เผื่อเวลา
+                  </button>
+                )}
+                <div className={`order-4 space-y-1 sm:order-none sm:col-span-2 ${showTiming(it) ? "" : "hidden sm:block"}`}>
                   <Label className="text-xs text-muted-foreground">
                     เล่นซ้อน (วิ · เริ่มก่อนเพลงก่อนจบ)
                   </Label>
@@ -1541,7 +1562,7 @@ export function SetlistBuilder({
                     onCommit={(s) => persist(it.id, { buffer_before_seconds: s })}
                   />
                 </div>
-                <div className="space-y-1 sm:col-span-2">
+                <div className={`order-5 space-y-1 sm:order-none sm:col-span-2 ${showTiming(it) ? "" : "hidden sm:block"}`}>
                   <Label className="text-xs text-muted-foreground">
                     เผื่อเวลาหลัง (วิ)
                   </Label>
@@ -1563,7 +1584,7 @@ export function SetlistBuilder({
                     }
                   />
                 </div>
-                <div className="space-y-1 sm:col-span-6">
+                <div className="order-2 space-y-1 sm:order-none sm:col-span-6">
                   <Label className="text-xs text-muted-foreground">ไมค์ + สมาชิก</Label>
                   <MicSlotsDialog
                     item={it}

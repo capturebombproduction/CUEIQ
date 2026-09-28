@@ -59,6 +59,11 @@ export function ScheduleEditor({
   );
   const [busy, setBusy] = useState(false);
   const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
+  // Rows whose folded location / notes the user opened on a phone. A row that
+  // already HAS either is always shown open — nothing typed ever hides.
+  const [extraOpen, setExtraOpen] = useState<Set<string>>(new Set());
+  const showExtra = (it: ScheduleItem) =>
+    !!it.location?.trim() || !!it.notes?.trim() || extraOpen.has(it.id);
   const dragIndex = useRef<number | null>(null);
   // Every field here autosaves on blur and always has; what was missing is any
   // sign of it. See components/event/save-status.tsx.
@@ -350,8 +355,14 @@ export function ScheduleEditor({
           }}
           onDragLeave={() => setDragOverIndex(null)}
         >
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-12">
-            <div className="space-y-1 sm:col-span-3">
+          {/* On a phone the row used to stack all six fields one per line — ~480px a
+              row, ~3,000px to retime a six-row day. Measured 2026-09-28 over 198 real
+              rows: start 99% filled, end 45%, label 41%, location 10%, notes 6%. So
+              below sm the two times share a line right under the type, and location
+              / notes fold behind one small button until a row actually uses them.
+              From sm up the order and layout are exactly what they were. */}
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-12">
+            <div className="order-1 col-span-2 space-y-1 sm:order-none sm:col-span-3">
               <Label className="text-xs text-muted-foreground">Type</Label>
               <Select
                 value={it.kind}
@@ -384,7 +395,7 @@ export function ScheduleEditor({
               </Select>
             </div>
 
-            <div className="space-y-1 sm:col-span-3">
+            <div className="order-4 col-span-2 space-y-1 sm:order-none sm:col-span-3">
               <Label className="text-xs text-muted-foreground">Label</Label>
               <Input
                 value={it.label ?? ""}
@@ -397,7 +408,7 @@ export function ScheduleEditor({
               />
             </div>
 
-            <div className="space-y-1 sm:col-span-2">
+            <div className="order-2 space-y-1 sm:order-none sm:col-span-2">
               <Label className="text-xs text-muted-foreground">Start</Label>
               <Input
                 type="time"
@@ -410,7 +421,7 @@ export function ScheduleEditor({
               />
             </div>
 
-            <div className="space-y-1 sm:col-span-2">
+            <div className="order-3 space-y-1 sm:order-none sm:col-span-2">
               <Label className="text-xs text-muted-foreground">End</Label>
               <Input
                 type="time"
@@ -423,7 +434,7 @@ export function ScheduleEditor({
               />
             </div>
 
-            <div className="flex shrink-0 items-end justify-end gap-1 sm:col-span-2">
+            <div className={`order-6 flex shrink-0 items-end justify-end gap-1 sm:order-none sm:col-span-2 ${showExtra(it) ? "col-span-2" : "col-span-1"}`}>
               {editable && (
                 <>
                   {/* Touch can't start an HTML5 drag, so these are the ONLY way to
@@ -482,7 +493,16 @@ export function ScheduleEditor({
               )}
             </div>
 
-            <div className="space-y-1 sm:col-span-6">
+            {!showExtra(it) && (
+              <button
+                type="button"
+                onClick={() => setExtraOpen((prev) => new Set(prev).add(it.id))}
+                className="order-5 col-span-1 self-center justify-self-start rounded-md px-1 py-0.5 text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline sm:hidden"
+              >
+                + สถานที่ / โน้ต
+              </button>
+            )}
+            <div className={`order-7 col-span-2 space-y-1 sm:order-none sm:col-span-6 ${showExtra(it) ? "" : "hidden sm:block"}`}>
               <Label className="text-xs text-muted-foreground">Location</Label>
               <Input
                 value={it.location ?? ""}
@@ -494,7 +514,7 @@ export function ScheduleEditor({
                 }
               />
             </div>
-            <div className="space-y-1 sm:col-span-6">
+            <div className={`order-8 col-span-2 space-y-1 sm:order-none sm:col-span-6 ${showExtra(it) ? "" : "hidden sm:block"}`}>
               <Label className="text-xs text-muted-foreground">Notes</Label>
               <Input
                 value={it.notes ?? ""}

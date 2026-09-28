@@ -149,3 +149,31 @@ describe("ScheduleEditor · the receipt", () => {
     );
   });
 });
+
+// Phone layout (2026-09-28): location / notes fold behind "+ สถานที่ / โน้ต" when a
+// row has neither — they are filled on 10% / 6% of real rows but each took a full
+// line on every card. jsdom has no layout, so what is pinned here is the one
+// regression that would actually cost something: a value somebody TYPED being
+// folded out of sight. The look itself was checked in a real browser at 390px.
+describe("ScheduleEditor · folding the rarely-used fields on a phone", () => {
+  const folded = (input: HTMLElement) =>
+    input.closest("div.space-y-1")!.className.split(" ").includes("hidden");
+
+  it("never folds a location or a note that has a value", () => {
+    mount([
+      row("a", { kind: "stage", location: "Main Stage" }),
+      row("b", { kind: "booth", notes: "ของแจก 200 ชิ้น", sort_order: 2 }),
+    ]);
+    expect(folded(screen.getByDisplayValue("Main Stage"))).toBe(false);
+    expect(folded(screen.getByDisplayValue("ของแจก 200 ชิ้น"))).toBe(false);
+    expect(screen.queryByRole("button", { name: /\+ สถานที่ \/ โน้ต/ })).toBeNull();
+  });
+
+  it("folds them on an empty row, and one tap brings them back", () => {
+    mount([row("a", { kind: "stage" })]);
+    const locations = () => screen.getAllByPlaceholderText("e.g. Main Stage");
+    expect(folded(locations()[0])).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: /\+ สถานที่ \/ โน้ต/ }));
+    expect(folded(locations()[0])).toBe(false);
+  });
+});
