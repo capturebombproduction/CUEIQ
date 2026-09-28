@@ -1411,7 +1411,10 @@ export function SetlistBuilder({
                       dragIndex.current = null;
                       setDragOverIndex(null);
                     }}
-                    className="shrink-0 cursor-grab text-muted-foreground hover:text-foreground active:cursor-grabbing"
+                    // Only where there is a mouse: HTML5 drag never starts from a
+                    // touch, and on a phone this was a 16×16 target that did nothing
+                    // (▲ ▼ on each row are the touch way to reorder).
+                    className="hidden shrink-0 cursor-grab text-muted-foreground hover:text-foreground active:cursor-grabbing [@media(hover:hover)]:block"
                     aria-label="ลากเพื่อย้ายลำดับ"
                   >
                     <GripVertical className="h-4 w-4" />
@@ -1565,7 +1568,7 @@ export function SetlistBuilder({
                   <button
                     type="button"
                     onClick={() => setTimingOpen((prev) => new Set(prev).add(it.id))}
-                    className="order-3 col-span-2 justify-self-start rounded-md px-1 py-0.5 text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline sm:hidden"
+                    className="order-3 col-span-2 justify-self-start min-h-9 rounded-md px-2 text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline sm:hidden"
                   >
                     + เล่นซ้อน / เผื่อเวลา
                   </button>

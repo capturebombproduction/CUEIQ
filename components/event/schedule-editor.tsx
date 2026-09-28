@@ -453,8 +453,9 @@ export function ScheduleEditor({
                       sheet the crew reads. Everything here is shrink-0: four
                       controls in a 2/12 cell would otherwise squash to ~22px on an
                       iPad in portrait, which is worse than what this replaced. The
-                      grip only appears from lg: up, where there is both room and a
-                      mouse to use it with. */}
+                      grip only appears where there is a mouse to use it with
+                      ((hover: hover) — was lg:, which still drew it, dead, on an
+                      iPad in landscape). */}
                   <Button
                     type="button"
                     variant="ghost"
@@ -484,7 +485,7 @@ export function ScheduleEditor({
                     draggable
                     onDragStart={() => { dragIndex.current = idx; }}
                     onDragEnd={() => { dragIndex.current = null; setDragOverIndex(null); }}
-                    className="hidden shrink-0 cursor-grab rounded p-1.5 text-muted-foreground hover:bg-muted active:cursor-grabbing lg:block"
+                    className="hidden shrink-0 cursor-grab rounded p-1.5 text-muted-foreground hover:bg-muted active:cursor-grabbing [@media(hover:hover)]:block"
                     title="ลากเพื่อสลับลำดับ (เดสก์ท็อป) — มือถือใช้ปุ่ม ▲▼"
                     aria-label="Drag to reorder"
                   >
@@ -507,7 +508,7 @@ export function ScheduleEditor({
               <button
                 type="button"
                 onClick={() => setExtraOpen((prev) => new Set(prev).add(it.id))}
-                className="order-5 col-span-1 self-center justify-self-start rounded-md px-1 py-0.5 text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline sm:hidden"
+                className="order-5 col-span-1 self-center justify-self-start min-h-9 rounded-md px-2 text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline sm:hidden"
               >
                 + สถานที่ / โน้ต
               </button>
