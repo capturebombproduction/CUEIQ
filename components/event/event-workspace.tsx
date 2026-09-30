@@ -80,6 +80,7 @@ export function EventWorkspace({
   songs,
   lineup,
   runSeq = [],
+  canRunLive = true,
 }: {
   event: EventRow & { group: Group | null };
   eventId: string;
@@ -97,6 +98,9 @@ export function EventWorkspace({
   lineup: string[];
   /** This festival's running order — drives the read-only live status card. */
   runSeq?: RunSeqLive[];
+  /** canLiveEdit — admin only. Decides whether Live Mode is the summary's
+   *  primary button or a follow-only secondary one. */
+  canRunLive?: boolean;
 }) {
   const modules = EVENT_TYPES[eventType]?.modules ?? EVENT_TYPES.idol.modules;
   const router = useRouter();
@@ -466,6 +470,7 @@ export function EventWorkspace({
             lineup={lineup}
             completeness={completeness}
             editable={editable}
+            canRunLive={canRunLive}
             tenantId={tenantId}
             runSeq={runSeq}
           />

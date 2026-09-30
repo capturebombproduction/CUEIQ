@@ -15,7 +15,7 @@ import { ExportButton } from "@/components/event/export-button";
 import { EventCopyrightPanel } from "@/components/event/event-copyright-panel";
 import type { RunSeqLive } from "@/components/event/event-live-caller";
 import { createClient } from "@/lib/supabase/client";
-import { canApprove, canEditGroup, canViewGroup } from "@/lib/permissions";
+import { canApprove, canEditGroup, canLiveEdit, canViewGroup } from "@/lib/permissions";
 import { eventCompleteness, performersHaveMics } from "@/lib/completeness";
 import { EVENT_TYPES, type EventType, type GroupStatus } from "@/lib/types";
 import { deadlineInfo } from "@/lib/time";
@@ -413,6 +413,7 @@ export function EventPage() {
         songs={bundle.songs}
         lineup={bundle.lineup}
         runSeq={runSeq}
+        canRunLive={!!ws && canLiveEdit(ws.perms)}
       />
     </div>
   );

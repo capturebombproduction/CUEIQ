@@ -152,6 +152,7 @@ export function EventSummary({
   lineup = [],
   completeness,
   editable = false,
+  canRunLive = true,
   tenantId,
   runSeq = [],
 }: {
@@ -164,6 +165,9 @@ export function EventSummary({
   lineup?: string[];
   completeness?: CompletenessResult;
   editable?: boolean;
+  /** Only an admin can DRIVE Live Mode (canLiveEdit). For everyone else it is a
+   *  follow-only screen, so it is not the page's first, primary button. */
+  canRunLive?: boolean;
   tenantId: string;
   /** This festival's running order — drives the read-only live status card. */
   runSeq?: RunSeqLive[];
@@ -297,14 +301,16 @@ export function EventSummary({
       <div className="no-print flex flex-wrap items-center gap-2">
         {/* Short labels below sm, so the three share one line on a phone (they
             wrapped to two, under a header that already took four). */}
-        <Button asChild>
-          <Link href={`/events/${event.id}/live`}>
-            <Radio className="h-4 w-4" />
-            <span>
-              <span className="hidden sm:inline">เข้า </span>Live Mode
-            </span>
-          </Link>
-        </Button>
+        {canRunLive && (
+          <Button asChild>
+            <Link href={`/events/${event.id}/live`}>
+              <Radio className="h-4 w-4" />
+              <span>
+                <span className="hidden sm:inline">เข้า </span>Live Mode
+              </span>
+            </Link>
+          </Button>
+        )}
         <Button variant="outline" onClick={exportJpg} disabled={exporting}>
           {exporting ? (
             <Loader2 className="h-4 w-4 animate-spin" />
@@ -323,9 +329,23 @@ export function EventSummary({
           }
           altHint="หรือกด “บันทึกเป็นรูป (JPG)” ที่อยู่ข้าง ๆ"
         />
-        <p className="self-center text-xs text-muted-foreground">
-          หน้านี้เป็นสรุปอย่างเดียว — แก้ข้อมูลที่แท็บ/ปุ่มด้านล่าง
-        </p>
+        {!canRunLive && (
+          <Button variant="outline" asChild>
+            <Link href={`/events/${event.id}/live`}>
+              <Radio className="h-4 w-4" />
+              <span>
+                Live Mode<span className="hidden sm:inline"> (ดูตาม)</span>
+              </span>
+            </Link>
+          </Button>
+        )}
+        {/* Editors only: to someone who cannot edit, "แก้ข้อมูลที่…" pointed at
+            fields that would not take a keystroke. */}
+        {editable && (
+          <p className="self-center text-xs text-muted-foreground">
+            หน้านี้เป็นสรุปอย่างเดียว — แก้ข้อมูลที่แท็บ/ปุ่มด้านล่าง
+          </p>
+        )}
       </div>
 
       {/* Live status of this band's slot in the festival running order (read-only).
@@ -657,7 +677,11 @@ export function EventSummary({
         )}
       </div>
 
-      {/* Bottom quick menu — jump to edit tabs / live mode */}
+      {/* Bottom quick menu — jump to edit tabs / live mode. Editors only: it
+          said "ไปแก้ไข" with a pencil on every button to members too, and led
+          them to tabs where nothing could be edited (the tabs above still
+          open the same views for anyone). */}
+      {editable && (
       <div className="no-print flex flex-wrap items-center gap-2 border-t pt-4">
         <span className="self-center text-sm font-medium text-muted-foreground">
           ไปแก้ไข:
@@ -677,12 +701,13 @@ export function EventSummary({
             <Pencil className="h-3.5 w-3.5" /> Mic Map
           </Button>
         )}
-        <Button size="sm" asChild>
+        <Button size="sm" variant={canRunLive ? "default" : "outline"} asChild>
           <Link href={`/events/${event.id}/live`}>
             <Radio className="h-3.5 w-3.5" /> Live Mode
           </Link>
         </Button>
       </div>
+      )}
     </div>
   );
 }

@@ -10,7 +10,7 @@ import {
   AlertTriangle,
 } from "lucide-react";
 import { getEventBundle, getWorkspace } from "@/lib/queries";
-import { canEditGroup, canViewGroup, canApprove } from "@/lib/permissions";
+import { canEditGroup, canViewGroup, canApprove, canLiveEdit } from "@/lib/permissions";
 import { createClient } from "@/lib/supabase/server";
 import { assertReadsSucceeded } from "@/lib/read-guard";
 import { eventCompleteness, performersHaveMics } from "@/lib/completeness";
@@ -263,6 +263,7 @@ export default async function EventPage({
         songs={bundle.songs}
         lineup={bundle.lineup}
         runSeq={runSeq}
+        canRunLive={canLiveEdit(ws.perms)}
       />
     </div>
   );

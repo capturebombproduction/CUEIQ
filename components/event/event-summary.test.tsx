@@ -95,3 +95,47 @@ describe("EventSummary — the JPG says who is coming", () => {
     expect(img).not.toContain("มาครบ");
   });
 });
+
+// 2026-10-01: the summary is where every member lands. It used to greet them with
+// "เข้า Live Mode" as its first, primary button (only an admin can drive Live
+// Mode), a note telling them to edit via the tabs, and a "ไปแก้ไข:" bar of pencil
+// buttons leading to fields that would not take a keystroke.
+describe("EventSummary — speaks to what the reader can actually do", () => {
+  const mountAs = (editable: boolean, canRunLive: boolean) =>
+    render(
+      <EventSummary
+        event={event}
+        schedule={[]}
+        setlist={[]}
+        members={members}
+        showMic={false}
+        onNavigate={() => {}}
+        tenantId="t1"
+        editable={editable}
+        canRunLive={canRunLive}
+      />
+    );
+  const liveLinks = () => screen.getAllByRole("link", { name: /Live Mode/ });
+
+  it("a member: no edit bar, no 'edit via the tabs' note, Live Mode offered but not first", () => {
+    mountAs(false, false);
+    expect(screen.queryByText(/ไปแก้ไข/)).toBeNull();
+    expect(screen.queryByText(/แก้ข้อมูลที่แท็บ/)).toBeNull();
+    const links = liveLinks();
+    expect(links).toHaveLength(1); // still reachable, to follow along on the day
+    const bar = links[0].closest("div")!;
+    const firstControl = bar.querySelector("a,button")!;
+    expect(firstControl.textContent).not.toMatch(/Live Mode/); // not the lead action
+  });
+
+  it("an Ar (edits, cannot drive Live): keeps the edit bar", () => {
+    mountAs(true, false);
+    expect(screen.getByText(/ไปแก้ไข/)).toBeInTheDocument();
+  });
+
+  it("an admin: Live Mode leads, as before", () => {
+    mountAs(true, true);
+    const bar = liveLinks()[0].closest("div")!;
+    expect(bar.querySelector("a,button")!.textContent).toMatch(/Live Mode/);
+  });
+});
