@@ -157,6 +157,27 @@ describe("EventsList — the next-show banner says when to BE there", () => {
     expect(screen.queryByRole("link", { name: /Live Mode/ })).toBeNull();
   });
 
+  it("on the show's own day it is Live Mode for everyone — that is what the day is for", () => {
+    render(
+      <ConfirmProvider>
+        <EventsList
+          events={[{ ...next, event_date: "2026-09-28" }]}
+          editableGroupIds={[]}
+          canRunLive={false}
+          practiceRoomByGroup={{ g1: "room-1" }}
+        />
+      </ConfirmProvider>
+    );
+    expect(screen.getByRole("link", { name: /Live Mode/ })).toBeTruthy();
+    expect(screen.queryByRole("link", { name: /ซ้อม/ })).toBeNull();
+  });
+
+  it("label staff (desktop — the web redirects them) never get ซ้อม: practice is a band activity", () => {
+    mountBanner({ canRunLive: false, canPractice: false });
+    expect(screen.queryByRole("link", { name: /ซ้อม/ })).toBeNull();
+    expect(screen.getByRole("link", { name: /Live Mode/ })).toBeTruthy();
+  });
+
   it("with no room known, ซ้อม opens the Training list", () => {
     mountBanner({ canRunLive: false });
     expect(screen.getByRole("link", { name: /ซ้อม/ }).getAttribute("href")).toBe("/practice");

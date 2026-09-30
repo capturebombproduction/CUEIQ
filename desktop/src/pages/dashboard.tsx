@@ -117,6 +117,7 @@ export function Dashboard() {
           events={events}
           editableGroupIds={editableGroupIds}
           canRunLive={canLiveEdit(ws.perms)}
+          canPractice={ws.perms.tenantRole !== "label_staff"}
         />
       )}
     </div>

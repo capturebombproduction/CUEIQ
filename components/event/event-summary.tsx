@@ -32,6 +32,7 @@ import {
   formatClockOfDay,
   parseClockToSeconds,
   shortClock,
+  bkkTodayKey,
 } from "@/lib/time";
 import { mapsEmbedUrl } from "@/lib/venues";
 import { cn } from "@/lib/utils";
@@ -165,8 +166,9 @@ export function EventSummary({
   lineup?: string[];
   completeness?: CompletenessResult;
   editable?: boolean;
-  /** Only an admin can DRIVE Live Mode (canLiveEdit). For everyone else it is a
-   *  follow-only screen, so it is not the page's first, primary button. */
+  /** canLiveEdit (admin). Anyone may run Live Mode to rehearse timing, but only
+   *  an admin edits it live; for everyone else it is not the page's first,
+   *  primary button — except on the show's own day. */
   canRunLive?: boolean;
   tenantId: string;
   /** This festival's running order — drives the read-only live status card. */
@@ -295,13 +297,16 @@ export function EventSummary({
     }
   }
 
+  // Live Mode leads for an admin, and for everyone on the show's own day.
+  const leadLive = canRunLive || event.event_date === bkkTodayKey();
+
   return (
     <div className="space-y-4">
       {/* Action bar — not included in the exported image / print */}
       <div className="no-print flex flex-wrap items-center gap-2">
         {/* Short labels below sm, so the three share one line on a phone (they
             wrapped to two, under a header that already took four). */}
-        {canRunLive && (
+        {leadLive && (
           <Button asChild>
             <Link href={`/events/${event.id}/live`}>
               <Radio className="h-4 w-4" />
@@ -329,12 +334,12 @@ export function EventSummary({
           }
           altHint="หรือกด “บันทึกเป็นรูป (JPG)” ที่อยู่ข้าง ๆ"
         />
-        {!canRunLive && (
+        {!leadLive && (
           <Button variant="outline" asChild>
             <Link href={`/events/${event.id}/live`}>
               <Radio className="h-4 w-4" />
               <span>
-                Live Mode<span className="hidden sm:inline"> (ดูตาม)</span>
+                Live Mode
               </span>
             </Link>
           </Button>
@@ -701,7 +706,7 @@ export function EventSummary({
             <Pencil className="h-3.5 w-3.5" /> Mic Map
           </Button>
         )}
-        <Button size="sm" variant={canRunLive ? "default" : "outline"} asChild>
+        <Button size="sm" variant={leadLive ? "default" : "outline"} asChild>
           <Link href={`/events/${event.id}/live`}>
             <Radio className="h-3.5 w-3.5" /> Live Mode
           </Link>

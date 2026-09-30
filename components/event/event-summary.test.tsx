@@ -122,7 +122,7 @@ describe("EventSummary — speaks to what the reader can actually do", () => {
     expect(screen.queryByText(/ไปแก้ไข/)).toBeNull();
     expect(screen.queryByText(/แก้ข้อมูลที่แท็บ/)).toBeNull();
     const links = liveLinks();
-    expect(links).toHaveLength(1); // still reachable, to follow along on the day
+    expect(links).toHaveLength(1); // still one tap — anyone may run it to rehearse timing
     const bar = links[0].closest("div")!;
     const firstControl = bar.querySelector("a,button")!;
     expect(firstControl.textContent).not.toMatch(/Live Mode/); // not the lead action
@@ -131,6 +131,25 @@ describe("EventSummary — speaks to what the reader can actually do", () => {
   it("an Ar (edits, cannot drive Live): keeps the edit bar", () => {
     mountAs(true, false);
     expect(screen.getByText(/ไปแก้ไข/)).toBeInTheDocument();
+  });
+
+  it("on the show's own day Live Mode leads for everyone", () => {
+    const today = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Bangkok" }).format(new Date());
+    render(
+      <EventSummary
+        event={{ ...event, event_date: today }}
+        schedule={[]}
+        setlist={[]}
+        members={members}
+        showMic={false}
+        onNavigate={() => {}}
+        tenantId="t1"
+        editable={false}
+        canRunLive={false}
+      />
+    );
+    const bar = liveLinks()[0].closest("div")!;
+    expect(bar.querySelector("a,button")!.textContent).toMatch(/Live Mode/);
   });
 
   it("an admin: Live Mode leads, as before", () => {

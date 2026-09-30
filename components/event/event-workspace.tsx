@@ -99,7 +99,7 @@ export function EventWorkspace({
   /** This festival's running order — drives the read-only live status card. */
   runSeq?: RunSeqLive[];
   /** canLiveEdit — admin only. Decides whether Live Mode is the summary's
-   *  primary button or a follow-only secondary one. */
+   *  primary button or a secondary one (see EventSummary). */
   canRunLive?: boolean;
 }) {
   const modules = EVENT_TYPES[eventType]?.modules ?? EVENT_TYPES.idol.modules;

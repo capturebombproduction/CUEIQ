@@ -275,6 +275,7 @@ export function EventsList({
   editableGroupIds,
   callTimes,
   canRunLive = true,
+  canPractice = true,
   practiceRoomByGroup,
 }: {
   events: EventWithGroup[];
@@ -284,9 +285,14 @@ export function EventsList({
    *  the desktop dashboard reads its list from an offline cache without schedules,
    *  and its banner then says the stage time alone, as it always did. */
   callTimes?: Record<string, string>;
-  /** Only an admin can DRIVE Live Mode (canLiveEdit); for everyone else the
-   *  banner's second button was a follow-only screen. They get "ซ้อม" instead. */
+  /** canLiveEdit (admin). Anyone may RUN Live Mode to rehearse timing, but only
+   *  an admin edits it live (reorder, files, "จบโชว์"), and the one real at-show
+   *  run on record (2026-09-05) was an admin's. For everyone else the banner's
+   *  second button is "ซ้อม" — what the band does between shows — except on the
+   *  show's own day, when it is Live Mode for everyone. */
   canRunLive?: boolean;
+  /** Practice is a band activity; the web redirects label staff away from it. */
+  canPractice?: boolean;
   /** The practice room "ซ้อม" opens, per band (lib/next-show.ts). Absent → the
    *  Training list. */
   practiceRoomByGroup?: Record<string, string>;
@@ -564,7 +570,7 @@ export function EventsList({
             >
               ดูงาน
             </Link>
-            {canRunLive ? (
+            {canRunLive || !canPractice || daysUntil(nextShow.event_date) <= 0 ? (
               <Link
                 href={`/events/${nextShow.id}/live`}
                 className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-sm font-semibold text-primary-foreground transition hover:opacity-90"

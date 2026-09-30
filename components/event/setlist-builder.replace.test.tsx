@@ -67,6 +67,7 @@ const SONGS = [
   song("lib-boot", "[SYSTEM_BOOT] SE", 96),
   song("lib-iam", "I Am Who I Am", 235),
   song("lib-eve", "Eve of the Revolution", 244),
+  song("lib-new", "Brand New Song", 0), // added to the library, length not set yet
 ];
 
 const SET = [
@@ -128,6 +129,21 @@ describe("SetlistBuilder — swap a song in place", () => {
     expect(supa.callsTo("setlist_items", "insert")).toHaveLength(0);
     expect(supa.callsTo("setlist_items", "delete")).toHaveLength(0);
     expect(screen.getByDisplayValue("เล่นต่อเนื่อง")).toBeInTheDocument(); // the slot's cue stays
+  });
+
+  it("a song with no length yet keeps the row's — 0:00 would pull every later start forward", async () => {
+    mount();
+    fireEvent.click(replaceButtons()[1]); // row 2, 235 s
+    const dialog = await screen.findByRole("dialog");
+    await act(async () => {
+      fireEvent.click(within(dialog).getByRole("button", { name: /Brand New Song/ }));
+    });
+    await waitFor(() => expect(supa.callsTo("setlist_items", "update")).toHaveLength(1));
+    expect(supa.callsTo("setlist_items", "update")[0].values).toEqual({
+      title: "Brand New Song",
+      duration_seconds: 235,
+      song_id: "lib-new",
+    });
   });
 
   it("marks the songs already in the set, without blocking them (a set can repeat one)", async () => {

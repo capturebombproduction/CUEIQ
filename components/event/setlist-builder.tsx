@@ -425,6 +425,7 @@ function LibraryPickerDialog({
   onOpenChange,
   heading = "เลือกเพลงจากคลัง",
   hint,
+  returnFocusTo,
 }: {
   songs: Song[];
   onPick: (song: Song) => void;
@@ -436,6 +437,8 @@ function LibraryPickerDialog({
   onOpenChange?: (open: boolean) => void;
   heading?: string;
   hint?: string;
+  /** Controlled mode has no trigger for Radix to hand focus back to on close. */
+  returnFocusTo?: () => HTMLElement | null;
 }) {
   const [openState, setOpenState] = useState(false);
   const controlled = openProp !== undefined;
@@ -459,7 +462,15 @@ function LibraryPickerDialog({
           </Button>
         </DialogTrigger>
       )}
-      <DialogContent>
+      <DialogContent
+        onCloseAutoFocus={(e) => {
+          const el = returnFocusTo?.();
+          if (el) {
+            e.preventDefault();
+            el.focus();
+          }
+        }}
+      >
         <DialogHeader>
           <DialogTitle>{heading}</DialogTitle>
           {hint && <DialogDescription>{hint}</DialogDescription>}
@@ -1042,10 +1053,13 @@ export function SetlistBuilder({
   // SLOT ("เล่นต่อเนื่อง", "พูดชื่อเพลง"), not facts about the old song. It takes
   // the new song's title, length and audio link (song_id wins over any legacy
   // per-row audio — lib/audio-targets.ts).
+  // The row being swapped, kept after the dialog closes so its heading does not
+  // flash to "แถวที่ " during the close animation; `replaceOpen` is the dialog.
   const [replacing, setReplacing] = useState<SetlistItem | null>(null);
+  const [replaceOpen, setReplaceOpen] = useState(false);
   function replaceFromLibrary(song: Song) {
     const it = replacing;
-    setReplacing(null);
+    setReplaceOpen(false);
     if (!it) return;
     // The dialog was open while the show moved on — the row went on air.
     if (liveItemId === it.id) {
@@ -1054,7 +1068,9 @@ export function SetlistBuilder({
     }
     update(it.id, {
       title: song.title,
-      duration_seconds: song.duration_seconds,
+      // A library song with no length yet keeps the row's: 0:00 would silently
+      // pull every later start time forward and break the set's run time.
+      duration_seconds: song.duration_seconds || it.duration_seconds,
       song_id: song.id,
     });
   }
@@ -1527,7 +1543,11 @@ export function SetlistBuilder({
                       variant="outline"
                       className="h-10 shrink-0 px-2.5"
                       title="เปลี่ยนเป็นเพลงอื่นจากคลัง — ตำแหน่ง ไมค์ และโน้ตคงเดิม"
-                      onClick={() => setReplacing(it)}
+                      data-replace-row={it.id}
+                      onClick={() => {
+                        setReplacing(it);
+                        setReplaceOpen(true);
+                      }}
                     >
                       <ListMusic className="h-4 w-4" /> เปลี่ยน
                     </Button>
@@ -1741,8 +1761,13 @@ export function SetlistBuilder({
             songs={songs}
             onPick={replaceFromLibrary}
             inSet={songIdsInSet}
-            open={replacing !== null}
-            onOpenChange={(o) => !o && setReplacing(null)}
+            open={replaceOpen}
+            onOpenChange={setReplaceOpen}
+            returnFocusTo={() =>
+              replacing
+                ? document.querySelector<HTMLElement>(`[data-replace-row="${replacing.id}"]`)
+                : null
+            }
             heading={`เปลี่ยนเพลงแถวที่ ${
               replacing ? items.findIndex((i) => i.id === replacing.id) + 1 : ""
             }`}

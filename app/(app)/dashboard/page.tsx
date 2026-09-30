@@ -10,7 +10,7 @@ import { EventsList } from "@/components/event/events-list";
 import { CreateFromTemplateButton } from "@/components/event/create-from-template-button";
 import { canCreateAnyEvent, canEditGroup, canLiveEdit, viewableGroups } from "@/lib/permissions";
 import { bkkTodayKey } from "@/lib/time";
-import { earliestStartByEvent, practiceRoomByGroup } from "@/lib/next-show";
+import { callTimeByEvent, practiceRoomByGroup } from "@/lib/next-show";
 import { type EventRow } from "@/lib/types";
 import { WhatsNew } from "@/components/whats-new";
 
@@ -53,7 +53,7 @@ export default async function DashboardPage() {
       .eq("is_template", true),
     supabase
       .from("schedule_items")
-      .select("event_id, start_time, events!inner(event_date, group_id, is_template)")
+      .select("event_id, start_time, kind, events!inner(event_date, group_id, is_template)")
       .not("start_time", "is", null)
       .gte("events.event_date", bkkTodayKey())
       .in("events.group_id", viewableGroupIds)
@@ -76,8 +76,9 @@ export default async function DashboardPage() {
           .order("created_at", { ascending: false })
           .limit(50),
   ]);
-  const callTimes = earliestStartByEvent(
-    (callRows ?? []) as { event_id: string; start_time: string | null }[]
+  const callTimes = callTimeByEvent(
+    (callRows ?? []) as { event_id: string; start_time: string | null; kind: string | null }[],
+    Object.fromEntries((data ?? []).map((e) => [e.id, e.show_start_time]))
   );
   const roomByGroup = practiceRoomByGroup(
     (roomRows ?? []) as { id: string; group_id: string }[],

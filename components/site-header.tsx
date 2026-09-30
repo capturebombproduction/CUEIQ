@@ -48,7 +48,10 @@ export function SiteHeader({
           nav always sits on its own scrollable row below. On a phone the top row is
           brand + bell + "⋯" (the other tools fold into HeaderTray), so the sticky
           header is two rows, not four; from sm up everything sits on the one row. */}
-      <div className="container flex flex-wrap items-center gap-x-2 gap-y-1.5 py-2 sm:gap-x-3">
+      {/* sm:justify-end: when a long name pushes the tools onto a second row
+          (≈640–760px), that row sits right, under the bell, not stranded left.
+          The first row is unaffected — the cluster's ml-auto takes the space. */}
+      <div className="container flex flex-wrap items-center gap-x-2 gap-y-1.5 py-2 sm:justify-end sm:gap-x-3">
         <Link href="/dashboard" className="shrink-0">
           <Brand subtitle="Designed by PatzNutthapat" />
         </Link>

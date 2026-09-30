@@ -17,7 +17,7 @@ import { eventCompleteness, performersHaveMics } from "@/lib/completeness";
 import { EVENT_TYPES, type EventType, type GroupStatus } from "@/lib/types";
 import { shortClock, deadlineInfo } from "@/lib/time";
 import { cn } from "@/lib/utils";
-import { earliestStartByEvent, showTimesLabel } from "@/lib/next-show";
+import { callTimeOf, showTimesLabel } from "@/lib/next-show";
 import { Button } from "@/components/ui/button";
 import { StatusBadge } from "@/components/status-badge";
 import { ApprovalControl } from "@/components/event/approval-control";
@@ -90,7 +90,7 @@ export default async function EventPage({
     bundle.setlist.map((s) => s.song_id).filter(Boolean) as string[]
   );
   const showTimes = showTimesLabel(
-    earliestStartByEvent(bundle.schedule)[event.id],
+    callTimeOf(bundle.schedule, event.show_start_time),
     event.show_start_time
   );
   const rejectedSongs = bundle.songs.filter(
