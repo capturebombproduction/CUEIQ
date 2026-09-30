@@ -17,6 +17,7 @@ import { eventCompleteness, performersHaveMics } from "@/lib/completeness";
 import { EVENT_TYPES, type EventType, type GroupStatus } from "@/lib/types";
 import { shortClock, deadlineInfo } from "@/lib/time";
 import { cn } from "@/lib/utils";
+import { earliestStartByEvent, showTimesLabel } from "@/lib/next-show";
 import { Button } from "@/components/ui/button";
 import { StatusBadge } from "@/components/status-badge";
 import { ApprovalControl } from "@/components/event/approval-control";
@@ -87,6 +88,10 @@ export default async function EventPage({
   // rejected. Surfaced to the band's Ar working on the event (warn only).
   const usedSongIds = new Set(
     bundle.setlist.map((s) => s.song_id).filter(Boolean) as string[]
+  );
+  const showTimes = showTimesLabel(
+    earliestStartByEvent(bundle.schedule)[event.id],
+    event.show_start_time
   );
   const rejectedSongs = bundle.songs.filter(
     (s) => usedSongIds.has(s.id) && s.copyright_status === "rejected"
@@ -174,11 +179,9 @@ export default async function EventPage({
               <span className="flex items-center gap-1.5">
                 <CalendarDays className="h-4 w-4" />
                 {formatDate(event.event_date)}
-                {event.show_start_time && (
-                  <span className="tabular-nums">
-                    · {shortClock(event.show_start_time)} น.
-                  </span>
-                )}
+                {/* "นัด 11:20 · ขึ้นเวที 13:20" — a bare "13:20 น." read as the call
+                    time to the members it was for (lib/next-show.ts). */}
+                {showTimes && <span className="tabular-nums">· {showTimes}</span>}
                 {event.hard_out_time && (
                   <span className="tabular-nums">
                     (Hard Out {shortClock(event.hard_out_time)})

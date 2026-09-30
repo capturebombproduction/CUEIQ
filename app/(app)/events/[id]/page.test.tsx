@@ -142,3 +142,29 @@ describe("EventPage — an empty read is still an empty order", () => {
     expect(supa.calls).toHaveLength(0);
   });
 });
+
+// The header's time, 2026-10-01: "18:00 น." alone read as the call time to the
+// members who open this page to find out when to be there (lib/next-show.ts).
+describe("EventPage — the header says when to be there", () => {
+  function textOf(node: unknown): string {
+    if (node == null || typeof node === "boolean") return "";
+    if (typeof node === "string" || typeof node === "number") return String(node);
+    if (Array.isArray(node)) return node.map(textOf).join("");
+    const el = node as Elementish;
+    return el.props ? textOf(el.props.children) : "";
+  }
+
+  it("names the call time from the show's own schedule, and the stage time", async () => {
+    (h.bundle as { schedule: unknown[] }).schedule = [
+      { id: "s2", event_id: EVENT_ID, kind: "stage", start_time: "18:00:00" },
+      { id: "s1", event_id: EVENT_ID, kind: "on_location", start_time: "16:00:00" },
+    ];
+    expect(textOf(await call())).toContain("นัด 16:00 · ขึ้นเวที 18:00");
+  });
+
+  it("with no schedule yet, still says what the one time is", async () => {
+    const text = textOf(await call());
+    expect(text).toContain("ขึ้นเวที 18:00");
+    expect(text).not.toContain("นัด");
+  });
+});

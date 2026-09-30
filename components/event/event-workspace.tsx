@@ -409,7 +409,10 @@ export function EventWorkspace({
           2026-08-16); what was missing is that the app never said so. Disabled
           fields with no explanation read as a broken page, and the person who
           hits them has no way to tell which it is. */}
-      {!editable && (
+      {/* Not on the summary: nothing there is editable by anyone, and it is the
+          page every member opens a show to — the box was the first thing they
+          read, every time, about a limit that was not in their way. */}
+      {!editable && view !== "summary" && (
         <div
           className="no-print rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:border-amber-500/40 dark:bg-amber-950/40 dark:text-amber-100"
           data-testid="read-only-notice"

@@ -18,8 +18,9 @@ import { createClient } from "@/lib/supabase/client";
 import { canApprove, canEditGroup, canViewGroup } from "@/lib/permissions";
 import { eventCompleteness, performersHaveMics } from "@/lib/completeness";
 import { EVENT_TYPES, type EventType, type GroupStatus } from "@/lib/types";
-import { shortClock, deadlineInfo } from "@/lib/time";
+import { deadlineInfo } from "@/lib/time";
 import { cn } from "@/lib/utils";
+import { earliestStartByEvent, showTimesLabel } from "@/lib/next-show";
 import { loadEventBundle, loadEventBundleStatus, type EventBundle } from "~/data/event-bundle";
 import { isOffline, readCache, writeCache } from "~/data/cache";
 import { hasLiveSession } from "@/lib/auth-session";
@@ -270,6 +271,10 @@ export function EventPage() {
   const usedSongIds = new Set(
     bundle.setlist.map((s) => s.song_id).filter(Boolean) as string[]
   );
+  const showTimes = showTimesLabel(
+    earliestStartByEvent(bundle.schedule)[event.id],
+    event.show_start_time
+  );
   const rejectedSongs = bundle.songs.filter(
     (s) => usedSongIds.has(s.id) && s.copyright_status === "rejected"
   );
@@ -321,9 +326,8 @@ export function EventPage() {
               <span className="flex items-center gap-1.5">
                 <CalendarDays className="h-4 w-4" />
                 {formatDate(event.event_date)}
-                {event.show_start_time && (
-                  <span className="tabular-nums">· {shortClock(event.show_start_time)} น.</span>
-                )}
+                {/* Same words as the web header (lib/next-show.ts). */}
+                {showTimes && <span className="tabular-nums">· {showTimes}</span>}
               </span>
               {event.venue && (
                 <span className="flex items-center gap-1.5">

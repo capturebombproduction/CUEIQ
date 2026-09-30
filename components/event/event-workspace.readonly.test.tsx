@@ -8,7 +8,7 @@
 // and the person who hits it cannot tell which one they are looking at. That is
 // what this test protects: not the permission (lib/permissions.test.ts owns
 // that), but the sentence.
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import { render, screen } from "@testing-library/react";
 import type { CompletenessResult } from "@/lib/completeness";
 import type { EventRow, Group } from "@/lib/types";
@@ -86,7 +86,12 @@ const mount = (editable: boolean) =>
   );
 
 describe("EventWorkspace · why the page is read-only", () => {
+  afterEach(() => {
+    window.location.hash = "";
+  });
+
   it("names who CAN edit, instead of leaving the fields dead and silent", () => {
+    window.location.hash = "#schedule"; // a tab with fields in it
     mount(false);
     const notice = screen.getByTestId("read-only-notice");
     expect(notice).toBeInTheDocument();
@@ -98,7 +103,15 @@ describe("EventWorkspace · why the page is read-only", () => {
   });
 
   it("says nothing at all to someone who CAN edit", () => {
+    window.location.hash = "#schedule";
     mount(true);
+    expect(screen.queryByTestId("read-only-notice")).not.toBeInTheDocument();
+  });
+
+  // 2026-10-01: the summary is where every member lands, and nothing on it is
+  // editable by anyone — the box was the first thing they read, every visit.
+  it("is not on the summary, where there is nothing to edit", () => {
+    mount(false);
     expect(screen.queryByTestId("read-only-notice")).not.toBeInTheDocument();
   });
 });
