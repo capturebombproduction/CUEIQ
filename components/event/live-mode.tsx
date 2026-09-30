@@ -32,7 +32,8 @@ import { toast } from "sonner";
 import { createClient } from "@/lib/supabase/client";
 import { hasLiveSession } from "@/lib/auth-session";
 import { shouldMuteOnStepDown, shouldYieldControl } from "@/lib/live-arbitration";
-import { saveAudio, loadAudioForEvent } from "@/lib/audio-store";
+import { saveAudio, loadAudioForEvent, deleteAudio } from "@/lib/audio-store";
+import { heldFileIsAnotherSongs } from "@/lib/audio-targets";
 import { getCachedSongBlob, cacheSongBlob } from "@/lib/song-cache";
 import { getLocalSource, listLocalSourceIds } from "@/lib/local-source";
 import { MGMT_OUTBOX_EVENT } from "@/lib/mgmt-outbox";
@@ -739,6 +740,15 @@ export function LiveMode({
         const urls: Record<string, string> = {};
         const names: Record<string, string> = {};
         for (const s of saved) {
+          // A row swapped to another song since this device cached it: these bytes
+          // are, by the library's own record, the OLD song's (lib/audio-targets.ts).
+          // Never restore them — with no master for the new song yet, nothing would
+          // ever replace them and the old song would play under the new title.
+          const row = itemsRef.current.find((x) => x.id === s.itemId);
+          if (row && heldFileIsAnotherSongs(s.path, row.song_id, songAudioRef.current)) {
+            deleteAudio(eventId, s.itemId).catch(() => {});
+            continue;
+          }
           urls[s.itemId] = URL.createObjectURL(s.blob);
           names[s.itemId] = s.name;
           // Records written BEFORE the copy-on-pick fix below hold the picked File
@@ -804,6 +814,24 @@ export function LiveMode({
   }, []);
 
   /** Which bytes this row should be holding: the R2 key, or a local-only marker. */
+  /** Forget the bytes this device holds for one row: the object URL, the state the
+   *  row's indicator and playback read, which version they were, and the per-event
+   *  IndexedDB copy the next open would restore. */
+  function dropHeldAudio(id: string) {
+    const url = audioUrlsRef.current[id];
+    if (url) URL.revokeObjectURL(url);
+    delete cachedPathRef.current[id];
+    const without = <T,>(prev: Record<string, T>) => {
+      if (!(id in prev)) return prev;
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    };
+    setAudioUrls(without);
+    setAudioNames(without);
+    deleteAudio(eventId, id).catch(() => {});
+  }
+
   function audioVersionOf(it: { song_id?: string | null; audio_path?: string | null }) {
     if (it.audio_path) return it.audio_path;
     if (it.song_id && localSongIdsRef.current.has(it.song_id)) return `local:${it.song_id}`;
@@ -850,6 +878,20 @@ export function LiveMode({
         // ⭐#1 step 7: no online master, but this device holds the file — the bytes
         // are already here, there is simply nothing to download.
         const version = audioVersionOf(it);
+        // The row's song was swapped while this screen was open (setlist-changed
+        // refetch) and the bytes held here are the old song's — drop them, whether
+        // or not the new song has a file to fetch. Not while they are sounding: the
+        // on-air lock below defers it, and the retry comes back here.
+        if (
+          audioUrlsRef.current[it.id] &&
+          heldFileIsAnotherSongs(cachedPathRef.current[it.id], it.song_id, songAudioRef.current)
+        ) {
+          if (it.id === playingIdRef.current) {
+            deferredOnAirRef.current.add(it.id);
+            continue;
+          }
+          dropHeldAudio(it.id);
+        }
         if (!version) continue;
         // LOCK the on-air file: never re-download or revoke the track that's
         // currently sounding (a mid-show library re-upload won't cut the live song).

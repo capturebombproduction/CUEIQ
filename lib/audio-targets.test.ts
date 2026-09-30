@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
+  heldFileIsAnotherSongs,
   resolveAudioTargets,
   resolveLocalOnlyCandidates,
   type SongAudioMap,
@@ -67,5 +68,27 @@ describe("resolveLocalOnlyCandidates", () => {
       songAudio
     );
     expect(c[0].name).toBe("เพลง");
+  });
+});
+
+// A row swapped to another song ("เปลี่ยน") while a device held the old one's bytes.
+describe("heldFileIsAnotherSongs", () => {
+  const songAudio = {
+    songA: { path: "t/g/a.mp3", name: "A" },
+    songB: { path: null, name: null }, // just added, no master yet
+  };
+  it("is true when the held file is another song's current master", () => {
+    expect(heldFileIsAnotherSongs("t/g/a.mp3", "songB", songAudio)).toBe(true);
+  });
+  it("is false for the row's own song — that is a version question, not a swap", () => {
+    expect(heldFileIsAnotherSongs("t/g/a.mp3", "songA", songAudio)).toBe(false);
+  });
+  it("is false for a path the library does not know — keep the bytes (offline cache, deleted master)", () => {
+    expect(heldFileIsAnotherSongs("t/g/old.mp3", "songB", songAudio)).toBe(false);
+    expect(heldFileIsAnotherSongs("t/g/a.mp3", "songB", {})).toBe(false);
+  });
+  it("is false with nothing held, or a device-local record with no path", () => {
+    expect(heldFileIsAnotherSongs(null, "songB", songAudio)).toBe(false);
+    expect(heldFileIsAnotherSongs(undefined, "songB", songAudio)).toBe(false);
   });
 });

@@ -40,9 +40,11 @@ vi.mock("@/lib/supabase/client", () => ({ createClient: () => h.supa }));
 vi.mock("@/lib/audio-store", () => ({
   saveAudio: vi.fn(async () => {}),
   loadAudioForEvent: vi.fn(async () => h.saved),
+  deleteAudio: vi.fn(async () => {}),
 }));
 
 import { LiveMode } from "./live-mode";
+import { deleteAudio } from "@/lib/audio-store";
 
 const EVENT_ID = "11111111-2222-4333-8444-555555555555";
 const GROUP_ID = "66666666-7777-4888-8999-000000000000";
@@ -806,5 +808,69 @@ describe("LiveMode · the crash-recovery snapshot restores the device's ROLE", (
     expect(reply!.payload.fromController).toBe(true);
     expect(reply!.payload.controllerSince).toBe(54_321);
     expect(reply!.payload.ended).toBe(false);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// A row swapped to another song ("เปลี่ยน" in the setlist builder) while this
+// device held the old song's bytes under that row id. With no master for the new
+// song, nothing replaced them, and Live Mode played the OLD song under the new
+// title with the row showing ready (review 2026-10-01).
+// ─────────────────────────────────────────────────────────────────────────────
+describe("LiveMode · a swapped row never plays the old song", () => {
+  const A = { id: "songA", audio_path: "t/g/a.mp3", audio_name: "a.mp3" };
+  const B = { id: "songB", audio_path: null, audio_name: null }; // just added, no master
+  const heldA = () => [{ itemId: "item-1", blob: new Blob(["A-bytes"]), name: "a.mp3", path: "t/g/a.mp3" }];
+  const fileButton = () =>
+    screen.getAllByRole("button").find((b) => /ไฟล์เพลง/.test(b.getAttribute("title") ?? ""))!;
+
+  beforeEach(() => {
+    vi.mocked(deleteAudio).mockClear();
+  });
+
+  it("opening the show after the swap: the old bytes are not restored, and are deleted", async () => {
+    const swapped = [makeItem(1, { song_id: "songB", title: "Track B" })];
+    supa.setTable("setlist_items", ok(swapped));
+    supa.setTable("songs", ok([A, B]));
+    h.saved = heldA();
+    await mountLive({
+      items: swapped,
+      songAudio: { songA: { path: A.audio_path, name: A.audio_name }, songB: { path: null, name: null } },
+    });
+    expect(deleteAudio).toHaveBeenCalledWith(EVENT_ID, "item-1");
+    expect(fileButton().getAttribute("title")).toBe("โหลดไฟล์เพลง (อัปโหลดขึ้นคลาวด์)");
+  });
+
+  it("a file the library does not know is KEPT — never drop show audio on a guess", async () => {
+    // e.g. the desktop's offline cache, whose song rows can lack audio_path
+    const row = [makeItem(1, { song_id: "songB", title: "Track B" })];
+    supa.setTable("setlist_items", ok(row));
+    supa.setTable("songs", ok([B]));
+    h.saved = heldA();
+    await mountLive({ items: row, songAudio: { songB: { path: null, name: null } } });
+    expect(deleteAudio).not.toHaveBeenCalled();
+    expect(fileButton().getAttribute("title")).toBe("เปลี่ยนไฟล์เพลง (อัปโหลดขึ้นคลาวด์)");
+  });
+
+  it("swapped while this screen is open: the setlist-changed refetch drops the old bytes", async () => {
+    const before = [makeItem(1, { song_id: "songA", title: "Track A" })];
+    supa.setTable("setlist_items", ok(before));
+    supa.setTable("songs", ok([A]));
+    h.saved = heldA();
+    await mountLive({ items: before, songAudio: { songA: { path: A.audio_path, name: A.audio_name } } });
+    expect(fileButton().getAttribute("title")).not.toBe("โหลดไฟล์เพลง (อัปโหลดขึ้นคลาวด์)");
+    expect(deleteAudio).not.toHaveBeenCalled();
+
+    supa.setTable("setlist_items", ok([makeItem(1, { song_id: "songB", title: "Track B" })]));
+    supa.setTable("songs", ok([A, B]));
+    await act(async () => {
+      live().emit("setlist-changed", {});
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(2_000);
+    });
+    await act(async () => {});
+    expect(deleteAudio).toHaveBeenCalledWith(EVENT_ID, "item-1");
+    expect(fileButton().getAttribute("title")).toBe("โหลดไฟล์เพลง (อัปโหลดขึ้นคลาวด์)");
   });
 });

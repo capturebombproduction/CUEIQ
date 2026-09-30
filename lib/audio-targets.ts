@@ -80,3 +80,31 @@ export function resolveLocalOnlyCandidates(
   }
   return out;
 }
+
+/**
+ * Whether the bytes a device holds for a setlist ROW are, by the library's own
+ * record, ANOTHER song's file.
+ *
+ * Live Mode caches audio per row id (lib/audio-store), not per song. Since the
+ * setlist builder can swap a row's song in place ("เปลี่ยน", 2026-09-28), a row
+ * can now change song while a device still holds the old one's bytes under that
+ * id — and when the new song has no master yet, Live Mode had nothing to replace
+ * them with, so it played the OLD song under the new title.
+ *
+ * Deliberately narrow: true only when `heldPath` is positively some OTHER song's
+ * current `audio_path`. A path the map does not know — the desktop's offline cache
+ * with song rows missing fields, a master deleted since — answers false, and the
+ * device keeps its bytes, exactly as before. Dropping audio a show might need on
+ * a guess is the worse failure.
+ */
+export function heldFileIsAnotherSongs(
+  heldPath: string | null | undefined,
+  rowSongId: string | null | undefined,
+  songAudio: SongAudioMap
+): boolean {
+  if (!heldPath) return false;
+  for (const [songId, sa] of Object.entries(songAudio)) {
+    if (songId !== rowSongId && sa?.path === heldPath) return true;
+  }
+  return false;
+}
