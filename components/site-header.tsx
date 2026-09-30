@@ -9,6 +9,7 @@ import { ThemeToggle } from "@/components/theme-toggle";
 import { AccentPicker } from "@/components/accent-picker";
 import { InstallButton } from "@/components/install-button";
 import { KioskMode } from "@/components/kiosk-mode";
+import { HeaderTray } from "@/components/header-tray";
 import { ROLE_SHORT, type Role } from "@/lib/types";
 import { isLabelWideUser, type Perms } from "@/lib/permissions";
 
@@ -44,14 +45,17 @@ export function SiteHeader({
       {/* Brand + identity + action icons. The nav is NOT inline here: with the
           admin's 7-link nav (incl. Crew) it never reliably fit beside the icons — it
           overflowed around 1280–1700 and the role badge overlapped the nav — so the
-          nav always sits on its own scrollable row below. The icon cluster is w-full
-          on phones (its own right-aligned line under the brand) and auto from sm up
-          (beside the brand on one row, with room to spare since the nav isn't here). */}
-      <div className="container flex flex-wrap items-center justify-between gap-x-3 gap-y-1.5 py-2">
+          nav always sits on its own scrollable row below. On a phone the top row is
+          brand + bell + "⋯" (the other tools fold into HeaderTray), so the sticky
+          header is two rows, not four; from sm up everything sits on the one row. */}
+      <div className="container flex flex-wrap items-center gap-x-2 gap-y-1.5 py-2 sm:gap-x-3">
         <Link href="/dashboard" className="shrink-0">
           <Brand subtitle="Designed by PatzNutthapat" />
         </Link>
-        <div className="flex w-full flex-wrap items-center justify-end gap-x-2 gap-y-1.5 sm:w-auto sm:gap-x-3">
+        {/* Always on the top row: who you are (sm+), the bell, and — when the
+            browser offers it — install. The rest folds behind "⋯" on a phone
+            (components/header-tray.tsx). */}
+        <div className="ml-auto flex items-center gap-x-2 sm:gap-x-3">
           {shownRole && (
             <Badge variant="secondary" className="hidden sm:inline-flex">
               {shownRole}
@@ -66,28 +70,30 @@ export function SiteHeader({
             <NotificationBell userId={userId} tenantId={tenantId} />
           )}
           <InstallButton />
+        </div>
+        <HeaderTray
+          identity={
+            shownRole || name ? (
+              <>
+                {shownRole && (
+                  <Badge variant="secondary" className="shrink-0 text-[10px]">
+                    {shownRole}
+                  </Badge>
+                )}
+                {name && <span className="min-w-0 truncate font-medium">{name}</span>}
+              </>
+            ) : undefined
+          }
+        >
           <KioskMode />
           <AccentPicker />
           <ThemeToggle />
           <ChangePasswordButton />
           <SignOutButton />
-        </div>
+        </HeaderTray>
       </div>
-      {/* Nav — always its own scrollable row, so it can never overlap the icons.
-          On phones (where the top row hides the identity) the role + name show here. */}
-      <div className="container -mt-1 space-y-1.5 pb-2">
-        {(shownRole || name) && (
-          <div className="flex items-center gap-2 text-xs sm:hidden">
-            {shownRole && (
-              <Badge variant="secondary" className="text-[10px]">
-                {shownRole}
-              </Badge>
-            )}
-            {name && (
-              <span className="min-w-0 truncate font-medium">{name}</span>
-            )}
-          </div>
-        )}
+      {/* Nav — always its own scrollable row, so it can never overlap the icons. */}
+      <div className="container -mt-1 pb-2">
         <div className="overflow-x-auto">
           <MainNav perms={perms} />
         </div>
