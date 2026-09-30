@@ -15,6 +15,7 @@ import {
   Loader2,
   DownloadCloud,
   ChevronDown,
+  Dumbbell,
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { StatusBadge } from "@/components/status-badge";
@@ -44,6 +45,7 @@ import {
   monthBeforeKey,
 } from "@/lib/time";
 import { cn } from "@/lib/utils";
+import { showTimesLabel } from "@/lib/next-show";
 
 type EventWithGroup = EventRow & {
   groups: {
@@ -271,10 +273,23 @@ const eventCache = (): EventCacheBridge | undefined =>
 export function EventsList({
   events,
   editableGroupIds,
+  callTimes,
+  canRunLive = true,
+  practiceRoomByGroup,
 }: {
   events: EventWithGroup[];
   /** Group ids the user may edit — drives the per-card duplicate button. */
   editableGroupIds: string[];
+  /** Each upcoming show's call time (its earliest timed schedule row). Optional:
+   *  the desktop dashboard reads its list from an offline cache without schedules,
+   *  and its banner then says the stage time alone, as it always did. */
+  callTimes?: Record<string, string>;
+  /** Only an admin can DRIVE Live Mode (canLiveEdit); for everyone else the
+   *  banner's second button was a follow-only screen. They get "ซ้อม" instead. */
+  canRunLive?: boolean;
+  /** The practice room "ซ้อม" opens, per band (lib/next-show.ts). Absent → the
+   *  Training list. */
+  practiceRoomByGroup?: Record<string, string>;
 }) {
   const [q, setQ] = useState("");
   // Local copy so a delete drops the card instantly; re-synced when the server
@@ -350,6 +365,9 @@ export function EventsList({
     upcoming.length === 0 && undated.length === 0 && past.length === 0 && old.length === 0;
   // soonest dated upcoming event (upcoming is already sorted soonest-first)
   const nextShow = !q.trim() ? upcoming.find((e) => !!e.event_date) : undefined;
+  const nextTimes = nextShow
+    ? showTimesLabel(callTimes?.[nextShow.id], nextShow.show_start_time)
+    : null;
 
   // all past events (search-independent) — for clearing their cached audio
   const allPastIds = useMemo(() => {
@@ -524,11 +542,15 @@ export function EventsList({
             <div className="truncate text-lg font-bold leading-tight">{nextShow.name}</div>
             <div className="truncate text-sm text-muted-foreground">
               {formatDate(nextShow.event_date)}
-              {nextShow.show_start_time && (
-                <span className="tabular-nums"> · {shortClock(nextShow.show_start_time)}</span>
-              )}
               {nextShow.venue && <span> · {nextShow.venue}</span>}
             </div>
+            {/* Its own line, in the foreground colour: this is what a member opens
+                the app to find out (lib/next-show.ts). */}
+            {nextTimes && (
+              <div data-testid="next-show-times" className="mt-0.5 text-sm font-semibold tabular-nums">
+                {nextTimes}
+              </div>
+            )}
           </div>
           <div className="shrink-0 text-right">
             <div className="text-xl font-extrabold text-primary">
@@ -542,12 +564,25 @@ export function EventsList({
             >
               ดูงาน
             </Link>
-            <Link
-              href={`/events/${nextShow.id}/live`}
-              className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-sm font-semibold text-primary-foreground transition hover:opacity-90"
-            >
-              <Radio className="h-4 w-4" /> Live Mode
-            </Link>
+            {canRunLive ? (
+              <Link
+                href={`/events/${nextShow.id}/live`}
+                className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-sm font-semibold text-primary-foreground transition hover:opacity-90"
+              >
+                <Radio className="h-4 w-4" /> Live Mode
+              </Link>
+            ) : (
+              <Link
+                href={
+                  nextShow.group_id && practiceRoomByGroup?.[nextShow.group_id]
+                    ? `/events/${practiceRoomByGroup[nextShow.group_id]}/practice`
+                    : "/practice"
+                }
+                className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-sm font-semibold text-primary-foreground transition hover:opacity-90"
+              >
+                <Dumbbell className="h-4 w-4" /> ซ้อม
+              </Link>
+            )}
           </div>
         </div>
       )}

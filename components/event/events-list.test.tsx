@@ -121,3 +121,44 @@ describe("EventsList — events more than a month past fold away", () => {
     expect(screen.queryByText(/ไม่พบงาน/)).toBeNull();
   });
 });
+
+// The "งานถัดไป" banner, 2026-10-01 (lib/next-show.ts). Measured: the band is
+// called ~2 h before its set, and the banner printed only the set time — the one
+// time a member need not be anywhere by. And its bright second button was Live
+// Mode, which only an admin can drive; the band practises the next show's set.
+describe("EventsList — the next-show banner says when to BE there", () => {
+  const next = { ...ev("up", "โชว์ที่จะถึง", "2026-10-05"), show_start_time: "13:20:00" };
+  const mountBanner = (props: Partial<Parameters<typeof EventsList>[0]> = {}) =>
+    render(
+      <ConfirmProvider>
+        <EventsList events={[next]} editableGroupIds={[]} {...props} />
+      </ConfirmProvider>
+    );
+
+  it("gives the call time and the stage time", () => {
+    mountBanner({ callTimes: { up: "11:20:00" } });
+    expect(screen.getByTestId("next-show-times").textContent).toBe("นัด 11:20 · ขึ้นเวที 13:20");
+  });
+
+  it("without schedules (the desktop's offline list) still names the stage time as such", () => {
+    mountBanner();
+    expect(screen.getByTestId("next-show-times").textContent).toBe("ขึ้นเวที 13:20");
+  });
+
+  it("an admin keeps Live Mode", () => {
+    mountBanner({ canRunLive: true });
+    expect(screen.getByRole("link", { name: /Live Mode/ }).getAttribute("href")).toBe("/events/up/live");
+    expect(screen.queryByRole("link", { name: /ซ้อม/ })).toBeNull();
+  });
+
+  it("everyone else gets ซ้อม, straight into the room the band practises in", () => {
+    mountBanner({ canRunLive: false, practiceRoomByGroup: { g1: "room-1" } });
+    expect(screen.getByRole("link", { name: /ซ้อม/ }).getAttribute("href")).toBe("/events/room-1/practice");
+    expect(screen.queryByRole("link", { name: /Live Mode/ })).toBeNull();
+  });
+
+  it("with no room known, ซ้อม opens the Training list", () => {
+    mountBanner({ canRunLive: false });
+    expect(screen.getByRole("link", { name: /ซ้อม/ }).getAttribute("href")).toBe("/practice");
+  });
+});

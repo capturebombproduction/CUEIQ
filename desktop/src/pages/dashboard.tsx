@@ -10,6 +10,7 @@ import { EventsList } from "@/components/event/events-list";
 import {
   canCreateAnyEvent,
   canEditGroup,
+  canLiveEdit,
   canViewLibrary,
   viewableGroups,
 } from "@/lib/permissions";
@@ -110,7 +111,13 @@ export function Dashboard() {
           </CardContent>
         </Card>
       ) : (
-        <EventsList events={events} editableGroupIds={editableGroupIds} />
+        // No call times here: this list comes from an offline cache without
+        // schedules, so the banner keeps saying the stage time alone.
+        <EventsList
+          events={events}
+          editableGroupIds={editableGroupIds}
+          canRunLive={canLiveEdit(ws.perms)}
+        />
       )}
     </div>
   );

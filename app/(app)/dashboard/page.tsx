@@ -8,7 +8,9 @@ import { Card, CardContent } from "@/components/ui/card";
 import { JoinDemo } from "@/components/join-demo";
 import { EventsList } from "@/components/event/events-list";
 import { CreateFromTemplateButton } from "@/components/event/create-from-template-button";
-import { canCreateAnyEvent, canEditGroup, viewableGroups } from "@/lib/permissions";
+import { canCreateAnyEvent, canEditGroup, canLiveEdit, viewableGroups } from "@/lib/permissions";
+import { bkkTodayKey } from "@/lib/time";
+import { earliestStartByEvent, practiceRoomByGroup } from "@/lib/next-show";
 import { type EventRow } from "@/lib/types";
 import { WhatsNew } from "@/components/whats-new";
 
@@ -29,7 +31,11 @@ export default async function DashboardPage() {
   // client pre-caches (EventsList derives libraryGroupIds from these events) —
   // so a one-band member no longer downloads every band's library.
   const viewableGroupIds = viewableGroups(ws.perms, ws.groups).map((g) => g.id);
-  const [{ data }, { data: tplRows }] = await Promise.all([
+  // The "งานถัดไป" banner (lib/next-show.ts): every upcoming show's call time, and —
+  // for anyone who cannot drive Live Mode — the practice room its "ซ้อม" opens.
+  // Best-effort: a failed read here only drops those two extras, never the list.
+  const canRunLive = canLiveEdit(ws.perms);
+  const [{ data }, { data: tplRows }, { data: callRows }, { data: roomRows }, { data: runRows }] = await Promise.all([
     supabase
       .from("events")
       .select("*, groups(name, color, exempt_from_deadline)")
@@ -45,7 +51,38 @@ export default async function DashboardPage() {
       .select("id, group_id")
       .eq("tenant_id", tid)
       .eq("is_template", true),
+    supabase
+      .from("schedule_items")
+      .select("event_id, start_time, events!inner(event_date, group_id, is_template)")
+      .not("start_time", "is", null)
+      .gte("events.event_date", bkkTodayKey())
+      .in("events.group_id", viewableGroupIds)
+      .eq("events.is_template", false),
+    canRunLive
+      ? Promise.resolve({ data: null })
+      : supabase
+          .from("events")
+          .select("id, group_id")
+          .eq("tenant_id", tid)
+          .in("group_id", viewableGroupIds)
+          .eq("is_practice", true)
+          .order("created_at", { ascending: false }),
+    canRunLive
+      ? Promise.resolve({ data: null })
+      : supabase
+          .from("practice_runs")
+          .select("event_id, group_id")
+          .in("group_id", viewableGroupIds)
+          .order("created_at", { ascending: false })
+          .limit(50),
   ]);
+  const callTimes = earliestStartByEvent(
+    (callRows ?? []) as { event_id: string; start_time: string | null }[]
+  );
+  const roomByGroup = practiceRoomByGroup(
+    (roomRows ?? []) as { id: string; group_id: string }[],
+    (runRows ?? []) as { event_id: string | null; group_id: string }[]
+  );
 
   const events = (data ?? []) as (EventRow & {
     groups: {
@@ -112,7 +149,13 @@ export default async function DashboardPage() {
           </CardContent>
         </Card>
       ) : (
-        <EventsList events={events} editableGroupIds={editableGroupIds} />
+        <EventsList
+          events={events}
+          editableGroupIds={editableGroupIds}
+          callTimes={callTimes}
+          canRunLive={canRunLive}
+          practiceRoomByGroup={roomByGroup}
+        />
       )}
     </div>
   );
