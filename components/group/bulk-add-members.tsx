@@ -10,6 +10,7 @@ import {
   DialogHeader,
   DialogTitle,
   DialogDescription,
+  DialogFooter,
   DialogTrigger,
 } from "@/components/ui/dialog";
 
@@ -42,13 +43,13 @@ export function BulkAddMembers({
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild>
-        <Button variant="outline" size="sm" className="mt-1">
-          <UserPlus className="h-4 w-4" /> เพิ่มหลายคน
+        <Button variant="secondary">
+          <UserPlus aria-hidden /> เพิ่มหลายคน
         </Button>
       </DialogTrigger>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>เพิ่มสมาชิกหลายคน</DialogTitle>
+          <DialogTitle>Add members</DialogTitle>
           <DialogDescription>
             พิมพ์บรรทัดละ 1 คน — ใส่ชื่อเล่นและเบอร์ไมค์ได้ คั่นด้วยคอมมา: ชื่อ, ชื่อเล่น, เบอร์ไมค์
           </DialogDescription>
@@ -59,10 +60,12 @@ export function BulkAddMembers({
           rows={8}
           placeholder={"Yuki, ยูกิ, 1\nCherrie, เชอร์รี่, 2\nRiko"}
         />
-        <Button onClick={submit} disabled={busy || !text.trim()}>
-          {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <UserPlus className="h-4 w-4" />}
-          เพิ่มทั้งหมด
-        </Button>
+        <DialogFooter>
+          <Button onClick={submit} disabled={busy || !text.trim()}>
+            {busy ? <Loader2 className="animate-spin" aria-hidden /> : <UserPlus aria-hidden />}
+            เพิ่มทั้งหมด
+          </Button>
+        </DialogFooter>
       </DialogContent>
     </Dialog>
   );

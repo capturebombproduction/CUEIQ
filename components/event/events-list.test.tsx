@@ -184,6 +184,84 @@ describe("EventsList — the next-show banner says when to BE there", () => {
   });
 });
 
+// The redesign's ticket and stubs (spec §G.1) read more of each row than the old
+// cards did — the band colour for the date tile, the date in parts, the times for
+// the stub. The desktop renders the list from its offline cache, whose rows carry
+// only what the airplane smoke seeds (desktop/scripts/smoke-backend.mjs): no
+// event_type, no times, no deadline, no run time, and a band with no colour. The
+// .exe smoke fails on any console.error, so this asserts the same thing in jsdom.
+describe("EventsList — the redesign survives a bare cached row", () => {
+  const seedRow = (id: string, name: string, event_date: string | null) =>
+    ({
+      id,
+      tenant_id: "t1",
+      group_id: "g1",
+      name,
+      event_date,
+      venue: null,
+      status: "draft",
+      is_template: false,
+      is_practice: false,
+      created_at: "2026-01-01T00:00:00.000Z",
+      groups: { name: "วงทดสอบ", color: null, exempt_from_deadline: false },
+    }) as never;
+
+  it("draws the ticket and the stubs, with no console error", () => {
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      render(
+        <ConfirmProvider>
+          <EventsList
+            events={[
+              seedRow("next", "โชว์ถัดไปจากแคช", "2026-10-03"),
+              seedRow("later", "โชว์หลังจากนั้น", "2026-11-20"),
+              seedRow("gone", "โชว์ที่ผ่านไปแล้ว", "2026-09-10"),
+            ]}
+            editableGroupIds={["g1"]}
+            canRunLive={false}
+          />
+        </ConfirmProvider>
+      );
+      const ticket = screen.getByRole("region", { name: "Next show" });
+      expect(ticket).toHaveTextContent("โชว์ถัดไปจากแคช");
+      expect(ticket).toHaveTextContent("อีก5วัน");
+      // the stub's date tile: weekday, day, month — and it is a link into the show
+      const later = screen.getByRole("link", { name: /โชว์หลังจากนั้น/ });
+      expect(later).toHaveAttribute("href", "/events/later");
+      expect(later).toHaveTextContent(/Fri\s*20\s*Nov/);
+      expect(screen.getByRole("link", { name: /โชว์ที่ผ่านไปแล้ว/ })).toBeInTheDocument();
+      expect(errors).not.toHaveBeenCalled();
+    } finally {
+      errors.mockRestore();
+    }
+  });
+
+  it("a show 120 days out sets its count smaller, so three digits fit a phone", () => {
+    render(
+      <ConfirmProvider>
+        <EventsList events={[seedRow("far", "โชว์ไกล", "2027-01-26")]} editableGroupIds={[]} />
+      </ConfirmProvider>
+    );
+    const count = screen.getByText("120");
+    expect(count.className.split(" ")).toContain("text-[96px]");
+  });
+
+  it("What's New goes under the ticket, never above it", () => {
+    render(
+      <ConfirmProvider>
+        <EventsList
+          events={[seedRow("next", "โชว์ถัดไปจากแคช", "2026-10-03")]}
+          editableGroupIds={[]}
+          belowHero={<p>การ์ดมีอะไรใหม่</p>}
+        />
+      </ConfirmProvider>
+    );
+    const ticket = screen.getByRole("region", { name: "Next show" });
+    const card = screen.getByText("การ์ดมีอะไรใหม่");
+    expect(ticket.compareDocumentPosition(card) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+});
+
 // Between shows (2026-10-01: Seishin had none entered — they enter a show 1–3
 // days before it). Without a next show there was no banner, and with it went the
 // one-tap "ซ้อม" in exactly the days the band practises.
@@ -219,5 +297,39 @@ describe("EventsList — between shows", () => {
     mountPast({ canRunLive: false });
     fireEvent.change(screen.getByPlaceholderText(/ค้นหา/), { target: { value: "โชว์" } });
     expect(screen.queryByTestId("no-next-show")).toBeNull();
+  });
+});
+
+// §J Home, 2026-10-01: the first Upcoming stub is the ticket's own show, and it
+// repeated the ticket's deadline chip on a line of its own — 123 px of stub that
+// pushed the first row under a member's tab bar (bottom 731.5, target ≤ 705).
+describe("EventsList — the ticket's own stub does not repeat its deadline", () => {
+  const next = { ...ev("up", "โชว์ที่จะถึง", "2026-10-05"), deadline: "2026-09-30T05:00:00Z" };
+  const later = { ...ev("later", "โชว์ถัดไปอีก", "2026-10-20"), deadline: "2026-10-15T05:00:00Z" };
+  const stubOf = (container: HTMLElement, id: string) =>
+    container.querySelector<HTMLAnchorElement>(`a.stub[href="/events/${id}"]`)!;
+
+  it("says the deadline once, on the ticket; other stubs keep theirs", () => {
+    const { container } = render(
+      <ConfirmProvider>
+        <EventsList events={[later, next]} editableGroupIds={[]} />
+      </ConfirmProvider>
+    );
+    const ticket = screen.getByRole("region", { name: "Next show" });
+    expect(ticket.textContent).toContain("เหลือ 2 วัน");
+    expect(screen.getAllByText("เหลือ 2 วัน")).toHaveLength(1);
+    expect(stubOf(container, "up").textContent).not.toContain("เหลือ 2 วัน");
+    expect(stubOf(container, "later").textContent).toContain("ครบกำหนด");
+  });
+
+  it("while searching there is no ticket, so the stub carries it again", () => {
+    const { container } = render(
+      <ConfirmProvider>
+        <EventsList events={[later, next]} editableGroupIds={[]} />
+      </ConfirmProvider>
+    );
+    fireEvent.change(screen.getByPlaceholderText(/ค้นหางาน/), { target: { value: "โชว์ที่จะถึง" } });
+    expect(screen.queryByRole("region", { name: "Next show" })).toBeNull();
+    expect(stubOf(container, "up").textContent).toContain("เหลือ 2 วัน");
   });
 });

@@ -2,8 +2,8 @@
 // data assembly client-side, then reuses OverviewClient verbatim (the festival
 // schedule board). Scoped to the bands the user may view.
 import { useEffect, useState } from "react";
-import { LayoutGrid } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
+import { PageTitle } from "@/components/page-title";
 import { RefreshButton } from "@/components/refresh-button";
 import { createClient } from "@/lib/supabase/client";
 import {
@@ -437,6 +437,7 @@ export function Overview() {
           incomplete: comp.missing.length,
           missingLabels: comp.missing.map((m) => m.label),
           notes: e.notes,
+          venue: e.venue ?? null,
         };
       });
 
@@ -482,16 +483,23 @@ export function Overview() {
   }
 
   return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="flex items-center gap-2 text-2xl font-bold tracking-tight">
-          <LayoutGrid className="h-6 w-6" /> Overview
-        </h1>
-        <p className="text-sm text-muted-foreground">
-          {ws.tenant.name} · {viewable.length} วง
-          {data ? ` · ${data.events.length} งาน` : ""}
-        </p>
-      </div>
+    <div className="space-y-4">
+      <PageTitle
+        title="Overview"
+        right={
+          <span className="pb-0.5 text-right text-[13px] leading-tight text-muted-foreground">
+            {ws.tenant.name}
+            <br />
+            <span className="num text-[17px] text-foreground">{viewable.length}</span> วง
+            {data ? (
+              <>
+                {" "}
+                · <span className="num text-[17px] text-foreground">{data.events.length}</span> งาน
+              </>
+            ) : null}
+          </span>
+        }
+      />
 
       {data === null && loadError ? (
         <Card>
@@ -503,7 +511,7 @@ export function Overview() {
       ) : data === null ? (
         <p className="py-16 text-center text-sm text-muted-foreground">กำลังโหลด…</p>
       ) : data.bands.length === 0 ? (
-        <p className="rounded-lg border border-dashed py-16 text-center text-muted-foreground">
+        <p className="rounded-[2px] border border-dashed border-border py-16 text-center text-muted-foreground">
           ยังไม่มีวง — เพิ่มที่หน้า “วง”
         </p>
       ) : (

@@ -1,13 +1,12 @@
 import { redirect } from "next/navigation";
-import Link from "next/link";
-import { Dumbbell, Play, Plus } from "lucide-react";
+import { Headphones } from "lucide-react";
 import { createClient } from "@/lib/supabase/server";
 import { getWorkspace } from "@/lib/queries";
 import { canEditGroup, viewableGroups } from "@/lib/permissions";
 import { CreatePracticeButton } from "@/components/practice/create-practice-button";
-import { DeletePracticeRoomButton } from "@/components/practice/delete-practice-room-button";
-import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
+import { PracticeRoomList, type PracticeRoomRow } from "@/components/practice/practice-room-list";
+import { loadPracticeRoomStats } from "@/components/practice/practice-room-stats";
+import { PageTitle } from "@/components/page-title";
 import type { EventRow } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
@@ -34,9 +33,13 @@ export default async function PracticePage() {
     .eq("is_practice", true)
     .order("created_at", { ascending: false });
 
-  const rooms = (data ?? []) as (EventRow & {
-    groups: { name: string; color: string | null } | null;
-  })[];
+  const rooms = (data ?? []) as (EventRow & PracticeRoomRow)[];
+  // What each room's slab says (songs, homework, problems, last session). Display
+  // only; a read that fails leaves its numbers out rather than showing 0.
+  const stats = await loadPracticeRoomStats(
+    supabase,
+    rooms.map((r) => r.id)
+  ).catch(() => undefined);
 
   // Bands the user may create a practice room for (admin → all; Ar → their bands).
   const editableGroups = ws.groups
@@ -44,79 +47,50 @@ export default async function PracticePage() {
     .map((g) => ({ id: g.id, name: g.name }));
 
   return (
-    <div className="mx-auto max-w-3xl space-y-6">
-      <div className="flex items-end justify-between gap-3">
-        <div>
-          <h1 className="flex items-center gap-2 text-2xl font-bold tracking-tight">
-            <Dumbbell className="h-6 w-6" /> Training
-          </h1>
-          <p className="mt-1 text-sm text-muted-foreground">
-            ห้องซ้อมของวง — เปิดเพลงจากคลัง, ปรับความเร็ว, วนท่อน, จับเวลาพัก และจดบันทึกการซ้อม
-          </p>
-        </div>
-        {editableGroups.length > 0 && (
-          <CreatePracticeButton
-            tenantId={tid}
-            userId={ws.user.id}
-            groups={editableGroups}
-          />
-        )}
-      </div>
+    <div className="mx-auto max-w-3xl space-y-4">
+      <PageTitle
+        title="Training"
+        right={
+          editableGroups.length > 0 && rooms.length > 0 ? (
+            <CreatePracticeButton
+              tenantId={tid}
+              userId={ws.user.id}
+              groups={editableGroups}
+              label="ห้องใหม่"
+            />
+          ) : null
+        }
+      />
+      <p className="text-[13px] text-muted-foreground">
+        ห้องซ้อมของวง — เปิดเพลงจากคลัง, ปรับความเร็ว, วนท่อน, จับเวลาพัก และจดบันทึกการซ้อม
+      </p>
 
       {rooms.length === 0 ? (
-        <Card>
-          <CardContent className="flex flex-col items-center gap-3 py-12 text-center text-sm text-muted-foreground">
-            <Dumbbell className="h-8 w-8 opacity-40" />
-            <p>ยังไม่มีห้องซ้อม</p>
-            {editableGroups.length > 0 ? (
-              <CreatePracticeButton
-                tenantId={tid}
-                userId={ws.user.id}
-                groups={editableGroups}
-                label="สร้างห้องซ้อมแรก"
-              />
-            ) : (
-              <p>ขอให้ Ar ของวงสร้างห้องซ้อมให้</p>
-            )}
-          </CardContent>
-        </Card>
-      ) : (
-        <div className="space-y-2">
-          {rooms.map((room) => (
-            <Card key={room.id} className="transition-colors hover:bg-muted/40">
-              <CardContent className="flex items-center justify-between gap-3 py-3">
-                <div className="flex min-w-0 items-center gap-3">
-                  <span
-                    className="h-9 w-1.5 shrink-0 rounded-full"
-                    style={{ background: room.groups?.color ?? "var(--muted)" }}
-                  />
-                  <div className="min-w-0">
-                    <p className="truncate font-medium">{room.name}</p>
-                    <p className="truncate text-xs text-muted-foreground">
-                      {room.groups?.name ?? "—"}
-                    </p>
-                  </div>
-                </div>
-                <div className="flex shrink-0 items-center gap-1">
-                  <Button asChild size="sm">
-                    <Link href={`/events/${room.id}/practice`}>
-                      <Play className="h-4 w-4" /> เข้าซ้อม
-                    </Link>
-                  </Button>
-                  {canEditGroup(ws.perms, room.group_id) && (
-                    <DeletePracticeRoomButton roomId={room.id} roomName={room.name} />
-                  )}
-                </div>
-              </CardContent>
-            </Card>
-          ))}
+        <div className="slab flex flex-col items-center gap-3 px-4 py-12 text-center text-sm text-muted-foreground">
+          <Headphones className="h-8 w-8 opacity-40" aria-hidden />
+          <p>ยังไม่มีห้องซ้อม</p>
+          {editableGroups.length > 0 ? (
+            <CreatePracticeButton
+              tenantId={tid}
+              userId={ws.user.id}
+              groups={editableGroups}
+              label="สร้างห้องซ้อมแรก"
+              variant="default"
+            />
+          ) : (
+            <p>ขอให้ Ar ของวงสร้างห้องซ้อมให้</p>
+          )}
         </div>
+      ) : (
+        <PracticeRoomList
+          rooms={rooms}
+          stats={stats}
+          deletableIds={rooms.filter((r) => canEditGroup(ws.perms, r.group_id)).map((r) => r.id)}
+        />
       )}
 
       {editableGroups.length === 0 && rooms.length > 0 && (
-        <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
-          <Plus className="h-3.5 w-3.5" /> สร้างห้องซ้อมได้เฉพาะ Ar ของวง
-        </p>
+        <p className="text-[12.5px] text-muted-foreground">สร้างห้องซ้อมได้เฉพาะ Ar ของวง</p>
       )}
     </div>
   );

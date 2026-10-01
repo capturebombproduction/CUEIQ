@@ -8,12 +8,13 @@ import {
   Square,
   Hand,
   Save,
-  AudioWaveform,
+  Metronome as MetronomeIcon,
   Volume2,
   Link2,
   Crosshair,
   Wand2,
   Loader2,
+  TriangleAlert,
 } from "lucide-react";
 import { toast } from "sonner";
 import { createClient } from "@/lib/supabase/client";
@@ -727,14 +728,14 @@ export function Metronome({
   if (!open) {
     return (
       <Button
-        variant="outline"
-        size="sm"
+        variant="secondary"
         onClick={() => {
           ensureCtxUnlocked(); // unlock within this tap so iOS lets auto-start make sound
           setOpen(true);
         }}
       >
-        <AudioWaveform className="h-4 w-4" /> เมโทรนอม
+        <MetronomeIcon className="h-4 w-4" /> เมโทรนอม
+        <span className="num text-[17px]">{bpm}</span>
       </Button>
     );
   }
@@ -742,36 +743,44 @@ export function Metronome({
   const isSync = sync && canSync;
 
   return (
-    <div className="w-full space-y-3 rounded-lg border bg-card p-3">
+    <section aria-label="Metronome" className="slab w-full space-y-3 p-3">
       <div className="flex items-center justify-between">
-        <span className="flex items-center gap-1.5 text-sm font-medium">
-          <AudioWaveform className="h-4 w-4" /> เมโทรนอม
-        </span>
-        <button
+        <span className="eyebrow key">Metronome</span>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="-my-1 h-11 min-w-11"
           onClick={() => {
             stopScheduler();
             closeCtx();
             setOpen(false);
           }}
-          className="text-xs text-muted-foreground hover:text-foreground"
         >
           ปิด
-        </button>
+        </Button>
       </div>
 
       {/* sync with song */}
       {canSync && (
         <button
+          type="button"
+          role="switch"
+          aria-checked={isSync}
           onClick={() => {
             ensureCtxUnlocked();
             setSync((s) => !s);
           }}
           className={cn(
-            "flex w-full items-center gap-2 rounded-lg border px-3 py-2 text-left transition-colors",
-            isSync ? "border-primary bg-primary/10" : "hover:bg-muted/50"
+            "flex min-h-11 w-full items-center gap-2 rounded-[2px] px-3 py-2 text-left transition-colors duration-2",
+            isSync
+              ? "bg-primary/10 shadow-[inset_0_0_0_1.5px_hsl(var(--primary))]"
+              : "well hover:bg-muted/70"
           )}
         >
-          <Link2 className={cn("h-4 w-4 shrink-0", isSync ? "text-primary" : "text-muted-foreground")} />
+          <Link2
+            className={cn("h-4 w-4 shrink-0", isSync ? "text-primary-ink" : "text-muted-foreground")}
+            aria-hidden
+          />
           <span className="min-w-0 flex-1">
             <span className="block text-sm font-medium">ซิงก์กับเพลง</span>
             <span className="block text-xs text-muted-foreground">
@@ -779,45 +788,77 @@ export function Metronome({
             </span>
           </span>
           <span
+            aria-hidden
             className={cn(
-              "relative h-5 w-9 shrink-0 rounded-full transition-colors",
-              isSync ? "bg-primary" : "bg-muted"
+              "relative h-5 w-9 shrink-0 rounded-full transition-colors duration-2",
+              isSync ? "bg-primary" : "bg-foreground/20"
             )}
           >
             <span
               className={cn(
-                "absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all",
-                isSync ? "left-[18px]" : "left-0.5"
+                "absolute left-0 top-0.5 h-4 w-4 rounded-full bg-background transition-transform duration-2",
+                isSync ? "translate-x-[18px]" : "translate-x-0.5"
               )}
             />
           </span>
         </button>
       )}
 
-      {/* dial + transport */}
+      {/* the beat stage: the tempo in Barlow, then one cell per beat of the bar —
+          the beat sounding now is lit, the downbeat in the band colour */}
       <div className="flex items-center gap-3">
-        <span
-          className={cn(
-            "flex h-12 w-12 shrink-0 items-center justify-center rounded-full border-2 tabular-nums transition-colors",
-            running && beatLabel === 1 ? "border-primary bg-primary/20" : "border-muted"
-          )}
-        >
-          <span className="text-lg font-bold">{running ? beatLabel || "·" : bpm}</span>
-        </span>
-
-        <div className="flex items-center gap-1">
-          <Button variant="outline" size="icon" onClick={() => setBpm((b) => clampBpm(b - 1))}>
-            <Minus className="h-4 w-4" />
-          </Button>
-          <Button variant="outline" size="icon" onClick={() => setBpm((b) => clampBpm(b + 1))}>
-            <Plus className="h-4 w-4" />
-          </Button>
+        <div className="flex min-w-0 flex-1 items-baseline gap-1.5">
+          <span className="num text-[42px] font-extrabold leading-none">{bpm}</span>
+          <span className="eyebrow text-muted-foreground">BPM</span>
         </div>
+        <Button
+          variant="secondary"
+          size="icon"
+          aria-label="ลด BPM"
+          onClick={() => setBpm((b) => clampBpm(b - 1))}
+        >
+          <Minus className="h-4 w-4" />
+        </Button>
+        <Button
+          variant="secondary"
+          size="icon"
+          aria-label="เพิ่ม BPM"
+          onClick={() => setBpm((b) => clampBpm(b + 1))}
+        >
+          <Plus className="h-4 w-4" />
+        </Button>
+      </div>
+      <div
+        data-testid="beat-stage"
+        aria-hidden
+        className="grid gap-[3px]"
+        style={{ gridTemplateColumns: `repeat(${beats}, minmax(0, 1fr))` }}
+      >
+        {Array.from({ length: beats }, (_, i) => i + 1).map((n) => {
+          const lit = running && beatLabel === n;
+          return (
+            <span
+              key={n}
+              data-lit={lit ? "true" : undefined}
+              className={cn(
+                "num grid h-9 place-items-center rounded-[2px] text-[15px]",
+                lit
+                  ? n === 1
+                    ? "bg-primary text-primary-foreground"
+                    : "bg-foreground text-background"
+                  : "well text-faint"
+              )}
+            >
+              {n}
+            </span>
+          );
+        })}
+      </div>
 
+      <div className="flex flex-wrap items-center gap-2">
         {isSync ? (
           <Button
-            variant="outline"
-            size="sm"
+            variant="secondary"
             onClick={setBeatOne}
             disabled={!running}
             title="แตะตอนเสียงตกจังหวะแรก เพื่อจัด 1 ให้ตรง"
@@ -826,32 +867,35 @@ export function Metronome({
           </Button>
         ) : (
           <>
-            <Button size="icon" className="h-11 w-11" onClick={manualToggle}>
+            <Button
+              size="icon"
+              aria-label={running ? "หยุดเมโทรนอม" : "เริ่มเมโทรนอม"}
+              onClick={manualToggle}
+            >
               {running ? <Square className="h-5 w-5" /> : <Play className="h-5 w-5" />}
             </Button>
-            <Button variant="outline" size="sm" onClick={tap}>
+            <Button variant="secondary" onClick={tap}>
               <Hand className="h-4 w-4" /> เคาะจังหวะ
             </Button>
           </>
         )}
-
-        <span className="ml-auto text-xs tabular-nums text-muted-foreground">{bpm} BPM</span>
       </div>
 
       <input
         type="range"
+        aria-label="BPM"
         min={MIN_BPM}
         max={MAX_BPM}
         value={bpm}
         onChange={(e) => setBpm(clampBpm(Number(e.target.value)))}
-        className="w-full accent-primary"
+        className="w-full"
       />
 
       {/* auto beat detection from the song's audio (+ octave fixups) */}
       {canSync && onDetectBeats && (
         <div className="space-y-1.5">
-          <div className="flex items-center gap-2">
-            <Button variant="outline" size="sm" onClick={detect} disabled={detecting}>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button variant="secondary" onClick={detect} disabled={detecting}>
               {detecting ? (
                 <Loader2 className="h-4 w-4 animate-spin" />
               ) : (
@@ -859,50 +903,56 @@ export function Metronome({
               )}
               {detecting ? "กำลังตรวจจับ…" : "ตรวจจับจังหวะจากเพลง"}
             </Button>
-            <Button variant="outline" size="sm" onClick={() => applyOctave(0.5)} title="ช้าลงครึ่งหนึ่ง">
+            <Button
+              variant="secondary"
+              className="num text-[16px]"
+              onClick={() => applyOctave(0.5)}
+              title="ช้าลงครึ่งหนึ่ง"
+            >
               ÷2
             </Button>
-            <Button variant="outline" size="sm" onClick={() => applyOctave(2)} title="เร็วขึ้นเท่าตัว">
+            <Button
+              variant="secondary"
+              className="num text-[16px]"
+              onClick={() => applyOctave(2)}
+              title="เร็วขึ้นเท่าตัว"
+            >
               ×2
             </Button>
           </div>
           {hasBeats && isSync && (
-            <p className="flex items-center gap-1 text-xs font-medium text-primary">
-              <Crosshair className="h-3 w-3" /> เกาะจังหวะจริงของเพลง — ไม่หลุดจังหวะ
+            <p className="flex items-center gap-1 text-xs font-medium text-primary-ink">
+              <Crosshair className="h-3 w-3" aria-hidden /> เกาะจังหวะจริงของเพลง — ไม่หลุดจังหวะ
             </p>
           )}
         </div>
       )}
 
       {isSync && !playing && (
-        <p className="text-xs text-muted-foreground">▶ เล่นเพลงแล้วเมโทรนอมจะเริ่มเองตามจังหวะ</p>
+        <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
+          <Play className="h-3 w-3" aria-hidden /> เล่นเพลงแล้วเมโทรนอมจะเริ่มเองตามจังหวะ
+        </p>
       )}
 
       {/* mode: click vs spoken count */}
-      <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center gap-2">
         <span className="text-xs text-muted-foreground">เสียง</span>
-        <div className="flex overflow-hidden rounded-md border text-xs">
+        <div role="group" aria-label="เสียงเมโทรนอม" className="seg">
           <button
+            type="button"
+            aria-pressed={mode === "click"}
             onClick={() => setMode("click")}
-            className={cn(
-              "px-2.5 py-1.5 transition-colors",
-              mode === "click"
-                ? "bg-primary text-primary-foreground"
-                : "text-muted-foreground hover:bg-muted"
-            )}
+            className={cn("transition-colors duration-2", mode === "click" && "on")}
           >
             คลิก
           </button>
           <button
+            type="button"
+            aria-pressed={mode === "voice"}
             onClick={() => setMode("voice")}
-            className={cn(
-              "px-2.5 py-1.5 transition-colors",
-              mode === "voice"
-                ? "bg-primary text-primary-foreground"
-                : "text-muted-foreground hover:bg-muted"
-            )}
+            className={cn("transition-colors duration-2", mode === "voice" && "on")}
           >
-            นับ 1–{beats} 🎀
+            นับ 1–{beats}
           </button>
         </div>
         {/* The honest label. "voice mode is selected" and "the recorded voice is
@@ -910,10 +960,13 @@ export function Metronome({
         {mode === "voice" && (
           <span
             className={cn(
-              "text-xs",
-              countStatus === "unavailable" ? "text-amber-600 dark:text-amber-500" : "text-muted-foreground"
+              "flex items-center gap-1 text-xs",
+              countStatus === "unavailable" ? "text-warning-ink" : "text-muted-foreground"
             )}
           >
+            {countStatus === "unavailable" && (
+              <TriangleAlert className="h-3.5 w-3.5 shrink-0" aria-hidden />
+            )}
             {countVoiceNote(countStatus, canSpeak)}
           </span>
         )}
@@ -921,41 +974,41 @@ export function Metronome({
 
       {/* metronome volume — independent of the song's volume */}
       <div className="flex items-center gap-2">
-        <Volume2 className="h-4 w-4 text-muted-foreground" />
+        <Volume2 className="h-4 w-4 text-muted-foreground" aria-hidden />
         <span className="w-20 shrink-0 text-xs text-muted-foreground">ดังเมโทรนอม</span>
         <input
           type="range"
+          aria-label="ดังเมโทรนอม"
           min={0}
           max={100}
           value={vol}
           onChange={(e) => setVol(Number(e.target.value))}
-          className="w-full accent-primary"
+          className="w-full"
         />
       </div>
 
       <div className="flex flex-wrap items-center gap-2">
         <span className="text-xs text-muted-foreground">บีตต่อห้อง</span>
-        {BEATS_OPTIONS.map((b) => (
-          <button
-            key={b}
-            onClick={() => setBeats(b)}
-            className={cn(
-              "rounded-md px-2 py-1 text-xs font-medium transition-colors",
-              beats === b
-                ? "bg-primary text-primary-foreground"
-                : "bg-muted text-muted-foreground hover:bg-muted/70"
-            )}
-          >
-            {b}
-          </button>
-        ))}
+        <div role="group" aria-label="บีตต่อห้อง" className="seg">
+          {BEATS_OPTIONS.map((b) => (
+            <button
+              key={b}
+              type="button"
+              aria-pressed={beats === b}
+              onClick={() => setBeats(b)}
+              className={cn("num min-w-11 !text-[15px] font-bold [font-family:var(--font-num)] transition-colors duration-2", beats === b && "on")}
+            >
+              {b}
+            </button>
+          ))}
+        </div>
 
         {canManage && song && (
-          <Button variant="outline" size="sm" className="ml-auto" onClick={saveBpm}>
+          <Button variant="secondary" className="ml-auto" onClick={saveBpm}>
             <Save className="h-4 w-4" /> บันทึกลงเพลง
           </Button>
         )}
       </div>
-    </div>
+    </section>
   );
 }

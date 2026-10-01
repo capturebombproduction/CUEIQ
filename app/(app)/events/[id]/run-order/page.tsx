@@ -1,11 +1,12 @@
 import { redirect } from "next/navigation";
 import Link from "next/link";
-import { ListOrdered, Radio } from "lucide-react";
+import { ChevronLeft, Radio } from "lucide-react";
 import { getEventRow, getWorkspace } from "@/lib/queries";
 import { canApprove } from "@/lib/permissions";
 import { createClient } from "@/lib/supabase/server";
 import { assertReadsSucceeded } from "@/lib/read-guard";
 import { Button } from "@/components/ui/button";
+import { PageTitle } from "@/components/page-title";
 import {
   RunOrderBuilder,
   type RunSequence,
@@ -120,18 +121,23 @@ export default async function RunOrderPage({
   const seqs = seqRes.data ?? [];
 
   return (
-    <div className="space-y-6">
-      <div>
+    <div className="space-y-5">
+      <div className="space-y-2">
+        {/* The show (or Overview) this order belongs to — 44 px tall, and the name
+            is shown as typed, so no caps. */}
         <Link
           href={fromOverview ? "/overview" : `/events/${ev.id}`}
-          className="text-sm text-muted-foreground hover:underline"
+          className="-ml-1.5 inline-flex h-11 max-w-full items-center gap-1 rounded-[3px] pr-2 text-[14px] font-medium text-muted-foreground hover:text-foreground"
         >
-          ← {fromOverview ? "Overview" : ev.name}
+          <ChevronLeft className="h-5 w-5 flex-none" aria-hidden />
+          <span className="truncate">{fromOverview ? "Overview" : ev.name}</span>
         </Link>
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <h1 className="flex items-center gap-2 text-2xl font-bold tracking-tight">
-            <ListOrdered className="h-6 w-6" /> Running Order
-          </h1>
+        <PageTitle title="Running Order" />
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+          <p className="min-w-0 flex-1 basis-56 text-[13px] text-muted-foreground">
+            {ev.name}
+            {ev.event_date ? ` · ${ev.event_date}` : ""} — ลำดับงานทั้งงาน (สำหรับสตาฟคุมคิว)
+          </p>
           <Button asChild>
             <Link
               href={`/events/${ev.id}/run-order/live${
@@ -142,10 +148,6 @@ export default async function RunOrderPage({
             </Link>
           </Button>
         </div>
-        <p className="text-sm text-muted-foreground">
-          {ev.name}
-          {ev.event_date ? ` · ${ev.event_date}` : ""} — ลำดับงานทั้งงาน (สำหรับสตาฟคุมคิว)
-        </p>
       </div>
       <RunOrderBuilder
         tenantId={tid}

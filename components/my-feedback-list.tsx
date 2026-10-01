@@ -1,12 +1,12 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
-import { Bug, Check, CornerDownRight, Lightbulb, Loader2, MessageCircle } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Bug, Check, CornerDownRight, Lightbulb, Loader2, MessageCircle, RotateCw } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { hasLiveSession } from "@/lib/auth-session";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
-import { FeedbackImage } from "@/components/feedback-image";
+import { FeedbackThumbs } from "@/components/feedback-thumbs";
+import { cn } from "@/lib/utils";
 
 /**
  * "ที่ส่งไปแล้ว" — a person's own reports, and what the team said back.
@@ -31,10 +31,11 @@ export interface MyFeedbackRow {
   images: string[] | null;
 }
 
-const CAT_ICON: Record<string, typeof Bug> = {
-  bug: Bug,
-  idea: Lightbulb,
-  other: MessageCircle,
+// Category as a chip: icon + word (the Dev Inbox reads the same).
+const CAT_CHIP: Record<string, { Icon: typeof Bug; label: string; cls: string; en: boolean }> = {
+  bug: { Icon: Bug, label: "Bug", cls: "chip-warning", en: true },
+  idea: { Icon: Lightbulb, label: "Idea", cls: "chip-info", en: true },
+  other: { Icon: MessageCircle, label: "อื่น ๆ", cls: "chip-neutral", en: false },
 };
 
 export function whenTH(iso: string) {
@@ -51,6 +52,18 @@ export function unreadReplies(rows: MyFeedbackRow[]): MyFeedbackRow[] {
   return rows.filter((r) => r.reply && !r.reply_seen_at);
 }
 
+/**
+ * "A new report just landed" — fired on window by the Feedback tile after a successful
+ * send, so EVERY mounted list re-reads: /feedback renders its own list under the tile,
+ * separate from the one inside the tile's dialog, and the person who just reported a
+ * bug is looking straight at it. A window event rather than a prop because the tile
+ * lives in the shell (account panel, Live tools) and the page list in a server page.
+ */
+export const FEEDBACK_SENT_EVENT = "cueiq:feedback-sent";
+export function announceFeedbackSent() {
+  if (typeof window !== "undefined") window.dispatchEvent(new Event(FEEDBACK_SENT_EVENT));
+}
+
 export function MyFeedbackList({
   userId,
   onSeen,
@@ -62,8 +75,12 @@ export function MyFeedbackList({
 }) {
   const [rows, setRows] = useState<MyFeedbackRow[] | null>(null);
   const [loadFailed, setLoadFailed] = useState(false);
+  // Reads can now overlap (a re-read on FEEDBACK_SENT_EVENT, a retry): only the
+  // newest may land, so an older answer cannot overwrite the list it was raced by.
+  const loadSeq = useRef(0);
 
   const load = useCallback(async () => {
+    const seq = ++loadSeq.current;
     setLoadFailed(false);
     const { data, error } = await createClient()
       .from("feedback")
@@ -73,6 +90,7 @@ export function MyFeedbackList({
       .eq("user_id", userId)
       .order("created_at", { ascending: false })
       .limit(30);
+    if (seq !== loadSeq.current) return;
     // AN EMPTY READ IS NOT AN EMPTY TABLE (lib/auth-session.ts). supabase-js
     // substitutes the anon key after a failed token refresh and RLS then answers []
     // with error: null — and this is the page a "ทีมงานตอบฟีดแบคของคุณแล้ว"
@@ -83,14 +101,22 @@ export function MyFeedbackList({
       return;
     }
     if (data && data.length === 0 && !(await hasLiveSession())) {
-      setLoadFailed(true);
+      if (seq === loadSeq.current) setLoadFailed(true);
       return;
     }
-    if (data) setRows(data as MyFeedbackRow[]);
+    if (data && seq === loadSeq.current) setRows(data as MyFeedbackRow[]);
   }, [userId]);
 
   useEffect(() => {
     void load();
+  }, [load]);
+
+  // A report sent from the Feedback tile (see FEEDBACK_SENT_EVENT) — re-read in place;
+  // the rows already shown stay up until the new answer replaces them.
+  useEffect(() => {
+    const reload = () => void load();
+    window.addEventListener(FEEDBACK_SENT_EVENT, reload);
+    return () => window.removeEventListener(FEEDBACK_SENT_EVENT, reload);
   }, [load]);
 
   // Opening this list IS reading it. The stamp goes on the ROW rather than into
@@ -125,10 +151,10 @@ export function MyFeedbackList({
 
   if (loadFailed) {
     return (
-      <div className="space-y-2 rounded-lg border border-dashed py-8 text-center text-sm text-muted-foreground">
+      <div className="space-y-3 rounded-[2px] border border-dashed border-border py-8 text-center text-sm text-muted-foreground">
         <p>โหลดรายการไม่สำเร็จ</p>
-        <Button variant="outline" size="sm" onClick={() => void load()}>
-          ลองอีกครั้ง
+        <Button variant="secondary" onClick={() => void load()}>
+          <RotateCw aria-hidden /> ลองอีกครั้ง
         </Button>
       </div>
     );
@@ -137,49 +163,49 @@ export function MyFeedbackList({
   if (rows === null) {
     return (
       <p className="flex items-center justify-center gap-2 py-8 text-sm text-muted-foreground">
-        <Loader2 className="h-4 w-4 animate-spin" /> กำลังโหลด…
+        <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> กำลังโหลด…
       </p>
     );
   }
 
   if (rows.length === 0) {
     return (
-      <p className="rounded-lg border border-dashed py-8 text-center text-sm text-muted-foreground">
+      <p className="rounded-[2px] border border-dashed border-border py-8 text-center text-sm text-muted-foreground">
         ยังไม่เคยส่งฟีดแบค
       </p>
     );
   }
 
   return (
-    <div className="space-y-2">
+    <div className="stack">
       {rows.map((r) => {
-        const Icon = CAT_ICON[r.category] ?? MessageCircle;
+        const cat = CAT_CHIP[r.category] ?? CAT_CHIP.other;
         return (
-          <div key={r.id} className="space-y-2 rounded-lg border bg-card p-3">
-            <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-              <Icon className="h-3.5 w-3.5" />
+          // A thread: what they wrote on the left, the team's answer on the right.
+          <article key={r.id} className="slab space-y-2.5 p-3 sm:p-4">
+            <div className="flex flex-wrap items-center gap-2 text-[12.5px] text-muted-foreground">
+              <span className={cn("chip", cat.cls, cat.en && "en")}>
+                <cat.Icon aria-hidden />
+                {cat.label}
+              </span>
               <span>{whenTH(r.created_at)}</span>
               {r.status === "done" && (
-                <Badge variant="secondary" className="gap-1">
-                  <Check className="h-3 w-3" /> จัดการแล้ว
-                </Badge>
+                <span className="chip chip-success">
+                  <Check aria-hidden /> จัดการแล้ว
+                </span>
               )}
             </div>
-            <p className="whitespace-pre-wrap text-sm">{r.message}</p>
-            {!!r.images?.length && (
-              <div className="flex flex-wrap gap-2">
-                {r.images.map((k) => (
-                  <FeedbackImage key={k} objectKey={k} />
-                ))}
-              </div>
-            )}
+            <p className="max-w-[92%] whitespace-pre-wrap break-words rounded-[2px] bg-muted px-3 py-2 text-[15px] leading-relaxed sm:max-w-[80%]">
+              {r.message}
+            </p>
+            {!!r.images?.length && <FeedbackThumbs keys={r.images} />}
             {r.reply ? (
               <div
                 data-testid="feedback-reply"
-                className="rounded-md border-l-2 border-primary bg-muted/50 p-2"
+                className="ml-auto max-w-[92%] rounded-[2px] bg-primary/[.12] px-3 py-2 shadow-[inset_0_0_0_1px_hsl(var(--primary)/.3)] sm:max-w-[80%]"
               >
-                <p className="mb-1 flex items-center gap-1.5 text-xs font-medium text-primary">
-                  <CornerDownRight className="h-3.5 w-3.5" />
+                <p className="mb-1 flex items-center gap-1.5 text-[12px] font-semibold text-primary-ink">
+                  <CornerDownRight className="h-3.5 w-3.5" aria-hidden />
                   ทีมงานตอบกลับ
                   {r.replied_at && (
                     <span className="font-normal text-muted-foreground">
@@ -187,12 +213,12 @@ export function MyFeedbackList({
                     </span>
                   )}
                 </p>
-                <p className="whitespace-pre-wrap text-sm">{r.reply}</p>
+                <p className="whitespace-pre-wrap break-words text-[15px] leading-relaxed">{r.reply}</p>
               </div>
             ) : (
-              <p className="text-xs text-muted-foreground">ยังไม่มีคำตอบ</p>
+              <p className="text-right text-[12.5px] text-muted-foreground">ยังไม่มีคำตอบ</p>
             )}
-          </div>
+          </article>
         );
       })}
     </div>

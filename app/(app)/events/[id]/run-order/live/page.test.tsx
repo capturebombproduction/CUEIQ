@@ -134,3 +134,47 @@ describe("RunOrderLivePage — an empty read is still an empty order", () => {
     await expect(call()).rejects.toThrow("NEXT_NOT_FOUND");
   });
 });
+
+// The route is immersive (no app header, no tab bar — components/chrome-gate.tsx), so
+// whatever the page wrapped around the caller would sit outside its top bar and push
+// the board down. The caller IS the screen; the page only tells it where "back" goes.
+describe("RunOrderLivePage — the caller owns the screen and the way back", () => {
+  const open = (from?: string) =>
+    RunOrderLivePage({
+      params: Promise.resolve({ id: EVENT_ID }),
+      searchParams: Promise.resolve(from ? { from } : {}),
+    });
+
+  it("renders the caller alone — no page heading or back link of its own", async () => {
+    const tree = (await open("overview")) as Elementish;
+    expect(tree.type).toBe(EventLiveCaller);
+  });
+
+  it("launched from Overview, back returns to Overview", async () => {
+    const caller = findEl(await open("overview"), EventLiveCaller)!;
+    expect(caller.props).toMatchObject({ backHref: "/overview", backLabel: "Overview" });
+  });
+
+  it("an approver goes back to the builder", async () => {
+    const caller = findEl(await open(), EventLiveCaller)!;
+    expect(caller.props).toMatchObject({
+      backHref: `/events/${EVENT_ID}/run-order`,
+      backLabel: "Running Order",
+      canControl: true,
+    });
+  });
+
+  it("a watcher goes back to the event, named as typed", async () => {
+    h.ws = {
+      ...(h.ws as Record<string, unknown>),
+      membership: { tenant_id: "t1", role: "member" },
+      perms: makePerms("member", [{ group_id: "g1", role: "member" }]),
+    };
+    const caller = findEl(await open(), EventLiveCaller)!;
+    expect(caller.props).toMatchObject({
+      backHref: `/events/${EVENT_ID}`,
+      backLabel: "A Lot Of Tone Fest",
+      canControl: false,
+    });
+  });
+});

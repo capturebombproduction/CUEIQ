@@ -18,6 +18,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { MicTile } from "@/components/event/mic-grid";
 import type { Member, MicAssignment, SetlistItem } from "@/lib/types";
 
 export function MicMapEditor({
@@ -395,9 +396,10 @@ export function MicMapEditor({
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
-            <Mic2 className="h-5 w-5" /> Mic Map (ไมค์ → สมาชิก)
-            <SaveStatus state={save.state} className="ml-auto font-normal" />
+            <Mic2 aria-hidden className="h-5 w-5" /> Mic Map
+            <SaveStatus state={save.state} className="ml-auto font-sans normal-case tracking-normal" />
           </CardTitle>
+          <p className="text-[13px] text-muted-foreground">ไมค์ → สมาชิก</p>
         </CardHeader>
         <CardContent className="space-y-3">
           {members.length > 0 && (
@@ -409,13 +411,33 @@ export function MicMapEditor({
           )}
 
           {groups.length === 0 && (
-            <p className="rounded-lg border border-dashed py-8 text-center text-sm text-muted-foreground">
+            <p className="rounded-[2px] border border-dashed py-8 text-center text-sm text-muted-foreground">
               ยังไม่มีการกำหนดไมค์
             </p>
           )}
 
-          {groups.map((g) => (
-            <div key={g.num} className="rounded-lg border p-3">
+          {/* A member reads who is on which mic: one tile per mic, number over the
+              holder(s), capped in the first holder's own colour (spec §G.3). */}
+          {!editable && groups.length > 0 && (
+            <div className="grid grid-cols-3 gap-[3px]">
+              {groups.map((g) => {
+                const holders = g.holders.map((h) => h.holder_name).filter(Boolean);
+                const first = members.find((x) => (x.nickname || x.name) === holders[0]);
+                return (
+                  <MicTile
+                    key={g.num}
+                    mic={g.num}
+                    name={holders.join(" / ") || "—"}
+                    color={first?.color ?? null}
+                    className="py-2 [&_.num]:text-[28px] [&_.truncate]:text-[14px]"
+                  />
+                );
+              })}
+            </div>
+          )}
+
+          {editable && groups.map((g) => (
+            <div key={g.num} className="well rounded-[2px] p-3">
               <div className="mb-2 flex items-center gap-2">
                 <span className="text-sm text-muted-foreground">ไมค์</span>
                 <Input
@@ -424,7 +446,7 @@ export function MicMapEditor({
                   min={1}
                   defaultValue={g.num}
                   disabled={!editable}
-                  className="h-8 w-16 tabular-nums"
+                  className="num w-16 text-[18px]"
                   onBlur={(e) => {
                     if (!changeMicNumber(g.num, Number(e.target.value))) {
                       e.target.value = String(g.num); // revert on rejection
@@ -432,7 +454,10 @@ export function MicMapEditor({
                   }}
                 />
                 {g.holders.length > 1 && (
-                  <Badge variant="secondary">วนไมค์ {g.holders.length} คน</Badge>
+                  <Badge variant="secondary">
+                    <Mic2 aria-hidden />
+                    วนไมค์ {g.holders.length} คน
+                  </Badge>
                 )}
                 {editable && (
                   <Button
@@ -451,7 +476,7 @@ export function MicMapEditor({
                 {g.holders.map((h, i) => (
                   <div key={h.id} className="flex items-center gap-2">
                     {g.holders.length > 1 && (
-                      <span className="w-5 text-center text-xs text-muted-foreground tabular-nums">
+                      <span className="num w-5 text-center text-[14px] text-muted-foreground">
                         {i + 1}
                       </span>
                     )}
@@ -514,11 +539,10 @@ export function MicMapEditor({
                   <Button
                     type="button"
                     variant="ghost"
-                    size="sm"
                     disabled={inserting}
                     onClick={() => addHolder(g.num)}
                   >
-                    <Plus className="h-4 w-4" /> เพิ่มคน (วนไมค์)
+                    <Plus aria-hidden className="h-4 w-4" /> เพิ่มคน (วนไมค์)
                   </Button>
                 )}
               </div>
@@ -528,12 +552,12 @@ export function MicMapEditor({
           {editable && (
             <Button
               type="button"
-              variant="outline"
+              variant="secondary"
               className="w-full"
               disabled={inserting}
               onClick={addMic}
             >
-              <Plus className="h-4 w-4" /> เพิ่มไมค์
+              <Plus aria-hidden className="h-4 w-4" /> เพิ่มไมค์
             </Button>
           )}
         </CardContent>
@@ -542,23 +566,24 @@ export function MicMapEditor({
       {/* Per-song summary (derived from setlist) */}
       <Card>
         <CardHeader>
-          <CardTitle>สรุป Mic Map แยกตามเพลง</CardTitle>
+          <CardTitle>Per Song</CardTitle>
+          <p className="text-[13px] text-muted-foreground">สรุปไมค์แยกตามเพลง</p>
         </CardHeader>
         <CardContent>
           {songsWithMics.length === 0 ? (
-            <p className="rounded-lg border border-dashed py-8 text-center text-sm text-muted-foreground">
+            <p className="rounded-[2px] border border-dashed py-8 text-center text-sm text-muted-foreground">
               ยังไม่ได้กำหนดไมค์ในเซ็ตลิสต์ — ตั้งค่าได้ที่แท็บ Setlist
             </p>
           ) : (
-            <div className="space-y-3">
+            <div className="stack">
               {songsWithMics.map((s) => (
-                <div key={s.id} className="rounded-lg border p-3">
+                <div key={s.id} className="slab p-3">
                   <p className="mb-1.5 font-medium">{s.title}</p>
                   <div className="flex flex-wrap gap-1.5">
-                    {s.mic_slots.map((slot, i) => (
-                      <Badge key={i} variant="outline" className="font-normal">
-                        <span className="font-semibold">{slot.mic}</span>
-                        <span className="mx-1 text-muted-foreground">→</span>
+                    {(s.mic_slots ?? []).map((slot, i) => (
+                      <Badge key={i} variant="secondary" className="font-normal">
+                        <span className="num text-[14px] text-foreground">{slot.mic}</span>
+                        <span className="text-muted-foreground">→</span>
                         {slot.member}
                       </Badge>
                     ))}

@@ -28,21 +28,16 @@ const darkVariants = (files: string[]) =>
       .map((line) => `${f}: ${line.trim()}`)
   );
 
-// The Overview board's two amber badges sit OUTSIDE its capture root and belong to the
-// Overview restyle (§G.7), which removes them. Listed by exact text so the list only
-// ever shrinks: editing either line drops it from here, and any NEW dark: fails.
-const KNOWN_OUTSIDE_CAPTURE = new Set([
-  'components/overview/overview-client.tsx: className="inline-flex items-center gap-0.5 rounded bg-amber-400/20 px-1 text-xs font-semibold text-amber-700 dark:text-amber-400"',
-]);
-
 describe("exported / printed surfaces use tokens, not dark: variants", () => {
   it("the run sheet (event-summary.tsx) has none", () => {
     expect(darkVariants(["components/event/event-summary.tsx"])).toEqual([]);
   });
 
-  it("the Overview export has none beyond the known board badges", () => {
+  // The board's two amber badges, the last known exceptions, went with the Overview
+  // restyle (§G.7): the whole folder is now held to none.
+  it("the Overview export has none", () => {
     const files = filesUnder("components/overview");
     expect(files.length).toBeGreaterThan(0);
-    expect(darkVariants(files).filter((l) => !KNOWN_OUTSIDE_CAPTURE.has(l))).toEqual([]);
+    expect(darkVariants(files)).toEqual([]);
   });
 });

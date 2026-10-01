@@ -1,8 +1,8 @@
 import { redirect } from "next/navigation";
-import { LayoutGrid } from "lucide-react";
 import { getWorkspace } from "@/lib/queries";
 import { createClient } from "@/lib/supabase/server";
 import { JoinDemo } from "@/components/join-demo";
+import { PageTitle } from "@/components/page-title";
 import {
   canApprove,
   canEditPhotoTime,
@@ -22,6 +22,7 @@ import {
   type CompletenessSetlistItem,
 } from "@/lib/completeness";
 import { assertReadsSucceeded } from "@/lib/read-guard";
+import { bkkTodayKey } from "@/lib/time";
 import {
   type EventRow,
   type Member,
@@ -466,6 +467,7 @@ export default async function OverviewPage() {
       incomplete: comp.missing.length,
       missingLabels: comp.missing.map((m) => m.label),
       notes: e.notes,
+      venue: e.venue ?? null,
     };
   });
 
@@ -485,18 +487,21 @@ export default async function OverviewPage() {
   }));
 
   return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="flex items-center gap-2 text-2xl font-bold tracking-tight">
-          <LayoutGrid className="h-6 w-6" /> Overview
-        </h1>
-        <p className="text-sm text-muted-foreground">
-          {ws.tenant.name} · {viewableGroups.length} วง · {events.length} งาน
-        </p>
-      </div>
+    <div className="space-y-4">
+      <PageTitle
+        title="Overview"
+        right={
+          <span className="pb-0.5 text-right text-[13px] leading-tight text-muted-foreground">
+            {ws.tenant.name}
+            <br />
+            <span className="num text-[17px] text-foreground">{viewableGroups.length}</span> วง ·{" "}
+            <span className="num text-[17px] text-foreground">{events.length}</span> งาน
+          </span>
+        }
+      />
 
       {bands.length === 0 ? (
-        <p className="rounded-lg border border-dashed py-16 text-center text-muted-foreground">
+        <p className="rounded-[2px] border border-dashed border-border py-16 text-center text-muted-foreground">
           ยังไม่มีวง — เพิ่มที่หน้า “วง”
         </p>
       ) : (
@@ -509,6 +514,7 @@ export default async function OverviewPage() {
           isLabelWide={isLabelWideUser(ws.perms)}
           canOpenDetail={canOpenEventDetail()}
           runOrderFestivals={runOrderFestivals}
+          todayKey={bkkTodayKey()}
         />
       )}
     </div>

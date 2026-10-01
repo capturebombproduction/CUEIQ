@@ -31,6 +31,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { StatusIcon } from "@/components/status-badge";
 import {
   EVENT_TYPES,
   STATUS_META,
@@ -279,15 +280,28 @@ export function EventForm({
     }
   }
 
-  return (
+  // Spec §G.4: sections are cards with an English title and a Thai helper; labels
+  // 13/500 muted, 6 px above their field; time fields set in the numeral face; the
+  // save bar floats just above the tab bar so Save is reachable from any field.
+  const LABEL = "text-[13px] font-medium text-muted-foreground";
+  const section = (title: string, helper: string, body: React.ReactNode) => (
     <Card>
-      <CardHeader>
-        <CardTitle>{mode === "create" ? "ข้อมูลงาน" : "แก้ไขข้อมูลงาน"}</CardTitle>
+      <CardHeader className="pb-3">
+        <CardTitle>{title}</CardTitle>
+        <p className="text-[13px] text-muted-foreground">{helper}</p>
       </CardHeader>
-      <CardContent>
-        <form onSubmit={onSubmit} className="space-y-4">
-          <div className="space-y-2">
-            <Label htmlFor="name">ชื่องาน *</Label>
+      <CardContent className="space-y-4">{body}</CardContent>
+    </Card>
+  );
+
+  return (
+    <form onSubmit={onSubmit} className="space-y-3">
+      {section(
+        "Show",
+        mode === "create" ? "ชื่องาน วง และประเภทงาน" : "แก้ไขชื่องาน วง และประเภทงาน",
+        <>
+          <div className="space-y-1.5">
+            <Label htmlFor="name" className={LABEL}>ชื่องาน *</Label>
             <Input
               id="name"
               value={name}
@@ -298,8 +312,8 @@ export function EventForm({
           </div>
 
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-            <div className="space-y-2">
-              <Label>วง</Label>
+            <div className="space-y-1.5">
+              <Label className={LABEL}>วง</Label>
               <Select value={groupId} onValueChange={setGroupId}>
                 <SelectTrigger>
                   <SelectValue placeholder="เลือกวง" />
@@ -313,8 +327,8 @@ export function EventForm({
                 </SelectContent>
               </Select>
             </div>
-            <div className="space-y-2">
-              <Label>ประเภทงาน</Label>
+            <div className="space-y-1.5">
+              <Label className={LABEL}>ประเภทงาน</Label>
               <Select
                 value={eventType}
                 onValueChange={(v) => setEventType(v as EventType)}
@@ -332,141 +346,150 @@ export function EventForm({
               </Select>
             </div>
           </div>
+        </>
+      )}
 
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-            <div className="space-y-2">
-              <Label htmlFor="date">วันที่</Label>
-              <Input
-                id="date"
-                type="date"
-                value={eventDate}
-                onChange={(e) => setEventDate(e.target.value)}
-              />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="start">เวลาเริ่มโชว์</Label>
-              <Input
-                id="start"
-                type="time"
-                value={showStart}
-                onChange={(e) => setShowStart(e.target.value)}
-              />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="hardout">Hard Out (เวลาต้องจบ)</Label>
-              <Input
-                id="hardout"
-                type="time"
-                value={hardOut}
-                onChange={(e) => setHardOut(e.target.value)}
-              />
-            </div>
+      {section(
+        "Date & Time",
+        "วันงาน เวลาเริ่มโชว์ และเวลาที่ต้องจบ",
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+          <div className="space-y-1.5">
+            <Label htmlFor="date" className={LABEL}>วันที่</Label>
+            <Input
+              id="date"
+              type="date"
+              className="num"
+              value={eventDate}
+              onChange={(e) => setEventDate(e.target.value)}
+            />
           </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="start" className={LABEL}>เวลาเริ่มโชว์</Label>
+            <Input
+              id="start"
+              type="time"
+              className="num"
+              value={showStart}
+              onChange={(e) => setShowStart(e.target.value)}
+            />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="hardout" className={LABEL}>Hard Out (เวลาต้องจบ)</Label>
+            <Input
+              id="hardout"
+              type="time"
+              className="num"
+              value={hardOut}
+              onChange={(e) => setHardOut(e.target.value)}
+            />
+          </div>
+        </div>
+      )}
 
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-            <div className="space-y-2">
-              <Label htmlFor="venue">สถานที่</Label>
-              <Input
-                id="venue"
-                list="venue-presets"
-                value={venue}
-                onChange={(e) => onVenueChange(e.target.value)}
-                placeholder="เช่น Lot of Live (Bangkok)"
-              />
-              <datalist id="venue-presets">
-                {VENUE_PRESETS.map((p) => (
-                  <option key={p.name} value={p.name} />
-                ))}
-              </datalist>
-            </div>
-            <div className="space-y-2">
-              <Label>สถานะ</Label>
-              <Select
-                value={status}
-                onValueChange={(v) => setStatus(v as GroupStatus)}
-              >
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {STATUS_KEYS.map((k) => (
-                    <SelectItem
-                      key={k}
-                      value={k}
-                      // อนุมัติแล้ว = ผู้อนุมัติเท่านั้น (mig 0037). Kept visible (never
-                      // filtered out) so an already-approved event still shows its
-                      // own status in the trigger.
-                      disabled={k === "approved" && !canApprove}
-                    >
-                      {STATUS_META[k].emoji} {STATUS_META[k].label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              {!canApprove && (
-                <p className="text-xs text-muted-foreground">
-                  การอนุมัติทำโดยแอดมิน/ทีมค่ายจากหน้า Overview
-                </p>
+      {section(
+        "Venue",
+        "สถานที่และลิงก์แผนที่",
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <div className="space-y-1.5">
+            <Label htmlFor="venue" className={LABEL}>สถานที่</Label>
+            <Input
+              id="venue"
+              list="venue-presets"
+              value={venue}
+              onChange={(e) => onVenueChange(e.target.value)}
+              placeholder="เช่น Lot of Live (Bangkok)"
+            />
+            <datalist id="venue-presets">
+              {VENUE_PRESETS.map((p) => (
+                <option key={p.name} value={p.name} />
+              ))}
+            </datalist>
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="map" className={LABEL}>Google Map (ลิงก์)</Label>
+            <Input
+              id="map"
+              value={mapUrl}
+              onChange={(e) => setMapUrl(e.target.value)}
+              placeholder="วางลิงก์ Google Maps"
+            />
+            <p className="text-[12.5px] text-muted-foreground">
+              {mapUrl.trim() ? (
+                <a
+                  href={mapUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-primary-ink underline"
+                >
+                  เปิดลิงก์เพื่อตรวจสอบ ↗
+                </a>
+              ) : venue.trim() ? (
+                <a
+                  href={mapsSearchUrl(venue)}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-primary-ink underline"
+                >
+                  ค้นหา “{venue}” ใน Google Maps แล้ววางลิงก์ ↗
+                </a>
+              ) : (
+                "เลือกสถานที่ที่มี preset ระบบจะใส่ลิงก์ให้ หรือวางเอง"
               )}
-            </div>
+            </p>
           </div>
+        </div>
+      )}
 
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-            <div className="space-y-2">
-              <Label htmlFor="map">Google Map (ลิงก์)</Label>
-              <Input
-                id="map"
-                value={mapUrl}
-                onChange={(e) => setMapUrl(e.target.value)}
-                placeholder="วางลิงก์ Google Maps"
-              />
-              <p className="text-xs text-muted-foreground">
-                {mapUrl.trim() ? (
-                  <a
-                    href={mapUrl}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="text-primary underline"
+      {section(
+        "Status & Deadline",
+        "สถานะงาน และเดดไลน์ส่งเซ็ตลิสต์",
+        <>
+          <div className="space-y-1.5">
+            <Label className={LABEL}>สถานะ</Label>
+            <Select
+              value={status}
+              onValueChange={(v) => setStatus(v as GroupStatus)}
+            >
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {STATUS_KEYS.map((k) => (
+                  <SelectItem
+                    key={k}
+                    value={k}
+                    // อนุมัติแล้ว = ผู้อนุมัติเท่านั้น (mig 0037). Kept visible (never
+                    // filtered out) so an already-approved event still shows its
+                    // own status in the trigger.
+                    disabled={k === "approved" && !canApprove}
                   >
-                    เปิดลิงก์เพื่อตรวจสอบ ↗
-                  </a>
-                ) : venue.trim() ? (
-                  <a
-                    href={mapsSearchUrl(venue)}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="text-primary underline"
-                  >
-                    ค้นหา “{venue}” ใน Google Maps แล้ววางลิงก์ ↗
-                  </a>
-                ) : (
-                  "เลือกสถานที่ที่มี preset ระบบจะใส่ลิงก์ให้ หรือวางเอง"
-                )}
+                    <span className="inline-flex items-center gap-2">
+                      <StatusIcon status={k} className="h-4 w-4 shrink-0" />
+                      {STATUS_META[k].label}
+                    </span>
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            {!canApprove && (
+              <p className="text-[12.5px] text-muted-foreground">
+                การอนุมัติทำโดยแอดมิน/ทีมค่ายจากหน้า Overview
               </p>
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="costume">COSTUME THEME</Label>
-              <Input
-                id="costume"
-                value={costumeTheme}
-                onChange={(e) => setCostumeTheme(e.target.value)}
-                placeholder="เช่น All Black"
-              />
-            </div>
+            )}
           </div>
-
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-            <div className="space-y-2">
-              <Label htmlFor="deadline">เดดไลน์ (ส่งเซ็ตลิสต์)</Label>
+            <div className="space-y-1.5">
+              <Label htmlFor="deadline" className={LABEL}>เดดไลน์ (ส่งเซ็ตลิสต์)</Label>
               <Input
                 id="deadline"
                 type="date"
+                className="num"
                 value={deadline}
                 onChange={(e) => setDeadline(e.target.value)}
               />
             </div>
-            <div className="space-y-2">
-              <Label htmlFor="deadline_note">หมายเหตุเดดไลน์</Label>
+            <div className="space-y-1.5">
+              <Label htmlFor="deadline_note" className={LABEL}>หมายเหตุเดดไลน์</Label>
               <Input
                 id="deadline_note"
                 value={deadlineNote}
@@ -475,9 +498,24 @@ export function EventForm({
               />
             </div>
           </div>
+        </>
+      )}
 
-          <div className="space-y-2">
-            <Label htmlFor="notes">โน้ต</Label>
+      {section(
+        "Notes",
+        "ธีมชุด และโน้ตถึงวง (ขึ้นบนรูปสรุปงาน)",
+        <>
+          <div className="space-y-1.5">
+            <Label htmlFor="costume" className={LABEL}>COSTUME THEME</Label>
+            <Input
+              id="costume"
+              value={costumeTheme}
+              onChange={(e) => setCostumeTheme(e.target.value)}
+              placeholder="เช่น All Black"
+            />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="notes" className={LABEL}>โน้ต</Label>
             <Textarea
               id="notes"
               value={notes}
@@ -485,25 +523,23 @@ export function EventForm({
               placeholder="รายละเอียดเพิ่มเติม"
             />
           </div>
+        </>
+      )}
 
-          <div className="flex justify-end gap-2 pt-2">
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => router.back()}
-            >
-              ยกเลิก
-            </Button>
-            <Button type="submit" disabled={loading}>
-              {loading
-                ? "กำลังบันทึก…"
-                : mode === "create"
-                  ? "สร้างงาน"
-                  : "บันทึก"}
-            </Button>
-          </div>
-        </form>
-      </CardContent>
-    </Card>
+      {/* Sticky: Save is one tap away from any field, floating 8 px above the tab
+          bar on a phone (the viewport bottom from lg). Solid, not glass. */}
+      <div className="sticky bottom-[calc(var(--tabbar-h)+env(safe-area-inset-bottom)+8px)] z-30 flex justify-end gap-2 rounded-[3px] bg-card p-2 shadow-float lg:bottom-4">
+        <Button type="button" variant="secondary" onClick={() => router.back()}>
+          ยกเลิก
+        </Button>
+        <Button type="submit" disabled={loading}>
+          {loading
+            ? "กำลังบันทึก…"
+            : mode === "create"
+              ? "สร้างงาน"
+              : "บันทึก"}
+        </Button>
+      </div>
+    </form>
   );
 }

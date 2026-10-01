@@ -1,27 +1,33 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, type CSSProperties, type ReactNode } from "react";
 import Link from "next/link";
 import {
   CalendarDays,
   MapPin,
-  Music2,
   Search,
   Radio,
-  AlarmClock,
   Timer,
   CheckCircle2,
   HardDriveDownload,
   Loader2,
   DownloadCloud,
   ChevronDown,
-  Dumbbell,
+  Headphones,
+  Disc3,
 } from "lucide-react";
-import { Card, CardContent } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { FIELD } from "@/components/ui/input";
 import { StatusBadge } from "@/components/status-badge";
+import { TitleSlab } from "@/components/title-slab";
 import { DuplicateEventButton } from "@/components/event/duplicate-event-button";
 import { DeleteEventButton } from "@/components/event/delete-event-button";
 import { DeviceStorage } from "@/components/event/device-storage";
+import { DeadlineChip } from "@/components/event/deadline-chip";
+import { dateParts } from "@/components/event/date-parts";
+// The band colour as the triplet `.date-tile` reads; a missing or garbled colour
+// (a cached row) falls back to muted ink instead of crashing the list.
+import { bandTriplet } from "@/lib/band-triplet";
 import { createClient } from "@/lib/supabase/client";
 import { hasLiveSession } from "@/lib/auth-session";
 import {
@@ -31,15 +37,9 @@ import {
   type PrefetchTarget,
 } from "@/lib/audio-prefetch";
 import { resolveAudioTargets, type SongAudioMap } from "@/lib/audio-targets";
-import {
-  EVENT_TYPES,
-  type EventRow,
-  type EventType,
-  type GroupStatus,
-} from "@/lib/types";
+import { type EventRow, type GroupStatus } from "@/lib/types";
 import {
   shortClock,
-  deadlineInfo,
   formatDuration,
   bkkTodayKey,
   monthBeforeKey,
@@ -55,27 +55,6 @@ type EventWithGroup = EventRow & {
   } | null;
 };
 
-// Tokens, not the raw palette: white on orange-500 was 2.8:1, under AA, on the
-// chip that says "ด่วน!". URGENT is the solid amber plate (its own dark ink, 10:1)
-// and SOON the amber tint (chip-warning) — fill vs tint, so the step still reads
-// once both are amber. Same steps in events-list.tsx and overview-client.tsx.
-const DEADLINE_TONE: Record<string, string> = {
-  overdue: "bg-destructive text-destructive-foreground",
-  urgent: "bg-warning text-warning-foreground",
-  soon: "chip-warning",
-  ok: "bg-muted text-muted-foreground",
-};
-
-function formatDate(date: string | null): string {
-  if (!date) return "ยังไม่ระบุวันที่";
-  const d = new Date(`${date}T00:00:00`);
-  if (isNaN(d.getTime())) return date;
-  return d.toLocaleDateString("en-GB", {
-    day: "2-digit",
-    month: "short",
-    year: "numeric",
-  });
-}
 
 // Pinned to Asia/Bangkok — this component is server-rendered (see
 // app/(app)/dashboard/page.tsx), and Vercel runs UTC, so the runtime's local
@@ -92,12 +71,6 @@ function daysUntil(dateStr: string): number {
   const today = new Date(`${todayKey()}T00:00:00Z`);
   const d = new Date(`${dateStr}T00:00:00Z`);
   return Math.round((d.getTime() - today.getTime()) / 86400000);
-}
-
-function countdownLabel(n: number): string {
-  if (n <= 0) return "วันนี้!";
-  if (n === 1) return "พรุ่งนี้";
-  return `อีก ${n} วัน`;
 }
 
 /** Per-device offline readiness for one event: audio bytes + whether this event's
@@ -122,12 +95,7 @@ function OfflineReadyBadge({ r }: { r: EventReadiness }) {
   const done = bytesDone && r.data;
   return (
     <span
-      className={cn(
-        "inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-xs font-medium",
-        done
-          ? "bg-green-600/10 text-green-700 dark:text-green-400"
-          : "bg-muted text-muted-foreground"
-      )}
+      className={cn("chip", done ? "chip-success" : "chip-neutral")}
       title={
         done
           ? "ข้อมูลงานและไฟล์เพลงอยู่ในเครื่องนี้ครบแล้ว เปิดและเล่นได้แม้เน็ตหลุด"
@@ -138,122 +106,147 @@ function OfflineReadyBadge({ r }: { r: EventReadiness }) {
     >
       {done ? (
         <>
-          <CheckCircle2 className="h-3.5 w-3.5" /> พร้อมออฟไลน์
+          <CheckCircle2 aria-hidden /> พร้อมออฟไลน์
         </>
       ) : bytesDone ? (
         <>
-          <HardDriveDownload className="h-3.5 w-3.5" /> ยังไม่มีข้อมูลงาน
+          <HardDriveDownload aria-hidden /> ยังไม่มีข้อมูลงาน
         </>
       ) : (
         <>
-          <HardDriveDownload className="h-3.5 w-3.5" /> เพลง {r.ready}/{r.total}
+          <HardDriveDownload aria-hidden /> เพลง {r.ready}/{r.total}
         </>
       )}
     </span>
   );
 }
 
-function EventCard({
+/** Copy / delete in a card's bottom-right corner (editors only). On a touch screen
+ *  they are always showing — there is no hover to reveal them — so the card leaves
+ *  them their own strip; they once sat on top of its last line. */
+function CornerActions({
   ev,
+  onDeleted,
+}: {
+  ev: EventWithGroup;
+  onDeleted?: (id: string) => void;
+}) {
+  return (
+    <>
+      <DuplicateEventButton eventId={ev.id} eventName={ev.name} showStartTime={ev.show_start_time} />
+      <DeleteEventButton eventId={ev.id} eventName={ev.name} onDeleted={onDeleted} />
+    </>
+  );
+}
+
+/**
+ * An upcoming show as a ticket stub (spec §G.1): the date on a solid tile of the
+ * band's own colour (darkened 30 %, white type — it holds on any group colour), then
+ * band + status, the name, the stage time and venue, and the deadline / offline
+ * chips. Every field is optional-chained: the desktop renders cached rows that can
+ * lack any of them (no event_type, no times, no colour).
+ */
+function EventStub({
+  ev,
+  onTicket = false,
   editable,
   readiness,
   onDeleted,
 }: {
   ev: EventWithGroup;
+  /** This show is the Next Show ticket right above, which already carries its
+   *  deadline chip. Said twice, the chip's line made the first stub 123 px tall
+   *  and pushed it under the tab bar on a phone (spec §J: ≤ 705). */
+  onTicket?: boolean;
   editable: boolean;
   readiness?: EventReadiness;
   onDeleted?: (id: string) => void;
 }) {
+  const dp = dateParts(ev.event_date);
+  const time = shortClock(ev.show_start_time);
   return (
-    <Link href={`/events/${ev.id}`} className="group">
-      <Card
-        className="relative h-full overflow-hidden border-l-4 transition-shadow group-hover:shadow-md"
-        style={ev.groups?.color ? { borderLeftColor: ev.groups.color } : undefined}
-      >
-        {editable && (
-          <>
-            <DuplicateEventButton
-              eventId={ev.id}
-              eventName={ev.name}
-              showStartTime={ev.show_start_time}
-            />
-            <DeleteEventButton eventId={ev.id} eventName={ev.name} onDeleted={onDeleted} />
-          </>
+    <Link
+      href={`/events/${ev.id}`}
+      className="stub slab group relative flex items-stretch overflow-hidden"
+      style={{ "--band": bandTriplet(ev.groups?.color) } as CSSProperties}
+    >
+      {editable && <CornerActions ev={ev} onDeleted={onDeleted} />}
+      <div className="date-tile py-2.5">
+        <span className="eyebrow text-[11px]">{dp?.wd ?? "—"}</span>
+        <span className="num mt-[3px] text-[36px] font-extrabold leading-[.92]">{dp?.day ?? "—"}</span>
+        <span className="eyebrow mt-[3px] text-[11px]">{dp?.mon ?? ""}</span>
+      </div>
+      <div className={cn("min-w-0 flex-1 px-3.5 py-2.5", editable && "[@media(hover:none)]:pb-14")}>
+        <div className="flex items-center gap-1.5 text-[11.5px] text-muted-foreground">
+          <span className="min-w-0 truncate">{ev.groups?.name ?? "—"}</span>
+          <StatusBadge status={ev.status as GroupStatus} className="ml-auto shrink-0" />
+        </div>
+        <h3 className="mt-[4px] truncate text-[15px] font-semibold leading-snug group-hover:text-primary-ink">
+          {ev.name}
+        </h3>
+        {(time || ev.venue) && (
+          <div className="mt-[1px] flex min-w-0 items-center gap-1.5 text-[12.5px] text-muted-foreground">
+            {time && <span className="num text-[17px] text-foreground">{time}</span>}
+            {time && ev.venue && <span className="text-faint">·</span>}
+            {ev.venue && <span className="truncate">{ev.venue}</span>}
+          </div>
         )}
-        {/* On a touch screen the copy / delete buttons are always showing (there is
-            no hover to reveal them), pinned to the bottom-right corner — where they
-            sat on top of the card's last line ("…(ไอดอล/ศิลปิน)" was unreadable on
-            a phone). Leave them their own strip there. */}
-        <CardContent
-          className={cn("space-y-3 p-5", editable && "[@media(hover:none)]:pb-14")}
+        <div className="mt-1 flex flex-wrap items-center gap-1.5 empty:hidden">
+          {!onTicket && <DeadlineChip deadline={ev.deadline} exempt={ev.groups?.exempt_from_deadline} />}
+          {readiness && <OfflineReadyBadge r={readiness} />}
+        </div>
+        {ev.last_run_seconds != null && (
+          <p className="mt-1 flex items-center gap-1 text-[11.5px] text-muted-foreground">
+            <Timer aria-hidden className="h-[13px] w-[13px]" /> โชว์ล่าสุดใช้เวลา{" "}
+            <span className="num text-[13px] text-foreground">{formatDuration(ev.last_run_seconds)}</span>
+          </p>
+        )}
+      </div>
+    </Link>
+  );
+}
+
+/** A past show as one compact row (spec §G.1): day over month, name and band ·
+ *  venue, and the run time the show actually took when one was recorded. */
+function PastRow({
+  ev,
+  editable,
+  onDeleted,
+}: {
+  ev: EventWithGroup;
+  editable: boolean;
+  onDeleted?: (id: string) => void;
+}) {
+  const dp = dateParts(ev.event_date);
+  return (
+    <Link
+      href={`/events/${ev.id}`}
+      className={cn(
+        "slab group relative flex min-h-[60px] items-center gap-3 px-3.5 py-3",
+        editable && "[@media(hover:none)]:pr-[108px]"
+      )}
+    >
+      {editable && <CornerActions ev={ev} onDeleted={onDeleted} />}
+      <div className="w-[38px] flex-none text-center leading-none">
+        <div className="num text-[24px]">{dp?.day ?? "—"}</div>
+        <div className="eyebrow mt-[3px] text-[10px] text-faint">{dp?.mon ?? ""}</div>
+      </div>
+      <div className="min-w-0 flex-1">
+        <h3 className="truncate text-[14px] font-medium group-hover:text-primary-ink">{ev.name}</h3>
+        {(ev.groups?.name || ev.venue) && (
+          <p className="truncate text-[12px] text-faint">
+            {[ev.groups?.name, ev.venue].filter(Boolean).join(" · ")}
+          </p>
+        )}
+      </div>
+      {ev.last_run_seconds != null && (
+        <div
+          className="num flex-none text-[19px] leading-none"
+          title="เวลาที่โชว์นี้ใช้จริง (Live Mode)"
         >
-          <div className="flex items-start justify-between gap-2">
-            <h2 className="font-semibold leading-tight group-hover:text-primary">
-              {ev.name}
-            </h2>
-            {/* shrink-0 + nowrap: beside a long show name the pill used to be
-                squeezed until its dot and its word stacked on two lines. */}
-            <StatusBadge
-              status={ev.status as GroupStatus}
-              className="shrink-0 whitespace-nowrap"
-            />
-          </div>
-          <div className="space-y-1.5 text-sm text-muted-foreground">
-            <p className="flex items-center gap-2">
-              <CalendarDays className="h-4 w-4 shrink-0" />
-              {formatDate(ev.event_date)}
-              {ev.show_start_time && (
-                <span className="tabular-nums">· {shortClock(ev.show_start_time)}</span>
-              )}
-            </p>
-            {ev.venue && (
-              <p className="flex items-center gap-2">
-                <MapPin className="h-4 w-4 shrink-0" />
-                <span className="truncate">{ev.venue}</span>
-              </p>
-            )}
-            <p className="flex items-center gap-2">
-              <Music2 className="h-4 w-4 shrink-0" />
-              {ev.groups?.name ?? "—"} ·{" "}
-              {/* Just the type's name. The full "Idol / Artist (ไอดอล/ศิลปิน)" is
-                  for the dropdown that picks it; on a card it ran the band line
-                  onto a second row, for a word every one of the band's cards
-                  repeats. */}
-              {/* `?? ""`: a cached row can come without event_type (the desktop's
-                  offline dashboard does — the airplane smoke boot caught this
-                  crashing the list), and the old code merely printed nothing. */}
-              {(EVENT_TYPES[ev.event_type as EventType]?.label ?? ev.event_type ?? "").split(" (")[0]}
-            </p>
-            {ev.last_run_seconds != null && (
-              <p className="flex items-center gap-2">
-                <Timer className="h-4 w-4 shrink-0" />
-                โชว์ล่าสุดใช้เวลา{" "}
-                <span className="font-medium tabular-nums text-foreground">
-                  {formatDuration(ev.last_run_seconds)}
-                </span>
-              </p>
-            )}
-          </div>
-          <div className="flex flex-wrap items-center gap-1.5">
-            {(() => {
-              if (ev.groups?.exempt_from_deadline) return null;
-              const dl = deadlineInfo(ev.deadline);
-              if (!dl) return null;
-              return (
-                <span
-                  className={cn(
-                    "inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-xs font-medium",
-                    DEADLINE_TONE[dl.tone]
-                  )}
-                >
-                  <AlarmClock className="h-3.5 w-3.5" /> {dl.label}
-                </span>
-              );
-            })()}
-            {readiness && <OfflineReadyBadge r={readiness} />}
-          </div>
-        </CardContent>
-      </Card>
+          {formatDuration(ev.last_run_seconds)}
+        </div>
+      )}
     </Link>
   );
 }
@@ -281,6 +274,7 @@ export function EventsList({
   canRunLive = true,
   canPractice = true,
   practiceRoomByGroup,
+  belowHero,
 }: {
   events: EventWithGroup[];
   /** Group ids the user may edit — drives the per-card duplicate button. */
@@ -300,6 +294,9 @@ export function EventsList({
   /** The practice room "ซ้อม" opens, per band (lib/next-show.ts). Absent → the
    *  Training list. */
   practiceRoomByGroup?: Record<string, string>;
+  /** Rendered right under the hero (the What's New card): under the ticket, never
+   *  above the one thing a member opened the app to see. */
+  belowHero?: ReactNode;
 }) {
   const [q, setQ] = useState("");
   // Local copy so a delete drops the card instantly; re-synced when the server
@@ -538,126 +535,260 @@ export function EventsList({
     };
   }, [computeReadiness, native]);
 
+  // ---- the hero (spec §G.1) — plain values, no hooks below this line ----
+  const days = nextShow?.event_date ? daysUntil(nextShow.event_date) : null;
+  const nextDp = dateParts(nextShow?.event_date);
+  const nextStage = shortClock(nextShow?.show_start_time) || null;
+  const nextCallRaw = shortClock(nextShow ? callTimes?.[nextShow.id] : null) || null;
+  // A call that IS the stage time is said once (showTimesLabel does the same).
+  const nextCall = nextCallRaw && nextCallRaw !== nextStage ? nextCallRaw : null;
+  const nextHardOut = shortClock(nextShow?.hard_out_time) || null;
+  // canLiveEdit (admin), no band practice (label staff), or the show's own day →
+  // Live Mode; otherwise the band practises the set (see the prop notes above).
+  const liveLeads = canRunLive || !canPractice || (days ?? 1) <= 0;
+  const practiceHref =
+    nextShow?.group_id && practiceRoomByGroup?.[nextShow.group_id]
+      ? `/events/${practiceRoomByGroup[nextShow.group_id]}/practice`
+      : "/practice";
+  // Desktop only (`native`): one tap to pull every upcoming show onto this machine.
+  const prepareBtn =
+    notReadyIds.length > 0 || bulk ? (
+      <button
+        type="button"
+        onClick={prepareAll}
+        disabled={!!bulk}
+        title="โหลดข้อมูลงานและไฟล์เพลงของทุกงานที่กำลังจะถึงลงเครื่องนี้ไว้ก่อน"
+        className="inline-flex h-11 shrink-0 items-center gap-1.5 rounded-[3px] bg-muted px-3 text-sm font-medium text-muted-foreground shadow-edge transition hover:text-foreground disabled:opacity-70"
+      >
+        {bulk ? (
+          <>
+            <Loader2 className="h-4 w-4 animate-spin" />
+            กำลังเตรียม {bulk.done}/{bulk.total}
+          </>
+        ) : (
+          <>
+            <DownloadCloud className="h-4 w-4" />
+            เตรียมทุกงานที่จะถึง ({notReadyIds.length})
+          </>
+        )}
+      </button>
+    ) : null;
+  // The show the ticket above is about — its stub below need not say its deadline twice.
+  const ticketId = nextShow?.event_date ? nextShow.id : null;
+  const stubs = (list: EventWithGroup[]) => (
+    <div className="flex flex-col gap-[2px] sm:grid sm:grid-cols-2 sm:gap-2 lg:grid-cols-3">
+      {list.map((ev) => (
+        <EventStub
+          key={ev.id}
+          ev={ev}
+          onTicket={ev.id === ticketId}
+          editable={canEditEvent(ev)}
+          readiness={readiness[ev.id]}
+          onDeleted={handleDeleted}
+        />
+      ))}
+    </div>
+  );
+  const pastRows = (list: EventWithGroup[]) => (
+    <div className="stack">
+      {list.map((ev) => (
+        <PastRow key={ev.id} ev={ev} editable={canEditEvent(ev)} onDeleted={handleDeleted} />
+      ))}
+    </div>
+  );
+
   return (
-    <div className="space-y-6">
+    <div className="space-y-5">
+      {/* The next show as a ticket — the screen's one lit surface. Not a link
+          itself: its two buttons are the ways in, and a link around links is
+          invalid. Its numerals are never band-coloured (spec §0.3 rule 3). */}
       {nextShow && nextShow.event_date && (
-        <div
-          className="flex flex-wrap items-center gap-x-5 gap-y-3 rounded-xl border border-l-4 bg-card p-4 shadow-sm"
-          style={nextShow.groups?.color ? { borderLeftColor: nextShow.groups.color } : undefined}
+        <section
+          aria-label="Next show"
+          className="ticket lit cut sweep"
+          style={{ "--cut": "22px", "--stub-h": "126px" } as CSSProperties}
         >
-          {/* min-w, not min-w-0: with a zero floor this block was the only thing in
-              the row allowed to shrink, so on a phone it gave way before anything
-              wrapped — the name came out as "A…" and the label stacked one word
-              per line. At 14rem it takes a row of its own once space runs out. */}
-          <div className="min-w-[14rem] flex-1">
-            <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-              งานถัดไป
+          <div className="px-4 pb-3 pt-3">
+            <div className="flex items-center justify-between gap-2">
+              <span className="eyebrow key">Next Show</span>
+              <StatusBadge status={nextShow.status as GroupStatus} className="shrink-0" />
             </div>
-            <div className="truncate text-lg font-bold leading-tight">{nextShow.name}</div>
-            <div className="truncate text-sm text-muted-foreground">
-              {formatDate(nextShow.event_date)}
-              {nextShow.venue && <span> · {nextShow.venue}</span>}
+            {/* Thai order: "อีก [3] วัน" — the count set big between its words. */}
+            <div className="mt-1 flex items-end">
+              {days != null && days <= 0 ? (
+                <>
+                  <span className="pb-[1px] text-[30px] font-semibold">วันนี้</span>
+                  {nextStage && (
+                    <span className="num ml-3 pb-[2px] text-[50px] font-extrabold leading-[.86]">
+                      {nextStage}
+                    </span>
+                  )}
+                </>
+              ) : days === 1 ? (
+                <span className="pb-[1px] text-[30px] font-semibold">พรุ่งนี้</span>
+              ) : (
+                <>
+                  <span className="pb-[5px] pr-2 text-[18px] font-medium text-muted-foreground">อีก</span>
+                  {/* 3 digits at 144 px overrun a 390 px phone; 96 px keeps the row in. */}
+                  <span className={cn("hero-num hard-drop slam", days != null && days > 99 && "text-[96px]")}>
+                    {days}
+                  </span>
+                  <span className="pb-[1px] pl-4 text-[30px] font-semibold">วัน</span>
+                </>
+              )}
+              {nextDp && (
+                <div className="ml-auto pb-[1px] pl-2 text-right">
+                  <div className="eyebrow text-muted-foreground">{nextDp.wd}</div>
+                  <div className="num mt-[3px] text-[50px] font-extrabold leading-[.86]">{nextDp.day}</div>
+                  <div className="eyebrow mt-[4px] whitespace-nowrap text-muted-foreground">
+                    {nextDp.mon} {nextDp.year}
+                  </div>
+                </div>
+              )}
             </div>
-            {/* Its own line, in the foreground colour: this is what a member opens
-                the app to find out (lib/next-show.ts). */}
-            {nextTimes && (
-              <div data-testid="next-show-times" className="mt-0.5 text-sm font-semibold tabular-nums">
-                {nextTimes}
+            <div className="mt-2.5">
+              <TitleSlab name={nextShow.name ?? ""} size={38} kickerSize={16} />
+            </div>
+            {nextShow.venue && (
+              <div className="mt-1.5 flex items-center gap-1.5 text-[13px] text-muted-foreground">
+                <MapPin aria-hidden className="h-[15px] w-[15px] flex-none" />
+                <span className="truncate">{nextShow.venue}</span>
               </div>
             )}
-          </div>
-          <div className="shrink-0 text-right">
-            <div className="text-xl font-extrabold text-primary">
-              {countdownLabel(daysUntil(nextShow.event_date))}
-            </div>
-          </div>
-          <div className="ml-auto flex shrink-0 gap-2">
-            <Link
-              href={`/events/${nextShow.id}`}
-              className="rounded-md border px-3 py-1.5 text-sm font-medium transition hover:bg-muted"
-            >
-              ดูงาน
-            </Link>
-            {canRunLive || !canPractice || daysUntil(nextShow.event_date) <= 0 ? (
-              <Link
-                href={`/events/${nextShow.id}/live`}
-                className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-sm font-semibold text-primary-foreground transition hover:opacity-90"
-              >
-                <Radio className="h-4 w-4" /> Live Mode
-              </Link>
-            ) : (
-              <Link
-                href={
-                  nextShow.group_id && practiceRoomByGroup?.[nextShow.group_id]
-                    ? `/events/${practiceRoomByGroup[nextShow.group_id]}/practice`
-                    : "/practice"
-                }
-                className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-sm font-semibold text-primary-foreground transition hover:opacity-90"
-              >
-                <Dumbbell className="h-4 w-4" /> ซ้อม
-              </Link>
+            <DeadlineChip
+              deadline={nextShow.deadline}
+              exempt={nextShow.groups?.exempt_from_deadline}
+              className="mt-1.5"
+            />
+            {/* "นัด 11:20 · ขึ้นเวที 13:20" said once, whole, for a screen reader —
+                the stub below sets the same numbers apart for the eye (lib/next-show.ts). */}
+            {nextTimes && (
+              <p data-testid="next-show-times" className="sr-only">
+                {nextTimes}
+              </p>
             )}
           </div>
-        </div>
+          <div className="perf" aria-hidden />
+          <div className="flex h-[126px] flex-col px-4 pt-2.5">
+            <div className="grid grid-cols-3 gap-3">
+              {(
+                [
+                  ["นัด", nextCall],
+                  ["ขึ้นเวที", nextStage],
+                  ["Hard Out", nextHardOut],
+                ] as const
+              ).map(([label, value], i) => (
+                <div key={label} className="min-w-0" aria-hidden={i < 2 || undefined}>
+                  <div className="flex items-center gap-1.5 text-[12px] leading-none text-muted-foreground">
+                    {i === 1 && <i className="h-[11px] w-[3px] bg-primary" />}
+                    {label}
+                  </div>
+                  <div className="num mt-[3px] text-[30px] leading-none">{value ?? "—"}</div>
+                </div>
+              ))}
+            </div>
+            <div className="mb-3 mt-auto grid grid-cols-[1.5fr_1fr] gap-2">
+              {liveLeads ? (
+                <Button asChild className="px-2">
+                  <Link href={`/events/${nextShow.id}/live`}>
+                    <Radio aria-hidden />
+                    <span className="en">Live Mode</span>
+                  </Link>
+                </Button>
+              ) : (
+                <Button asChild className="px-2">
+                  <Link href={practiceHref}>
+                    <Headphones aria-hidden />
+                    ซ้อมตามเซ็ต
+                  </Link>
+                </Button>
+              )}
+              <Button asChild variant="secondary" className="px-2">
+                <Link href={`/events/${nextShow.id}`}>
+                  <CalendarDays aria-hidden />
+                  ดูงาน
+                </Link>
+              </Button>
+            </div>
+          </div>
+        </section>
       )}
 
       {/* Between shows. The band enters a show 1–3 days before it (measured), so
-          for most of the week there is no banner — and with it went the one-tap
-          "ซ้อม", in exactly the days the band practises. Said plainly instead of
-          leaving a page of past shows that reads as stale. */}
+          for most of the week there is no ticket — and with it went the one-tap
+          "ซ้อม", in exactly the days the band practises. Said plainly, with the
+          practice room as the screen's hero instead of a page of past shows. */}
       {!q.trim() && !nextShow && !canRunLive && canPractice && (
-        <div
-          data-testid="no-next-show"
-          className="flex flex-wrap items-center gap-x-5 gap-y-3 rounded-xl border border-dashed p-4"
-        >
-          <div className="min-w-[12rem] flex-1">
-            <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-              งานถัดไป
-            </div>
-            <div className="text-sm text-muted-foreground">ยังไม่มีงานที่จะถึงในระบบ</div>
-          </div>
-          <Link
-            href={soleRoom ? `/events/${soleRoom}/practice` : "/practice"}
-            className="ml-auto inline-flex shrink-0 items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-sm font-semibold text-primary-foreground transition hover:opacity-90"
+        <div data-testid="no-next-show" className="space-y-3">
+          <p className="flex items-center gap-2 text-[13px] text-muted-foreground">
+            <CalendarDays aria-hidden className="h-[15px] w-[15px] flex-none" />
+            ยังไม่มีงานที่จะถึงในระบบ — Ar จะเพิ่มเมื่อยืนยันแล้ว
+          </p>
+          <section
+            aria-label="Practice room"
+            className="lit cut sweep p-4"
+            style={{ "--cut": "22px" } as CSSProperties}
           >
-            <Dumbbell className="h-4 w-4" /> ซ้อม
-          </Link>
+            <span className="eyebrow key">Practice Room</span>
+            <div className="mt-3.5 grid grid-cols-[1.6fr_1fr] gap-2">
+              <Button asChild className="h-12">
+                <Link href={soleRoom ? `/events/${soleRoom}/practice` : "/practice"}>
+                  <Headphones aria-hidden />
+                  เข้าห้องซ้อม
+                </Link>
+              </Button>
+              <Button asChild variant="secondary" className="h-12">
+                <Link href="/library">
+                  <Disc3 aria-hidden />
+                  <span className="en">Library</span>
+                </Link>
+              </Button>
+            </div>
+          </section>
         </div>
       )}
 
+      {belowHero}
+
+      {!noResults && upcoming.length > 0 && (
+        <section className="space-y-2">
+          <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 px-0.5">
+            <h2 className="h2">Upcoming</h2>
+            <span className="text-[12.5px] text-muted-foreground">กำลังจะถึง · {upcoming.length}</span>
+            {prepareBtn && <span className="ml-auto">{prepareBtn}</span>}
+          </div>
+          {stubs(upcoming)}
+        </section>
+      )}
+      {!noResults && undated.length > 0 && (
+        <section className="space-y-2">
+          <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 px-0.5">
+            <h2 className="h2">No Date</h2>
+            <span className="text-[12.5px] text-muted-foreground">ยังไม่ได้ใส่วันที่ · {undated.length}</span>
+          </div>
+          {stubs(undated)}
+        </section>
+      )}
+
+      {/* Search sits below what is coming up: the first screen is for the next
+          show, and finding an old one is the rarer errand. */}
       <div className="flex flex-wrap items-center gap-3">
-        <div className="relative max-w-sm flex-1">
-          <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+        <div className="relative min-w-0 flex-1 sm:max-w-sm">
+          <Search
+            aria-hidden
+            className="pointer-events-none absolute left-3.5 top-1/2 h-[18px] w-[18px] -translate-y-1/2 text-muted-foreground"
+          />
           <input
             value={q}
             onChange={(e) => setQ(e.target.value)}
             type="search"
             enterKeyHint="search"
             placeholder="ค้นหางาน / สถานที่ / วง…"
-            className="w-full rounded-md border bg-background py-2 pl-9 pr-3 text-base outline-none ring-primary/40 focus:ring-2 sm:text-sm"
+            aria-label="ค้นหางาน"
+            className={cn("h-[46px] w-full pl-10 pr-3 text-base sm:text-sm", FIELD)}
           />
         </div>
-        {(notReadyIds.length > 0 || bulk) && (
-          <button
-            type="button"
-            onClick={prepareAll}
-            disabled={!!bulk}
-            title="โหลดข้อมูลงานและไฟล์เพลงของทุกงานที่กำลังจะถึงลงเครื่องนี้ไว้ก่อน"
-            className="inline-flex shrink-0 items-center gap-1.5 rounded-md border px-3 py-2 text-sm font-medium text-muted-foreground transition hover:bg-muted hover:text-foreground disabled:opacity-70"
-          >
-            {bulk ? (
-              <>
-                <Loader2 className="h-4 w-4 animate-spin" />
-                กำลังเตรียม {bulk.done}/{bulk.total}
-              </>
-            ) : (
-              <>
-                <DownloadCloud className="h-4 w-4" />
-                เตรียมทุกงานที่จะถึง ({notReadyIds.length})
-              </>
-            )}
-          </button>
-        )}
+        {upcoming.length === 0 && prepareBtn}
       </div>
 
       {noResults ? (
@@ -666,63 +797,19 @@ export function EventsList({
         </p>
       ) : (
         <>
-          {upcoming.length > 0 && (
-            <section className="space-y-3">
-              <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-                กำลังจะถึง · {upcoming.length}
-              </h2>
-              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-                {upcoming.map((ev) => (
-                  <EventCard
-                    key={ev.id}
-                    ev={ev}
-                    editable={canEditEvent(ev)}
-                    readiness={readiness[ev.id]}
-                    onDeleted={handleDeleted}
-                  />
-                ))}
-              </div>
-            </section>
-          )}
-          {undated.length > 0 && (
-            <section className="space-y-3">
-              <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-                ยังไม่ได้ใส่วันที่ · {undated.length}
-              </h2>
-              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-                {undated.map((ev) => (
-                  <EventCard
-                    key={ev.id}
-                    ev={ev}
-                    editable={canEditEvent(ev)}
-                    readiness={readiness[ev.id]}
-                    onDeleted={handleDeleted}
-                  />
-                ))}
-              </div>
-            </section>
-          )}
           {past.length > 0 && (
-            <section className="space-y-3">
-              <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-                ผ่านมาแล้ว · {past.length}
-              </h2>
-              <div className="grid grid-cols-1 gap-4 opacity-80 sm:grid-cols-2 lg:grid-cols-3">
-                {past.map((ev) => (
-                  <EventCard
-                    key={ev.id}
-                    ev={ev}
-                    editable={canEditEvent(ev)}
-                    onDeleted={handleDeleted}
-                  />
-                ))}
+            <section className="space-y-2">
+              <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 px-0.5">
+                <h2 className="h2">Past</h2>
+                <span className="text-[12.5px] text-muted-foreground">ผ่านมาแล้ว · {past.length}</span>
               </div>
+              {pastRows(past)}
             </section>
           )}
           {old.length > 0 && (
-            <section className="space-y-3">
+            <section className="space-y-2">
               {q.trim() ? (
-                <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+                <h2 className="px-0.5 text-[12.5px] font-semibold text-muted-foreground">
                   งานเก่า (เกิน 1 เดือน) · {old.length}
                 </h2>
               ) : (
@@ -730,7 +817,7 @@ export function EventsList({
                   type="button"
                   onClick={() => setOldOpen((v) => !v)}
                   aria-expanded={showOld}
-                  className="flex w-full items-center justify-between gap-3 rounded-lg border bg-muted/40 px-4 py-3 text-left text-sm font-semibold text-muted-foreground transition-colors hover:bg-muted"
+                  className="flex h-11 w-full items-center justify-between gap-3 rounded-[2px] bg-muted px-4 text-left text-sm font-semibold text-muted-foreground shadow-edge transition-colors hover:bg-muted/80"
                 >
                   <span>งานเก่า (เกิน 1 เดือน) · {old.length}</span>
                   <span className="flex shrink-0 items-center gap-1 text-xs font-medium">
@@ -741,18 +828,7 @@ export function EventsList({
                   </span>
                 </button>
               )}
-              {showOld && (
-                <div className="grid grid-cols-1 gap-4 opacity-80 sm:grid-cols-2 lg:grid-cols-3">
-                  {old.map((ev) => (
-                    <EventCard
-                      key={ev.id}
-                      ev={ev}
-                      editable={canEditEvent(ev)}
-                      onDeleted={handleDeleted}
-                    />
-                  ))}
-                </div>
-              )}
+              {showOld && pastRows(old)}
             </section>
           )}
         </>

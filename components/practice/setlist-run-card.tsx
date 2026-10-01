@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { ListOrdered, Loader2, Play, Square } from "lucide-react";
+import { AudioLines, ListOrdered, Loader2, Play, Square } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { bkkTodayKey, monthBeforeKey } from "@/lib/time";
 import {
@@ -11,6 +11,7 @@ import {
   type SetlistShow,
 } from "@/lib/practice-setlist";
 import { Button } from "@/components/ui/button";
+import { FIELD } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import type { Song } from "@/lib/types";
 
@@ -87,59 +88,64 @@ export function SetlistRunCard({
 
   if (failed) {
     return (
-      <p className="rounded-lg border border-dashed px-3 py-2 text-xs text-muted-foreground">
+      <p className="slab px-3 py-2.5 text-[12.5px] text-muted-foreground">
         ซ้อมตามเซ็ตลิสต์: โหลดเซ็ตลิสต์ของงานไม่ได้ — ต้องต่อเน็ต
       </p>
     );
   }
   if (!shows) {
     return (
-      <p className="flex items-center gap-2 px-1 text-xs text-muted-foreground">
-        <Loader2 className="h-3.5 w-3.5 animate-spin" /> กำลังโหลดเซ็ตลิสต์ของงาน…
+      <p className="flex items-center gap-2 px-1 text-[12.5px] text-muted-foreground">
+        <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden /> กำลังโหลดเซ็ตลิสต์ของงาน…
       </p>
     );
   }
   if (shows.length === 0 || !show) return null; // no show with a playable set this month
 
   return (
-    <section className="space-y-3 rounded-xl border bg-card p-4 shadow-sm">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <h2 className="flex items-center gap-1.5 text-sm font-medium">
-          <ListOrdered className="h-4 w-4" /> ซ้อมตามเซ็ตลิสต์
-        </h2>
-        <select
-          aria-label="เลือกงานที่จะซ้อม"
-          value={show.id}
-          onChange={(e) => setShowId(e.target.value)}
-          className="h-9 min-w-0 max-w-full rounded-md border bg-background px-2 text-sm"
-        >
-          {shows.map((s) => (
-            <option key={s.id} value={s.id}>
-              {whenLabel(s.event_date, today)} · {s.name}
-            </option>
-          ))}
-        </select>
+    <section aria-label="Setlist" className="space-y-2.5">
+      <div className="flex items-baseline justify-between gap-3 px-0.5">
+        <h2 className="h2">Setlist</h2>
+        <span className="flex items-center gap-1 text-[13px] text-muted-foreground">
+          <ListOrdered className="h-3.5 w-3.5" aria-hidden /> ซ้อมตามเซ็ตลิสต์ · เล่นต่อเอง
+        </span>
       </div>
+      <select
+        aria-label="เลือกงานที่จะซ้อม"
+        value={show.id}
+        onChange={(e) => setShowId(e.target.value)}
+        className={cn(FIELD, "h-11 w-full min-w-0 px-3 text-base sm:text-sm")}
+      >
+        {shows.map((s) => (
+          <option key={s.id} value={s.id}>
+            {whenLabel(s.event_date, today)} · {s.name}
+          </option>
+        ))}
+      </select>
 
-      <ol className="divide-y rounded-lg border">
+      <ol className="stack">
         {queue.map((q, i) => {
           const active = runningHere?.index === i;
           return (
             <li key={`${q.itemId}-${i}`}>
               <button
+                type="button"
+                aria-current={active ? "true" : undefined}
                 onClick={() => onPlay(show.id, queue, i)}
                 className={cn(
-                  "flex w-full items-center gap-3 px-3 py-2 text-left text-sm transition-colors",
-                  active ? "bg-primary/10 font-semibold" : "hover:bg-muted/50"
+                  "slab flex min-h-[50px] w-full items-center gap-3 px-3 text-left text-[14.5px] transition-colors duration-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
+                  active
+                    ? "bg-[linear-gradient(90deg,hsl(var(--primary)/.14),transparent_70%)] font-semibold text-primary-ink shadow-[inset_4px_0_0_hsl(var(--primary)),inset_0_0_0_1px_hsl(var(--border))]"
+                    : "hover:bg-muted/40"
                 )}
               >
-                <span className="w-5 shrink-0 text-right tabular-nums text-xs text-muted-foreground">
-                  {i + 1}
-                </span>
+                <span className="num w-5 shrink-0 text-right text-[14px] text-faint">{i + 1}</span>
                 <span className="min-w-0 flex-1 truncate">{q.song.title}</span>
-                {active && loadingSongId === q.song.id && (
-                  <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" />
-                )}
+                {active && loadingSongId === q.song.id ? (
+                  <Loader2 className="h-4 w-4 shrink-0 animate-spin" aria-hidden />
+                ) : active ? (
+                  <AudioLines className="h-4 w-4 shrink-0" strokeWidth={2.8} aria-hidden />
+                ) : null}
               </button>
             </li>
           );
@@ -147,7 +153,7 @@ export function SetlistRunCard({
       </ol>
 
       {missing.length > 0 && (
-        <p className="text-xs text-muted-foreground">
+        <p className="px-0.5 text-[12.5px] text-muted-foreground">
           ข้ามเพราะยังไม่มีไฟล์เสียงในคลัง: {missing.join(", ")}
         </p>
       )}
@@ -157,20 +163,20 @@ export function SetlistRunCard({
           set that keeps auto-advancing underneath. */}
       {running ? (
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <span className="text-xs text-muted-foreground">
+          <span className="text-[12.5px] text-muted-foreground">
             {runningHere
               ? `กำลังเล่นเพลงที่ ${running.index + 1}/${running.total} — จบแล้วเล่นเพลงถัดไปเอง`
               : `กำลังเล่นตามเซ็ตของ “${
                   shows.find((s) => s.id === running.showId)?.name ?? "อีกงาน"
                 }” อยู่ (เพลงที่ ${running.index + 1}/${running.total})`}
           </span>
-          <Button variant="outline" size="sm" onClick={onStop}>
+          <Button variant="secondary" onClick={onStop}>
             <Square className="h-3.5 w-3.5" /> หยุดเล่นต่อ
           </Button>
         </div>
       ) : (
         <Button
-          className="w-full"
+          className="h-12 w-full"
           disabled={queue.length === 0}
           onClick={() => onPlay(show.id, queue, 0)}
         >

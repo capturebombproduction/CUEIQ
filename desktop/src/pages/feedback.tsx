@@ -1,5 +1,5 @@
-// Desktop ฟีดแบคของฉัน — mirrors app/(app)/feedback/page.tsx and reuses
-// MyFeedbackList verbatim.
+// Desktop Feedback — mirrors app/(app)/feedback/page.tsx and reuses
+// MyFeedbackList and the Feedback tile (FeedbackButton) verbatim.
 //
 // WHY THIS FILE EXISTS AT ALL. /api/notify sends "ทีมงานตอบฟีดแบคของคุณแล้ว" with
 // link "/feedback", and the bell navigates to whatever the row says. Without a
@@ -10,9 +10,10 @@
 // No cache read: an answer that only exists on the server cannot be shown offline,
 // and MyFeedbackList already renders "กำลังโหลด…" rather than claiming the list is
 // empty when the read fails (an empty read is not an empty table).
-import { MessagesSquare } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { MyFeedbackList } from "@/components/my-feedback-list";
+import { FeedbackButton } from "@/components/feedback-button";
+import { PageTitle } from "@/components/page-title";
 import { useWorkspace } from "~/data/workspace-context";
 
 export function Feedback() {
@@ -29,15 +30,19 @@ export function Feedback() {
   }
 
   return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="flex items-center gap-2 text-2xl font-bold tracking-tight">
-          <MessagesSquare className="h-6 w-6" /> ฟีดแบคของฉัน
-        </h1>
-        <p className="text-sm text-muted-foreground">
+    <div className="space-y-4">
+      <div className="space-y-2">
+        <PageTitle title="Feedback" />
+        <p className="text-[14px] text-muted-foreground">
           เรื่องที่คุณแจ้งเข้ามา และคำตอบจากทีมงาน
         </p>
       </div>
+      {/* The report form — the same tile the More sheet carries. It renders
+          nothing without a tenant, exactly as it does there. */}
+      <div className="sm:max-w-xs">
+        <FeedbackButton userId={ws.user.id} tenantId={ws.membership?.tenant_id ?? null} />
+      </div>
+      <h2 className="h2 pt-2">Sent</h2>
       <MyFeedbackList userId={ws.user.id} />
     </div>
   );

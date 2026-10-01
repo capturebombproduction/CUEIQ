@@ -147,29 +147,84 @@ describe("what a skin may and may not touch", () => {
   // The other half of that rule, from the screens' side: the delete-red guard above
   // moves --destructive for a red band, so a ladder step painted with bg-destructive
   // turned VIOLET on Seishin's devices (and Crimson's, Sunset's, Sakura's) while
-  // every other band's stayed red. Each colour the WARN / URGENT / OVER steps name
+  // every other band's stayed red. Each colour the WARN / URGENT / OVER steps use
   // must be a token no skin writes.
-  const LADDERS = ["components/event/live-mode.tsx", "desktop/src/pages/my-show.tsx"];
-  it.each(LADDERS)("%s: the WARN / URGENT / OVER colours are tokens no skin writes", (file) => {
+  //
+  // Since the Live slice the steps are no longer a class map in each screen: they
+  // are app/stage.css's zone classes, and the two screens only NAME them. So the
+  // rule is held in two halves — the screens wear the steps through those classes
+  // and paint no step colour of their own, and every colour those rules read is a
+  // token no skin writes.
+  const LADDERS = ["components/live/now-card.tsx", "desktop/src/pages/my-show.tsx"];
+  it.each(LADDERS)("%s: wears WARN / URGENT / OVER through stage.css's zone classes", (file) => {
     const src = fs.readFileSync(path.resolve(__dirname, "..", file), "utf8");
-    const map = /const zoneClasses = \{([\s\S]*?)\}\[zone\]/.exec(src)?.[1];
-    expect(map, "the zone class map moved — point this test at its new home").toBeTruthy();
-    const tokens = new Set<string>();
-    for (const step of ["warn", "urgent", "over"]) {
-      const classes = new RegExp(`\\b${step}:\\s*"([^"]*)"`).exec(map!)?.[1];
-      expect(classes, `no ${step} entry`).toBeTruthy();
-      for (const m of classes!.matchAll(/(?<![\w-])(?:bg|text|border|ring)-([a-z]+(?:-[a-z]+)*)/g)) {
-        tokens.add(m[1]);
-      }
+    // the card's zone expression: Quick Show's `zoneClasses`, the NOW card's className
+    const zone =
+      /const zoneClasses = cn\(([\s\S]*?)\);/.exec(src)?.[1] ??
+      /data-zone=\{zone\}\s*className=\{cn\(([\s\S]*?)\)\}/.exec(src)?.[1];
+    expect(zone, "the zone classes moved — point this test at their new home").toBeTruthy();
+    for (const cls of ["zone-warn", "zone-urgent", "alarm-plate", "settled"]) {
+      expect(zone, `no .${cls} step`).toMatch(new RegExp(`["\\s]${cls}["\\s]`));
     }
-    expect(tokens.size).toBeGreaterThan(0);
+    // …and no step colour of its own: not the band, not the skin-moved red, not --notify
+    expect(zone).not.toMatch(/(?<![\w-])(?:bg|text|border|ring)-(?:primary|destructive|notify)\b/);
+    // The interim map and its dimming pulse are gone for good.
+    expect(src).not.toMatch(/animate-pulse-ring|(?<![\w-])bg-notify\b/);
+  });
+
+  it("app/stage.css: every colour the WARN / URGENT / OVER rules read is a token no skin writes", () => {
+    const css = postcss.parse(fs.readFileSync(path.resolve(__dirname, "../app/stage.css"), "utf8"));
+    const STEP = /\.(?:zone-warn|zone-urgent|zone-over|alarm-plate|hazard-band)\b/;
+    const tokens = new Set<string>();
+    let rules = 0;
+    let settledFrame = "";
+    css.walkRules((r) => {
+      if (!STEP.test(r.selector)) return;
+      rules += 1;
+      // colours only: the timing tokens in animation / transition are not the point
+      const values = r.nodes
+        .flatMap((n) => (n.type === "decl" && !/^(animation|transition)/.test(n.prop) ? [n.value] : []))
+        .join(";");
+      // The settled plate is a CARD by design (ten seconds past zero the alarm stops
+      // shouting): its fill follows the skin; what must not is its alarm frame.
+      if (/^\.alarm-plate\.settled$/.test(r.selector.trim())) {
+        settledFrame = values;
+        return;
+      }
+      for (const m of values.matchAll(/var\(--([\w-]+)/g)) tokens.add(m[1]);
+    });
+    expect(rules, "the ladder rules moved out of app/stage.css").toBeGreaterThanOrEqual(8);
+    expect(settledFrame, "the settled plate keeps its alarm frame").toContain("var(--alarm)");
+    for (const step of ["warning", "warning-ink", "warning-foreground", "urgent-wash-a", "alarm", "alarm-foreground"]) {
+      expect(tokens, `the ladder no longer reads --${step}`).toContain(step);
+    }
     for (const token of tokens) {
       // a real theme token, not a typo or a raw palette name…
       expect(themeTokens.light, `--${token} is not a theme.css token`).toHaveProperty(`--${token}`);
       // …and not one any band colour rewrites
       for (const [name, hex] of BANDS) {
-        expect(skinCss(hex), `${name} reskins --${token} under ${file}'s ladder`).not.toContain(`--${token}:`);
+        expect(skinCss(hex), `${name} reskins --${token} under the Live ladder`).not.toContain(`--${token}:`);
       }
     }
   });
+});
+
+// The band that never picked a colour gets theme.css's own --input, and §J wants a
+// field boundary of 3:1 on every surface it sits on (WCAG 1.4.11). theme.css still
+// carries the PRE-redesign surface values on purpose (see its header): light
+// --input 220 13% 91% is 1.24:1 on white — login, library search and the overview
+// selects showed fields with no visible edge — and dark 217 33% 22% is 1.5:1. The
+// final values (spec §A: light L54 / --border L80) land WITH the surface/lighting
+// decision, because their hue follows it. Until then these two are marked `fails`, so
+// they pass while the gap stands. When the new surfaces land and a theme clears 3:1,
+// its line goes red ("expected to fail"): drop that `.fails` and it becomes the guard.
+describe("theme.css's own field boundary (no band skin)", () => {
+  it.fails.each(["light", "dark"] as const)(
+    "KNOWN GAP until the surface tokens land, %s: --input clears 3:1 on card and page",
+    (theme) => {
+      const t = themeTokens[theme];
+      expect(contrast(t["--input"], t["--card"])).toBeGreaterThanOrEqual(3);
+      expect(contrast(t["--input"], t["--background"])).toBeGreaterThanOrEqual(3);
+    }
+  );
 });

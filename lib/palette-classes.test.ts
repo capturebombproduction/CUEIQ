@@ -20,23 +20,11 @@ const RAW_PALETTE =
   /(?<![\w-])(?:bg|text|border)-(?:red|rose|pink|fuchsia|purple|violet|indigo|blue|sky|cyan|teal|emerald|green|lime|yellow|amber|orange|slate|gray|zinc|neutral|stone)-\d/g;
 
 const BUDGET: Record<string, number> = {
-  "components/event/live-mode.tsx": 47,
-  "components/event/live-status-strip.tsx": 24,
-  "components/event/event-live-caller.tsx": 23,
   "components/practice/practice-journal.tsx": 12,
-  "components/event/show-readiness-check.tsx": 12,
-  "components/overview/overview-client.tsx": 6,
-  "components/event/event-workspace.tsx": 6,
   "components/event/device-storage.tsx": 6,
-  "components/event/event-run-status.tsx": 5,
-  "components/admin/backup-status.tsx": 5,
   "components/song/song-library.tsx": 4,
-  "components/event/events-list.tsx": 3,
   "components/practice/practice-player.tsx": 3,
   "components/practice/metronome.tsx": 2,
-  "components/event/setlist-builder.tsx": 2,
-  "components/error-card.tsx": 1,
-  "components/admin/storage-usage.tsx": 1,
 };
 
 const repoRoot = path.resolve(__dirname, "..");

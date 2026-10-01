@@ -14,6 +14,27 @@ import {
   DialogDescription,
   DialogTrigger,
 } from "@/components/ui/dialog";
+import { useSheetMemory } from "@/components/event/event-more-menu";
+
+type LinkState = { token: string | null; expiresAt: string | null };
+/** A write this page made, and the props it was made over (see `seedLink`). */
+type KeptLink = LinkState & { over: LinkState };
+
+/**
+ * Where the button starts on mount. It lives in the hero's ⋯ sheet, which
+ * unmounts it on every close, so the props it is given are the PAGE-LOAD values —
+ * after "สร้างลิงก์แชร์" they still say "no link", and seeding from them offered to
+ * create a second link that would kill the one already sent to the venue. So the
+ * last write this page made wins, but only while the props still show what they
+ * showed when it was made: once a refresh brings the row back (with this write in
+ * it, or someone else's after it), the server's value is the truth again.
+ */
+function seedLink(kept: KeptLink | undefined, props: LinkState): LinkState {
+  if (kept && kept.over.token === props.token && kept.over.expiresAt === props.expiresAt) {
+    return { token: kept.token, expiresAt: kept.expiresAt };
+  }
+  return props;
+}
 
 // Lets an editor publish a public read-only run-sheet link for the event. The
 // link works WITHOUT login — anyone with it reads the run sheet via the
@@ -22,13 +43,27 @@ export function ShareButton({
   eventId,
   initialToken,
   initialExpiresAt,
+  variant = "secondary",
+  className,
 }: {
   eventId: string;
   initialToken: string | null;
   initialExpiresAt: string | null;
+  /** the trigger's look — "secondary" as a row of the event hero's ⋯ sheet */
+  variant?: "secondary" | "outline";
+  className?: string;
 }) {
-  const [token, setToken] = useState<string | null>(initialToken);
-  const [expiresAt, setExpiresAt] = useState<string | null>(initialExpiresAt);
+  const memory = useSheetMemory();
+  const memoryKey = `share-link:${eventId}`;
+  const props: LinkState = { token: initialToken, expiresAt: initialExpiresAt };
+  const [token, setToken] = useState<string | null>(
+    () => seedLink(memory?.get(memoryKey) as KeptLink | undefined, props).token
+  );
+  const [expiresAt, setExpiresAt] = useState<string | null>(
+    () => seedLink(memory?.get(memoryKey) as KeptLink | undefined, props).expiresAt
+  );
+  /** Record a write that LANDED, so the next mount starts from it (seedLink). */
+  const keep = (next: LinkState) => memory?.set(memoryKey, { ...next, over: props } satisfies KeptLink);
   const [busy, setBusy] = useState(false);
   const [copied, setCopied] = useState(false);
 
@@ -87,6 +122,7 @@ export function ShareButton({
     }
     setToken(next);
     if (!enabled) setExpiresAt(null);
+    keep({ token: next, expiresAt: enabled ? expiresAt : null });
     toast.success(enabled ? "เปิดลิงก์แชร์แล้ว" : "ปิดลิงก์แชร์แล้ว");
   }
 
@@ -108,6 +144,7 @@ export function ShareButton({
       return;
     }
     setExpiresAt(next);
+    keep({ token, expiresAt: next });
     toast.success(days == null ? "ตั้งเป็นไม่หมดอายุ" : `หมดอายุใน ${days} วัน`);
   }
 
@@ -126,8 +163,8 @@ export function ShareButton({
   return (
     <Dialog>
       <DialogTrigger asChild>
-        <Button type="button" variant="outline" size="lg">
-          <Share2 className="h-4 w-4" /> แชร์
+        <Button type="button" variant={variant} className={className}>
+          <Share2 aria-hidden /> แชร์ลิงก์ run sheet
         </Button>
       </DialogTrigger>
       <DialogContent>

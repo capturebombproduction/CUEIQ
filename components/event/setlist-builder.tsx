@@ -11,12 +11,14 @@ import {
   Plus,
   Mic,
   AlarmClock,
-  CheckCircle2,
+  Check,
   ListMusic,
   GripVertical,
-  Radio,
+  OctagonAlert,
   RotateCcw,
 } from "lucide-react";
+import { KindTile } from "@/components/event/kind";
+import { RunMeter } from "@/components/event/run-meter";
 import { createClient } from "@/lib/supabase/client";
 import { newLocalRowId } from "@/lib/mgmt-outbox";
 import { OFFLINE_QUEUED_MESSAGE, tryQueueChildList } from "@/lib/mgmt-write";
@@ -95,7 +97,7 @@ function DurationField({
       // lone number as SECONDS, so "345" meaning 3:45 commits 5:45 with no error.
       inputMode="text"
       placeholder="m:ss"
-      className="tabular-nums"
+      className="num"
       onChange={(e) => setText(e.target.value)}
       onKeyDown={(e) => {
         if (e.key === "Enter") (e.target as HTMLInputElement).blur();
@@ -148,7 +150,7 @@ function OverlapInput({
       type="text"
       inputMode="text"
       placeholder="เช่น -5"
-      className="tabular-nums"
+      className="num"
       value={text}
       disabled={disabled}
       onChange={(e) => {
@@ -1327,58 +1329,78 @@ export function SetlistBuilder({
     );
   }
 
+  // The slot the set must fit: show start → hard out (folded past midnight by
+  // computeSetlistTimes). Without both there is no slot, so no "/ 60:00" and no tick.
+  const slotSec =
+    hasClock && timing.hardOutSec != null ? timing.hardOutSec - showStartSec! : null;
+
   return (
-    <div className="space-y-4">
-      {/* Summary / Hard-out banner */}
-      <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border bg-card p-4">
-        <div className="flex flex-wrap items-center gap-x-6 gap-y-1">
-          <div>
-            <p className="text-xs text-muted-foreground">เวลารวม (Run Time)</p>
-            <p className="text-xl font-bold tabular-nums">
-              {formatDuration(timing.totalSeconds)}
-            </p>
-          </div>
-          {hasClock && (
-            <div>
-              <p className="text-xs text-muted-foreground">เริ่ม–จบ</p>
-              <p className="font-semibold tabular-nums">
-                {formatClockOfDay(showStartSec!)} –{" "}
-                {formatClockOfDay(timing.endSec)}
-              </p>
-            </div>
-          )}
-          <div>
-            <p className="text-xs text-muted-foreground">จำนวนรายการ</p>
-            <p className="font-semibold tabular-nums">{items.length}</p>
-          </div>
-          {/* The receipt. Sits with the numbers the operator is already scanning,
-              rather than floating over the list — this is a standing statement
-              about the whole builder, not a per-row flourish. */}
-          <div>
-            <p className="text-xs text-muted-foreground">การบันทึก</p>
-            <p className="font-semibold">
-              {save.state === "idle" ? (
-                <span className="text-xs font-normal text-muted-foreground">
-                  บันทึกอัตโนมัติ
+    <div className="space-y-3">
+      {/* RUN TIME (spec §G.3): the set's length, the slot it must fit, the set's
+          shape as a strip (songs solid, the rest lighter, overflow hatched) with the
+          hard out as a tick, then in-time or over in words. */}
+      <section className="slab p-3.5">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <span className="eyebrow key text-muted-foreground">Run time</span>
+          <span className="text-[12.5px] text-muted-foreground">
+            <span className="num text-[15px] text-foreground">{items.length}</span> รายการ
+            {hasClock && (
+              <>
+                {" · "}
+                <span className="num text-[15px] text-foreground">
+                  {formatClockOfDay(showStartSec!)}–{formatClockOfDay(timing.endSec)}
                 </span>
-              ) : (
-                <SaveStatus state={save.state} />
-              )}
-            </p>
-          </div>
+              </>
+            )}
+          </span>
         </div>
+        <div className="mt-1 flex items-baseline gap-2">
+          <span className="num text-[58px] font-extrabold leading-[.9]">
+            {formatDuration(timing.totalSeconds)}
+          </span>
+          {slotSec != null && (
+            <span className="num text-[24px] text-faint">/ {formatDuration(slotSec)}</span>
+          )}
+        </div>
+        {items.length > 0 && (
+          <RunMeter
+            className="mt-3"
+            blocks={items.map((it, i) => ({
+              kind: it.kind,
+              seconds: Math.max(
+                0,
+                (timing.rows[i]?.slotEndSec ?? 0) - (timing.rows[i]?.slotStartSec ?? 0)
+              ),
+            }))}
+            slotSeconds={slotSec}
+            hardOutSeconds={slotSec}
+          />
+        )}
+        {slotSec != null && items.length > 0 && (
+          <div className="mt-1.5 flex justify-between text-[11px] text-faint">
+            <span className="num text-[13px]">{formatClockOfDay(showStartSec!)}</span>
+            <span>
+              Hard Out <span className="num text-[13px]">{formatClockOfDay(timing.hardOutSec!)}</span>
+            </span>
+          </div>
+        )}
+        <div className="mt-2 flex flex-wrap items-center gap-2">
         {hardOutSec != null && (
-          <div className="flex flex-wrap items-center justify-end gap-2">
+          <>
+            {/* Over is the band-independent alarm, never --destructive: a red
+                band's skin moves that token off red (lib/skin.ts). */}
             {timing.isOver ? (
-              <Badge variant="destructive" className="gap-1 px-3 py-1.5 text-sm">
-                <AlarmClock className="h-4 w-4" /> เกิน Hard Out{" "}
-                {formatDuration(timing.overBy)}
-              </Badge>
+              <span className="chip chip-alarm">
+                <OctagonAlert aria-hidden /> เกิน Hard Out +{formatDuration(timing.overBy)}
+              </span>
             ) : (
-              <Badge variant="success" className="gap-1 px-3 py-1.5 text-sm">
-                <CheckCircle2 className="h-4 w-4" /> อยู่ในเวลา · เหลือ{" "}
-                {formatDuration(Math.max(0, timing.hardOutSec! - timing.endSec))}
-              </Badge>
+              <span className="flex items-center gap-1.5 text-[13px] text-success-ink">
+                <Check aria-hidden className="h-[15px] w-[15px]" /> อยู่ในเวลา · เหลือ{" "}
+                <span className="num text-[16px]">
+                  {formatDuration(Math.max(0, timing.hardOutSec! - timing.endSec))}
+                </span>{" "}
+                ก่อน Hard Out
+              </span>
             )}
             {/* The same "เวลาที่เหลือ" the last row has, put where the mismatch is
                 SHOWN. Measured 2026-09-28: in 10 of Seishin Kakumei's 25 shows the
@@ -1410,39 +1432,105 @@ export function SetlistBuilder({
               return (
                 <Button
                   type="button"
-                  variant="outline"
-                  size="sm"
+                  variant="secondary"
                   onClick={() =>
                     fillRemaining(last.id, lastRow.startSec, last.buffer_after_seconds)
                   }
                   title="ตั้งความยาวแถวสุดท้าย = เวลาที่เหลือจนถึง Hard Out"
-                  className="h-8 max-w-full gap-1 text-xs"
+                  className="max-w-full gap-1 text-[13px]"
                 >
-                  <AlarmClock className="h-3.5 w-3.5 shrink-0" />
+                  <AlarmClock aria-hidden className="h-4 w-4 shrink-0" />
                   <span className="truncate">
                     ให้ “{last.title?.trim() || "แถวสุดท้าย"}” เติมให้พอดี
                   </span>
                 </Button>
               );
             })()}
-          </div>
+          </>
         )}
-      </div>
+          {/* The receipt. Sits with the numbers the operator is already scanning,
+              rather than floating over the list — a standing statement about the
+              whole builder, not a per-row flourish. Editors only: a member saves
+              nothing here. */}
+          {editable &&
+            (save.state === "idle" ? (
+              <span className="ml-auto text-[12.5px] text-muted-foreground">บันทึกอัตโนมัติ</span>
+            ) : (
+              <SaveStatus state={save.state} className="ml-auto" />
+            ))}
+        </div>
+      </section>
 
       {items.length === 0 && (
-        <p className="rounded-lg border border-dashed py-10 text-center text-sm text-muted-foreground">
+        <p className="rounded-[2px] border border-dashed py-10 text-center text-sm text-muted-foreground">
           ยังไม่มีรายการในเซ็ตลิสต์
         </p>
       )}
 
-      {/* Items */}
-      <div className="space-y-2">
+      {/* Items: a member reads a compact cue list; an editor gets the full rows */}
+      <div className={editable ? "space-y-2" : "stack"}>
         {items.map((it, idx) => {
           const t = timing.rows[idx];
           // This row is on air in a running Live Mode → lock its edits (can't change
           // what's playing). Other rows stay editable and sync to Live Mode live.
           const isLive = liveItemId === it.id;
           const rowEditable = editable && !isLive;
+          // A row that ends past the hard out: the alarm rail (band-independent —
+          // never --destructive, which a red band's skin moves off red) and the
+          // octagon, so it is never colour alone. The on-air rail wins over it.
+          const rowTone = cn(
+            t?.overHardOut && "bg-alarm/[.06] shadow-[inset_3px_0_0_hsl(var(--alarm)),inset_0_0_0_1px_hsl(var(--border))]",
+            isLive && "shadow-[inset_4px_0_0_hsl(var(--primary)),inset_0_0_0_1px_hsl(var(--border))]"
+          );
+          const overMark = t?.overHardOut ? (
+            <span className="inline-flex items-center gap-0.5 font-semibold text-foreground">
+              <OctagonAlert aria-hidden className="h-[13px] w-[13px]" />
+              เกิน Hard Out
+            </span>
+          ) : null;
+
+          // Members read the set; they do not edit it. A compact cue row (spec
+          // §G.3): index · kind tile · title over start / mics / note · length.
+          // Every field guarded — the desktop shows cached rows.
+          if (!editable) {
+            const slots = it.mic_slots ?? [];
+            return (
+              <div key={it.id} className={cn("slab flex min-h-[60px] items-center gap-3 px-3 py-2", rowTone)}>
+                <span className="num w-4 flex-none text-right text-[14px] text-faint">{idx + 1}</span>
+                <KindTile kind={it.kind} />
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-1.5 text-[15px] font-medium leading-tight">
+                    {isLive && (
+                      <>
+                        <i aria-hidden className="onair-dot" />
+                        <span className="sr-only">กำลังเล่นอยู่บนเวที</span>
+                      </>
+                    )}
+                    <span className="truncate">{it.title || "—"}</span>
+                  </div>
+                  <div className="mt-[3px] flex min-w-0 items-center gap-1.5 text-[12.5px] text-muted-foreground">
+                    {hasClock && t && (
+                      <span className="num flex-none text-[15px] text-foreground/85">
+                        {formatClockOfDay(t.startSec)}
+                      </span>
+                    )}
+                    {overMark}
+                    {slots.length > 0 && (
+                      <span className="flex min-w-0 items-center gap-1">
+                        <Mic aria-hidden className="h-3 w-3 flex-none" />
+                        <span className="truncate">
+                          {slots.map((s) => (s.member ? `${s.mic}·${s.member}` : s.mic)).join("  ")}
+                        </span>
+                      </span>
+                    )}
+                    {it.notes && <span className="truncate">· {it.notes}</span>}
+                  </div>
+                </div>
+                <span className="num flex-none text-[19px]">{formatDuration(it.duration_seconds ?? 0)}</span>
+              </div>
+            );
+          }
+
           return (
             <div
               key={it.id}
@@ -1461,15 +1549,14 @@ export function SetlistBuilder({
                   : undefined
               }
               className={cn(
-                "rounded-lg border bg-card p-3 shadow-sm",
-                t?.overHardOut && "border-destructive/60 bg-destructive/5",
-                dragOverIndex === idx && "ring-2 ring-primary",
-                isLive && "border-rose-400 ring-2 ring-rose-400/60"
+                "slab p-3",
+                rowTone,
+                dragOverIndex === idx && "shadow-[inset_0_0_0_2px_hsl(var(--primary))]"
               )}
             >
               {isLive && (
-                <div className="mb-2 flex items-center gap-1.5 text-xs font-semibold text-rose-600">
-                  <Radio className="h-3.5 w-3.5 animate-pulse" />
+                <div className="mb-2 flex items-center gap-1.5 text-xs font-semibold text-primary-ink">
+                  <i aria-hidden className="onair-dot" />
                   กำลังเล่นอยู่บนเวที — ล็อกแก้ไขชั่วคราว
                 </div>
               )}
@@ -1495,22 +1582,29 @@ export function SetlistBuilder({
                     // Only where there is a mouse: HTML5 drag never starts from a
                     // touch, and on a phone this was a 16×16 target that did nothing
                     // (▲ ▼ on each row are the touch way to reorder).
-                    className="hidden shrink-0 cursor-grab text-muted-foreground hover:text-foreground active:cursor-grabbing [@media(hover:hover)]:block"
+                    className="hidden h-11 w-6 shrink-0 cursor-grab place-items-center text-muted-foreground hover:text-foreground active:cursor-grabbing [@media(hover:hover)]:grid"
                     aria-label="ลากเพื่อย้ายลำดับ"
                   >
                     <GripVertical className="h-4 w-4" />
                   </button>
                 )}
-                <span className="grid h-6 w-6 shrink-0 place-items-center rounded bg-muted text-xs font-semibold tabular-nums">
+                <span className="num w-4 shrink-0 text-right text-[14px] text-faint">
                   {idx + 1}
                 </span>
-                <div className="w-[88px] shrink-0">
+                {/* 92px with a tighter trigger: the field's own px-3.5 + gap-2 + chevron
+                    left 36px for the label in 88px, so a phone's 16px "SONG" (41px)
+                    read "SONC", and "GUEST" (47px; 41px at sm's 14px) clipped on
+                    every screen. This leaves
+                    52px, and the row still fits one line at 390 with the mouse-only
+                    grip shown (grip 24 + index 16 + 4×44 buttons + gaps + 92 = 332 of
+                    334). Measured in Chrome; setlist-builder.rows.test.tsx holds it. */}
+                <div className="w-[92px] shrink-0">
                   <Select
                     value={it.kind}
                     disabled={!rowEditable}
                     onValueChange={(v) => update(it.id, { kind: v as SetlistKind })}
                   >
-                    <SelectTrigger className="h-9">
+                    <SelectTrigger className="gap-1 pl-3 pr-2">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
@@ -1540,8 +1634,8 @@ export function SetlistBuilder({
                   {rowEditable && it.kind === "song" && songs.length > 0 && (
                     <Button
                       type="button"
-                      variant="outline"
-                      className="h-10 shrink-0 px-2.5"
+                      variant="secondary"
+                      className="shrink-0 px-2.5"
                       title="เปลี่ยนเป็นเพลงอื่นจากคลัง — ตำแหน่ง ไมค์ และโน้ตคงเดิม"
                       data-replace-row={it.id}
                       onClick={() => {
@@ -1597,22 +1691,20 @@ export function SetlistBuilder({
               </div>
 
               {/* Timing line */}
-              <div
-                className={cn(
-                  "mt-2 flex flex-wrap items-center gap-x-4 gap-y-0.5 pl-8 text-xs tabular-nums text-muted-foreground",
-                  t?.overHardOut && "text-destructive"
-                )}
-              >
+              <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-0.5 pl-8 text-[12.5px] text-muted-foreground">
+                {overMark}
                 {hasClock && (
                   <span>
-                    เริ่ม <b className="font-semibold">{formatClockOfDay(t.startSec)}</b> · จบ{" "}
-                    <b className="font-semibold">{formatClockOfDay(t.endSec)}</b>
+                    เริ่ม <b className="num text-[15px] text-foreground/85">{formatClockOfDay(t.startSec)}</b> · จบ{" "}
+                    <b className="num text-[15px] text-foreground/85">{formatClockOfDay(t.endSec)}</b>
                   </span>
                 )}
                 <span>
-                  ความยาว {formatDuration(it.duration_seconds)}
+                  ความยาว <b className="num text-[15px] text-foreground/85">{formatDuration(it.duration_seconds ?? 0)}</b>
                 </span>
-                <span>สะสม {formatDuration(t?.accumulatedSec ?? 0)}</span>
+                <span>
+                  สะสม <b className="num text-[15px] text-foreground/85">{formatDuration(t?.accumulatedSec ?? 0)}</b>
+                </span>
               </div>
 
               {/* Editable fields. On a phone these stacked one per line, ~640px an
@@ -1622,7 +1714,7 @@ export function SetlistBuilder({
                   one button until a row uses them. From sm up nothing moves. */}
               <div className="mt-2 grid grid-cols-2 gap-2 pl-8 sm:grid-cols-12">
                 <div className="order-1 space-y-1 sm:order-none sm:col-span-2">
-                  <Label className="text-xs text-muted-foreground">
+                  <Label className="text-[13px] font-medium text-muted-foreground">
                     ความยาว (m:ss)
                   </Label>
                   <DurationField
@@ -1639,15 +1731,14 @@ export function SetlistBuilder({
                     idx === items.length - 1 && (
                       <Button
                         type="button"
-                        variant="outline"
-                        size="sm"
+                        variant="secondary"
                         onClick={() =>
                           fillRemaining(it.id, t.startSec, it.buffer_after_seconds)
                         }
                         title="ตั้งความยาว = เวลาที่เหลือจนถึง Hard Out (เช่น MC ปิดท้าย)"
-                        className="h-8 w-full gap-1 text-xs"
+                        className="w-full gap-1 text-[13px]"
                       >
-                        <AlarmClock className="h-3.5 w-3.5" /> เวลาที่เหลือ
+                        <AlarmClock aria-hidden className="h-4 w-4" /> เวลาที่เหลือ
                       </Button>
                     )}
                   {/* undo — restore the duration from before "เวลาที่เหลือ" was pressed */}
@@ -1655,13 +1746,12 @@ export function SetlistBuilder({
                     <Button
                       type="button"
                       variant="ghost"
-                      size="sm"
                       onClick={() => restoreDuration(it.id)}
                       title="คืนความยาวก่อนกด 'เวลาที่เหลือ'"
-                      className="h-8 w-full gap-1 text-xs text-muted-foreground"
+                      className="w-full gap-1 text-[13px] text-muted-foreground"
                     >
-                      <RotateCcw className="h-3.5 w-3.5" /> คืนค่าเดิม{" "}
-                      {formatDuration(prevDuration[it.id])}
+                      <RotateCcw aria-hidden className="h-4 w-4" /> คืนค่าเดิม{" "}
+                      <span className="num">{formatDuration(prevDuration[it.id])}</span>
                     </Button>
                   )}
                 </div>
@@ -1669,13 +1759,13 @@ export function SetlistBuilder({
                   <button
                     type="button"
                     onClick={() => setTimingOpen((prev) => new Set(prev).add(it.id))}
-                    className="order-3 col-span-2 justify-self-start min-h-9 rounded-md px-2 text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline sm:hidden"
+                    className="order-3 col-span-2 justify-self-start min-h-11 rounded-[2px] px-2 text-[13px] text-muted-foreground underline-offset-2 hover:text-foreground hover:underline sm:hidden"
                   >
                     + เล่นซ้อน / เผื่อเวลา
                   </button>
                 )}
                 <div className={`order-4 space-y-1 sm:order-none sm:col-span-2 ${showTiming(it) ? "" : "hidden sm:block"}`}>
-                  <Label className="text-xs text-muted-foreground">
+                  <Label className="text-[13px] font-medium text-muted-foreground">
                     เล่นซ้อน (วิ · เริ่มก่อนเพลงก่อนจบ)
                   </Label>
                   {/* type="number" made this unreachable on iOS, whose numeric keypad
@@ -1690,13 +1780,13 @@ export function SetlistBuilder({
                   />
                 </div>
                 <div className={`order-5 space-y-1 sm:order-none sm:col-span-2 ${showTiming(it) ? "" : "hidden sm:block"}`}>
-                  <Label className="text-xs text-muted-foreground">
+                  <Label className="text-[13px] font-medium text-muted-foreground">
                     เผื่อเวลาหลัง (วิ)
                   </Label>
                   <Input
                     type="number"
                     min={0}
-                    className="tabular-nums"
+                    className="num"
                     value={it.buffer_after_seconds}
                     disabled={!rowEditable}
                     onChange={(e) =>
@@ -1712,7 +1802,7 @@ export function SetlistBuilder({
                   />
                 </div>
                 <div className="order-2 space-y-1 sm:order-none sm:col-span-6">
-                  <Label className="text-xs text-muted-foreground">ไมค์ + สมาชิก</Label>
+                  <Label className="text-[13px] font-medium text-muted-foreground">ไมค์ + สมาชิก</Label>
                   <MicSlotsDialog
                     item={it}
                     eventId={eventId}
@@ -1773,46 +1863,25 @@ export function SetlistBuilder({
             }`}
             hint={`แทน “${clip(replacing?.title?.trim() || "เพลงนี้", 40)}” — อยู่ตำแหน่งเดิม ไมค์กับโน้ตคงไว้`}
           />
-          <Button
-            type="button"
-            variant="outline"
-            disabled={inserting}
-            onClick={() => addItem("mc")}
-          >
-            <Plus className="h-4 w-4" /> MC
-          </Button>
-          <Button
-            type="button"
-            variant="outline"
-            disabled={inserting}
-            onClick={() => addItem("se")}
-          >
-            <Plus className="h-4 w-4" /> SE
-          </Button>
-          <Button
-            type="button"
-            variant="outline"
-            disabled={inserting}
-            onClick={() => addItem("instrument")}
-          >
-            <Plus className="h-4 w-4" /> Instrument
-          </Button>
-          <Button
-            type="button"
-            variant="outline"
-            disabled={inserting}
-            onClick={() => addItem("interlude")}
-          >
-            <Plus className="h-4 w-4" /> Interlude
-          </Button>
-          <Button
-            type="button"
-            variant="outline"
-            disabled={inserting}
-            onClick={() => addItem("guest")}
-          >
-            <Plus className="h-4 w-4" /> Guest
-          </Button>
+          {(
+            [
+              ["mc", "MC"],
+              ["se", "SE"],
+              ["instrument", "Instrument"],
+              ["interlude", "Interlude"],
+              ["guest", "Guest"],
+            ] as const
+          ).map(([kind, label]) => (
+            <Button
+              key={kind}
+              type="button"
+              variant="secondary"
+              disabled={inserting}
+              onClick={() => addItem(kind)}
+            >
+              <Plus aria-hidden className="h-4 w-4" /> <span className="en">{label}</span>
+            </Button>
+          ))}
           <span className="mx-1 self-center text-muted-foreground/40">|</span>
           <SetlistVersions
             eventId={eventId}

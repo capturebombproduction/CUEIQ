@@ -5,6 +5,8 @@ import { Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { createClient } from "@/lib/supabase/client";
 import { noRowsMessage, wroteNothing } from "@/lib/write-guard";
+import { FIELD } from "@/components/ui/input";
+import { cn } from "@/lib/utils";
 
 /**
  * Inline photo-time editor used on /overview. Lets an approver (label staff) or
@@ -160,7 +162,7 @@ export function PhotoTimeCell({
         onChange={(e) => setStart(e.target.value)}
         onBlur={commit}
         aria-label="เวลาเริ่มถ่ายรูป"
-        className="w-[4.25rem] rounded border bg-background px-1 py-0.5 text-base tabular-nums sm:text-sm"
+        className={cn(FIELD, "num h-11 w-[5.75rem] px-1.5 text-base sm:h-9 sm:w-[5rem] sm:text-sm")}
       />
       <span className="text-muted-foreground">–</span>
       <input
@@ -169,9 +171,9 @@ export function PhotoTimeCell({
         onChange={(e) => setEnd(e.target.value)}
         onBlur={commit}
         aria-label="เวลาจบถ่ายรูป"
-        className="w-[4.25rem] rounded border bg-background px-1 py-0.5 text-base tabular-nums sm:text-sm"
+        className={cn(FIELD, "num h-11 w-[5.75rem] px-1.5 text-base sm:h-9 sm:w-[5rem] sm:text-sm")}
       />
-      {busy && <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />}
+      {busy && <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" aria-hidden />}
     </span>
   );
 }

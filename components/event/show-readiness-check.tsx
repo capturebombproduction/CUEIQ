@@ -105,8 +105,8 @@ function useStableByContent<T>(value: T, signature: string): T {
 }
 
 function ToneIcon({ tone }: { tone: RowTone }) {
-  if (tone === "ok") return <CheckCircle2 className="h-4 w-4 text-green-600 dark:text-green-400" />;
-  if (tone === "warn") return <AlertTriangle className="h-4 w-4 text-amber-500" />;
+  if (tone === "ok") return <CheckCircle2 className="h-4 w-4 text-success-ink" />;
+  if (tone === "warn") return <AlertTriangle className="h-4 w-4 text-warning-ink" />;
   if (tone === "bad") return <XCircle className="h-4 w-4 text-destructive" />;
   return <span className="h-4 w-4" />;
 }
@@ -131,8 +131,8 @@ function Row({
       <span
         className={cn(
           "ml-auto inline-flex items-center gap-1.5 tabular-nums",
-          tone === "ok" && "text-green-700 dark:text-green-400",
-          tone === "warn" && "text-amber-600 dark:text-amber-400",
+          tone === "ok" && "text-success-ink",
+          tone === "warn" && "text-warning-ink",
           tone === "bad" && "text-destructive",
           tone === "muted" && "text-muted-foreground"
         )}
@@ -466,15 +466,15 @@ export function ShowReadinessCheck({
   return (
     <div
       className={cn(
-        "no-print rounded-lg border bg-card/40",
-        verdict === "bad" && "border-destructive/40",
-        verdict === "warn" && "border-amber-500/40"
+        "no-print slab",
+        verdict === "bad" && "shadow-[inset_3px_0_0_hsl(var(--destructive)),inset_0_0_0_1px_hsl(var(--border))]",
+        verdict === "warn" && "shadow-[inset_3px_0_0_hsl(var(--warning)),inset_0_0_0_1px_hsl(var(--border))]"
       )}
     >
       <button
         type="button"
         onClick={toggle}
-        className="flex w-full items-center gap-2 px-3 py-2.5 text-left"
+        className="flex min-h-11 w-full items-center gap-2 px-3 py-2.5 text-left"
         aria-expanded={open}
       >
         <ListChecks className="h-4 w-4 shrink-0 text-muted-foreground" />
@@ -482,8 +482,8 @@ export function ShowReadinessCheck({
         <span
           className={cn(
             "ml-auto inline-flex items-center gap-1.5 text-sm font-medium",
-            verdict === "ok" && "text-green-700 dark:text-green-400",
-            verdict === "warn" && "text-amber-600 dark:text-amber-400",
+            verdict === "ok" && "text-success-ink",
+            verdict === "warn" && "text-warning-ink",
             verdict === "bad" && "text-destructive"
           )}
         >

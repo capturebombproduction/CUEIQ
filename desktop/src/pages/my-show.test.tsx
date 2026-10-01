@@ -748,29 +748,46 @@ describe("Quick Show — the warning ladder", () => {
     await boot([song("SE", { durationSeconds: 80, bufferAfterSeconds: 12, sortOrder: 1 })]);
     await click(startButton());
 
+    // The zone is on the card as data, and each step is a stage.css class (the same
+    // ladder as Live Mode's NOW card) — frame, fill, inversion. Never a dimming pulse.
+    const zoneIs = (zone: string) => {
+      expect(countdownCard()).toHaveAttribute("data-zone", zone);
+      expect(countdownCard()).not.toHaveClass("animate-pulse-ring");
+    };
+
     // The old ladder painted this red ("เหลือน้อยกว่า 2 นาที") from its first second.
     expect(zoneCaptionText()).toBe("เวลาคงเหลือของรายการ");
-    expect(countdownCard()).toHaveClass("bg-card");
+    zoneIs("ok");
+    expect(countdownCard()).toHaveClass("lit");
 
     // 50 s left: under a full song's 60 s cap, but NOT under this item's own 46 s —
     // a page that fed liveZone a fixed block instead of the item's would warn here.
     await tick(42_000);
-    expect(countdownCard()).toHaveClass("bg-card");
+    zoneIs("ok");
 
     await tick(4_000); // 46 s left — half the block
     expect(zoneCaptionText()).toBe("เหลือไม่ถึง 46 วินาที");
-    expect(countdownCard()).toHaveClass("bg-warning");
+    zoneIs("warn");
+    expect(countdownCard()).toHaveClass("zone-warn");
 
     await tick(21_000); // 25 s left — under 30, over this item's 23
-    expect(countdownCard()).toHaveClass("bg-warning");
+    zoneIs("warn");
 
     await tick(2_000); // 23 s left — a quarter
     expect(zoneCaptionText()).toBe("เหลือไม่ถึง 23 วินาที");
-    expect(countdownCard()).toHaveClass("bg-notify"); // the fixed red: a band skin never moves it
-    expect(countdownCard()).not.toHaveClass("animate-pulse-ring");
+    zoneIs("urgent");
+    expect(countdownCard()).toHaveClass("zone-urgent");
+    // URGENT is a fill, never the light plate: only overtime inverts
+    expect(countdownCard()).not.toHaveClass("alarm-plate");
 
     await tick(23_000);
     expect(zoneCaptionText()).toBe("เลยเวลาแล้ว");
-    expect(countdownCard()).toHaveClass("animate-pulse-ring");
+    zoneIs("over");
+    expect(countdownCard()).toHaveClass("alarm-plate");
+    expect(countdownCard()).not.toHaveClass("settled");
+
+    // Ten seconds of the full-luminance flip is enough to have been seen.
+    await tick(10_000);
+    expect(countdownCard()).toHaveClass("alarm-plate", "settled");
   });
 });

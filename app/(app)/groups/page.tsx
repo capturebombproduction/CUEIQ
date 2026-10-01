@@ -2,6 +2,7 @@ import { getMembers, getWorkspace } from "@/lib/queries";
 import { JoinDemo } from "@/components/join-demo";
 import { GroupManager } from "@/components/group/group-manager";
 import { RefreshButton } from "@/components/refresh-button";
+import { PageTitle } from "@/components/page-title";
 import { ConfirmSavedBar } from "@/components/confirm-saved-bar";
 import { canEditAnyGroup, viewableGroups } from "@/lib/permissions";
 
@@ -22,15 +23,13 @@ export default async function GroupsPage() {
   );
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight">จัดการวง</h1>
-          <p className="text-sm text-muted-foreground">
-            {ws.tenant.name} · {bands.length} วง
-          </p>
-        </div>
-        <RefreshButton />
+    <div className="space-y-4">
+      <div className="space-y-2">
+        <PageTitle title="Artists" right={<RefreshButton />} />
+        <p className="text-[14px] text-muted-foreground">
+          {ws.tenant.name} · <span className="num text-[16px] text-foreground">{bands.length}</span> วง ·
+          สมาชิก · ไมค์ · สีประจำตัว
+        </p>
       </div>
       <GroupManager
         tenantId={ws.membership.tenant_id}

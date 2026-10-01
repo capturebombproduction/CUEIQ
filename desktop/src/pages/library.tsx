@@ -4,7 +4,9 @@
 // IS the dual-source / master model: a song's audio_path is the single online
 // master, and uploading a new file overwrites it (newer-upload-wins).
 import { useEffect, useState } from "react";
+import { PageTitle } from "@/components/page-title";
 import { RefreshButton } from "@/components/refresh-button";
+import { LibraryCount } from "@/components/song/library-count";
 import { SongLibrary } from "@/components/song/song-library";
 import { Card, CardContent } from "@/components/ui/card";
 import { canViewLibrary, viewableGroups } from "@/lib/permissions";
@@ -81,17 +83,18 @@ export function Library() {
   }
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight">คลังเพลง</h1>
-          <p className="text-sm text-muted-foreground">
-            {ws.tenant.name}
-            {songs ? ` · ${songs.length} เพลง` : ""}
-          </p>
-        </div>
-        <RefreshButton />
-      </div>
+    <div className="space-y-4">
+      <PageTitle
+        title="Library"
+        right={
+          songs ? (
+            <LibraryCount
+              count={songs.length}
+              scope={bands.length === 1 ? bands[0].name : ws.tenant.name}
+            />
+          ) : null
+        }
+      />
       {songs === null && loadError ? (
         <Card>
           <CardContent className="flex flex-col items-center gap-3 py-16 text-center text-sm text-muted-foreground">
@@ -107,6 +110,7 @@ export function Library() {
           groups={bands}
           initialSongs={songs}
           perms={ws.perms}
+          toolbarEnd={<RefreshButton variant="secondary" className="h-[46px] px-3" />}
         />
       )}
     </div>

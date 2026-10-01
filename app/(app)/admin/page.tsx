@@ -1,5 +1,6 @@
+import Link from "next/link";
 import { redirect } from "next/navigation";
-import { ShieldAlert } from "lucide-react";
+import { Inbox, Users } from "lucide-react";
 import { getWorkspace } from "@/lib/queries";
 import { isAdmin } from "@/lib/permissions";
 import { createAdminClient, hasServiceRole } from "@/lib/supabase/admin";
@@ -10,9 +11,13 @@ import { BackupStatus } from "@/components/admin/backup-status";
 import { getR2Usage, listBackups } from "@/lib/r2";
 import type { GroupRole, Role } from "@/lib/types";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Inbox } from "lucide-react";
+import { PageTitle } from "@/components/page-title";
 
 export const dynamic = "force-dynamic";
+
+/** A control-centre tile that is a way in (the More sheet's tile, as a link). */
+const ADMIN_TILE =
+  "well flex min-h-[94px] flex-col items-start rounded-[2px] p-3 text-left transition-colors duration-2 hover:bg-muted/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring";
 
 async function listUsers(tenantId: string): Promise<ManagedUser[]> {
   const admin = createAdminClient();
@@ -88,62 +93,90 @@ export default async function AdminPage() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="flex items-center gap-2 text-2xl font-bold tracking-tight">
-          <ShieldAlert className="h-6 w-6" /> ผู้ใช้ &amp; สิทธิ์
-        </h1>
-        <p className="text-sm text-muted-foreground">
-          {ws.tenant.name} — สร้างบัญชีและกำหนดบทบาทให้แต่ละคน (สมัครเองถูกปิดไว้)
+      <div className="space-y-2">
+        <PageTitle
+          title="Admin"
+          right={
+            <span className="pb-0.5 text-right text-[13px] leading-tight text-muted-foreground">
+              {ws.tenant.name}
+            </span>
+          }
+        />
+        <p className="text-[14px] text-muted-foreground">
+          สร้างบัญชีและกำหนดบทบาทให้แต่ละคน (สมัครเองถูกปิดไว้) · ดูแลระบบสำรองข้อมูล พื้นที่ไฟล์ และฟีดแบค
         </p>
       </div>
 
-      {!hasServiceRole() ? (
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base">ต้องตั้งค่า service_role key ก่อน</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-3 text-sm text-muted-foreground">
-            <p>
-              การสร้างบัญชีใหม่ต้องใช้ <code>SUPABASE_SERVICE_ROLE_KEY</code> (คีย์ลับ)
-              ซึ่งยังไม่ได้ตั้งค่าบนเซิร์ฟเวอร์
-            </p>
-            <ol className="list-decimal space-y-1 pl-5">
-              <li>Supabase Dashboard → Settings → API → <b>service_role</b> secret → คัดลอก</li>
-              <li>
-                วางใน <code>.env.local</code> เป็น{" "}
-                <code>SUPABASE_SERVICE_ROLE_KEY=...</code> แล้วรีสตาร์ทเซิร์ฟเวอร์
-              </li>
-              <li>บน Vercel: Project → Settings → Environment Variables เพิ่มคีย์เดียวกัน</li>
-            </ol>
-            <p className="text-xs">
-              ระหว่างนี้ยังกำหนดบทบาทให้คนที่มีบัญชีอยู่แล้วได้ — แต่ต้องมีคีย์ก่อนถึงจะสร้างบัญชีใหม่ได้
-            </p>
-          </CardContent>
-        </Card>
-      ) : (
-        <UserManager
-          currentUserId={ws.user?.id ?? ""}
-          groups={ws.groups}
-          initialUsers={await listUsers(ws.membership.tenant_id)}
-        />
-      )}
+      {/* The control centre: the system's health at a glance, then the ways in. */}
+      <div className="grid gap-[2px] sm:grid-cols-2">
+        <div className={r2usage ? undefined : "sm:col-span-2"}>
+          <BackupStatus backups={backups} />
+        </div>
+        {r2usage && <StorageUsage bytes={r2usage.bytes} count={r2usage.count} />}
+        <div className="grid grid-cols-2 gap-[2px] sm:col-span-2">
+          <a href="#dev-inbox" className={ADMIN_TILE}>
+            <Inbox className="h-[22px] w-[22px] text-primary-ink" aria-hidden />
+            <span className="caps mt-2 text-[19px] leading-none tracking-[.03em]">Inbox</span>
+            <span className="mt-1 text-[12px] leading-snug text-muted-foreground">
+              ฟีดแบคจากทีม + error ที่ระบบจับได้
+            </span>
+          </a>
+          <Link href="/crew" className={ADMIN_TILE}>
+            <Users className="h-[22px] w-[22px] text-primary-ink" aria-hidden />
+            <span className="caps mt-2 text-[19px] leading-none tracking-[.03em]">Crew</span>
+            <span className="mt-1 text-[12px] leading-snug text-muted-foreground">
+              ทีมงานประจำค่าย · ใส่ในรูปตารางงาน
+            </span>
+          </Link>
+        </div>
+      </div>
 
-      {r2usage && (
-        <section className="border-t pt-6">
-          <StorageUsage bytes={r2usage.bytes} count={r2usage.count} />
-        </section>
-      )}
-
-      <section className="border-t pt-6">
-        <BackupStatus backups={backups} />
+      <section className="space-y-3" aria-labelledby="admin-users">
+        <h2 id="admin-users" className="h2">
+          Users
+        </h2>
+        {!hasServiceRole() ? (
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">ต้องตั้งค่า service_role key ก่อน</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3 text-sm text-muted-foreground">
+              <p>
+                การสร้างบัญชีใหม่ต้องใช้ <code>SUPABASE_SERVICE_ROLE_KEY</code> (คีย์ลับ)
+                ซึ่งยังไม่ได้ตั้งค่าบนเซิร์ฟเวอร์
+              </p>
+              <ol className="list-decimal space-y-1 pl-5">
+                <li>Supabase Dashboard → Settings → API → <b>service_role</b> secret → คัดลอก</li>
+                <li>
+                  วางใน <code>.env.local</code> เป็น{" "}
+                  <code>SUPABASE_SERVICE_ROLE_KEY=...</code> แล้วรีสตาร์ทเซิร์ฟเวอร์
+                </li>
+                <li>บน Vercel: Project → Settings → Environment Variables เพิ่มคีย์เดียวกัน</li>
+              </ol>
+              <p className="text-xs">
+                ระหว่างนี้ยังกำหนดบทบาทให้คนที่มีบัญชีอยู่แล้วได้ — แต่ต้องมีคีย์ก่อนถึงจะสร้างบัญชีใหม่ได้
+              </p>
+            </CardContent>
+          </Card>
+        ) : (
+          <UserManager
+            currentUserId={ws.user?.id ?? ""}
+            groups={ws.groups}
+            initialUsers={await listUsers(ws.membership.tenant_id)}
+          />
+        )}
       </section>
 
-      <section className="space-y-3 border-t pt-6">
+      <section
+        id="dev-inbox"
+        className="scroll-mt-[calc(var(--header-h)+env(safe-area-inset-top)+16px)] space-y-3"
+        aria-labelledby="admin-inbox"
+      >
         <div>
-          <h2 className="flex items-center gap-2 text-lg font-semibold">
-            <Inbox className="h-5 w-5" /> ฟีดแบค &amp; ปัญหา
+          <h2 id="admin-inbox" className="h2">
+            Dev Inbox
           </h2>
-          <p className="text-sm text-muted-foreground">
+          <p className="mt-1 text-[14px] text-muted-foreground">
             ข้อความที่ทีมส่งเข้ามา + error ที่ระบบจับได้อัตโนมัติ (เห็นเฉพาะแอดมิน)
           </p>
         </div>

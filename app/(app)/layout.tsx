@@ -6,6 +6,7 @@ import { ConfirmProvider } from "@/components/ui/confirm-dialog";
 import { FeedbackUnreadProvider } from "@/components/feedback-button";
 import { PushNudge } from "@/components/notifications/push-nudge";
 import { ChromeGate } from "@/components/chrome-gate";
+import { AppMain } from "@/components/app-main";
 import { TabBar } from "@/components/tab-bar";
 import { AccountPanel, AccountPanelProvider } from "@/components/account-panel";
 import { accountLine } from "@/lib/role-label";
@@ -58,12 +59,14 @@ export default async function AppLayout({
           </ChromeGate>
           {/* overflow-x-clip, never overflow-hidden: hidden would make <main> a
               scroll container and break every sticky element inside it. The bottom
-              padding keeps the last row clear of the tab bar. */}
-          <main className="container relative z-[1] overflow-x-clip pb-[calc(var(--tabbar-h)+env(safe-area-inset-bottom)+24px)] pt-5 lg:py-8">
+              padding keeps the last row clear of the tab bar. On the immersive
+              screens AppMain drops the container and all of this padding — they
+              are edge to edge and own their gutter (components/app-main.tsx). */}
+          <AppMain className="container relative z-[1] overflow-x-clip pb-[calc(var(--tabbar-h)+env(safe-area-inset-bottom)+24px)] pt-5 lg:py-8">
             <AppErrorBoundary userId={ws.user.id} tenantId={tenantId}>
               <ConfirmProvider>{children}</ConfirmProvider>
             </AppErrorBoundary>
-          </main>
+          </AppMain>
           {/* Below lg. Hides itself on the immersive screens (and zeroes --tabbar-h). */}
           <TabBar perms={ws.perms} />
           {/* The More sheet: account tools, What's New and Feedback. There is NO

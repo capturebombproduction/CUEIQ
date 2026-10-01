@@ -134,22 +134,26 @@ export function WhatsNew({ canEdit }: { canEdit: boolean }) {
   };
 
   if (!items || items.length === 0) return null;
+  // A slab with an info-tone tile (spec §G.1), placed UNDER the next-show ticket by
+  // the dashboard — never above the thing a member opened the app to see.
   return (
-    <section
-      data-testid="whats-new"
-      aria-label="มีอะไรใหม่"
-      className="rounded-xl border border-primary/40 bg-primary/5 p-4"
-    >
+    <section data-testid="whats-new" aria-label="มีอะไรใหม่" className="slab p-4">
       <div className="flex items-start gap-3">
-        <Sparkles className="mt-0.5 h-5 w-5 shrink-0 text-primary" />
+        <span
+          aria-hidden
+          className="grid h-9 w-9 flex-none place-items-center rounded-[2px] bg-info/15 text-info-ink"
+        >
+          <Sparkles className="h-5 w-5" />
+        </span>
         <div className="min-w-0 flex-1">
-          <h2 className="text-sm font-semibold">มีอะไรใหม่ใน CueIQ</h2>
-          <ul className="mt-1.5 list-disc space-y-1 pl-4 text-sm text-muted-foreground">
+          <h2 className="h2 text-[22px]">What&apos;s New</h2>
+          <p className="mt-1 text-[12.5px] text-muted-foreground">มีอะไรใหม่ใน CueIQ</p>
+          <ul className="mt-2 list-disc space-y-1 pl-4 text-sm text-muted-foreground">
             {items.map((t) => (
               <li key={t}>{t}</li>
             ))}
           </ul>
-          <Button size="sm" variant="outline" className="mt-3" onClick={dismiss}>
+          <Button variant="secondary" className="mt-3" onClick={dismiss}>
             เข้าใจแล้ว
           </Button>
         </div>
@@ -158,9 +162,9 @@ export function WhatsNew({ canEdit }: { canEdit: boolean }) {
           onClick={dismiss}
           aria-label="ปิด"
           title="ปิด"
-          className="-mr-1.5 -mt-1.5 grid h-9 w-9 shrink-0 place-items-center rounded-md text-muted-foreground hover:bg-muted"
+          className="-mr-2 -mt-2 grid h-11 w-11 shrink-0 place-items-center rounded-[2px] text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
         >
-          <X className="h-4 w-4" />
+          <X className="h-[18px] w-[18px]" />
         </button>
       </div>
     </section>

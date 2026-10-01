@@ -107,23 +107,13 @@ const preset: Partial<Config> = {
           from: { height: "var(--radix-accordion-content-height)" },
           to: { height: "0" },
         },
-        // TEMPORARY — the spec deletes pulse-ring (it dims the whole overtime card,
-        // controls included, to 45 %), but Live Mode and the desktop Quick Show still
-        // mark OVER with `animate-pulse-ring` until the Live slice moves both to
-        // `.alarm-plate`. Dropped early, the class compiled to nothing and OVER became
-        // the same static card as URGENT, told apart only by the "-" on the clock.
-        // Delete this and the animation below in the same commit as those two screens.
-        // (lib/theme-single-source.test.ts fails any animate-* class that ships empty.)
-        "pulse-ring": {
-          "0%, 100%": { opacity: "1" },
-          "50%": { opacity: "0.45" },
-        },
+        // (pulse-ring is gone: it dimmed the whole overtime card, controls included,
+        // to 45 %. Live Mode and Quick Show mark OVER with `.alarm-plate` now.)
       },
       // sheet-in / onair keyframes live in app/stage.css (its classes name them too).
       animation: {
         "accordion-down": "accordion-down 0.2s ease-out",
         "accordion-up": "accordion-up 0.2s ease-out",
-        "pulse-ring": "pulse-ring 1.4s ease-in-out infinite",
         "sheet-in": "sheet-in var(--dur-3) var(--ease-out)",
         onair: "onair 1.2s steps(1) infinite",
       },

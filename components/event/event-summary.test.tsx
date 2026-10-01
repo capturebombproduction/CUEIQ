@@ -9,7 +9,7 @@
 // shipped and stayed wrong for three months.
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
-import type { EventRow, Group, Member } from "@/lib/types";
+import type { EventRow, Group, Member, SetlistItem } from "@/lib/types";
 
 vi.mock("@/lib/supabase/client", () => ({ createClient: () => ({}) }));
 
@@ -156,5 +156,71 @@ describe("EventSummary — speaks to what the reader can actually do", () => {
     mountAs(true, true);
     const bar = liveLinks()[0].closest("div")!;
     expect(bar.querySelector("a,button")!.textContent).toMatch(/Live Mode/);
+  });
+});
+
+// "เกิน Hard Out" is the overtime alarm — and the run sheet painted it, and every
+// row past the hard out, in --destructive. lib/skin.ts moves that token OFF red for
+// a band whose own colour is red (so an error never reads as the band), which made
+// Seishin Kakumei's overtime violet. Overtime is the band-independent alarm plate,
+// identical for every band (spec §0.3 rule 4), on screen and on the exported sheet.
+describe("EventSummary — past the hard out is the alarm, never the band's destructive", () => {
+  const item = (id: string, sort_order: number, seconds: number) =>
+    ({
+      id,
+      tenant_id: "t1",
+      event_id: "e1",
+      kind: "song",
+      title: `เพลง ${sort_order}`,
+      duration_seconds: seconds,
+      buffer_before_seconds: 0,
+      buffer_after_seconds: 0,
+      mic_slots: [],
+      notes: null,
+      sort_order,
+    }) as SetlistItem;
+
+  it("the badge and the late rows use the alarm tone", () => {
+    const { container } = render(
+      <EventSummary
+        event={{ ...event, show_start_time: "18:00:00", hard_out_time: "18:05:00" }}
+        schedule={[]}
+        setlist={[item("a", 1, 240), item("b", 2, 240)]}
+        members={[]}
+        showMic={false}
+        onNavigate={() => {}}
+        tenantId="t1"
+      />
+    );
+    const badge = screen.getByText(/เกิน Hard Out \+3:00/).closest(".chip")!;
+    expect(badge.className.split(" ")).toContain("chip-alarm");
+    expect(badge.querySelector("svg")).not.toBeNull(); // icon + word
+    const late = container.querySelectorAll("tr[data-over-hard-out]");
+    expect(late).toHaveLength(1); // 18:04–18:08 runs past 18:05; the first song does not
+    // nothing on the sheet reaches for the band-skinned destructive token
+    expect(container.querySelector('[class*="destructive"], .chip-danger')).toBeNull();
+  });
+});
+
+// The event page's hero carries Live Mode (EventHero), so the summary's bar is left
+// with the run sheet's own actions — offering Live twice on one screen read as two
+// different things.
+describe("EventSummary — Live Mode when the hero already has it", () => {
+  it("leaves the bar to the JPG and print", () => {
+    render(
+      <EventSummary
+        event={event}
+        schedule={[]}
+        setlist={[]}
+        members={members}
+        showMic={false}
+        onNavigate={() => {}}
+        tenantId="t1"
+        canRunLive
+        showLive={false}
+      />
+    );
+    expect(screen.queryByRole("link", { name: /Live Mode/ })).toBeNull();
+    expect(screen.getByRole("button", { name: /บันทึกเป็นรูป/ })).toBeInTheDocument();
   });
 });

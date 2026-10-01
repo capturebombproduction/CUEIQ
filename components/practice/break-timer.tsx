@@ -5,14 +5,10 @@ import { Coffee, Pause, Play, RotateCcw, X } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { cn } from "@/lib/utils";
+import { Countdown } from "@/components/live/countdown";
 
-function mmss(sec: number) {
-  if (sec < 0) sec = 0;
-  const m = Math.floor(sec / 60);
-  const s = Math.floor(sec % 60);
-  return `${m}:${s.toString().padStart(2, "0")}`;
-}
+const RING_R = 60;
+const RING_C = 2 * Math.PI * RING_R;
 
 /**
  * Break timer for practice (โหมดซ้อม) — pick 5 / 10 min or a custom length, counts
@@ -86,7 +82,7 @@ export function BreakTimer() {
         setRunning(false);
         deadlineRef.current = null;
         beep();
-        toast.success("หมดเวลาพักแล้ว — กลับมาซ้อมต่อ! ☕");
+        toast.success("หมดเวลาพักแล้ว — กลับมาซ้อมต่อ!");
       }
     }, 250);
     return () => clearInterval(id);
@@ -130,7 +126,7 @@ export function BreakTimer() {
 
   if (!open) {
     return (
-      <Button variant="outline" size="sm" onClick={() => setOpen(true)}>
+      <Button variant="secondary" onClick={() => setOpen(true)}>
         <Coffee className="h-4 w-4" /> เวลาพัก
       </Button>
     );
@@ -138,73 +134,107 @@ export function BreakTimer() {
 
   const active = remaining > 0 || running;
   const danger = active && remaining <= 10;
+  // the ring: what is left of this break, drawn as an arc (no animation — it
+  // steps with the clock, which ticks on its own)
+  const frac = total > 0 ? Math.min(1, Math.max(0, remaining / total)) : 0;
 
   return (
-    <div className="rounded-lg border bg-card p-3">
+    <section aria-label="Break" className="slab w-full p-3">
       <div className="mb-2 flex items-center justify-between">
-        <span className="flex items-center gap-1.5 text-sm font-medium">
-          <Coffee className="h-4 w-4" /> เวลาพัก
-        </span>
-        <button
+        <span className="eyebrow key">Break</span>
+        <Button
+          variant="ghost"
+          size="icon"
+          aria-label="ปิดเวลาพัก"
+          className="-my-1.5 -mr-1.5 text-muted-foreground"
           onClick={() => {
             reset();
             setOpen(false);
           }}
-          className="text-muted-foreground hover:text-foreground"
         >
           <X className="h-4 w-4" />
-        </button>
+        </Button>
       </div>
 
       {active ? (
-        <div className="flex items-center gap-3">
-          <span
-            className={cn(
-              "tabular-nums text-3xl font-bold",
-              danger ? "text-destructive" : "text-foreground"
-            )}
-          >
-            {mmss(remaining)}
-          </span>
-          <div className="ml-auto flex items-center gap-1.5">
-            <Button variant="outline" size="icon" onClick={toggle}>
+        <div className="flex flex-wrap items-center gap-4">
+          <div className="relative grid h-[132px] w-[132px] shrink-0 place-items-center">
+            <svg
+              viewBox="0 0 132 132"
+              aria-hidden
+              className="absolute inset-0 h-full w-full -rotate-90"
+            >
+              <circle cx="66" cy="66" r={RING_R} fill="none" strokeWidth="6" className="stroke-foreground/[.12]" />
+              <circle
+                data-testid="break-ring"
+                cx="66"
+                cy="66"
+                r={RING_R}
+                fill="none"
+                strokeWidth="6"
+                strokeDasharray={RING_C}
+                strokeDashoffset={RING_C * (1 - frac)}
+                className={danger ? "stroke-warning" : "stroke-primary"}
+              />
+            </svg>
+            <div className="relative w-[100px]">
+              <Countdown
+                seconds={remaining}
+                max={96}
+                fixed={false}
+                className={danger ? "text-warning-ink" : undefined}
+              />
+            </div>
+          </div>
+          <div className="flex flex-1 items-center gap-1.5">
+            <Button
+              variant="secondary"
+              size="icon"
+              aria-label={running ? "หยุดเวลาพักชั่วคราว" : "นับเวลาพักต่อ"}
+              onClick={toggle}
+            >
               {running ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}
             </Button>
-            <Button variant="outline" size="icon" onClick={reset} title="เริ่มนับใหม่จากต้น">
+            <Button
+              variant="secondary"
+              size="icon"
+              aria-label="เริ่มนับใหม่จากต้น"
+              title="เริ่มนับใหม่จากต้น"
+              onClick={reset}
+            >
               <RotateCcw className="h-4 w-4" />
             </Button>
-            <Button variant="ghost" size="sm" onClick={changeTime} title="ตั้งเวลาพักใหม่">
+            <Button variant="ghost" onClick={changeTime} title="ตั้งเวลาพักใหม่">
               เปลี่ยน
             </Button>
           </div>
         </div>
       ) : (
         <div className="flex flex-wrap items-center gap-2">
-          <Button variant="secondary" size="sm" onClick={() => startWith(5 * 60)}>
-            5 นาที
+          <Button variant="secondary" onClick={() => startWith(5 * 60)}>
+            <span className="num text-[16px]">5</span> นาที
           </Button>
-          <Button variant="secondary" size="sm" onClick={() => startWith(10 * 60)}>
-            10 นาที
+          <Button variant="secondary" onClick={() => startWith(10 * 60)}>
+            <span className="num text-[16px]">10</span> นาที
           </Button>
-          <div className="flex items-center gap-1">
+          <div className="flex items-center gap-1.5">
             <Input
               type="number"
+              inputMode="numeric"
+              aria-label="เวลาพัก (นาที)"
               min={1}
               max={180}
               value={custom}
               onChange={(e) => setCustom(e.target.value)}
-              className="h-9 w-16"
+              className="num w-20 text-center"
             />
-            <span className="text-xs text-muted-foreground">นาที</span>
-            <Button
-              size="sm"
-              onClick={() => startWith(Math.round(Number(custom) || 0) * 60)}
-            >
+            <span className="text-[12.5px] text-muted-foreground">นาที</span>
+            <Button onClick={() => startWith(Math.round(Number(custom) || 0) * 60)}>
               เริ่ม
             </Button>
           </div>
         </div>
       )}
-    </div>
+    </section>
   );
 }

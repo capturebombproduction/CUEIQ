@@ -1,14 +1,12 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import dynamic from "next/dynamic";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
-import { AlertTriangle, Check, ClipboardList, Loader2 } from "lucide-react";
+import { AlertTriangle, Check, ClipboardList, Eye, Loader2 } from "lucide-react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
-import { RefreshButton } from "@/components/refresh-button";
-import { ShareButton } from "@/components/event/share-button";
 import { EventSummary } from "@/components/event/event-summary";
 import { useLeaveGuard } from "@/components/event/use-leave-guard";
 import { commitFocusedField, unsavedWork } from "@/lib/dirty-guard";
@@ -58,13 +56,10 @@ import {
   type Song,
 } from "@/lib/types";
 
-/** A workspace tab that still reads as a control when nothing is selected — see
- *  the note at the TabsList. Only the UNSELECTED ink is set here: everything else —
- *  the track, equal columns, the foreground block on the chosen tab — is the seg
- *  primitive's (components/ui/tabs.tsx). Per-trigger borders and a band-colour fill
- *  on top of it made a hybrid: four small boxes crammed left in a full-width empty
- *  track, the chosen one band-red instead of the foreground block. */
-const TAB_CLS = "data-[state=inactive]:text-foreground";
+/** The Summary segment's own classes — a TabsTrigger's, which it copies because it
+ *  cannot be one (see the note at the TabsList). The seg primitive draws the rest. */
+const SEG_ITEM_CLS =
+  "transition-colors duration-2 ease-out data-[state=inactive]:hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring";
 
 export function EventWorkspace({
   event,
@@ -83,6 +78,8 @@ export function EventWorkspace({
   lineup,
   runSeq = [],
   canRunLive = true,
+  liveInHero = false,
+  summaryFooter,
 }: {
   event: EventRow & { group: Group | null };
   eventId: string;
@@ -103,6 +100,16 @@ export function EventWorkspace({
   /** canLiveEdit — admin only. Decides whether Live Mode is the summary's
    *  primary button or a secondary one (see EventSummary). */
   canRunLive?: boolean;
+  /** The page's hero (EventHero) already carries Live Mode, so the Summary's own
+   *  action bar leaves it out rather than offer it twice on one screen. */
+  liveInHero?: boolean;
+  /** What belongs under the run sheet on the Summary view only — the approvers'
+   *  copyright triage (spec G.3; it sat between the hero and these tabs, one
+   *  62 px row per song, and pushed the tabs off a phone's first screen).
+   *  Kept MOUNTED and hidden on the other views, unlike the Summary itself: the
+   *  panel seeds its rows from page-load props, so a remount on every return to
+   *  Summary would show a song just approved as waiting again. */
+  summaryFooter?: ReactNode;
 }) {
   const modules = EVENT_TYPES[eventType]?.modules ?? EVENT_TYPES.idol.modules;
   const router = useRouter();
@@ -351,7 +358,7 @@ export function EventWorkspace({
   }
 
   return (
-    <div className="w-full space-y-4">
+    <div className="w-full space-y-3">
       {/* An APPROVED show that has since lost something required. The auto-effect
           above only walks draft/in_progress → pending_review → draft, so once a
           show is approved nothing re-checks it — and editing is deliberately never
@@ -363,9 +370,9 @@ export function EventWorkspace({
       {!completeness.complete &&
         !event.is_template &&
         (status === "approved" || status === "overdue") && (
-          <div className="no-print rounded-lg border border-destructive/50 bg-destructive/10 p-3">
-            <div className="flex items-center gap-2 font-semibold text-destructive">
-              <AlertTriangle className="h-5 w-5 shrink-0" />
+          <div className="no-print slab p-3 shadow-[inset_3px_0_0_hsl(var(--destructive)),inset_0_0_0_1px_hsl(var(--border))]">
+            <div className="flex items-center gap-2 font-semibold text-foreground">
+              <AlertTriangle aria-hidden className="h-5 w-5 shrink-0 text-destructive" />
               งานนี้อนุมัติไปแล้ว แต่ตอนนี้ข้อมูลไม่ครบ ({completeness.missing.length})
             </div>
             <ul className="ml-7 mt-1.5 list-disc space-y-0.5 text-sm text-muted-foreground">
@@ -379,33 +386,8 @@ export function EventWorkspace({
           </div>
         )}
 
-      {/* Big Summary button (default view) + refresh */}
-      <div className="no-print flex flex-wrap items-center gap-2">
-        <Button
-          type="button"
-          size="lg"
-          variant={view === "summary" ? "default" : "outline"}
-          onClick={() => changeView("summary")}
-          className="font-semibold"
-        >
-          {/* The English half is dropped on a phone so this row, the refresh and
-              the share button fit on ONE line — on a 390px screen the header used to
-              stack six rows of buttons before the show itself appeared. */}
-          <ClipboardList className="h-5 w-5" />
-          {/* one text node for the button's flex gap, or the halves drift apart */}
-          <span>
-            สรุปงาน<span className="hidden sm:inline"> (Summary)</span>
-          </span>
-        </Button>
-        <RefreshButton />
-        {editable && (
-          <ShareButton
-            eventId={eventId}
-            initialToken={event.share_token}
-            initialExpiresAt={event.share_expires_at}
-          />
-        )}
-      </div>
+      {/* (The big "สรุปงาน" button, Refresh and Share that sat here moved: Summary
+          is the first segment below, Refresh and Share are in the hero's ⋯.) */}
 
       {/* WHY the page is read-only, said once, where the reader is.
           Reported through the in-app feedback channel as a BUG ("แก้ไขตารางเวลาไม่ได้",
@@ -418,53 +400,60 @@ export function EventWorkspace({
       {/* Not on the summary: nothing there is editable by anyone, and it is the
           page every member opens a show to — the box was the first thing they
           read, every time, about a limit that was not in their way. */}
+      {/* ONE line on a phone (2026-10-01, §J): at two lines it pushed a member's
+          first setlist row past the fold. Who can edit is the message that matters;
+          the "ทักได้เลย" after it was dropped for the room. */}
       {!editable && view !== "summary" && (
         <div
-          className="no-print rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:border-amber-500/40 dark:bg-amber-950/40 dark:text-amber-100"
+          className="no-print flex items-start gap-2 rounded-[2px] bg-muted px-3 py-1.5 text-[12.5px] leading-snug text-muted-foreground shadow-edge"
           data-testid="read-only-notice"
         >
-          <span className="font-medium">ดูอย่างเดียว</span> — งานของวงแก้ได้โดย{" "}
-          <span className="font-medium">Ar ของวงนั้น</span> หรือ{" "}
-          <span className="font-medium">แอดมิน</span> เท่านั้น
-          {event.is_template ? " (และแม่แบบแก้ได้จากหน้าแม่แบบ)" : ""} — ถ้าต้องแก้จริง ๆ
-          ทักคนใดคนหนึ่งได้เลย
+          <Eye aria-hidden className="mt-px h-4 w-4 flex-none" />
+          <span>
+            <span className="font-semibold text-foreground">ดูอย่างเดียว</span> — แก้ได้โดย{" "}
+            <span className="font-semibold text-foreground">Ar ของวง</span> หรือ{" "}
+            <span className="font-semibold text-foreground">แอดมิน</span>
+            {event.is_template ? " (แม่แบบแก้ที่หน้าแม่แบบ)" : ""}
+          </span>
         </div>
       )}
 
       <Tabs value={view} onValueChange={changeView} className="w-full">
-        {/* ⚠️ THESE HAVE TO LOOK LIKE BUTTONS EVEN WHEN NONE IS SELECTED.
-            Reported from a phone on 2026-09-06: "แก้เซ็ตลิสต์ในงานไม่ได้ กดตรงไหน"
-            — not broken, unfindable. The default view is `summary`, which is NOT
-            one of these tabs, so on arrival NOTHING here is active: Radix leaves
-            every trigger at `text-muted-foreground` on the list's own `bg-muted`,
-            i.e. grey text on grey, with no selected sibling to contrast against.
-            Measured in a browser at 375px, it reads as a row of headings. The big
-            white "สรุปงาน" button directly above makes it worse by being the only
-            thing on screen that looks pressable.
-            The redesign's segmented track now gives the row a control's shape
-            (one bordered bar, equal segments), and each trigger keeps foreground
-            ink rather than the seg's muted default, so the labels never go grey
-            on grey. The chosen one is the seg's solid foreground block. When
-            Summary becomes the first tab (spec G.3), something is always
-            selected and TAB_CLS can go. */}
-        <TabsList className="no-print">
-          <TabsTrigger value="setlist" className={TAB_CLS}>
-            Setlist<span className="hidden sm:inline">&nbsp;+ Run Time</span>
-          </TabsTrigger>
-          <TabsTrigger value="schedule" className={TAB_CLS}>
-            นัดหมาย
-          </TabsTrigger>
-          {modules.micMap && (
-            <TabsTrigger value="mic" className={TAB_CLS}>
-              Mic Map
-            </TabsTrigger>
-          )}
-          <TabsTrigger value="lineup" className={TAB_CLS}>
-            รายชื่อวันนี้
-          </TabsTrigger>
-        </TabsList>
+        {/* ⚠️ THESE HAVE TO LOOK LIKE BUTTONS. Reported from a phone on 2026-09-06:
+            "แก้เซ็ตลิสต์ในงานไม่ได้ กดตรงไหน" — not broken, unfindable. The default
+            view, Summary, used to sit OUTSIDE this row as a big button, so on arrival
+            nothing in the row was selected and it read as a line of headings.
+            Summary is now the row's first segment (spec G.3), so one segment is
+            always the solid foreground block and the row always reads as a control.
 
-        <TabsContent value="summary">
+            Sticky under the header, on an OPAQUE bar (glass is for the header and
+            tab bar only), so the way between the editors is always one tap away. */}
+        <div className="no-print sticky top-[calc(var(--header-h)+env(safe-area-inset-top))] z-30 -mx-1 bg-background/95 px-1 py-2">
+          <TabsList className="en">
+            {/* NOT a TabsTrigger. A Radix trigger switches on MOUSEDOWN, before the
+                field being edited loses focus and starts its autosave; entering
+                Summary refreshes the page data for the run sheet and its JPG
+                (changeView), so that refresh would read the database a moment
+                before the last edit lands, and the sheet would miss it. A plain
+                click fires after the blur, as the old Summary button did. */}
+            <button
+              type="button"
+              role="tab"
+              aria-selected={view === "summary"}
+              data-state={view === "summary" ? "active" : "inactive"}
+              onClick={() => changeView("summary")}
+              className={SEG_ITEM_CLS}
+            >
+              Summary
+            </button>
+            <TabsTrigger value="setlist">Setlist</TabsTrigger>
+            <TabsTrigger value="schedule">Schedule</TabsTrigger>
+            {modules.micMap && <TabsTrigger value="mic">Mics</TabsTrigger>}
+            <TabsTrigger value="lineup">Lineup</TabsTrigger>
+          </TabsList>
+        </div>
+
+        <TabsContent value="summary" className="mt-2">
           <EventSummary
             event={event}
             schedule={schedule}
@@ -476,16 +465,23 @@ export function EventWorkspace({
             completeness={completeness}
             editable={editable}
             canRunLive={canRunLive}
+            showLive={!liveInHero}
             tenantId={tenantId}
             runSeq={runSeq}
           />
         </TabsContent>
+        {summaryFooter && (
+          <div hidden={view !== "summary"} className="mt-3">
+            {summaryFooter}
+          </div>
+        )}
 
         {/* forceMount keeps an already-opened editor alive across tab switches;
             Radix only sets `hidden` on content it would have unmounted, so a
             force-mounted panel has to be hidden here. */}
         <TabsContent
           value="setlist"
+          className="mt-1"
           forceMount={keepMounted("setlist")}
           hidden={view !== "setlist"}
         >
@@ -505,6 +501,7 @@ export function EventWorkspace({
 
         <TabsContent
           value="schedule"
+          className="mt-1"
           forceMount={keepMounted("schedule")}
           hidden={view !== "schedule"}
         >
@@ -520,6 +517,7 @@ export function EventWorkspace({
 
         <TabsContent
           value="lineup"
+          className="mt-1"
           forceMount={keepMounted("lineup")}
           hidden={view !== "lineup"}
         >
@@ -537,6 +535,7 @@ export function EventWorkspace({
         {modules.micMap && (
           <TabsContent
             value="mic"
+            className="mt-1"
             forceMount={keepMounted("mic")}
             hidden={view !== "mic"}
           >
@@ -555,24 +554,18 @@ export function EventWorkspace({
       </Tabs>
 
       {/* Bottom action bar — the "save" button STAYS on the current tab and just
-          confirms with a toast (data already auto-saves). No page bounce. */}
-      {view !== "summary" && (
-        <div className="no-print mt-2 flex flex-wrap items-center gap-2 rounded-lg border bg-muted/30 p-3">
-          <Button
-            type="button"
-            variant="default"
-            onClick={confirmSaved}
-            disabled={saving}
-            className="font-semibold"
-          >
-            <Check className="h-4 w-4" /> บันทึก / อัปเดต
+          confirms with a toast (data already auto-saves). No page bounce. A solid
+          slab floating just above the tab bar (spec §G.4), primary at the right.
+          Only for someone who can edit: a read-only member has nothing to save, and
+          on first paint the bar sat over their first setlist row (§J). The way back
+          to the run sheet is the Summary segment, always in the sticky row above. */}
+      {editable && view !== "summary" && (
+        <div className="no-print sticky bottom-[calc(var(--tabbar-h)+env(safe-area-inset-bottom)+8px)] z-30 mt-2 flex items-center justify-end gap-2 rounded-[3px] bg-card p-2 shadow-float lg:bottom-4">
+          <Button type="button" variant="secondary" onClick={() => changeView("summary")}>
+            <ClipboardList aria-hidden /> ดูสรุปงาน
           </Button>
-          <Button
-            type="button"
-            variant="outline"
-            onClick={() => changeView("summary")}
-          >
-            <ClipboardList className="h-4 w-4" /> ดูสรุปงาน
+          <Button type="button" onClick={confirmSaved} disabled={saving}>
+            <Check aria-hidden /> บันทึก / อัปเดต
           </Button>
         </div>
       )}

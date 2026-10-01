@@ -13,6 +13,7 @@ import { bkkTodayKey } from "@/lib/time";
 import { callTimeByEvent, practiceRoomByGroup } from "@/lib/next-show";
 import { type EventRow } from "@/lib/types";
 import { WhatsNew } from "@/components/whats-new";
+import { PageTitle } from "@/components/page-title";
 
 export const dynamic = "force-dynamic";
 
@@ -108,47 +109,64 @@ export default async function DashboardPage() {
     .filter((g) => templateByGroup.has(g.id))
     .map((g) => ({ id: g.id, name: g.name, templateId: templateByGroup.get(g.id)! }));
   const showTemplate = canCreate && templateGroups.length > 0;
+  // The title's right side (spec §G.1): who is reading, today, and whose shows
+  // these are — one band's name for a member, the label's for label-wide staff.
+  const viewable = viewableGroups(ws.perms, ws.groups);
+  const bandLabel = viewable.length === 1 ? viewable[0].name : ws.tenant.name;
+  // Server-rendered (force-dynamic), so formatting "today" here cannot drift
+  // from a hydrated copy; pinned to Bangkok because Vercel runs UTC.
+  const todayTh = new Intl.DateTimeFormat("th-TH", {
+    weekday: "short",
+    day: "numeric",
+    month: "short",
+    timeZone: "Asia/Bangkok",
+  }).format(new Date());
+  const whatsNew = <WhatsNew canEdit={editableGroupIds.length > 0} />;
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-end justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight">All Events</h1>
-          <p className="text-sm text-muted-foreground">
-            {ws.tenant.name} · {events.length}{" "}
-            {events.length === 1 ? "Event" : "Events"}
-          </p>
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
-          {showTemplate && (
-            <CreateFromTemplateButton groups={templateGroups} />
-          )}
+    <div className="space-y-3">
+      <PageTitle
+        title="Events"
+        right={
+          <div className="max-w-[12.5rem] pb-[1px] text-right text-[12.5px] leading-snug text-muted-foreground">
+            {ws.user?.name && <span className="block truncate">สวัสดี {ws.user.name}</span>}
+            <span className="block truncate">
+              {todayTh} · <span className="font-medium text-foreground">{bandLabel}</span>
+            </span>
+          </div>
+        }
+      />
+      {(showTemplate || canCreate) && (
+        <div className="flex flex-wrap gap-2">
+          {showTemplate && <CreateFromTemplateButton groups={templateGroups} />}
           {canCreate && (
-            <Button asChild>
+            <Button asChild variant="secondary">
               <Link href="/events/new">
-                <Plus className="h-4 w-4" /> New Event
+                <Plus aria-hidden />
+                <span className="en">New Event</span>
               </Link>
             </Button>
           )}
         </div>
-      </div>
-
-      <WhatsNew canEdit={editableGroupIds.length > 0} />
+      )}
 
       {events.length === 0 ? (
-        <Card>
-          <CardContent className="flex flex-col items-center justify-center gap-3 py-16 text-center">
-            <Music2 className="h-10 w-10 text-muted-foreground" />
-            <p className="text-muted-foreground">No events yet</p>
-            {canCreate && (
-              <Button asChild variant="outline">
-                <Link href="/events/new">
-                  <Plus className="h-4 w-4" /> Create your first event
-                </Link>
-              </Button>
-            )}
-          </CardContent>
-        </Card>
+        <>
+          {whatsNew}
+          <Card>
+            <CardContent className="flex flex-col items-center justify-center gap-3 py-16 text-center">
+              <Music2 className="h-10 w-10 text-muted-foreground" />
+              <p className="text-muted-foreground">No events yet</p>
+              {canCreate && (
+                <Button asChild variant="secondary">
+                  <Link href="/events/new">
+                    <Plus className="h-4 w-4" /> Create your first event
+                  </Link>
+                </Button>
+              )}
+            </CardContent>
+          </Card>
+        </>
       ) : (
         <EventsList
           events={events}
@@ -156,6 +174,7 @@ export default async function DashboardPage() {
           callTimes={callTimes}
           canRunLive={canRunLive}
           practiceRoomByGroup={roomByGroup}
+          belowHero={whatsNew}
         />
       )}
     </div>

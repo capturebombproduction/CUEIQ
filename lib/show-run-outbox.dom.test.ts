@@ -464,6 +464,22 @@ describe("LiveStatusStrip renders the difference", () => {
     expect(screen.queryByText(/เช็คคิวซิงค์ไม่ได้/)).toBeNull();
   });
 
+  // Live Mode's own status row already says who controls and who sounds, so the
+  // strip stands aside until something needs the operator — but stays MOUNTED, so
+  // its counting keeps going (hidden by class, never unmounted).
+  it("stands aside while all is well, and steps forward the moment the queue cannot be read", async () => {
+    const view = mount();
+    await settle();
+    const strip = () => screen.getByText("ออนไลน์").parentElement!;
+    expect(strip()).toHaveClass("hidden");
+    view.unmount();
+
+    killStorage();
+    mount();
+    expect(await screen.findByText(/เช็คคิวซิงค์ไม่ได้/)).toBeInTheDocument();
+    expect(strip()).not.toHaveClass("hidden");
+  });
+
   it("warns instead of showing a confident nothing when the queue is unreadable", async () => {
     killStorage();
     mount();

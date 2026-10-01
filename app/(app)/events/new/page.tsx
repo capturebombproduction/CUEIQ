@@ -1,11 +1,9 @@
 import { redirect } from "next/navigation";
-import Link from "next/link";
-import { ArrowLeft } from "lucide-react";
 import { getWorkspace } from "@/lib/queries";
 import { canApprove, canCreateAnyEvent, editableGroups } from "@/lib/permissions";
 import { EventForm } from "@/components/event/event-form";
-import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { PageTitle } from "@/components/page-title";
 
 export const dynamic = "force-dynamic";
 
@@ -18,15 +16,11 @@ export default async function NewEventPage() {
   const groups = editableGroups(ws.perms, ws.groups);
 
   return (
-    <div className="mx-auto max-w-2xl space-y-6">
-      <div>
-        <Button asChild variant="ghost" size="sm" className="-ml-2 mb-2">
-          <Link href="/dashboard">
-            <ArrowLeft className="h-4 w-4" /> กลับ
-          </Link>
-        </Button>
-        <h1 className="text-2xl font-bold tracking-tight">สร้างงานใหม่</h1>
-      </div>
+    <div className="mx-auto max-w-2xl space-y-3">
+      {/* The way back is the header's "‹ EVENTS" (and the form's ยกเลิก) — a second
+          back link here said the same thing twice (spec §G.3). */}
+      <PageTitle title="New Event" />
+      <p className="text-[13px] text-muted-foreground">สร้างงานใหม่ — เติมเซ็ตลิสต์ ตารางเวลา และไมค์ได้หลังสร้าง</p>
 
       {groups.length === 0 ? (
         <Card>

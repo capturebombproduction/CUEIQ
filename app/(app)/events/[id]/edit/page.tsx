@@ -5,6 +5,7 @@ import { getEventRow, getWorkspace } from "@/lib/queries";
 import { canApprove, canEditGroup, editableGroups } from "@/lib/permissions";
 import { EventForm } from "@/components/event/event-form";
 import { Button } from "@/components/ui/button";
+import { PageTitle } from "@/components/page-title";
 
 export const dynamic = "force-dynamic";
 
@@ -27,15 +28,16 @@ export default async function EditEventPage({
   }
 
   return (
-    <div className="mx-auto max-w-2xl space-y-6">
-      <div>
-        <Button asChild variant="ghost" size="sm" className="-ml-2 mb-2">
-          <Link href={`/events/${id}`}>
-            <ArrowLeft className="h-4 w-4" /> กลับไปหน้างาน
-          </Link>
-        </Button>
-        <h1 className="text-2xl font-bold tracking-tight">แก้ไขข้อมูลงาน</h1>
-      </div>
+    <div className="mx-auto max-w-2xl space-y-3">
+      {/* Back to THIS show — the header's "‹ EVENTS" goes up to the list, a
+          different place, so this one stays. */}
+      <Button asChild variant="ghost" className="no-print -ml-3 text-primary-ink">
+        <Link href={`/events/${id}`}>
+          <ArrowLeft aria-hidden /> กลับไปหน้างาน
+        </Link>
+      </Button>
+      <PageTitle title="Edit Event" />
+      <p className="truncate text-[13px] text-muted-foreground">แก้ไขข้อมูลงาน — {event.name}</p>
       <EventForm
         mode="edit"
         event={event}

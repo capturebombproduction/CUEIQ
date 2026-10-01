@@ -12,7 +12,12 @@ export function ExportButton({
   eventId,
   groupId,
   data: local,
+  variant = "secondary",
+  className,
 }: {
+  /** "secondary" in the event hero's ⋯ sheet (spec §E.8) */
+  variant?: "secondary" | "outline";
+  className?: string;
   eventId: string;
   /** The event's band — `members` is group-scoped, not event-scoped. */
   groupId: string;
@@ -129,9 +134,9 @@ export function ExportButton({
   }
 
   return (
-    <Button variant="outline" onClick={onExport} disabled={loading}>
-      <FileSpreadsheet className="h-4 w-4" />
-      {loading ? "กำลังสร้าง…" : "Export Excel"}
+    <Button variant={variant} className={className} onClick={onExport} disabled={loading}>
+      <FileSpreadsheet aria-hidden />
+      {loading ? "กำลังสร้าง…" : <span className="en">Export Excel</span>}
     </Button>
   );
 }

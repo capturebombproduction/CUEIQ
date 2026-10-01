@@ -1,8 +1,10 @@
-import { Brand } from "@/components/brand";
 import { LoginForm } from "@/components/auth/login-form";
 
 export const metadata = { title: "เข้าสู่ระบบ" };
 
+// The first impression (spec §G.9): the dark stage itself — bg-background, no
+// gradient wash — with one centred slab. The page light (round 3) is not decided
+// yet, so nothing here paints any.
 export default async function LoginPage({
   searchParams,
 }: {
@@ -10,21 +12,10 @@ export default async function LoginPage({
 }) {
   const { next } = await searchParams;
   return (
-    <main className="flex min-h-screen items-center justify-center bg-gradient-to-b from-accent/40 to-background p-4">
+    <main className="flex min-h-[100dvh] flex-col items-center justify-center bg-background px-4 py-10">
       <div className="w-full max-w-sm">
-        <div className="mb-8 flex flex-col items-center text-center">
-          <Brand size="lg" />
-          <p className="mt-3 text-sm text-muted-foreground">
-            Smart cues for every show.
-          </p>
-        </div>
         <LoginForm next={next} />
-        <p className="mt-6 text-center text-sm text-muted-foreground">
-          ต้องการบัญชีเข้าใช้งาน? ติดต่อแอดมินค่าย
-        </p>
-        <p className="mt-1 text-center text-xs text-muted-foreground">
-          ลืมรหัสผ่าน? ติดต่อแอดมินให้รีเซ็ตรหัสผ่านให้ (เข้าระบบแล้วเปลี่ยนรหัสเองได้)
-        </p>
+        <p className="mt-8 text-center text-[11px] text-faint">Designed by PatzNutthapat</p>
       </div>
     </main>
   );

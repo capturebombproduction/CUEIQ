@@ -2,7 +2,7 @@
 // Reuses PracticeMode verbatim (slow-down/pitch + markers + metronome + journal).
 import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { ArrowLeft } from "lucide-react";
+import { ArrowLeft, ChevronLeft } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { PracticeMode } from "@/components/practice/practice-mode";
 import { createClient } from "@/lib/supabase/client";
@@ -101,16 +101,17 @@ export function PracticeRoom() {
   const canManage = !!ws && canEditGroup(ws.perms, bundle.event.group_id);
 
   return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <Button asChild variant="ghost" size="sm" className="-ml-2">
-          <Link to="/practice">
-            <ArrowLeft className="h-4 w-4" /> ห้องซ้อม
-          </Link>
-        </Button>
-      </div>
+    <div className="space-y-3">
+      {/* the desktop shell has no "‹ TRAINING" in its header — the way back is here */}
+      <Link
+        to="/practice"
+        className="caps -ml-2 flex h-11 w-fit items-center gap-0.5 rounded-[3px] pr-2 text-[15px] text-primary-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      >
+        <ChevronLeft className="h-5 w-5" strokeWidth={2.6} aria-hidden />
+        Training
+      </Link>
       {state.partial && (
-        <p className="rounded-lg border border-dashed px-3 py-2 text-sm text-muted-foreground">
+        <p className="slab px-3 py-2.5 text-sm text-muted-foreground">
           โหลดลิสต์ซ้อม/มาร์กเกอร์ไม่สำเร็จ — อาจออฟไลน์อยู่ ที่เห็นอาจไม่ครบ ยังไม่มีอะไรหาย
           กดรีเฟรชอีกครั้งเมื่อเน็ตกลับมา
         </p>

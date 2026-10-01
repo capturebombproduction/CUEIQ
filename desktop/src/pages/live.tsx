@@ -70,25 +70,26 @@ export function LivePage() {
   // preflight has to see them; resolveAudioTargets deliberately does not.
   const localOnly = resolveLocalOnlyCandidates(bundle.setlist, songAudio);
 
+  // Immersive (the shell drops its header and its <main> padding on this route):
+  // the back link is in Live Mode's own top bar.
+  // ⚠️ The readiness card above LiveMode pushes the stage layout down by its own
+  // height, so the .exe stage page scrolls by that much — where it should live is
+  // พี่'s call (review-shots/design/PLANS-surfaces-critic.md, finding L6).
   return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <Button asChild variant="ghost" size="sm" className="-ml-2">
-          <Link to={`/events/${event.id}`}>
-            <ArrowLeft className="h-4 w-4" /> กลับไปหน้างาน
-          </Link>
-        </Button>
-      </div>
+    <div>
       {/* `setlist` is what lets the preflight reconcile rows against the resolvers —
           without it a row whose song was deleted leaves no trace in either list and
           the check prints a green "พร้อมโชว์ออฟไลน์" over a track that plays nothing.
           Round 10 built that guard and never passed this prop. */}
-      <ShowReadinessCheck
-        eventId={event.id}
-        targets={audioTargets}
-        localOnly={localOnly}
-        setlist={bundle.setlist}
-      />
+      {/* Its own gutter now that <main> has none; `empty:hidden` when it has nothing to say. */}
+      <div className="px-4 pt-3 empty:hidden stage:px-5">
+        <ShowReadinessCheck
+          eventId={event.id}
+          targets={audioTargets}
+          localOnly={localOnly}
+          setlist={bundle.setlist}
+        />
+      </div>
       <LiveMode
         eventId={event.id}
         groupId={event.group_id}
@@ -98,6 +99,8 @@ export function LivePage() {
         canEdit={canEdit}
         lastRunSeconds={event.last_run_seconds ?? null}
         lastRunAt={event.last_run_at ?? null}
+        userId={ws?.user?.id ?? null}
+        tenantId={ws?.membership?.tenant_id ?? null}
       />
     </div>
   );

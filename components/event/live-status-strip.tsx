@@ -39,10 +39,13 @@ export function LiveStatusStrip({
   eventId,
   isController,
   soundOutput,
+  className,
 }: {
   eventId: string;
   isController: boolean;
   soundOutput: boolean;
+  /** placement from the screen (e.g. the stage gutter) */
+  className?: string;
 }) {
   const [online, setOnline] = useState(true);
   // number = that many writes are waiting. null = THE QUEUE COULD NOT BE READ,
@@ -115,81 +118,64 @@ export function LiveStatusStrip({
     };
   }, [eventId]);
 
+  // Live Mode's status row already says who controls and who sounds, so the strip
+  // stands aside until something needs the operator: offline, writes waiting (or a
+  // queue that could not be read), a run time that was saved nowhere, or the
+  // recorded MAIN gone dark. It stays MOUNTED either way — its effects keep counting.
+  const attention =
+    !online || pending === null || (pending ?? 0) > 0 || saveLost || (!!otherMain?.ghost && !isController);
+
   return (
-    <div className="flex flex-wrap items-center gap-2 text-xs">
+    <div className={cn("flex flex-wrap items-center gap-1.5", !attention && "hidden", className)}>
       {/* Show Main — loud when this device is the controller, so you don't drive
           the show from the wrong device. */}
       <span
-        className={cn(
-          "inline-flex items-center gap-1.5 rounded-md border px-2 py-1 font-semibold",
-          isController
-            ? "border-primary/50 bg-primary/15 text-primary"
-            : "border-border bg-muted/40 text-muted-foreground"
-        )}
+        className={cn("chip", isController ? "chip-primary" : "chip-neutral")}
         title={isController ? "เครื่องนี้กำลังคุมโชว์ (Show Main)" : "เครื่องนี้ดูอย่างเดียว"}
       >
         {isController ? (
           <>
-            <SlidersHorizontal className="h-3.5 w-3.5" /> คุมโชว์
+            <SlidersHorizontal aria-hidden /> คุมโชว์
           </>
         ) : (
           <>
-            <Eye className="h-3.5 w-3.5" /> ดูอย่างเดียว
+            <Eye aria-hidden /> ดูอย่างเดียว
           </>
         )}
-        {label && <span className="font-mono font-normal opacity-70">· {label}</span>}
+        {label && <span className="font-normal opacity-80">· {label}</span>}
       </span>
 
       {/* Cross-device: another device is the recorded MAIN — so you know where
           control lives (and if that device went dark, a stale = reclaimable main). */}
       {otherMain && !isController && (
         <span
-          className={cn(
-            "inline-flex items-center gap-1.5 rounded-md border px-2 py-1 font-medium",
-            otherMain.ghost
-              ? "border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-400"
-              : "border-border bg-muted/40 text-muted-foreground"
-          )}
+          className={cn("chip", otherMain.ghost ? "chip-warning" : "chip-neutral")}
           title={
             otherMain.ghost
               ? "เครื่องที่คุมโชว์เงียบไป (ไม่เห็นสัญญาณ) — กดขอควบคุมเพื่อรับช่วงต่อได้"
               : `เครื่องที่กำลังคุมโชว์: ${otherMain.label}`
           }
         >
-          {otherMain.ghost ? (
-            <AlertTriangle className="h-3.5 w-3.5" />
-          ) : (
-            <MonitorSmartphone className="h-3.5 w-3.5" />
-          )}
+          {otherMain.ghost ? <AlertTriangle aria-hidden /> : <MonitorSmartphone aria-hidden />}
           {otherMain.ghost ? `MAIN เดิมหลุด · ${otherMain.label}` : `MAIN · ${otherMain.label}`}
         </span>
       )}
 
       {/* Audio Host — is this the device the sound comes out of? */}
       <span
-        className={cn(
-          "inline-flex items-center gap-1.5 rounded-md border px-2 py-1 font-medium",
-          soundOutput
-            ? "border-green-500/40 bg-green-500/10 text-green-700 dark:text-green-400"
-            : "border-border bg-muted/40 text-muted-foreground"
-        )}
+        className={cn("chip", soundOutput ? "chip-success" : "chip-neutral")}
         title={soundOutput ? "เสียงออกเครื่องนี้ (Audio Host)" : "เครื่องนี้ปิดเสียง"}
       >
-        {soundOutput ? <Volume2 className="h-3.5 w-3.5" /> : <VolumeX className="h-3.5 w-3.5" />}
+        {soundOutput ? <Volume2 aria-hidden /> : <VolumeX aria-hidden />}
         {soundOutput ? "เสียงออกเครื่องนี้" : "ปิดเสียง"}
       </span>
 
       {/* Network */}
       <span
-        className={cn(
-          "inline-flex items-center gap-1.5 rounded-md border px-2 py-1 font-medium",
-          online
-            ? "border-border bg-muted/40 text-muted-foreground"
-            : "border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-400"
-        )}
+        className={cn("chip", online ? "chip-neutral" : "chip-warning")}
         title={online ? "ออนไลน์" : "ออฟไลน์ — โชว์เดินจากเครื่องนี้"}
       >
-        {online ? <Wifi className="h-3.5 w-3.5" /> : <WifiOff className="h-3.5 w-3.5" />}
+        {online ? <Wifi aria-hidden /> : <WifiOff aria-hidden />}
         {online ? "ออนไลน์" : "ออฟไลน์"}
       </span>
 
@@ -199,10 +185,10 @@ export function LiveStatusStrip({
           silent, exactly as before. */}
       {pending !== null && pending > 0 && (
         <span
-          className="inline-flex items-center gap-1.5 rounded-md border border-amber-500/40 bg-amber-500/10 px-2 py-1 font-medium text-amber-700 dark:text-amber-400"
+          className="chip chip-warning"
           title="ข้อมูลโชว์ที่บันทึกตอนออฟไลน์ รอซิงค์ขึ้นเซิร์ฟเวอร์เมื่อกลับมาออนไลน์"
         >
-          <CloudUpload className="h-3.5 w-3.5" /> รอซิงค์ {pending}
+          <CloudUpload aria-hidden /> รอซิงค์ <span className="num">{pending}</span>
         </span>
       )}
 
@@ -210,10 +196,10 @@ export function LiveStatusStrip({
           cannot back: "no chip" is what a fully-synced device looks like. */}
       {pending === null && (
         <span
-          className="inline-flex items-center gap-1.5 rounded-md border border-amber-500/40 bg-amber-500/10 px-2 py-1 font-medium text-amber-700 dark:text-amber-400"
+          className="chip chip-warning"
           title="อ่านคิวที่รอซิงค์ในเครื่องนี้ไม่ได้ — ยังบอกไม่ได้ว่าซิงค์ครบหรือยัง อย่าเพิ่งปิดเครื่อง"
         >
-          <AlertTriangle className="h-3.5 w-3.5" /> เช็คคิวซิงค์ไม่ได้
+          <AlertTriangle aria-hidden /> เช็คคิวซิงค์ไม่ได้
         </span>
       )}
 
@@ -221,10 +207,10 @@ export function LiveStatusStrip({
           thing on the strip, because the number is now only on this screen. */}
       {saveLost && (
         <span
-          className="inline-flex items-center gap-1.5 rounded-md border border-red-500/50 bg-red-500/15 px-2 py-1 font-semibold text-red-700 dark:text-red-400"
+          className="chip chip-danger font-semibold"
           title="บันทึกเวลาโชว์ล่าสุดไม่สำเร็จ และเก็บลงคิวในเครื่องไม่ได้ด้วย — จดเวลาไว้ก่อน แล้วกดจบโชว์อีกครั้งเมื่อเน็ตกลับ"
         >
-          <AlertTriangle className="h-3.5 w-3.5" /> ยังไม่ได้บันทึกเวลาโชว์
+          <AlertTriangle aria-hidden /> ยังไม่ได้บันทึกเวลาโชว์
         </span>
       )}
     </div>

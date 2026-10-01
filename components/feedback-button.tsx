@@ -30,7 +30,7 @@ import {
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
-import { MyFeedbackList } from "@/components/my-feedback-list";
+import { MyFeedbackList, announceFeedbackSent } from "@/components/my-feedback-list";
 import {
   Dialog,
   DialogContent,
@@ -276,6 +276,8 @@ export function FeedbackButton({
       setFiles([]);
       setOpen(false);
       setListRev((n) => n + 1);
+      // …and every other mounted list (the /feedback page's own) re-reads too.
+      announceFeedbackSent();
     } catch (e) {
       // A venue with no signal is this button's NORMAL habitat (see the doc
       // comment above) — a bare "TypeError: Failed to fetch" toast title reads

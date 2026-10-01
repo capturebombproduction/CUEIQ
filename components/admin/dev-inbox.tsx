@@ -14,17 +14,20 @@ import {
   CornerDownRight,
   Send,
   User,
+  CircleCheck,
 } from "lucide-react";
 import { toast } from "sonner";
 import { createClient } from "@/lib/supabase/client";
 import { noRowsMessage, wroteNothing } from "@/lib/write-guard";
 import { notify } from "@/lib/notify-client";
 import { removeEventAudio } from "@/lib/audio-remote";
-import { FeedbackImage } from "@/components/feedback-image";
+import { FeedbackThumbs } from "@/components/feedback-thumbs";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Textarea } from "@/components/ui/textarea";
 import { useConfirm } from "@/components/ui/confirm-dialog";
+import { cn } from "@/lib/utils";
 
 interface FeedbackRow {
   id: string;
@@ -87,10 +90,11 @@ function groupErrors(rows: ErrorRow[]): ErrorGroup[] {
   return Array.from(map.values()).sort((a, b) => b.last_seen.localeCompare(a.last_seen));
 }
 
-const CAT_ICON: Record<string, typeof Bug> = {
-  bug: Bug,
-  idea: Lightbulb,
-  other: MessageCircle,
+// Category as a chip: icon + word, tone by kind (spec §G.8).
+const CAT_CHIP: Record<string, { Icon: typeof Bug; label: string; cls: string; en: boolean }> = {
+  bug: { Icon: Bug, label: "Bug", cls: "chip-warning", en: true },
+  idea: { Icon: Lightbulb, label: "Idea", cls: "chip-info", en: true },
+  other: { Icon: MessageCircle, label: "อื่น ๆ", cls: "chip-neutral", en: false },
 };
 
 function when(iso: string) {
@@ -252,199 +256,227 @@ export function DevInbox({
   return (
     <Tabs defaultValue="feedback" className="w-full">
       <div className="flex items-center justify-between gap-2">
-        <TabsList>
+        <TabsList className="flex-1 sm:max-w-md [&>*]:h-11 sm:[&>*]:h-[38px]">
           <TabsTrigger value="feedback">
             ฟีดแบค
-            {openCount > 0 && (
-              <Badge variant="secondary" className="ml-1.5">{openCount}</Badge>
-            )}
+            {openCount > 0 && <span className="num text-[15px]">{openCount}</span>}
           </TabsTrigger>
           <TabsTrigger value="errors">
             ปัญหา (Errors)
-            {realErrs.length > 0 && (
-              <Badge variant="secondary" className="ml-1.5">{realErrs.length}</Badge>
-            )}
+            {realErrs.length > 0 && <span className="num text-[15px]">{realErrs.length}</span>}
           </TabsTrigger>
         </TabsList>
-        <Button variant="ghost" size="icon" title="โหลดใหม่" onClick={load} disabled={loading}>
-          {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+        <Button variant="secondary" size="icon" title="โหลดใหม่" aria-label="โหลดใหม่" onClick={load} disabled={loading}>
+          {loading ? <Loader2 className="animate-spin" aria-hidden /> : <RefreshCw aria-hidden />}
         </Button>
       </div>
 
-      {/* feedback */}
-      <TabsContent value="feedback" className="mt-3 space-y-2">
+      {/* feedback — one thread per report: their message, then the answer */}
+      <TabsContent value="feedback" className="mt-3">
         {!loading && fb.length === 0 && (
-          <p className="rounded-lg border border-dashed py-8 text-center text-sm text-muted-foreground">
+          <p className="rounded-[2px] border border-dashed border-border py-8 text-center text-sm text-muted-foreground">
             ยังไม่มีฟีดแบค
           </p>
         )}
-        {fb.map((r) => {
-          const Icon = CAT_ICON[r.category] ?? MessageCircle;
-          const done = r.status === "done";
-          const who = r.user_id ? namesById[r.user_id] : null;
-          return (
-            <div key={r.id} className={`rounded-lg border bg-card p-3 ${done ? "opacity-50" : ""}`}>
-              <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0 space-y-1">
-                  <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                    <Icon className="h-3.5 w-3.5" />
+        <div className="stack">
+          {fb.map((r) => {
+            const cat = CAT_CHIP[r.category] ?? CAT_CHIP.other;
+            const done = r.status === "done";
+            const who = r.user_id ? namesById[r.user_id] : null;
+            return (
+              <article key={r.id} className="slab space-y-2.5 p-3 sm:p-4">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-[12.5px] text-muted-foreground">
+                    {!done && (
+                      <span
+                        aria-hidden
+                        title="ยังไม่ได้จัดการ"
+                        className="dot static inline-block shrink-0"
+                      />
+                    )}
+                    <span className={cn("chip", cat.cls, cat.en && "en")}>
+                      <cat.Icon aria-hidden />
+                      {cat.label}
+                    </span>
                     {/* Who wrote it. The inbox never showed this, so answering a
                         report meant guessing who to talk to — and the reply below
                         is worth much less if you cannot tell whose bug it was. */}
                     {who && (
-                      <span className="inline-flex items-center gap-1 font-medium text-foreground">
-                        <User className="h-3.5 w-3.5" /> {who}
+                      <span className="inline-flex items-center gap-1 font-semibold text-foreground">
+                        <User className="h-3.5 w-3.5" aria-hidden /> {who}
                       </span>
                     )}
                     <span>{when(r.created_at)}</span>
-                    {r.context?.path && (
-                      <span className="truncate font-mono">· {r.context.path}</span>
-                    )}
-                    {r.context?.commit && <span>· {r.context.commit}</span>}
-                  </div>
-                  <p className={`whitespace-pre-wrap text-sm ${done ? "line-through" : ""}`}>
-                    {r.message}
-                  </p>
-                </div>
-                <div className="flex shrink-0 gap-1">
-                  <Button
-                    variant="ghost" size="icon"
-                    title={done ? "ทำเป็นยังไม่เสร็จ" : "ทำเครื่องหมายว่าจัดการแล้ว"}
-                    onClick={() => toggleDone(r.id, r.status)}
-                    className={done ? "text-success" : ""}
-                  >
-                    <Check className="h-4 w-4" />
-                  </Button>
-                  <Button variant="ghost" size="icon" title="ลบ" onClick={() => delFb(r.id)}>
-                    <Trash2 className="h-4 w-4" />
-                  </Button>
-                </div>
-              </div>
-
-              {!!r.images?.length && (
-                <div className="mt-2 flex flex-wrap gap-2">
-                  {r.images.map((k) => (
-                    <FeedbackImage key={k} objectKey={k} />
-                  ))}
-                </div>
-              )}
-
-              {r.reply && (
-                <div className="mt-2 rounded-md border-l-2 border-primary bg-muted/50 p-2">
-                  <p className="mb-1 flex items-center gap-1.5 text-xs font-medium text-primary">
-                    <CornerDownRight className="h-3.5 w-3.5" />
-                    ตอบไปแล้ว
-                    {r.replied_at && (
-                      <span className="font-normal text-muted-foreground">
-                        · {when(r.replied_at)}
+                    {done && (
+                      <span className="chip chip-success">
+                        <Check aria-hidden /> จัดการแล้ว
                       </span>
                     )}
-                  </p>
-                  <p className="whitespace-pre-wrap text-sm">{r.reply}</p>
+                  </div>
+                  <div className="-mr-1.5 -mt-1.5 flex shrink-0">
+                    <Button
+                      variant="ghost" size="icon"
+                      title={done ? "ทำเป็นยังไม่เสร็จ" : "ทำเครื่องหมายว่าจัดการแล้ว"}
+                      onClick={() => toggleDone(r.id, r.status)}
+                      className={done ? "text-success-ink" : ""}
+                    >
+                      <Check aria-hidden />
+                    </Button>
+                    <Button variant="ghost" size="icon" title="ลบ" aria-label="ลบ" onClick={() => delFb(r.id)}>
+                      <Trash2 aria-hidden />
+                    </Button>
+                  </div>
                 </div>
-              )}
 
-              <div className="mt-2 flex items-end gap-2">
-                <textarea
-                  value={drafts[r.id] ?? ""}
-                  onChange={(e) => setDrafts((d) => ({ ...d, [r.id]: e.target.value }))}
-                  rows={2}
-                  placeholder={r.reply ? "แก้คำตอบ / ตอบเพิ่ม…" : "ตอบกลับคนที่แจ้งมา…"}
-                  data-testid={`feedback-reply-input-${r.id}`}
-                  className="min-w-0 flex-1 rounded-md border bg-background p-2 text-base focus:outline-none focus:ring-2 focus:ring-ring sm:text-sm"
-                />
-                <Button
-                  size="sm"
-                  onClick={() => sendReply(r.id)}
-                  disabled={sending === r.id || !(drafts[r.id] ?? "").trim()}
-                >
-                  {sending === r.id ? (
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                  ) : (
-                    <Send className="h-4 w-4" />
+                {/* Their message: a bubble on the left, with where it came from. */}
+                <div className={cn("max-w-[92%] rounded-[2px] bg-muted px-3 py-2 sm:max-w-[80%]", done && "opacity-60")}>
+                  <p className={cn("whitespace-pre-wrap break-words text-[15px] leading-relaxed", done && "line-through")}>
+                    {r.message}
+                  </p>
+                  {(r.context?.path || r.context?.commit || r.context?.ua) && (
+                    <p className="mt-1 flex min-w-0 flex-wrap gap-x-2 text-[12px] text-muted-foreground">
+                      {r.context?.commit && <span className="num text-[13px]">{r.context.commit}</span>}
+                      {r.context?.path && <span className="min-w-0 truncate font-mono">{r.context.path}</span>}
+                      {r.context?.ua && (
+                        <span className="min-w-0 max-w-full truncate" title={r.context.ua}>
+                          {r.context.ua}
+                        </span>
+                      )}
+                    </p>
                   )}
-                  ตอบ
-                </Button>
-              </div>
-            </div>
-          );
-        })}
+                </div>
+
+                {!!r.images?.length && <FeedbackThumbs keys={r.images} />}
+
+                {/* The answer: on the right, in the band's colour. */}
+                {r.reply && (
+                  <div className="ml-auto max-w-[92%] rounded-[2px] bg-primary/[.12] px-3 py-2 shadow-[inset_0_0_0_1px_hsl(var(--primary)/.3)] sm:max-w-[80%]">
+                    <p className="mb-1 flex items-center gap-1.5 text-[12px] font-semibold text-primary-ink">
+                      <CornerDownRight className="h-3.5 w-3.5" aria-hidden />
+                      ตอบไปแล้ว
+                      {r.replied_at && (
+                        <span className="font-normal text-muted-foreground">
+                          · {when(r.replied_at)}
+                        </span>
+                      )}
+                    </p>
+                    <p className="whitespace-pre-wrap break-words text-[15px] leading-relaxed">{r.reply}</p>
+                  </div>
+                )}
+
+                <div className="flex items-end gap-2">
+                  <Textarea
+                    value={drafts[r.id] ?? ""}
+                    onChange={(e) => setDrafts((d) => ({ ...d, [r.id]: e.target.value }))}
+                    rows={2}
+                    placeholder={r.reply ? "แก้คำตอบ / ตอบเพิ่ม…" : "ตอบกลับคนที่แจ้งมา…"}
+                    aria-label="คำตอบ"
+                    data-testid={`feedback-reply-input-${r.id}`}
+                    className="min-h-[64px] min-w-0 flex-1"
+                  />
+                  <Button
+                    onClick={() => sendReply(r.id)}
+                    disabled={sending === r.id || !(drafts[r.id] ?? "").trim()}
+                  >
+                    {sending === r.id ? (
+                      <Loader2 className="animate-spin" aria-hidden />
+                    ) : (
+                      <Send aria-hidden />
+                    )}
+                    ตอบ
+                  </Button>
+                </div>
+              </article>
+            );
+          })}
+        </div>
       </TabsContent>
 
       {/* errors */}
-      <TabsContent value="errors" className="mt-3 space-y-2">
+      <TabsContent value="errors" className="mt-3 space-y-3">
         {/* toolbar */}
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <div className="flex items-center gap-2 text-xs text-muted-foreground">
-            <span>{realErrs.length} error จริง</span>
+          <div className="flex items-center gap-2 text-[13px] text-muted-foreground">
+            <span>
+              <span className="num text-[15px] text-foreground">{realErrs.length}</span> error จริง
+            </span>
             {noiseErrs.length > 0 && (
               <button
-                className="underline-offset-2 hover:underline"
+                type="button"
+                className="min-h-11 underline-offset-2 hover:underline sm:min-h-0"
                 onClick={() => setShowNoise((v) => !v)}
               >
                 {showNoise ? `ซ่อน noise (${noiseErrs.length})` : `+ noise ${noiseErrs.length}`}
               </button>
             )}
           </div>
-          <div className="flex gap-1">
+          <div className="flex gap-2">
             {noiseErrs.length > 0 && (
-              <Button variant="outline" size="sm" onClick={clearNoise} className="text-xs">
-                <X className="h-3.5 w-3.5" /> ล้าง noise
+              <Button variant="secondary" size="sm" onClick={clearNoise} className="h-11 sm:h-9">
+                <X aria-hidden /> ล้าง noise
               </Button>
             )}
             {errs.length > 0 && (
-              <Button variant="outline" size="sm" onClick={clearAll} className="text-xs text-destructive hover:text-destructive">
-                <Trash2 className="h-3.5 w-3.5" /> ล้างทั้งหมด
+              <Button variant="destructive-outline" size="sm" onClick={clearAll} className="h-11 sm:h-9">
+                <Trash2 aria-hidden /> ล้างทั้งหมด
               </Button>
             )}
           </div>
         </div>
 
         {!loading && groups.length === 0 && (
-          <p className="rounded-lg border border-dashed py-8 text-center text-sm text-muted-foreground">
-            ไม่มี error ที่ถูกบันทึก — ดีงาม ✨
+          <p className="flex items-center justify-center gap-2 rounded-[2px] border border-dashed border-border py-8 text-center text-sm text-muted-foreground">
+            <CircleCheck className="h-4 w-4 text-success-ink" aria-hidden />
+            ไม่มี error ที่ถูกบันทึก — ดีงาม
           </p>
         )}
-        {groups.map((g) => {
-          const r = g.first;
-          const noise = isNoise(r);
-          return (
-            <div key={g.key} className={`rounded-lg border bg-card p-3 ${noise ? "opacity-50" : ""}`}>
-              <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0 space-y-1">
-                  <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                    <AlertTriangle className={`h-3.5 w-3.5 ${noise ? "text-muted-foreground" : "text-destructive"}`} />
-                    <span>{when(g.last_seen)}</span>
-                    <Badge variant="outline">{r.kind}</Badge>
-                    {g.count > 1 && (
-                      <Badge variant="secondary">×{g.count}</Badge>
+        <div className="stack">
+          {groups.map((g) => {
+            const r = g.first;
+            const noise = isNoise(r);
+            return (
+              <article key={g.key} className={cn("slab p-3 sm:p-4", noise && "opacity-60")}>
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0 space-y-1.5">
+                    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[12.5px] text-muted-foreground">
+                      <AlertTriangle
+                        className={cn("h-4 w-4", noise ? "text-muted-foreground" : "text-destructive")}
+                        aria-hidden
+                      />
+                      <span>{when(g.last_seen)}</span>
+                      <Badge variant="outline">{r.kind}</Badge>
+                      {g.count > 1 && (
+                        <Badge variant="secondary">
+                          <span className="num text-[13px]">×{g.count}</span>
+                        </Badge>
+                      )}
+                      {r.app_version && <span className="num text-[13px]">{r.app_version}</span>}
+                      {noise && <Badge variant="outline" className="en">noise</Badge>}
+                    </div>
+                    <p className="break-words text-[14px] font-semibold">{r.message}</p>
+                    {r.url && (
+                      <p className="truncate font-mono text-xs text-muted-foreground">
+                        {shortUrl(r.url)}
+                      </p>
                     )}
-                    {r.app_version && <span>· {r.app_version}</span>}
-                    {noise && <Badge variant="outline" className="text-[10px]">noise</Badge>}
+                    {r.stack && (
+                      <pre className="max-h-32 overflow-auto whitespace-pre-wrap rounded-[2px] bg-muted p-2 text-[11px] text-muted-foreground">
+                        {r.stack}
+                      </pre>
+                    )}
                   </div>
-                  <p className="break-words text-sm font-medium">{r.message}</p>
-                  {r.url && (
-                    <p className="truncate font-mono text-xs text-muted-foreground">
-                      {shortUrl(r.url)}
-                    </p>
-                  )}
-                  {r.stack && (
-                    <pre className="max-h-32 overflow-auto whitespace-pre-wrap rounded bg-muted/50 p-2 text-[11px] text-muted-foreground">
-                      {r.stack}
-                    </pre>
-                  )}
+                  <Button
+                    variant="ghost" size="icon" title="ลบกลุ่มนี้" aria-label="ลบกลุ่มนี้"
+                    onClick={() => delGroup(g.ids)}
+                    className="-mr-1.5 -mt-1.5 shrink-0"
+                  >
+                    <Trash2 aria-hidden />
+                  </Button>
                 </div>
-                <Button
-                  variant="ghost" size="icon" title="ลบกลุ่มนี้"
-                  onClick={() => delGroup(g.ids)}
-                  className="shrink-0"
-                >
-                  <Trash2 className="h-4 w-4" />
-                </Button>
-              </div>
-            </div>
-          );
-        })}
+              </article>
+            );
+          })}
+        </div>
       </TabsContent>
     </Tabs>
   );

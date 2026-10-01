@@ -2,12 +2,30 @@
 
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
-import { GripVertical, Trash2, Plus, Clock, ChevronUp, ChevronDown } from "lucide-react";
+import {
+  GripVertical,
+  Trash2,
+  Plus,
+  Clock,
+  ChevronUp,
+  ChevronDown,
+  CalendarClock,
+  Camera,
+  Flag,
+  HandHeart,
+  MapPin,
+  Mic,
+  Radio,
+  Shirt,
+  Sparkles,
+  type LucideIcon,
+} from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { newLocalRowId } from "@/lib/mgmt-outbox";
 import { OFFLINE_QUEUED_MESSAGE, tryQueueChildList } from "@/lib/mgmt-write";
 import { noRowsMessage, wroteNothing } from "@/lib/write-guard";
 import { shortClock } from "@/lib/time";
+import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -38,6 +56,72 @@ const QUICK_KINDS: { kind: ScheduleKind; label: string }[] = [
   { kind: "photo", label: "ถ่ายรูป" },
   { kind: "booth", label: "บูธ/แฟนไซน์" },
 ];
+
+// The read-only call sheet (spec §G.3): one icon per kind, and the short name a
+// row goes by when it has no label of its own.
+const SCHED_ICON: Partial<Record<ScheduleKind, LucideIcon>> = {
+  on_location: MapPin,
+  dressing_room: Shirt,
+  sound_check: Mic,
+  costume: Sparkles,
+  stb: Flag,
+  stage: Radio,
+  booth: HandHeart,
+  photo: Camera,
+};
+const KIND_SHORT: Partial<Record<ScheduleKind, string>> = {
+  ...Object.fromEntries(QUICK_KINDS.map((q) => [q.kind, q.label])),
+  costume: "เปลี่ยนชุด",
+};
+
+/** Members read the day; they do not edit it. A vertical timeline down the clock
+ *  — start time, a dot on a rail, what happens and where — with the stage row
+ *  carrying the band's rail. Rows without a time keep their place at the end. */
+function ScheduleTimeline({ items }: { items: ScheduleItem[] }) {
+  const ordered = [...items].sort(
+    (a, b) =>
+      (a.start_time ?? "￿").localeCompare(b.start_time ?? "￿") ||
+      (a.sort_order ?? 0) - (b.sort_order ?? 0)
+  );
+  return (
+    <ol className="relative space-y-[2px] before:absolute before:bottom-3 before:left-[80px] before:top-3 before:w-[2px] before:bg-foreground/15">
+      {ordered.map((it) => {
+        const Icon = SCHED_ICON[it.kind] ?? CalendarClock;
+        const stage = it.kind === "stage";
+        const title = it.label?.trim() || KIND_SHORT[it.kind] || SCHEDULE_KIND_LABELS[it.kind] || it.kind || "—";
+        return (
+          <li
+            key={it.id}
+            className={cn(
+              "relative flex gap-3 px-2 py-2.5",
+              stage && "slab shadow-[inset_3px_0_0_hsl(var(--primary)),inset_0_0_0_1px_hsl(var(--border))]"
+            )}
+          >
+            <div className="w-14 flex-none text-right leading-tight">
+              <div className="num text-[17px]">{shortClock(it.start_time) || "—"}</div>
+              {it.end_time && <div className="num text-[12px] text-faint">{shortClock(it.end_time)}</div>}
+            </div>
+            <span
+              aria-hidden
+              className={cn(
+                "relative z-[1] mt-1.5 h-2.5 w-2.5 flex-none",
+                stage ? "bg-primary shadow-[0_0_0_4px_hsl(var(--primary)/.2)]" : "bg-foreground/40"
+              )}
+            />
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-1.5 text-[15px] font-medium leading-snug">
+                <Icon aria-hidden className="h-4 w-4 flex-none text-muted-foreground" />
+                <span className="min-w-0">{title}</span>
+              </div>
+              {it.location && <div className="text-[12.5px] text-muted-foreground">{it.location}</div>}
+              {it.notes && <div className="text-[12.5px] text-muted-foreground">{it.notes}</div>}
+            </div>
+          </li>
+        );
+      })}
+    </ol>
+  );
+}
 
 export function ScheduleEditor({
   eventId,
@@ -323,38 +407,59 @@ export function ScheduleEditor({
   const firstStart = starts.length ? starts.reduce((a, b) => (a < b ? a : b)) : null;
   const lastEnd = ends.length ? ends.reduce((a, b) => (a > b ? a : b)) : null;
 
+  const summaryStrip = items.length > 0 && (
+    <div className="well flex flex-wrap items-center gap-x-4 gap-y-1 rounded-[2px] px-3 py-2 text-sm shadow-edge">
+      <span className="flex items-center gap-1.5 font-medium">
+        <Clock aria-hidden className="h-4 w-4 text-muted-foreground" />
+        <span className="num text-[15px]">{items.length}</span> รายการ
+      </span>
+      {firstStart && (
+        <span className="num text-[15px] text-muted-foreground">
+          {shortClock(firstStart)}
+          {lastEnd && lastEnd !== firstStart ? `–${shortClock(lastEnd)}` : ""}
+        </span>
+      )}
+      {/* The receipt, at the end of the row the operator is already reading. */}
+      <SaveStatus state={save.state} className="ml-auto" />
+    </div>
+  );
+
+  // Members (and label staff) read the day: the call sheet as a timeline, not a
+  // grid of disabled fields. (All hooks are above this line.)
+  if (!editable) {
+    return (
+      <div className="space-y-3">
+        {items.length === 0 ? (
+          <p className="rounded-[2px] border border-dashed py-8 text-center text-sm text-muted-foreground">
+            No call time entries yet
+          </p>
+        ) : (
+          <>
+            {summaryStrip}
+            <ScheduleTimeline items={items} />
+          </>
+        )}
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-3">
       {items.length === 0 && (
-        <p className="rounded-lg border border-dashed py-8 text-center text-sm text-muted-foreground">
+        <p className="rounded-[2px] border border-dashed py-8 text-center text-sm text-muted-foreground">
           No call time entries yet
         </p>
       )}
 
-      {items.length > 0 && (
-        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 rounded-lg border bg-muted/30 px-3 py-2 text-sm">
-          <span className="flex items-center gap-1.5 font-medium">
-            <Clock className="h-4 w-4 text-muted-foreground" />
-            {items.length} รายการ
-          </span>
-          {firstStart && (
-            <span className="tabular-nums text-muted-foreground">
-              {shortClock(firstStart)}
-              {lastEnd && lastEnd !== firstStart ? `–${shortClock(lastEnd)}` : ""}
-            </span>
-          )}
-          {/* The receipt, at the end of the row the operator is already reading. */}
-          <SaveStatus state={save.state} className="ml-auto" />
-        </div>
-      )}
+      {summaryStrip}
 
       {items.map((it, idx) => (
         <div
           key={it.id}
-          className={[
-            "rounded-lg border bg-card p-3 shadow-sm transition-shadow sm:p-4",
-            dragOverIndex === idx ? "ring-2 ring-primary" : "",
-          ].join(" ")}
+          className={cn(
+            "slab p-3 sm:p-4",
+            dragOverIndex === idx && "shadow-[inset_0_0_0_2px_hsl(var(--primary))]"
+          )}
           onDragOver={(e) => {
             e.preventDefault();
             setDragOverIndex(idx);
@@ -373,7 +478,7 @@ export function ScheduleEditor({
               From sm up the order and layout are exactly what they were. */}
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-12">
             <div className="order-1 col-span-2 space-y-1 sm:order-none sm:col-span-3">
-              <Label className="text-xs text-muted-foreground">Type</Label>
+              <Label className="text-[13px] font-medium text-muted-foreground">Type</Label>
               <Select
                 value={it.kind}
                 disabled={!editable}
@@ -406,7 +511,7 @@ export function ScheduleEditor({
             </div>
 
             <div className="order-4 col-span-2 space-y-1 sm:order-none sm:col-span-3">
-              <Label className="text-xs text-muted-foreground">Label</Label>
+              <Label className="text-[13px] font-medium text-muted-foreground">Label</Label>
               <Input
                 value={it.label ?? ""}
                 disabled={!editable}
@@ -419,9 +524,10 @@ export function ScheduleEditor({
             </div>
 
             <div className="order-2 space-y-1 sm:order-none sm:col-span-2">
-              <Label className="text-xs text-muted-foreground">Start</Label>
+              <Label className="text-[13px] font-medium text-muted-foreground">Start</Label>
               <Input
                 type="time"
+                className="num"
                 value={it.start_time?.slice(0, 5) ?? ""}
                 disabled={!editable}
                 onChange={(e) => setLocal(it.id, { start_time: e.target.value })}
@@ -432,9 +538,10 @@ export function ScheduleEditor({
             </div>
 
             <div className="order-3 space-y-1 sm:order-none sm:col-span-2">
-              <Label className="text-xs text-muted-foreground">End</Label>
+              <Label className="text-[13px] font-medium text-muted-foreground">End</Label>
               <Input
                 type="time"
+                className="num"
                 value={it.end_time?.slice(0, 5) ?? ""}
                 disabled={!editable}
                 onChange={(e) => setLocal(it.id, { end_time: e.target.value })}
@@ -485,7 +592,7 @@ export function ScheduleEditor({
                     draggable
                     onDragStart={() => { dragIndex.current = idx; }}
                     onDragEnd={() => { dragIndex.current = null; setDragOverIndex(null); }}
-                    className="hidden shrink-0 cursor-grab rounded p-1.5 text-muted-foreground hover:bg-muted active:cursor-grabbing lg:[@media(hover:hover)]:block"
+                    className="hidden h-11 shrink-0 cursor-grab place-items-center rounded-[2px] px-1.5 text-muted-foreground hover:bg-muted active:cursor-grabbing lg:[@media(hover:hover)]:grid"
                     title="ลากเพื่อสลับลำดับ (เดสก์ท็อป) — มือถือใช้ปุ่ม ▲▼"
                     aria-label="Drag to reorder"
                   >
@@ -508,13 +615,13 @@ export function ScheduleEditor({
               <button
                 type="button"
                 onClick={() => setExtraOpen((prev) => new Set(prev).add(it.id))}
-                className="order-5 col-span-1 self-center justify-self-start min-h-9 rounded-md px-2 text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline sm:hidden"
+                className="order-5 col-span-1 self-center justify-self-start min-h-11 rounded-[2px] px-2 text-[13px] text-muted-foreground underline-offset-2 hover:text-foreground hover:underline sm:hidden"
               >
                 + สถานที่ / โน้ต
               </button>
             )}
             <div className={`order-7 col-span-2 space-y-1 sm:order-none sm:col-span-6 ${showExtra(it) ? "" : "hidden sm:block"}`}>
-              <Label className="text-xs text-muted-foreground">Location</Label>
+              <Label className="text-[13px] font-medium text-muted-foreground">Location</Label>
               <Input
                 value={it.location ?? ""}
                 disabled={!editable}
@@ -526,7 +633,7 @@ export function ScheduleEditor({
               />
             </div>
             <div className={`order-8 col-span-2 space-y-1 sm:order-none sm:col-span-6 ${showExtra(it) ? "" : "hidden sm:block"}`}>
-              <Label className="text-xs text-muted-foreground">Notes</Label>
+              <Label className="text-[13px] font-medium text-muted-foreground">Notes</Label>
               <Input
                 value={it.notes ?? ""}
                 disabled={!editable}
@@ -542,28 +649,26 @@ export function ScheduleEditor({
 
       {editable && (
         <div className="space-y-2">
-          <p className="text-xs text-muted-foreground">เพิ่มด่วน:</p>
+          <p className="text-[13px] font-medium text-muted-foreground">เพิ่มด่วน:</p>
           <div className="flex flex-wrap gap-2">
             {QUICK_KINDS.map((q) => (
               <Button
                 key={q.kind}
                 type="button"
-                variant="outline"
-                size="sm"
+                variant="secondary"
                 onClick={() => addItem(q.kind)}
                 disabled={busy}
               >
-                <Plus className="h-3.5 w-3.5" /> {q.label}
+                <Plus aria-hidden className="h-4 w-4" /> {q.label}
               </Button>
             ))}
             <Button
               type="button"
-              variant="outline"
-              size="sm"
+              variant="secondary"
               onClick={() => addItem("other")}
               disabled={busy}
             >
-              <Plus className="h-3.5 w-3.5" /> แถวว่าง
+              <Plus aria-hidden className="h-4 w-4" /> แถวว่าง
             </Button>
           </div>
         </div>

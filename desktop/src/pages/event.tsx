@@ -6,40 +6,28 @@
 // actually goes to the venue, which is exactly where the run sheet is needed.
 import { useEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { ArrowLeft, CalendarDays, MapPin, Music2, Pencil, Play, AlarmClock, AlertTriangle } from "lucide-react";
+import { ArrowLeft, Pencil, Play, AlertTriangle } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { StatusBadge } from "@/components/status-badge";
 import { EventWorkspace } from "@/components/event/event-workspace";
 import { ApprovalControl } from "@/components/event/approval-control";
 import { ExportButton } from "@/components/event/export-button";
 import { EventCopyrightPanel } from "@/components/event/event-copyright-panel";
+import { EventHero } from "@/components/event/event-hero";
+import { EventMoreMenu } from "@/components/event/event-more-menu";
+import { ShareButton } from "@/components/event/share-button";
+import { RefreshButton } from "@/components/refresh-button";
 import type { RunSeqLive } from "@/components/event/event-live-caller";
 import { createClient } from "@/lib/supabase/client";
 import { canApprove, canEditGroup, canLiveEdit, canViewGroup } from "@/lib/permissions";
 import { eventCompleteness, performersHaveMics } from "@/lib/completeness";
-import { EVENT_TYPES, type EventType, type GroupStatus } from "@/lib/types";
-import { deadlineInfo } from "@/lib/time";
-import { cn } from "@/lib/utils";
+import { type EventType, type GroupStatus } from "@/lib/types";
+import { bkkTodayKey } from "@/lib/time";
 import { callTimeOf, showTimesLabel } from "@/lib/next-show";
 import { loadEventBundle, loadEventBundleStatus, type EventBundle } from "~/data/event-bundle";
 import { isOffline, readCache, writeCache } from "~/data/cache";
 import { hasLiveSession } from "@/lib/auth-session";
 import { onRouterRefresh } from "~/shims/next-navigation";
 import { useWorkspace } from "~/data/workspace-context";
-
-const DEADLINE_BADGE: Record<string, string> = {
-  overdue: "bg-destructive text-destructive-foreground",
-  urgent: "bg-orange-500 text-white",
-  soon: "bg-amber-400 text-black",
-  ok: "bg-muted text-muted-foreground",
-};
-
-function formatDate(date: string | null): string {
-  if (!date) return "ยังไม่ระบุวันที่";
-  const d = new Date(`${date}T00:00:00`);
-  if (isNaN(d.getTime())) return date;
-  return d.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
-}
 
 /** Shown when the load came back with NOTHING because the server could not be
  *  reached — as opposed to because the show is gone or is not this account's.
@@ -271,10 +259,8 @@ export function EventPage() {
   const usedSongIds = new Set(
     bundle.setlist.map((s) => s.song_id).filter(Boolean) as string[]
   );
-  const showTimes = showTimesLabel(
-    callTimeOf(bundle.schedule, event.show_start_time),
-    event.show_start_time
-  );
+  const callTime = callTimeOf(bundle.schedule, event.show_start_time);
+  const showTimes = showTimesLabel(callTime, event.show_start_time);
   const rejectedSongs = bundle.songs.filter(
     (s) => usedSongIds.has(s.id) && s.copyright_status === "rejected"
   );
@@ -288,68 +274,53 @@ export function EventPage() {
   const showCopyrightPanel =
     !!ws && canApprove(ws.perms) && setlistLibrarySongs.length > 0;
 
+  const canRunLive = !!ws && canLiveEdit(ws.perms);
+  // Same rule as the web event page and the dashboard ticket.
+  const leadLive =
+    canRunLive || ws?.perms.tenantRole === "label_staff" || event.event_date === bkkTodayKey();
+
   return (
-    <div className="space-y-6">
-      <div className="no-print">
-        <Button asChild variant="ghost" size="sm" className="-ml-2 mb-2">
-          <Link to="/dashboard">
-            <ArrowLeft className="h-4 w-4" /> All Events
-          </Link>
-        </Button>
-
-        <div className="flex flex-wrap items-start justify-between gap-4">
-          <div
-            className="space-y-2 border-l-4 pl-3"
-            style={event.group?.color ? { borderLeftColor: event.group.color } : undefined}
-          >
-            <div className="flex flex-wrap items-center gap-3">
-              <h1 className="text-2xl font-bold tracking-tight">{event.name}</h1>
-              <StatusBadge status={event.status as GroupStatus} />
-              {!event.group?.exempt_from_deadline &&
-                (() => {
-                  const dl = deadlineInfo(event.deadline);
-                  if (!dl) return null;
-                  return (
-                    <span
-                      className={cn(
-                        "inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-xs font-medium",
-                        DEADLINE_BADGE[dl.tone]
-                      )}
-                      title={event.deadline_note ?? undefined}
-                    >
-                      <AlarmClock className="h-3.5 w-3.5" /> {dl.label}
-                    </span>
-                  );
-                })()}
-            </div>
-            <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-muted-foreground">
-              <span className="flex items-center gap-1.5">
-                <CalendarDays className="h-4 w-4" />
-                {formatDate(event.event_date)}
-                {/* Same words as the web header (lib/next-show.ts). */}
-                {showTimes && <span className="tabular-nums">· {showTimes}</span>}
-              </span>
-              {event.venue && (
-                <span className="flex items-center gap-1.5">
-                  <MapPin className="h-4 w-4" />
-                  {event.venue}
-                </span>
-              )}
-              <span className="flex items-center gap-1.5">
-                <Music2 className="h-4 w-4" />
-                {event.group?.name ?? "—"} ·{" "}
-                {EVENT_TYPES[event.event_type as EventType]?.label ?? event.event_type}
-              </span>
-            </div>
-          </div>
-
-          {/* Same action bar as the web event page. The desktop is the copy that
-              goes to the VENUE, and it could not produce the run sheet venue staff
-              hold, nor resubmit a rejected show — both lived only in the browser. */}
-          <div className="flex flex-wrap items-center gap-2">
+    <div className="space-y-3">
+      {/* The same hero as the web event page. The header's inline nav is the way
+          back to Events here (no "← All Events" row — spec §G.3). The desktop is the
+          copy that goes to the VENUE, so the ⋯ keeps Excel (from the bundle on
+          disk), resubmitting a rejected show and the share link within reach. */}
+      <EventHero
+        event={event}
+        callTime={callTime}
+        leadLive={leadLive}
+        // The web page finds the band's room with two reads this machine does not
+        // cache (and the desktop ticket does not make either), so the practice
+        // button opens the Training list here — labelled ห้องซ้อม, for where it goes.
+        practiceRoomHref={null}
+        statusActions={
+          <ApprovalControl
+            eventId={event.id}
+            status={event.status as GroupStatus}
+            canResubmit={canResubmit}
+          />
+        }
+        more={
+          <EventMoreMenu eventName={event.name}>
+            {editable && (
+              <Button asChild variant="secondary">
+                <Link to={`/events/${event.id}/edit`}>
+                  <Pencil aria-hidden /> แก้ไขรายละเอียดงาน
+                </Link>
+              </Button>
+            )}
+            {editable && (
+              <ShareButton
+                eventId={event.id}
+                initialToken={event.share_token}
+                initialExpiresAt={event.share_expires_at}
+                variant="secondary"
+              />
+            )}
             <ExportButton
               eventId={event.id}
               groupId={event.group_id}
+              variant="secondary"
               // From the bundle already on screen (and on disk), so the run sheet
               // can be produced with no network — at the venue, which is where it
               // is actually wanted.
@@ -362,26 +333,18 @@ export function EventPage() {
                 lineup: bundle.lineup,
               }}
             />
-            {editable && (
-              <Button asChild variant="outline">
-                <Link to={`/events/${event.id}/edit`}>
-                  <Pencil className="h-4 w-4" /> แก้ไข
-                </Link>
-              </Button>
-            )}
-            <ApprovalControl
-              eventId={event.id}
-              status={event.status as GroupStatus}
-              canResubmit={canResubmit}
-            />
-          </div>
-        </div>
-      </div>
+            <RefreshButton variant="secondary" label="โหลดข้อมูลล่าสุด" />
+          </EventMoreMenu>
+        }
+      >
+        {/* Same words as the web page (lib/next-show.ts), whole, for a screen reader. */}
+        {showTimes && <p className="sr-only">{showTimes}</p>}
+      </EventHero>
 
       {rejectedSongs.length > 0 && (
-        <div className="no-print rounded-lg border border-destructive/50 bg-destructive/10 p-3">
-          <div className="flex items-center gap-2 font-semibold text-destructive">
-            <AlertTriangle className="h-5 w-5 shrink-0" />
+        <div className="no-print slab p-3 shadow-[inset_3px_0_0_hsl(var(--destructive)),inset_0_0_0_1px_hsl(var(--border))]">
+          <div className="flex items-center gap-2 font-semibold text-foreground">
+            <AlertTriangle aria-hidden className="h-5 w-5 shrink-0 text-destructive" />
             เพลงในงานนี้ถูกปฏิเสธลิขสิทธิ์ ({rejectedSongs.length})
           </div>
           <ul className="ml-7 mt-1.5 list-disc space-y-0.5 text-sm text-muted-foreground">
@@ -394,8 +357,6 @@ export function EventPage() {
           </ul>
         </div>
       )}
-
-      {showCopyrightPanel && <EventCopyrightPanel songs={setlistLibrarySongs} />}
 
       <EventWorkspace
         event={event}
@@ -413,7 +374,13 @@ export function EventPage() {
         songs={bundle.songs}
         lineup={bundle.lineup}
         runSeq={runSeq}
-        canRunLive={!!ws && canLiveEdit(ws.perms)}
+        canRunLive={canRunLive}
+        liveInHero
+        // Under the run sheet, on Summary (spec G.3) — not between the hero and the
+        // tabs, where 12 songs' rows pushed the tabs off a phone's first screen.
+        summaryFooter={
+          showCopyrightPanel ? <EventCopyrightPanel songs={setlistLibrarySongs} /> : null
+        }
       />
     </div>
   );

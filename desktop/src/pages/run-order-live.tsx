@@ -4,7 +4,7 @@
 // runs over the same Supabase channel the web uses, so web + desktop stay in step.
 import { useEffect, useState } from "react";
 import { Link, Navigate, useParams } from "react-router-dom";
-import { ArrowLeft, Radio } from "lucide-react";
+import { ChevronLeft, WifiOff } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { RefreshButton } from "@/components/refresh-button";
 import { canApprove } from "@/lib/permissions";
@@ -54,6 +54,15 @@ export function RunOrderLivePage() {
         <CardContent className="flex flex-col items-center gap-3 py-16 text-center text-sm text-muted-foreground">
           <p>โหลดคิวงานไม่สำเร็จ — อาจออฟไลน์อยู่หรือเน็ตมีปัญหา ลองใหม่เมื่อเน็ตกลับมา</p>
           <RefreshButton label="ลองใหม่" />
+          {/* The shell hides its header on this route and the desktop has no browser
+              back button: without this the failed card is a dead end. */}
+          <Link
+            to={`/events/${id}`}
+            className="inline-flex h-11 items-center gap-1 rounded-[3px] px-2 text-sm text-muted-foreground hover:text-foreground hover:underline"
+          >
+            <ChevronLeft className="h-4 w-4" aria-hidden />
+            กลับ
+          </Link>
         </CardContent>
       </Card>
     );
@@ -61,40 +70,33 @@ export function RunOrderLivePage() {
   if (!data) return <Navigate to="/overview" replace />;
   const canControl = canApprove(ws.perms);
 
+  // The route is immersive (shell.tsx hides the header), so the caller's own top bar
+  // carries the title, the show name and the way back — anything rendered around it
+  // here would sit outside that bar.
   return (
-    <div className="space-y-4">
-      <Link
-        to={canControl ? `/events/${id}/run-order` : `/events/${id}`}
-        className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:underline"
-      >
-        <ArrowLeft className="h-4 w-4" /> {canControl ? "Running Order" : data.name}
-      </Link>
-      <div>
-        <h1 className="flex items-center gap-2 text-2xl font-bold tracking-tight">
-          <Radio className="h-6 w-6 text-primary" /> คุมคิวงาน (Live)
-        </h1>
-        <p className="text-sm text-muted-foreground">
-          {data.name}
-          {data.date ? ` · ${data.date}` : ""} — สำหรับสตาฟคุมคิวสด ทั้งงาน
-        </p>
-      </div>
-      {offlineCopy && (
-        // Say it plainly: this is what the board looked like the last time this
-        // machine could reach the server, and การกดคิวยังต้องใช้เน็ต. A stale board
-        // that looks live is worse than one that admits it.
-        <p className="rounded-lg border border-dashed px-3 py-2 text-sm text-muted-foreground">
-          ออฟไลน์ — นี่คือคิวที่เครื่องนี้เก็บไว้ล่าสุด อาจไม่ตรงกับที่เครื่องอื่นเห็น
-          คุมคิวต่อได้ตามปกติ ทุกอย่างที่กดจะถูกเก็บไว้และซิงค์ให้เมื่อเน็ตกลับมา
-        </p>
-      )}
-      <EventLiveCaller
-        tenantId={ws.membership.tenant_id}
-        eventName={data.name}
-        eventDate={data.date}
-        eventId={id!}
-        initial={data.seqs}
-        canControl={canControl}
-      />
-    </div>
+    <EventLiveCaller
+      tenantId={ws.membership.tenant_id}
+      eventName={data.name}
+      eventDate={data.date}
+      eventId={id!}
+      initial={data.seqs}
+      canControl={canControl}
+      backHref={canControl ? `/events/${id}/run-order` : `/events/${id}`}
+      backLabel={canControl ? "Running Order" : data.name}
+      notice={
+        offlineCopy ? (
+          // Say it plainly: this is what the board looked like the last time this
+          // machine could reach the server, and การกดคิวยังต้องใช้เน็ต. A stale board
+          // that looks live is worse than one that admits it.
+          <p className="flex items-start gap-2 rounded-[2px] bg-warning/[.12] px-3 py-2 text-[13px] text-foreground shadow-[inset_3px_0_0_hsl(var(--warning))]">
+            <WifiOff className="mt-0.5 h-4 w-4 flex-none text-warning-ink" aria-hidden />
+            <span>
+              ออฟไลน์ — นี่คือคิวที่เครื่องนี้เก็บไว้ล่าสุด อาจไม่ตรงกับที่เครื่องอื่นเห็น
+              คุมคิวต่อได้ตามปกติ ทุกอย่างที่กดจะถูกเก็บไว้และซิงค์ให้เมื่อเน็ตกลับมา
+            </span>
+          </p>
+        ) : null
+      }
+    />
   );
 }

@@ -1,52 +1,28 @@
 import { notFound } from "next/navigation";
 import Link from "next/link";
-import {
-  ArrowLeft,
-  CalendarDays,
-  MapPin,
-  Music2,
-  Pencil,
-  AlarmClock,
-  AlertTriangle,
-} from "lucide-react";
+import { Pencil, AlertTriangle } from "lucide-react";
 import { getEventBundle, getWorkspace } from "@/lib/queries";
 import { canEditGroup, canViewGroup, canApprove, canLiveEdit } from "@/lib/permissions";
 import { createClient } from "@/lib/supabase/server";
 import { assertReadsSucceeded } from "@/lib/read-guard";
 import { eventCompleteness, performersHaveMics } from "@/lib/completeness";
-import { EVENT_TYPES, type EventType, type GroupStatus } from "@/lib/types";
-import { shortClock, deadlineInfo } from "@/lib/time";
-import { cn } from "@/lib/utils";
-import { callTimeOf, showTimesLabel } from "@/lib/next-show";
+import { type EventType, type GroupStatus } from "@/lib/types";
+import { bkkTodayKey } from "@/lib/time";
+import { callTimeOf, practiceRoomByGroup, showTimesLabel } from "@/lib/next-show";
 import { Button } from "@/components/ui/button";
-import { StatusBadge } from "@/components/status-badge";
 import { ApprovalControl } from "@/components/event/approval-control";
 import { EventApproveButton } from "@/components/event/event-approve-button";
 import { EventWorkspace } from "@/components/event/event-workspace";
 import { type RunSeqLive } from "@/components/event/event-live-caller";
 import { ExportButton } from "@/components/event/export-button";
 import { EventCopyrightPanel } from "@/components/event/event-copyright-panel";
+import { EventHero } from "@/components/event/event-hero";
+import { EventMoreMenu } from "@/components/event/event-more-menu";
+import { ShareButton } from "@/components/event/share-button";
+import { RefreshButton } from "@/components/refresh-button";
 import { BandSkin } from "@/components/band-skin";
 
 export const dynamic = "force-dynamic";
-
-const DEADLINE_BADGE: Record<string, string> = {
-  overdue: "bg-destructive text-destructive-foreground",
-  urgent: "bg-orange-500 text-white",
-  soon: "bg-amber-400 text-black",
-  ok: "bg-muted text-muted-foreground",
-};
-
-function formatDate(date: string | null): string {
-  if (!date) return "ยังไม่ระบุวันที่";
-  const d = new Date(`${date}T00:00:00`);
-  if (isNaN(d.getTime())) return date;
-  return d.toLocaleDateString("en-GB", {
-    day: "2-digit",
-    month: "short",
-    year: "numeric",
-  });
-}
 
 export default async function EventPage({
   params,
@@ -89,10 +65,8 @@ export default async function EventPage({
   const usedSongIds = new Set(
     bundle.setlist.map((s) => s.song_id).filter(Boolean) as string[]
   );
-  const showTimes = showTimesLabel(
-    callTimeOf(bundle.schedule, event.show_start_time),
-    event.show_start_time
-  );
+  const callTime = callTimeOf(bundle.schedule, event.show_start_time);
+  const showTimes = showTimesLabel(callTime, event.show_start_time);
   const rejectedSongs = bundle.songs.filter(
     (s) => usedSongIds.has(s.id) && s.copyright_status === "rejected"
   );
@@ -110,6 +84,12 @@ export default async function EventPage({
   const showCopyrightPanel =
     canApprove(ws.perms) && setlistLibrarySongs.length > 0;
 
+  const canRunLive = canLiveEdit(ws.perms);
+  // Same rule as the dashboard ticket: Live Mode leads for an admin, for anyone
+  // with no band practice (label staff proofing a show), and on the show's own day.
+  const leadLive =
+    canRunLive || ws.perms.tenantRole === "label_staff" || event.event_date === bkkTodayKey();
+
   // Pull this festival's (same name + date) running order so the band can WATCH
   // its own slot status live on its event page (read-only EventRunStatusCard).
   // Staff build & drive the order from Overview — not from here anymore.
@@ -123,7 +103,45 @@ export default async function EventPage({
   roq = event.event_date
     ? roq.eq("event_date", event.event_date)
     : roq.is("event_date", null);
-  const runSeqRes = await roq;
+  // Which room the hero's practice button opens: the band's, found exactly as the
+  // dashboard ticket finds it (lib/next-show practiceRoomByGroup), so "ซ้อมตามเซ็ต"
+  // leads to the same room from both screens. Asked only when that button shows.
+  // Best-effort, and deliberately OUTSIDE the read guard below: a failed read here
+  // claims nothing about the band's rooms — the button then opens the Training list
+  // and says so ("ห้องซ้อม", components/event/event-hero.tsx), true either way.
+  const bestEffort = <T,>(q: PromiseLike<T> | null) =>
+    q ? Promise.resolve(q).catch(() => null) : null;
+  const [runSeqRes, roomRes, roomRunRes] = await Promise.all([
+    roq,
+    bestEffort(
+      leadLive || !event.group_id
+        ? null
+        : supabase
+            .from("events")
+            .select("id, group_id")
+            .eq("tenant_id", event.tenant_id)
+            .eq("group_id", event.group_id)
+            .eq("is_practice", true)
+            .order("created_at", { ascending: false })
+    ),
+    bestEffort(
+      leadLive || !event.group_id
+        ? null
+        : supabase
+            .from("practice_runs")
+            .select("event_id, group_id")
+            .eq("group_id", event.group_id)
+            .order("created_at", { ascending: false })
+            .limit(50)
+    ),
+  ]);
+  const practiceRoom =
+    roomRes && !roomRes.error && roomRunRes && !roomRunRes.error
+      ? practiceRoomByGroup(
+          (roomRes.data ?? []) as { id: string; group_id: string }[],
+          (roomRunRes.data ?? []) as { event_id: string | null; group_id: string }[]
+        )[event.group_id]
+      : undefined;
   // getEventBundle above is all-or-none about the six child reads for exactly this
   // reason; this seventh read was left outside the rule. A FAILED READ IS NOT A
   // ZERO COUNT (lib/read-guard.ts) — and here it is worse than a wrong count,
@@ -141,82 +159,18 @@ export default async function EventPage({
   const runSeq = (runSeqRes.data ?? []) as RunSeqLive[];
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-3">
       <BandSkin hex={event.group?.skin} />
-      <div className="no-print">
-        <Button asChild variant="ghost" size="sm" className="-ml-2 mb-2">
-          <Link href="/dashboard">
-            <ArrowLeft className="h-4 w-4" /> All Events
-          </Link>
-        </Button>
-
-        <div className="flex flex-wrap items-start justify-between gap-4">
-          <div
-            className="space-y-2 border-l-4 pl-3"
-            style={event.group?.color ? { borderLeftColor: event.group.color } : undefined}
-          >
-            <div className="flex flex-wrap items-center gap-3">
-              <h1 className="text-2xl font-bold tracking-tight">{event.name}</h1>
-              <StatusBadge status={event.status as GroupStatus} />
-              {!event.group?.exempt_from_deadline &&
-                (() => {
-                  const dl = deadlineInfo(event.deadline);
-                  if (!dl) return null;
-                  return (
-                    <span
-                      className={cn(
-                        "inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-xs font-medium",
-                        DEADLINE_BADGE[dl.tone]
-                      )}
-                      title={event.deadline_note ?? undefined}
-                    >
-                      <AlarmClock className="h-3.5 w-3.5" /> {dl.label}
-                    </span>
-                  );
-                })()}
-            </div>
-            <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-muted-foreground">
-              <span className="flex items-center gap-1.5">
-                <CalendarDays className="h-4 w-4" />
-                {formatDate(event.event_date)}
-                {/* "นัด 11:20 · ขึ้นเวที 13:20" — a bare "13:20 น." read as the call
-                    time to the members it was for (lib/next-show.ts). */}
-                {showTimes && <span className="tabular-nums">· {showTimes}</span>}
-                {event.hard_out_time && (
-                  <span className="tabular-nums">
-                    (Hard Out {shortClock(event.hard_out_time)})
-                  </span>
-                )}
-              </span>
-              {event.venue && (
-                <span className="flex items-center gap-1.5">
-                  <MapPin className="h-4 w-4" />
-                  {event.venue}
-                </span>
-              )}
-              <span className="flex items-center gap-1.5">
-                <Music2 className="h-4 w-4" />
-                {event.group?.name ?? "—"} ·{" "}
-                {EVENT_TYPES[event.event_type as EventType]?.label ??
-                  event.event_type}
-              </span>
-            </div>
-          </div>
-
-          <div className="flex flex-wrap items-center gap-2">
-            <ExportButton eventId={event.id} groupId={event.group_id} />
-            {editable && (
-              <Button asChild variant="outline">
-                <Link href={`/events/${event.id}/edit`}>
-                  <Pencil className="h-4 w-4" /> แก้ไข
-                </Link>
-              </Button>
-            )}
-            <ApprovalControl
-              eventId={event.id}
-              status={event.status as GroupStatus}
-              canResubmit={canResubmit}
-            />
+      {/* No "← All Events" here any more: the header's "‹ EVENTS" is the way back on
+          a phone, and the inline nav from lg up (spec §G.3) — two back links on one
+          screen read as two different places. */}
+      <EventHero
+        event={event}
+        callTime={callTime}
+        leadLive={leadLive}
+        practiceRoomHref={practiceRoom ? `/events/${practiceRoom}/practice` : null}
+        statusActions={
+          <>
             {canApprove(ws.perms) && (
               <EventApproveButton
                 eventId={event.id}
@@ -224,14 +178,44 @@ export default async function EventPage({
                 status={event.status as GroupStatus}
               />
             )}
-          </div>
-        </div>
-      </div>
+            <ApprovalControl
+              eventId={event.id}
+              status={event.status as GroupStatus}
+              canResubmit={canResubmit}
+            />
+          </>
+        }
+        more={
+          <EventMoreMenu eventName={event.name}>
+            {editable && (
+              <Button asChild variant="secondary">
+                <Link href={`/events/${event.id}/edit`}>
+                  <Pencil aria-hidden /> แก้ไขรายละเอียดงาน
+                </Link>
+              </Button>
+            )}
+            {editable && (
+              <ShareButton
+                eventId={event.id}
+                initialToken={event.share_token}
+                initialExpiresAt={event.share_expires_at}
+                variant="secondary"
+              />
+            )}
+            <ExportButton eventId={event.id} groupId={event.group_id} variant="secondary" />
+            <RefreshButton variant="secondary" label="โหลดข้อมูลล่าสุด" />
+          </EventMoreMenu>
+        }
+      >
+        {/* "นัด 11:20 · ขึ้นเวที 13:20" in one piece for a screen reader — the tiles
+            above set the same numbers apart for the eye (lib/next-show.ts). */}
+        {showTimes && <p className="sr-only">{showTimes}</p>}
+      </EventHero>
 
       {rejectedSongs.length > 0 && (
-        <div className="no-print rounded-lg border border-destructive/50 bg-destructive/10 p-3">
-          <div className="flex items-center gap-2 font-semibold text-destructive">
-            <AlertTriangle className="h-5 w-5 shrink-0" />
+        <div className="no-print slab p-3 shadow-[inset_3px_0_0_hsl(var(--destructive)),inset_0_0_0_1px_hsl(var(--border))]">
+          <div className="flex items-center gap-2 font-semibold text-foreground">
+            <AlertTriangle aria-hidden className="h-5 w-5 shrink-0 text-destructive" />
             เพลงในงานนี้ถูกปฏิเสธลิขสิทธิ์ ({rejectedSongs.length})
           </div>
           <ul className="ml-7 mt-1.5 list-disc space-y-0.5 text-sm text-muted-foreground">
@@ -244,8 +228,6 @@ export default async function EventPage({
           </ul>
         </div>
       )}
-
-      {showCopyrightPanel && <EventCopyrightPanel songs={setlistLibrarySongs} />}
 
       <EventWorkspace
         event={event}
@@ -263,7 +245,13 @@ export default async function EventPage({
         songs={bundle.songs}
         lineup={bundle.lineup}
         runSeq={runSeq}
-        canRunLive={canLiveEdit(ws.perms)}
+        canRunLive={canRunLive}
+        liveInHero
+        // Under the run sheet, on Summary (spec G.3) — not between the hero and the
+        // tabs, where 12 songs' rows pushed the tabs off a phone's first screen.
+        summaryFooter={
+          showCopyrightPanel ? <EventCopyrightPanel songs={setlistLibrarySongs} /> : null
+        }
       />
     </div>
   );

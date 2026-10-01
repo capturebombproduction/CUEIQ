@@ -4,10 +4,11 @@
 // the writes too). Edits sync to the web via the shared Supabase.
 import { useEffect, useState } from "react";
 import { Link, Navigate, useParams } from "react-router-dom";
-import { ListOrdered, Radio } from "lucide-react";
+import { ChevronLeft, Radio, WifiOff } from "lucide-react";
 import { canApprove } from "@/lib/permissions";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { PageTitle } from "@/components/page-title";
 import { RefreshButton } from "@/components/refresh-button";
 import { RunOrderBuilder } from "@/components/event/run-order-builder";
 import { useWorkspace } from "~/data/workspace-context";
@@ -61,29 +62,35 @@ export function RunOrderPage() {
   if (!data) return <Navigate to="/overview" replace />;
 
   return (
-    <div className="space-y-6">
-      <div>
-        <Link to={`/events/${id}`} className="text-sm text-muted-foreground hover:underline">
-          ← {data.name}
+    <div className="space-y-5">
+      <div className="space-y-2">
+        {/* the show this order belongs to — 44 px tall, its name as typed */}
+        <Link
+          to={`/events/${id}`}
+          className="-ml-1.5 inline-flex h-11 max-w-full items-center gap-1 rounded-[3px] pr-2 text-[14px] font-medium text-muted-foreground hover:text-foreground"
+        >
+          <ChevronLeft className="h-5 w-5 flex-none" aria-hidden />
+          <span className="truncate">{data.name}</span>
         </Link>
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <h1 className="flex items-center gap-2 text-2xl font-bold tracking-tight">
-            <ListOrdered className="h-6 w-6" /> Running Order
-          </h1>
+        <PageTitle title="Running Order" />
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+          <p className="min-w-0 flex-1 basis-56 text-[13px] text-muted-foreground">
+            {data.name}
+            {data.date ? ` · ${data.date}` : ""} — ลำดับงานทั้งงาน (สำหรับสตาฟคุมคิว)
+          </p>
           <Button asChild>
             <Link to={`/events/${id}/run-order/live`}>
               <Radio className="h-4 w-4" /> คุมคิว (Live)
             </Link>
           </Button>
         </div>
-        <p className="text-sm text-muted-foreground">
-          {data.name}
-          {data.date ? ` · ${data.date}` : ""} — ลำดับงานทั้งงาน (สำหรับสตาฟคุมคิว)
-        </p>
       </div>
       {offlineCopy && (
-        <p className="rounded-lg border border-dashed px-3 py-2 text-sm text-muted-foreground">
-          ออฟไลน์ — นี่คือลำดับงานที่เครื่องนี้เก็บไว้ล่าสุด ดูได้แต่ยังแก้ไม่ได้จนกว่าเน็ตจะกลับมา
+        <p className="flex items-start gap-2 rounded-[2px] bg-warning/[.12] px-3 py-2 text-[13px] text-foreground shadow-[inset_3px_0_0_hsl(var(--warning))]">
+          <WifiOff className="mt-0.5 h-4 w-4 flex-none text-warning-ink" aria-hidden />
+          <span>
+            ออฟไลน์ — นี่คือลำดับงานที่เครื่องนี้เก็บไว้ล่าสุด ดูได้แต่ยังแก้ไม่ได้จนกว่าเน็ตจะกลับมา
+          </span>
         </p>
       )}
       <RunOrderBuilder

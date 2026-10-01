@@ -2,12 +2,13 @@
 
 import { useState } from "react";
 import { toast } from "sonner";
-import { Check, Users, CheckCheck, X } from "lucide-react";
+import { Users, CheckCheck, X } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { OFFLINE_QUEUED_MESSAGE, tryQueueChildList } from "@/lib/mgmt-write";
 import { Button } from "@/components/ui/button";
 import { useConfirm } from "@/components/ui/confirm-dialog";
 import { cn } from "@/lib/utils";
+import { lineupStatus, memberLabel } from "@/lib/lineup";
 import type { Member } from "@/lib/types";
 
 // Which band members are performing at THIS event. A row in event_members = in.
@@ -117,38 +118,50 @@ export function LineupEditor({
 
   if (members.length === 0) {
     return (
-      <p className="rounded-lg border border-dashed py-8 text-center text-sm text-muted-foreground">
+      <p className="rounded-[2px] border border-dashed py-8 text-center text-sm text-muted-foreground">
         วงนี้ยังไม่มีสมาชิก — เพิ่มสมาชิกที่หน้า “วง” ก่อน
       </p>
     );
   }
 
+  // Who is missing, by name (the same words the run sheet prints — lib/lineup).
+  const { chosen, absent } = lineupStatus(members, [...lineup]);
+
   return (
     <div className="space-y-3">
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-2 rounded-lg border bg-muted/30 px-3 py-2">
+      <div className="well flex flex-wrap items-center gap-x-4 gap-y-2 rounded-[2px] px-3 py-2 shadow-edge">
         <span className="flex items-center gap-1.5 text-sm font-medium">
-          <Users className="h-4 w-4 text-muted-foreground" />
-          มางานนี้ {lineup.size}/{members.length} คน
+          <Users aria-hidden className="h-4 w-4 text-muted-foreground" />
+          มางานนี้ <span className="num text-[17px]">{lineup.size}/{members.length}</span> คน
         </span>
+        {chosen && absent.length > 0 && (
+          <span className="chip chip-warning max-w-full">
+            <Users aria-hidden />
+            <span className="truncate">ขาด {absent.map(memberLabel).join(", ")}</span>
+          </span>
+        )}
         {editable && (
           <div className="ml-auto flex gap-2">
-            <Button type="button" variant="outline" size="sm" onClick={selectAll}>
-              <CheckCheck className="h-3.5 w-3.5" /> เลือกทั้งหมด
+            <Button type="button" variant="secondary" onClick={selectAll}>
+              <CheckCheck aria-hidden className="h-4 w-4" /> เลือกทั้งหมด
             </Button>
-            <Button type="button" variant="ghost" size="sm" onClick={clearAll}>
-              <X className="h-3.5 w-3.5" /> ล้าง
+            <Button type="button" variant="ghost" onClick={clearAll}>
+              <X aria-hidden className="h-4 w-4" /> ล้าง
             </Button>
           </div>
         )}
       </div>
 
       {lineup.size === 0 && (
-        <p className="text-xs text-muted-foreground">
+        <p className="text-[12.5px] text-muted-foreground">
           ยังไม่ได้เลือกใครมางานนี้ — แตะชื่อเพื่อเลือก หรือกด “เลือกทั้งหมด”
         </p>
       )}
 
-      <div className="flex flex-wrap gap-2">
+      {/* One slab per member: the mic number in a tile ringed in the member's own
+          colour (data, so an inline style), the names, and a present / absent
+          switch. aria-pressed carries the state for assistive tech. */}
+      <div className="stack">
         {members.map((m) => {
           const inLineup = lineup.has(m.id);
           return (
@@ -157,22 +170,41 @@ export function LineupEditor({
               type="button"
               onClick={() => toggle(m.id)}
               disabled={!editable}
+              aria-pressed={inLineup}
               className={cn(
-                "flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-sm transition",
-                inLineup
-                  ? "border-primary bg-primary/10 font-medium"
-                  : "text-muted-foreground opacity-70 hover:opacity-100",
+                "slab flex min-h-[60px] w-full items-center gap-3 px-3 text-left transition-opacity",
+                !inLineup && "opacity-60",
                 !editable && "cursor-default"
               )}
-              style={
-                inLineup && m.color ? { borderColor: m.color } : undefined
-              }
             >
-              {inLineup && <Check className="h-3.5 w-3.5 text-primary" />}
-              {m.mic_number != null && (
-                <span className="tabular-nums font-semibold">{m.mic_number}</span>
-              )}
-              {m.nickname || m.name}
+              <span
+                className="num grid h-9 w-9 flex-none place-items-center rounded-[2px] bg-muted text-[15px]"
+                style={{
+                  boxShadow: `0 0 0 2px hsl(var(--card)), 0 0 0 4px ${m.color ?? "hsl(var(--border))"}`,
+                }}
+              >
+                {m.mic_number ?? "—"}
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-[15px] font-semibold">{m.nickname || m.name}</span>
+                {m.nickname && (
+                  <span className="block truncate text-[12px] text-muted-foreground">{m.name}</span>
+                )}
+              </span>
+              <span className="flex flex-none items-center gap-2">
+                <span className="text-[12.5px] text-muted-foreground">{inLineup ? "มา" : "ไม่มา"}</span>
+                <span
+                  aria-hidden
+                  className={cn(
+                    // A switch drawn in Tailwind (stage.css has no .switch yet): the
+                    // knob in the ink that holds on its track in both themes.
+                    "relative h-7 w-[46px] rounded-[2px] after:absolute after:top-[3px] after:h-[22px] after:w-[22px] after:rounded-[1px] after:content-['']",
+                    inLineup
+                      ? "bg-primary after:right-[3px] after:bg-primary-foreground"
+                      : "bg-input after:left-[3px] after:bg-foreground/70"
+                  )}
+                />
+              </span>
             </button>
           );
         })}

@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  type CSSProperties,
   type ReactNode,
   createContext,
   useCallback,
@@ -14,21 +15,30 @@ import Link from "next/link";
 import { toast } from "sonner";
 import {
   AlarmClock,
-  Users,
-  PlayCircle,
-  ImageDown,
-  Loader2,
-  Radio,
-  ListOrdered,
+  CalendarDays,
   ChevronDown,
   ChevronUp,
-  Inbox,
+  History,
+  Hourglass,
+  ImageDown,
+  ListOrdered,
+  Loader2,
+  OctagonAlert,
+  PlayCircle,
+  Radio,
+  ShieldAlert,
+  TriangleAlert,
+  Users,
+  type LucideIcon,
 } from "lucide-react";
 import { EventStatusActions } from "@/components/overview/event-status-actions";
 import { PhotoTimeCell } from "@/components/overview/photo-time-cell";
 import { StatusBadge } from "@/components/status-badge";
+import { TitleSlab } from "@/components/title-slab";
 import { Button } from "@/components/ui/button";
+import { FIELD } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
+import { bandTriplet } from "@/lib/band-triplet";
 import { shortClock, deadlineInfo, bkkTodayKey } from "@/lib/time";
 import { captureElementToImage } from "@/lib/export-image";
 import type { GroupStatus, StaffContact } from "@/lib/types";
@@ -68,6 +78,8 @@ export interface OverviewEvent {
   missingLabels: string[]; // the missing items, for the readiness badge's tooltip
   notes: string | null; // free note shown as a small tag by the name (e.g. the act
   // name for a slot a band plays under a different unit — "G-D!" under HatoBito)
+  /** Venue, for the Today hero. Optional: an offline cached row may not carry it. */
+  venue?: string | null;
 }
 
 export interface OverviewBand {
@@ -90,16 +102,55 @@ const VIEW_MODES: { value: ViewMode; label: string }[] = [
   { value: "year", label: "รายปี" },
 ];
 
-// Tokens, not the raw palette: white on orange-500 was 2.8:1, under AA, on the
-// chip that says "ด่วน!". URGENT is the solid amber plate (its own dark ink, 10:1)
-// and SOON the amber tint (chip-warning) — fill vs tint, so the step still reads
-// once both are amber. Same steps in events-list.tsx and overview-client.tsx.
-const DEADLINE_BADGE: Record<string, string> = {
-  overdue: "bg-destructive text-destructive-foreground",
-  urgent: "bg-warning text-warning-foreground",
-  soon: "chip-warning",
-  ok: "bg-muted text-muted-foreground",
+// Deadline steps as chips (icon + word, never colour alone). Fill vs tint keeps
+// URGENT and SOON apart once both are amber: URGENT is the solid amber plate (its own
+// dark ink, 10:1), SOON the amber tint. Overdue is the band-independent alarm plate.
+// Tokens only — this file also renders the JPG export (lib/export-surfaces.test.ts).
+const DEADLINE_CHIP: Record<string, { cls: string; Icon: LucideIcon }> = {
+  overdue: { cls: "chip-alarm", Icon: OctagonAlert },
+  urgent: { cls: "bg-warning text-warning-foreground", Icon: Hourglass },
+  soon: { cls: "chip-warning", Icon: Hourglass },
+  ok: { cls: "chip-neutral", Icon: AlarmClock },
 };
+
+/** The band's square — identity by colour AND by the name beside it. */
+function BandSquare({ color, className }: { color: string | null | undefined; className?: string }) {
+  return (
+    <span
+      aria-hidden
+      className={cn("inline-block h-2.5 w-2.5 shrink-0 rounded-[1px]", className)}
+      style={{ background: `hsl(${bandTriplet(color)})` }}
+    />
+  );
+}
+
+/**
+ * "2026-10-04" → { wd: "Sun", day: "04", mon: "Oct" }. Parsed and formatted in UTC so
+ * the server and a Bangkok browser print the same day; null for a missing or garbled
+ * date (cached rows can lack event_date).
+ */
+export function dateParts(key: string | null | undefined) {
+  if (!key) return null;
+  const d = new Date(`${key}T00:00:00Z`);
+  if (isNaN(d.getTime())) return null;
+  const f = (o: Intl.DateTimeFormatOptions) => d.toLocaleDateString("en-US", { timeZone: "UTC", ...o });
+  return { wd: f({ weekday: "short" }), day: f({ day: "2-digit" }), mon: f({ month: "short" }) };
+}
+
+/** Whole days from `from` to `to` (both "YYYY-MM-DD"), or null if either is garbled. */
+function daysBetween(from: string, to: string): number | null {
+  const a = Date.parse(`${from}T00:00:00Z`);
+  const b = Date.parse(`${to}T00:00:00Z`);
+  if (isNaN(a) || isNaN(b)) return null;
+  return Math.round((b - a) / 86_400_000);
+}
+
+/** `key` plus `n` days, as "YYYY-MM-DD" (UTC arithmetic: no DST, no zone drift). */
+function addDays(key: string, n: number): string {
+  const t = Date.parse(`${key}T00:00:00Z`);
+  if (isNaN(t)) return key;
+  return new Date(t + n * 86_400_000).toISOString().slice(0, 10);
+}
 
 function fmtDate(date: string | null): string {
   if (!date) return "—";
@@ -201,6 +252,24 @@ function photoMinutes(ev: OverviewEvent): number {
 function boothMinutes(ev: OverviewEvent): number {
   return ev.booth?.start ? toMinutes(ev.booth.start) : Number.POSITIVE_INFINITY;
 }
+/**
+ * Date first, then the given clock: a list that spans several dates (a band's section,
+ * a week, the Past fold) must read in calendar order, because each stub leads with its
+ * date tile. `newestFirst` flips the dates only (the Past fold) — within one day the
+ * clock still runs forward — and an undated show sorts last either way.
+ */
+function byDateThen(minutes: (ev: OverviewEvent) => number, newestFirst = false) {
+  return (a: OverviewEvent, b: OverviewEvent): number => {
+    const da = a.event_date ?? "";
+    const db = b.event_date ?? "";
+    if (da !== db) {
+      if (!da) return 1;
+      if (!db) return -1;
+      return (da < db ? -1 : 1) * (newestFirst ? -1 : 1);
+    }
+    return minutes(a) - minutes(b);
+  };
+}
 const hasPhoto = (ev: OverviewEvent) => !!ev.photo;
 const hasBooth = (ev: OverviewEvent) => !!(ev.booth && (ev.booth.start || ev.booth.end));
 
@@ -212,33 +281,62 @@ interface Bucket {
   events: OverviewEvent[];
 }
 
-// --- Shared cell renderers — used by BOTH the desktop table and the mobile
-// cards so the interactive bits (detail link, Live, copyright badges, photo-time
-// edit, status actions) live in one place. ---
+// --- The quick filters ("focus"). Each is a count over EVERY row in scope and a
+// filter that shows exactly the rows it counted — the approval queue's rule (see the
+// note by pendingCount below), extended to the other three tiles. ---
+type Focus = "queue" | "week" | "missing" | "rights";
 
-// View-only Live link (overview audience). copyright-status badges that deep-link
-// to the library. Shared by the event-name cell and the compact report row.
+/** What the export subtitle says while a focus is on. */
+const FOCUS_EXPORT_LABEL: Record<Focus, string> = {
+  queue: "งานที่รออนุมัติ",
+  week: "งานใน 7 วันข้างหน้า",
+  missing: "งานที่ยังเตรียมไม่ครบ",
+  rights: "งานที่มีเพลงติดลิขสิทธิ์",
+};
+/** The board's section heading while a focus is on (English chrome). */
+const FOCUS_TITLE: Record<Focus, string> = {
+  queue: "Queue",
+  week: "Next 7 Days",
+  missing: "Missing Prep",
+  rights: "Rights",
+};
+
+// Tap area for a small chip-sized link or button: an invisible pseudo-element
+// grows the hit box to >= 44 px tall on a phone without growing the chip itself.
+const HIT_44 = "relative after:absolute after:-inset-y-2.5 after:inset-x-0 after:content-['']";
+// The same for a one-line show / band name (~19-21 px): 13 px each way. Anything after it
+// in the row that is itself positioned (the chips above, the status control) stays
+// on top of this box, so it never steals their taps.
+const HIT_NAME = "relative after:absolute after:-inset-y-[13px] after:inset-x-0 after:content-['']";
+
+// --- Shared cell renderers — the interactive bits (detail link, Live, copyright
+// chips, photo-time edit, status actions) live in one place. ---
+
+// View-only Live link (overview audience).
 function LiveLink({ ev }: { ev: OverviewEvent }) {
   return (
     <Link
       href={`/events/${ev.id}/live`}
       title="เปิด Live (ดูอย่างเดียว)"
-      className="text-muted-foreground hover:text-primary"
+      className={cn("chip chip-neutral en hover:text-foreground", HIT_44)}
     >
-      <PlayCircle className="h-4 w-4" />
+      <PlayCircle aria-hidden />
+      Live
     </Link>
   );
 }
 
+// copyright-status chips that deep-link to the library.
 function CopyrightBadges({ ev }: { ev: OverviewEvent }) {
   if (ev.copyrightRejected > 0) {
     return (
       <Link
         href="/library"
         title={`${ev.copyrightRejected} เพลงถูกปฏิเสธลิขสิทธิ์ — ไปจัดการที่คลังเพลง`}
-        className="inline-flex items-center gap-0.5 rounded bg-destructive/15 px-1 text-xs font-semibold text-destructive"
+        className={cn("chip chip-danger", HIT_44)}
       >
-        ⛔ {ev.copyrightRejected}
+        <ShieldAlert aria-hidden />
+        ลิขสิทธิ์ไม่ผ่าน <span className="num text-[13px]">{ev.copyrightRejected}</span>
       </Link>
     );
   }
@@ -247,17 +345,18 @@ function CopyrightBadges({ ev }: { ev: OverviewEvent }) {
       <Link
         href="/library"
         title={`${ev.copyrightPending} เพลงรอตรวจลิขสิทธิ์ — ไปจัดการที่คลังเพลง`}
-        className="inline-flex items-center gap-0.5 rounded bg-amber-400/20 px-1 text-xs font-semibold text-amber-700 dark:text-amber-400"
+        className={cn("chip chip-warning", HIT_44)}
       >
-        🕒 {ev.copyrightPending}
+        <Hourglass aria-hidden />
+        รอตรวจลิขสิทธิ์ <span className="num text-[13px]">{ev.copyrightPending}</span>
       </Link>
     );
   }
   return null;
 }
 
-// Readiness badge — mirrors CopyrightBadges (only shows when there's something to
-// flag). "ยังขาด N" amber tag when the event is missing required prep (setlist/mic/
+// Readiness chip — mirrors CopyrightBadges (only shows when there's something to
+// flag). "ยังขาด N" when the event is missing required prep (setlist/mic/
 // call-times/…); the tooltip lists exactly what. Hidden once the event is approved
 // (it passed the completeness gate) so only in-prep shows get nagged.
 function ReadyBadge({ ev }: { ev: OverviewEvent }) {
@@ -266,9 +365,10 @@ function ReadyBadge({ ev }: { ev: OverviewEvent }) {
     <Link
       href={`/events/${ev.id}`}
       title={`ยังขาด: ${ev.missingLabels.join(", ")}`}
-      className="inline-flex items-center gap-0.5 rounded bg-amber-400/20 px-1 text-xs font-semibold text-amber-700 dark:text-amber-400"
+      className={cn("chip chip-warning", HIT_44)}
     >
-      ⚠ ขาด {ev.incomplete}
+      <TriangleAlert aria-hidden />
+      ยังขาด <span className="num text-[13px]">{ev.incomplete}</span>
     </Link>
   );
 }
@@ -282,10 +382,7 @@ function ActNote({ ev }: { ev: OverviewEvent }) {
   const note = ev.notes?.trim();
   if (!note || note.length > ACT_NOTE_MAX) return null;
   return (
-    <span
-      className="shrink-0 rounded-full border px-1.5 py-0 text-[11px] font-normal text-muted-foreground"
-      title={note}
-    >
+    <span className="chip chip-neutral shrink-0 font-normal" title={note}>
       {note}
     </span>
   );
@@ -294,10 +391,7 @@ function ActNote({ ev }: { ev: OverviewEvent }) {
 function BandTag({ ev }: { ev: OverviewEvent }) {
   return (
     <span className="inline-flex items-center gap-1.5">
-      <span
-        className="inline-block h-2.5 w-2.5 rounded-full"
-        style={{ background: ev.group_color || "var(--primary)" }}
-      />
+      <BandSquare color={ev.group_color} />
       {ev.group_name}
     </span>
   );
@@ -332,17 +426,12 @@ function PhotoCell({ ev }: { ev: OverviewEvent }) {
 
 function DeadlineCell({ ev }: { ev: OverviewEvent }) {
   const dl = ev.exempt_from_deadline ? null : deadlineInfo(ev.deadline);
-  return dl ? (
-    <span
-      className={cn(
-        "inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs font-medium",
-        DEADLINE_BADGE[dl.tone]
-      )}
-    >
-      <AlarmClock className="h-3 w-3" /> {dl.label}
+  if (!dl) return null;
+  const { cls, Icon } = DEADLINE_CHIP[dl.tone] ?? DEADLINE_CHIP.ok;
+  return (
+    <span className={cn("chip", cls)}>
+      <Icon aria-hidden /> {dl.label}
     </span>
-  ) : (
-    <span className="text-xs text-muted-foreground">—</span>
   );
 }
 
@@ -367,9 +456,9 @@ function StatusCell({
   );
 }
 
-// The act's identity for a schedule row: the band (color dot + name) when several
+// The act's identity for a schedule row: the band (colour square + name) when several
 // bands share a bucket, otherwise the event name. `withBadges` adds the live link /
-// copyright / readiness / act-note chips — used only in the main Stage table so the
+// copyright / readiness / act-note chips — used only in the main Stage list so the
 // Photo/Booth tables stay clean. `secondary` is a muted tag (event name and/or date)
 // shown only when those vary within the bucket, so a multi-show/multi-date bucket
 // (week/month/…) stays unambiguous without a dedicated column.
@@ -389,34 +478,33 @@ function ActIdentity({
   isLabelWide: boolean;
 }) {
   return (
-    <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5">
+    <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
       {bandPrimary ? (
         canOpenDetail ? (
           <Link
             href={`/events/${ev.id}`}
-            className="inline-flex items-center gap-1.5 font-medium hover:text-primary hover:underline"
+            className={cn("inline-flex items-center gap-1.5 font-semibold hover:text-primary-ink hover:underline", HIT_NAME)}
           >
-            <span
-              className="inline-block h-2.5 w-2.5 shrink-0 rounded-full"
-              style={{ background: ev.group_color || "var(--primary)" }}
-            />
+            <BandSquare color={ev.group_color} />
             {ev.group_name}
           </Link>
         ) : (
-          <BandTag ev={ev} />
+          <span className="font-semibold">
+            <BandTag ev={ev} />
+          </span>
         )
       ) : canOpenDetail ? (
         <Link
           href={`/events/${ev.id}`}
-          className="break-words font-medium hover:text-primary hover:underline"
+          className={cn("break-words font-semibold leading-snug hover:text-primary-ink hover:underline", HIT_NAME)}
         >
           {ev.name}
         </Link>
       ) : (
-        <span className="break-words font-medium">{ev.name}</span>
+        <span className="break-words font-semibold leading-snug">{ev.name}</span>
       )}
       {secondary && (
-        <span className="text-xs text-muted-foreground">· {secondary}</span>
+        <span className="text-[12.5px] text-muted-foreground">· {secondary}</span>
       )}
       {withBadges && (
         <>
@@ -430,9 +518,132 @@ function ActIdentity({
   );
 }
 
+/** The stub's date block: a solid tile in the band's own colour (`.date-tile`). */
+function DateTile({ date, today }: { date: string | null; today: boolean }) {
+  const p = dateParts(date);
+  return (
+    <div className="date-tile py-2">
+      {p ? (
+        <>
+          <span className="eyebrow text-[11px]">{today ? "Today" : p.wd}</span>
+          <span className="num mt-[3px] text-[30px] font-extrabold leading-[.92]">{p.day}</span>
+          <span className="eyebrow mt-[3px] text-[11px]">{p.mon}</span>
+        </>
+      ) : (
+        <span className="num text-[22px]">—</span>
+      )}
+    </div>
+  );
+}
+
+// The Stage list: one stub per act, a stack of slabs on a phone; from sm the same
+// rows line up under column heads and read as a table. ONE markup for both — the
+// status control holds its own state, so a second copy for the other width would
+// have shown a stale chip after an approval made in the first.
+const STAGE_COLS = "sm:grid-cols-[minmax(0,1fr)_7.5rem_10.5rem]";
+
+function StageList({
+  rows,
+  showBandColumn,
+  secondaryOf,
+  canOpenDetail,
+  isLabelWide,
+  canApproveEvents,
+  onStatusChanged,
+  todayKey,
+}: {
+  rows: OverviewEvent[];
+  showBandColumn: boolean;
+  secondaryOf: (ev: OverviewEvent) => string;
+  canOpenDetail: boolean;
+  isLabelWide: boolean;
+  canApproveEvents: boolean;
+  onStatusChanged?: (id: string, next: GroupStatus) => void;
+  todayKey: string;
+}) {
+  return (
+    <div>
+      <div aria-hidden className="hidden h-8 items-center sm:flex">
+        <span className="w-[72px] shrink-0 text-center font-display text-[12.5px] font-bold uppercase tracking-[.1em] text-muted-foreground [font-synthesis:none]">
+          Date
+        </span>
+        <div
+          className={cn(
+            "grid flex-1 gap-3 px-3.5 font-display text-[12.5px] font-bold uppercase tracking-[.1em] text-muted-foreground [font-synthesis:none]",
+            STAGE_COLS
+          )}
+        >
+          <span>{showBandColumn ? "Band" : "Show"}</span>
+          <span>Stage</span>
+          <span className="text-right">Status</span>
+        </div>
+      </div>
+      <ul className="stack">
+        {rows.map((ev) => {
+          const today = ev.event_date === todayKey;
+          return (
+            <li
+              key={ev.id}
+              data-today={today || undefined}
+              className="stub slab flex items-stretch overflow-hidden"
+              style={{ "--band": bandTriplet(ev.group_color) } as CSSProperties}
+            >
+              <DateTile date={ev.event_date} today={today} />
+              <div
+                className={cn(
+                  "min-w-0 flex-1 px-3.5 py-2.5 text-[15px] sm:grid sm:items-center sm:gap-3",
+                  STAGE_COLS,
+                  today && "bg-primary/[.06]"
+                )}
+              >
+                <ActIdentity
+                  ev={ev}
+                  bandPrimary={showBandColumn}
+                  secondary={secondaryOf(ev)}
+                  withBadges
+                  canOpenDetail={canOpenDetail}
+                  isLabelWide={isLabelWide}
+                />
+                {/* A phone line under the name; from sm its two halves become the
+                    Stage and Status columns (display: contents). */}
+                <div className="mt-1.5 flex flex-wrap items-center justify-between gap-x-2 gap-y-1 sm:contents">
+                  <div className="flex shrink-0 items-baseline gap-1.5 whitespace-nowrap">
+                    <span className="text-[12px] text-muted-foreground sm:hidden">ขึ้นเวที</span>
+                    <div className="num text-[17px] text-foreground">
+                      {fmtSlots(ev.stage, ev.stageMore)}
+                    </div>
+                  </div>
+                  <div className="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-1.5 sm:ml-0 sm:flex-col sm:items-end">
+                    <DeadlineCell ev={ev} />
+                    <StatusCell
+                      ev={ev}
+                      canApproveEvents={canApproveEvents}
+                      onStatusChanged={onStatusChanged}
+                    />
+                  </div>
+                </div>
+              </div>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+}
+
+// Row / cell classes for the Photo and Booth tables (see MiniTimeTable). The time
+// cell is `relative` so it stacks above the name link's enlarged tap area (HIT_NAME):
+// when a long name wraps the time under it on a phone, that box reaches 5 px into
+// the photo-time fields and would open the event instead of focusing the field.
+const MINI_TR =
+  "flex flex-wrap items-center justify-between gap-x-3 gap-y-1.5 border-b border-border/70 px-3 py-2.5 last:border-0 sm:table-row sm:p-0";
+const MINI_TD_NAME = "min-w-0 sm:table-cell sm:px-3 sm:py-2.5 sm:align-middle";
+const MINI_TD_TIME =
+  "num relative ml-auto whitespace-nowrap text-right text-[15px] sm:table-cell sm:px-3 sm:py-2.5 sm:align-middle";
+
 // A minimal "act → time" table (the Photo and Booth tables). The caller picks and
 // sorts the rows; `count` is the number of acts that actually HAVE that time — the
-// ถ่ายรูป table appends a labelled "ยังไม่กำหนดเวลา" section whose blank rows are
+// Photo table appends a labelled "ยังไม่กำหนดเวลา" section whose blank rows are
 // deliberately NOT counted (see photoTableRows).
 function MiniTimeTable({
   title,
@@ -444,31 +655,38 @@ function MiniTimeTable({
   children: ReactNode;
 }) {
   return (
-    <div className="overflow-hidden rounded-lg border">
-      <div className="border-b bg-muted/40 px-3 py-1.5 text-xs font-semibold uppercase text-muted-foreground">
+    <div className="overflow-hidden rounded-[2px] bg-card shadow-edge">
+      <div className="flex h-9 items-center gap-2 border-b border-border px-3">
         {/* "· 0" would read as a data claim ("0 acts have a photo call") on a
             stage-only day where this block exists ONLY to offer the to-do section —
             an earlier session removed exactly that "ถ่ายรูป · 0 —" line. */}
-        {title}
-        {count > 0 ? ` · ${count}` : ""}
+        <span className="eyebrow text-muted-foreground">{title}</span>
+        {count > 0 && <span className="num text-[14px] text-foreground">{count}</span>}
       </div>
-      <div className="overflow-x-auto">
-        <table className="w-full text-sm">
-          <tbody>{children}</tbody>
+      {/* overflow-y-hidden: the last row's name tap area (HIT_NAME) hangs ~3 px below
+          the table, and overflow-x-auto alone computes overflow-y to auto — a 3 px
+          vertical scroll, i.e. a scrollbar on every table on a Windows laptop. */}
+      <div className="overflow-x-auto overflow-y-hidden">
+        {/* A real table from sm. On a phone each row is a flex line instead — the act
+            on the left, its time (or the photo editor) beside it, wrapping under the
+            name when there is not room — so a long show name is not squeezed into a
+            sliver beside two time fields. */}
+        <table className="block w-full text-sm sm:table">
+          <tbody className="block sm:table-row-group">{children}</tbody>
         </table>
       </div>
     </div>
   );
 }
 
-// The three activity tables for one bucket — ขึ้นแสดง (Stage) · ถ่ายรูป (Photo) ·
-// บูธ (Booth) — each sorted by ITS OWN time so a band's photo/booth slot reads in
-// that activity's order, not pulled out of place by its stage time (พี่: เวลาถ่ายรูป
-// ไม่เรียงตามสเตจ → วงโดด). Stage is the main table (every act + deadline + status);
-// Photo & Booth are minimal (act + time) and list only acts that have that time —
-// ถ่ายรูป then appends a collapsible to-do section for the acts a viewer may still
-// FILL IN (see photoTableRows below).
-// Replaces the old single 3-time table/cards — works the same at every view mode.
+// The three activity sections for one bucket — Stage · Photo · Booth — each sorted
+// by date and then by ITS OWN time so a band's photo/booth slot reads in that
+// activity's order, not pulled out of place by its stage time (พี่: เวลาถ่ายรูปไม่
+// เรียงตามสเตจ → วงโดด). `newestFirst` (the Past fold) puts the latest date on top.
+// Stage is the main list (every act + deadline + status); Photo & Booth are minimal
+// (act + time) and list only acts that have that time — Photo then appends a
+// collapsible to-do section for the acts a viewer may still FILL IN (see
+// photoTableRows below). Works the same at every view mode.
 function ActivityTables({
   events,
   showBandColumn,
@@ -476,6 +694,8 @@ function ActivityTables({
   isLabelWide,
   canApproveEvents,
   onStatusChanged,
+  todayKey,
+  newestFirst = false,
 }: {
   events: OverviewEvent[];
   showBandColumn: boolean;
@@ -483,10 +703,12 @@ function ActivityTables({
   isLabelWide: boolean;
   canApproveEvents: boolean;
   onStatusChanged?: (id: string, next: GroupStatus) => void;
+  todayKey: string;
+  newestFirst?: boolean;
 }) {
   const stageRows = useMemo(
-    () => [...events].sort((a, b) => stageMinutes(a) - stageMinutes(b)),
-    [events]
+    () => [...events].sort(byDateThen(stageMinutes, newestFirst)),
+    [events, newestFirst]
   );
   // While a photo editor holds focus, its row is PINNED to the section + sort key it
   // had when focus arrived. PhotoTimeCell commits on blur, and tabbing start→end blurs
@@ -513,7 +735,7 @@ function ActivityTables({
   // viewer allowed to set one: label staff are read-only on the event page (and blocked
   // from non-status writes by mig 0037), so without a row here they could never create a
   // band's FIRST photo time — the exact job this inline editor exists for. Keeping them
-  // out of the table keeps its headline count honest ("ถ่ายรูป · 12" means 12 acts have
+  // out of the table keeps its headline count honest ("Photo 12" means 12 acts have
   // a call time, not 12 blank inputs on a stage-only day like WARUDO) and keeps them out
   // of the export image, which filters on hasPhoto only.
   const { photoRows, photoTodoRows } = useMemo(() => {
@@ -522,19 +744,19 @@ function ActivityTables({
     const at = (ev: OverviewEvent) =>
       pinned && pinned.id === ev.id ? pinned.at : photoMinutes(ev);
     return {
-      photoRows: events.filter((ev) => timed(ev)).sort((a, b) => at(a) - at(b)),
-      // Untimed acts keep the bucket's own (stage-time) order — there is no photo
-      // time to sort them by yet.
+      photoRows: events.filter((ev) => timed(ev)).sort(byDateThen(at, newestFirst)),
+      // Untimed acts keep the bucket's own (date → stage-time) order — there is no
+      // photo time to sort them by yet.
       photoTodoRows: events.filter((ev) => ev.canEditPhoto && !timed(ev)),
     };
-  }, [events, pinned]);
+  }, [events, pinned, newestFirst]);
   // The to-do section opens by default on a day that already uses photo calls, and
   // starts COLLAPSED on a stage-only day, where a wall of blank inputs is pure noise —
   // its one header line keeps it discoverable for the staffer who does need to fill in.
   const [showPhotoTodo, setShowPhotoTodo] = useState(() => photoRows.length > 0);
   const boothRows = useMemo(
-    () => events.filter(hasBooth).sort((a, b) => boothMinutes(a) - boothMinutes(b)),
-    [events]
+    () => events.filter(hasBooth).sort(byDateThen(boothMinutes, newestFirst)),
+    [events, newestFirst]
   );
   // Muted secondary tag (event name and/or date) — only when those vary in the
   // bucket, so multi-show / multi-date views stay clear without a separate column.
@@ -570,8 +792,8 @@ function ActivityTables({
   // the write it defers while the start write is still in flight — i.e. a save that
   // silently never happens.
   const renderPhotoRow = (ev: OverviewEvent) => (
-    <tr key={ev.id} className="border-b last:border-0">
-      <td className="px-3 py-2">
+    <tr key={ev.id} className={MINI_TR}>
+      <td className={MINI_TD_NAME}>
         <ActIdentity
           ev={ev}
           bandPrimary={showBandColumn}
@@ -581,7 +803,7 @@ function ActivityTables({
         />
       </td>
       <td
-        className="whitespace-nowrap px-3 py-2 text-right tabular-nums text-muted-foreground"
+        className={MINI_TD_TIME}
         onFocus={ev.canEditPhoto ? () => pinPhotoRow(ev) : undefined}
         onBlur={ev.canEditPhoto ? unpinPhotoRow : undefined}
       >
@@ -593,18 +815,18 @@ function ActivityTables({
     ...photoRows.map((ev) => renderPhotoRow(ev)),
     ...(photoTodoRows.length > 0
       ? [
-          <tr key="__photo-todo" className="border-b last:border-0">
-            <td colSpan={2} className="p-0">
+          <tr key="__photo-todo" className="flex border-b border-border/70 last:border-0 sm:table-row">
+            <td colSpan={2} className="w-full p-0 sm:table-cell">
               <button
                 type="button"
                 onClick={() => setShowPhotoTodo((v) => !v)}
                 aria-expanded={showPhotoTodo}
-                className="flex w-full items-center gap-1.5 bg-muted/20 px-3 py-1.5 text-left text-xs font-semibold text-muted-foreground hover:bg-muted/40"
+                className="relative flex min-h-11 w-full items-center gap-1.5 bg-muted px-3 py-1.5 text-left text-[12.5px] font-semibold text-muted-foreground transition-colors duration-2 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring sm:min-h-9"
               >
                 {showPhotoTodo ? (
-                  <ChevronUp className="h-3.5 w-3.5 shrink-0" />
+                  <ChevronUp className="h-4 w-4 shrink-0" aria-hidden />
                 ) : (
-                  <ChevronDown className="h-3.5 w-3.5 shrink-0" />
+                  <ChevronDown className="h-4 w-4 shrink-0" aria-hidden />
                 )}
                 ยังไม่กำหนดเวลาถ่ายรูป · {photoTodoRows.length}
                 {!showPhotoTodo && (
@@ -619,67 +841,35 @@ function ActivityTables({
   ];
 
   return (
-    <div className="space-y-4">
-      {/* Stage — the main table: every act, plus deadline + status + badges */}
-      <div className="overflow-hidden rounded-lg border">
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b bg-muted/40 text-left text-xs uppercase text-muted-foreground">
-                <th className="px-3 py-2 font-medium">{showBandColumn ? "วง" : "งาน"}</th>
-                <th className="px-3 py-2 font-medium tabular-nums">ขึ้นแสดง</th>
-                <th className="px-3 py-2 text-right font-medium">สถานะ</th>
-              </tr>
-            </thead>
-            <tbody>
-              {stageRows.map((ev) => (
-                <tr key={ev.id} className="border-b align-middle last:border-0">
-                  <td className="px-3 py-2">
-                    <ActIdentity
-                      ev={ev}
-                      bandPrimary={showBandColumn}
-                      secondary={secondaryOf(ev)}
-                      withBadges
-                      canOpenDetail={canOpenDetail}
-                      isLabelWide={isLabelWide}
-                    />
-                  </td>
-                  <td className="whitespace-nowrap px-3 py-2 tabular-nums text-muted-foreground">
-                    {fmtSlots(ev.stage, ev.stageMore)}
-                  </td>
-                  <td className="px-3 py-2">
-                    <div className="flex items-center justify-end gap-2">
-                      <DeadlineCell ev={ev} />
-                      <StatusCell
-                        ev={ev}
-                        canApproveEvents={canApproveEvents}
-                        onStatusChanged={onStatusChanged}
-                      />
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </div>
+    <div className="space-y-3">
+      {/* Stage — the main list: every act, plus deadline + status + chips */}
+      <StageList
+        rows={stageRows}
+        showBandColumn={showBandColumn}
+        secondaryOf={secondaryOf}
+        canOpenDetail={canOpenDetail}
+        isLabelWide={isLabelWide}
+        canApproveEvents={canApproveEvents}
+        onStatusChanged={onStatusChanged}
+        todayKey={todayKey}
+      />
 
       {/* Photo + Booth — minimal, each in its own time order; side-by-side on wide
           screens (like the organiser's Portrait/Stage sheets), hidden when empty.
-          ถ่ายรูป also shows up when it has no times but the viewer may add some —
+          Photo also shows up when it has no times but the viewer may add some —
           that block is then just its one collapsed to-do line. */}
       {(photoTableRows.length > 0 || boothRows.length > 0) && (
-        <div className="grid gap-4 md:grid-cols-2">
+        <div className="grid gap-3 md:grid-cols-2">
           {photoTableRows.length > 0 && (
-            <MiniTimeTable title="ถ่ายรูป" count={photoRows.length}>
+            <MiniTimeTable title="Photo" count={photoRows.length}>
               {photoTableRows}
             </MiniTimeTable>
           )}
           {boothRows.length > 0 && (
-            <MiniTimeTable title="บูธ" count={boothRows.length}>
+            <MiniTimeTable title="Booth" count={boothRows.length}>
               {boothRows.map((ev) => (
-                <tr key={ev.id} className="border-b last:border-0">
-                  <td className="px-3 py-2">
+                <tr key={ev.id} className={MINI_TR}>
+                  <td className={MINI_TD_NAME}>
                     <ActIdentity
                       ev={ev}
                       bandPrimary={showBandColumn}
@@ -688,7 +878,7 @@ function ActivityTables({
                       isLabelWide={isLabelWide}
                     />
                   </td>
-                  <td className="whitespace-nowrap px-3 py-2 text-right tabular-nums text-muted-foreground">
+                  <td className={MINI_TD_TIME}>
                     {fmtSlots(ev.booth, ev.boothMore)}
                   </td>
                 </tr>
@@ -736,29 +926,29 @@ function FestivalRunControls({
   if (groups.length === 0) return null;
   const multi = groups.length > 1;
   return (
-    <div className="ml-auto flex flex-wrap items-center gap-1.5">
+    <div className="flex w-full flex-wrap items-center gap-2 sm:ml-auto sm:w-auto">
       {groups.map((g) => {
         const repId = g.events[0]?.id;
         if (!repId) return null;
         const key = `${g.name}__${g.date ?? ""}`;
         const hasOrder = runOrderSet.has(key);
         return (
-          <div key={key} className="flex items-center gap-1">
+          <div key={key} className="flex flex-wrap items-center gap-1.5">
             {multi && (
-              <span className="max-w-[8rem] truncate text-xs text-muted-foreground">
+              <span className="max-w-[10rem] truncate text-[12.5px] text-muted-foreground">
                 {g.name}:
               </span>
             )}
             {hasOrder && (
-              <Button size="sm" variant="default" asChild className="h-7">
+              <Button size="sm" asChild className="h-11 sm:h-9">
                 <Link href={`/events/${repId}/run-order/live?from=overview`}>
-                  <Radio className="h-3.5 w-3.5" /> คุมคิว (Live)
+                  <Radio aria-hidden /> คุมคิว (Live)
                 </Link>
               </Button>
             )}
-            <Button size="sm" variant="outline" asChild className="h-7">
+            <Button size="sm" variant="secondary" asChild className="h-11 sm:h-9">
               <Link href={`/events/${repId}/run-order?from=overview`}>
-                <ListOrdered className="h-3.5 w-3.5" /> Running Order
+                <ListOrdered aria-hidden /> Running Order
               </Link>
             </Button>
           </div>
@@ -768,16 +958,10 @@ function FestivalRunControls({
   );
 }
 
-// One schedule table for the export JPG, with the "อะไรซ้ำยุบ" column collapse: any
-// of งาน / วันที่ that's constant down the whole table is hoisted into the header
-// (when not already the label) and its column dropped; วง shows only when bands
-// vary. The kept columns spread evenly across the full width (no spacer) so the
-// image reads airy and matches the contact tables below — not packed against the
-// left edge. `nested` renders a lighter sub-header (used under a period header in
-// รายวัน/เดือน/…); `hideDate` drops the date when the period header already shows it.
 // One activity column in the export image: a small "act → time" table sorted by the
 // caller. `secondary(ev)` appends the event name / date as a muted tag when they vary
 // within the group (so a band-spanning or multi-date group stays unambiguous).
+// EXPORT SURFACE: flat, upright, tokens only (no dark-mode variant, no .lit / .cut / slab).
 function ExportActivityCol({
   title,
   rows,
@@ -840,7 +1024,11 @@ function ExportActivityCol({
 
 // One festival/band block in the export image, split into the three activity tables
 // (Stage / Photo / Booth) — each in its own time order, mirroring the on-screen view
-// and the organiser's separate Portrait/Stage sheets.
+// and the organiser's separate Portrait/Stage sheets. The "อะไรซ้ำยุบ" column
+// collapse: any of งาน / วันที่ that's constant down the whole block is hoisted into
+// the header (when not already the label); `nested` renders a lighter sub-header
+// (used under a period header in รายวัน/เดือน/…); `hideDate` drops the date when the
+// period header already shows it.
 function ExportSchedule({
   label,
   color,
@@ -868,9 +1056,9 @@ function ExportSchedule({
       ? first.event_date
       : null;
 
-  const stageRows = [...events].sort((a, b) => stageMinutes(a) - stageMinutes(b));
-  const photoRows = events.filter(hasPhoto).sort((a, b) => photoMinutes(a) - photoMinutes(b));
-  const boothRows = events.filter(hasBooth).sort((a, b) => boothMinutes(a) - boothMinutes(b));
+  const stageRows = [...events].sort(byDateThen(stageMinutes));
+  const photoRows = events.filter(hasPhoto).sort(byDateThen(photoMinutes));
+  const boothRows = events.filter(hasBooth).sort(byDateThen(boothMinutes));
 
   // Disambiguate rows when the group mixes shows/dates: append the differing bits.
   const secondary = (ev: OverviewEvent) => {
@@ -947,6 +1135,208 @@ function ExportSchedule({
   );
 }
 
+/** Group events into the board's sections for the current view mode. */
+function bucketize(
+  list: OverviewEvent[],
+  mode: ViewMode,
+  bands: OverviewBand[],
+  bandFilter: string,
+  opts: { keepEmptyBands: boolean; newestFirst?: boolean }
+): Bucket[] {
+  if (mode === "band") {
+    // In "band" mode every band is listed (even with 0 events) so rosters show.
+    const shown = bandFilter === "all" ? bands : bands.filter((b) => b.id === bandFilter);
+    return shown
+      .map((b) => ({
+        key: b.id,
+        label: b.name,
+        color: b.color,
+        events: list.filter((e) => e.group_id === b.id),
+      }))
+      .filter((b) => opts.keepEmptyBands || b.events.length > 0);
+  }
+  if (mode === "event") {
+    // Group by (date + name): one header per show, with its bands listed beneath.
+    // A festival where several bands share a name + day collapses to ONE header;
+    // a day with two differently-named shows gets two. `list` is already in
+    // date→time order, and Map keeps first-seen order, so groups stay sorted.
+    const map = new Map<string, Bucket>();
+    for (const ev of list) {
+      const key = `${ev.event_date ?? NO_DATE_KEY}__${ev.name}`;
+      const b =
+        map.get(key) ??
+        ({ key, label: ev.name, date: ev.event_date, events: [] } as Bucket);
+      b.events.push(ev);
+      map.set(key, b);
+    }
+    return Array.from(map.values());
+  }
+  const map = new Map<string, Bucket>();
+  for (const ev of list) {
+    const { key, label } = bucketOf(ev, mode);
+    const b = map.get(key) ?? { key, label, events: [] };
+    b.events.push(ev);
+    map.set(key, b);
+  }
+  return Array.from(map.values()).sort((a, b) =>
+    opts.newestFirst ? b.key.localeCompare(a.key) : a.key.localeCompare(b.key)
+  );
+}
+
+/** One quick-filter tile: a count over every show in scope that is also its filter. */
+function KpiTile({
+  icon: Icon,
+  iconClass,
+  count,
+  label,
+  active,
+  onToggle,
+  title,
+}: {
+  icon: LucideIcon;
+  iconClass: string;
+  count: number;
+  label: string;
+  active: boolean;
+  onToggle: () => void;
+  title: string;
+}) {
+  return (
+    <button
+      type="button"
+      aria-pressed={active}
+      // Nothing to show is not a filter: a tile reading 0 stays as the all-clear,
+      // but tapping it would only empty the board.
+      disabled={count === 0}
+      onClick={onToggle}
+      title={title}
+      className={cn(
+        "flex min-h-[68px] min-w-0 flex-col items-stretch justify-between gap-1 rounded-[2px] px-3 py-2.5 text-left transition-colors duration-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring disabled:cursor-default",
+        active
+          ? "bg-foreground text-background"
+          : "bg-card shadow-edge enabled:hover:bg-muted"
+      )}
+    >
+      <span className="flex items-center justify-between gap-2">
+        <span className={cn("num text-[26px] leading-none", count === 0 && !active && "text-faint")}>
+          {count}
+        </span>
+        <Icon aria-hidden className={cn("h-[18px] w-[18px] shrink-0", !active && iconClass)} />
+      </span>
+      <span className={cn("truncate text-[12.5px] leading-tight", !active && "text-muted-foreground")}>
+        {label}
+      </span>
+    </button>
+  );
+}
+
+/**
+ * The screen's one lit hero: what is on TODAY across the label (or this band), else
+ * how far off the next show is. The approval queue — the nag approvers came for —
+ * and the JPG export are its actions.
+ */
+function TodayHero({
+  todayKey,
+  events,
+  canOpenDetail,
+  actions,
+}: {
+  todayKey: string;
+  events: OverviewEvent[];
+  canOpenDetail: boolean;
+  actions: ReactNode;
+}) {
+  const p = dateParts(todayKey);
+  const todays = events
+    .filter((e) => e.event_date === todayKey)
+    .sort((a, b) => stageMinutes(a) - stageMinutes(b));
+  const next = todays.length
+    ? null
+    : events
+        .filter((e) => !!e.event_date && e.event_date > todayKey)
+        .sort((a, b) =>
+          a.event_date === b.event_date
+            ? stageMinutes(a) - stageMinutes(b)
+            : (a.event_date ?? "") < (b.event_date ?? "")
+              ? -1
+              : 1
+        )[0];
+  const inDays = next?.event_date ? daysBetween(todayKey, next.event_date) : null;
+
+  return (
+    <section className="lit cut sweep p-4 [--cut:20px]" aria-label="วันนี้">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <span className="eyebrow key">
+          Today{p ? ` · ${p.wd} ${p.day} ${p.mon}` : ""}
+        </span>
+        {todays.length > 0 ? (
+          <span className="chip chip-primary">
+            <CalendarDays aria-hidden />
+            <span className="num text-[14px]">{todays.length}</span> โชว์วันนี้
+          </span>
+        ) : (
+          <span className="chip chip-neutral">
+            <CalendarDays aria-hidden />
+            ไม่มีโชว์วันนี้
+          </span>
+        )}
+      </div>
+
+      {todays.length > 0 ? (
+        <ul className="stack mt-3">
+          {todays.map((ev) => (
+            <li
+              key={ev.id}
+              className="relative flex min-h-[52px] items-center gap-3 rounded-[2px] bg-muted px-3 py-2"
+              style={{ boxShadow: `inset 4px 0 0 hsl(${bandTriplet(ev.group_color)})` }}
+            >
+              <span className="num w-[3.25rem] shrink-0 text-[22px] leading-none">
+                {shortClock(ev.stage?.start) || "—"}
+              </span>
+              <div className="min-w-0 flex-1">
+                {canOpenDetail ? (
+                  <Link
+                    href={`/events/${ev.id}`}
+                    // ::after covers the whole row: the row is the tap target.
+                    className="block truncate text-[14px] font-semibold after:absolute after:inset-0 after:content-[''] hover:text-primary-ink hover:underline"
+                  >
+                    {ev.name}
+                  </Link>
+                ) : (
+                  <span className="block truncate text-[14px] font-semibold">{ev.name}</span>
+                )}
+                <span className="block truncate text-[12px] text-muted-foreground">
+                  {[ev.group_name, ev.venue].filter(Boolean).join(" · ")}
+                </span>
+              </div>
+              <StatusBadge status={ev.status} className="shrink-0" />
+            </li>
+          ))}
+        </ul>
+      ) : next ? (
+        <>
+          <p className="mt-2.5 text-[13px] text-muted-foreground">
+            งานถัดไป ·{" "}
+            {inDays === 1 ? (
+              <span className="text-foreground">พรุ่งนี้</span>
+            ) : (
+              <>
+                อีก <span className="num text-[17px] text-foreground">{inDays ?? "—"}</span> วัน
+              </>
+            )}{" "}
+            · {next.group_name}
+          </p>
+          <TitleSlab name={next.name} size={26} className="mt-1" />
+        </>
+      ) : (
+        <p className="mt-2.5 text-[13px] text-muted-foreground">ยังไม่มีงานที่จะถึงในตาราง</p>
+      )}
+
+      {actions && <div className="mt-3.5 flex flex-wrap gap-2">{actions}</div>}
+    </section>
+  );
+}
+
 export function OverviewClient({
   events,
   bands,
@@ -956,6 +1346,7 @@ export function OverviewClient({
   isLabelWide,
   canOpenDetail,
   runOrderFestivals = [],
+  todayKey: todayProp,
 }: {
   events: OverviewEvent[];
   bands: OverviewBand[];
@@ -965,7 +1356,11 @@ export function OverviewClient({
   isLabelWide: boolean; // show the view-only Live link (overview audience)
   canOpenDetail: boolean; // false for label_staff (overview-only); name is plain text
   runOrderFestivals?: string[]; // "name__date" keys that already have a running order
+  /** Bangkok "YYYY-MM-DD". The server passes its own so the HTML it renders and the
+   *  client that hydrates it agree on which shows are past; defaults to now. */
+  todayKey?: string;
 }) {
+  const todayKey = todayProp ?? bkkTodayKey();
   // Fast lookup of which festivals (name + date) already have a running order, so
   // the header can offer "คุมคิว (Live)" only when there's something to run.
   const runOrderSet = useMemo(
@@ -974,9 +1369,12 @@ export function OverviewClient({
   );
   const [mode, setMode] = useState<ViewMode>("band");
   const [bandFilter, setBandFilter] = useState<string>("all");
-  // "show me only what is waiting for me". See the chip and the filter below.
-  const [queueOnly, setQueueOnly] = useState(false);
+  // "show me only what is waiting for me" — and its three siblings. See the queue
+  // note and the filter below.
+  const [focus, setFocus] = useState<Focus | null>(null);
   const [dateFilter, setDateFilter] = useState<string>("all"); // "all" or an ISO date
+  // Shows that already happened sit folded under the upcoming board.
+  const [pastOpen, setPastOpen] = useState(false);
   const [exporting, setExporting] = useState(false);
   const exportRef = useRef<HTMLDivElement>(null);
   // The off-screen export block is rendered ONLY after mount (client-side). It
@@ -1053,6 +1451,13 @@ export function OverviewClient({
     [byBand]
   );
 
+  // A show is past once its date is behind today (Bangkok). An undated show is not
+  // past — it simply has no date yet, and sorts last among the upcoming.
+  const isPast = useCallback(
+    (e: OverviewEvent) => !!e.event_date && e.event_date < todayKey,
+    [todayKey]
+  );
+
   // ── THE APPROVAL QUEUE, AS A PLACE YOU CAN LOOK ──────────────────────────
   // On 2026-08-31 "Gorya seitan sai" was found still at pending_review, submitted
   // 15 July for a 19 July show. It had been sitting on THIS BOARD the whole time,
@@ -1064,38 +1469,116 @@ export function OverviewClient({
   // over rows already in hand, no query, no notification, no new channel.
   //
   // Counted over EVERY row in scope, never over `filtered`: a queue a band filter
-  // can hide is the same bug one step along.
-  const pendingCount = useMemo(
-    () => mergedEvents.filter((e) => e.status === "pending_review").length,
-    [mergedEvents]
+  // can hide is the same bug one step along. The same holds for the three tiles
+  // beside it. The queue alone also reaches into the past (and so is never folded):
+  // a past-dated submission is exactly the one the cron cannot reach.
+  const weekEnd = addDays(todayKey, 6);
+  const focusTest = useMemo<Record<Focus, (e: OverviewEvent) => boolean>>(
+    () => ({
+      queue: (e) => e.status === "pending_review",
+      week: (e) => !!e.event_date && e.event_date >= todayKey && e.event_date <= weekEnd,
+      missing: (e) => !isPast(e) && e.status !== "approved" && e.incomplete > 0,
+      rights: (e) => !isPast(e) && e.copyrightPending + e.copyrightRejected > 0,
+    }),
+    [todayKey, weekEnd, isPast]
   );
+  const counts = useMemo(() => {
+    const c: Record<Focus, number> = { queue: 0, week: 0, missing: 0, rights: 0 };
+    let rejected = 0;
+    for (const e of mergedEvents) {
+      for (const f of Object.keys(c) as Focus[]) if (focusTest[f](e)) c[f]++;
+      if (focusTest.rights(e) && e.copyrightRejected > 0) rejected++;
+    }
+    return { ...c, rightsRejected: rejected };
+  }, [mergedEvents, focusTest]);
+  const pendingCount = counts.queue;
   // Derived, not stored, so approving the last one cannot strand the viewer on an
-  // empty board with the chip already gone and no way to switch it off.
-  const queueActive = queueOnly && pendingCount > 0;
+  // empty board with the chip already gone and no way to switch it off. Same for
+  // every tile: a focus whose count fell to 0 simply stops filtering.
+  const activeFocus: Focus | null = focus && counts[focus] > 0 ? focus : null;
+  const queueActive = activeFocus === "queue";
+
+  const toggleFocus = (f: Focus) => {
+    // Switching a focus ON clears the band and date filters. `filtered` already
+    // ignores them, but the BUCKETS are built from `bandFilter` (in รายวง mode the
+    // board renders one section per selected band), so without this a band filter
+    // still hid rows the tile was counting — the very bug the count exists to
+    // prevent, one level down. Clearing them also makes the two selects SAY
+    // "ทุกวง / ทุกวัน", so the controls agree with what is on screen instead of
+    // contradicting it.
+    const on = activeFocus !== f;
+    if (on) {
+      setBandFilter("all");
+      setDateFilter("all");
+    }
+    setFocus(on ? f : null);
+  };
+
+  const dateActive = dateFilter !== "all" && availableDates.includes(dateFilter);
 
   // Apply the date filter on top of the band filter. Guard against a stale date
   // (e.g. after switching band) by falling back to the whole band scope.
   const filtered = useMemo(() => {
-    // The queue ignores the band and date filters on purpose: it must always show
-    // exactly what the count promises, or it is lying about the size of the queue.
-    if (queueActive) return sortedEvents.filter((e) => e.status === "pending_review");
-    if (dateFilter === "all" || !byBand.some((e) => e.event_date === dateFilter)) {
-      return byBand;
-    }
+    // A focus ignores the band and date filters on purpose: it must always show
+    // exactly what its count promises, or it is lying about the size of the queue.
+    if (activeFocus) return sortedEvents.filter(focusTest[activeFocus]);
+    if (!dateActive) return byBand;
     return byBand.filter((e) => e.event_date === dateFilter);
-  }, [byBand, dateFilter, queueActive, sortedEvents]);
+  }, [byBand, dateFilter, dateActive, activeFocus, focusTest, sortedEvents]);
+
+  // Today and what is coming first; the past folds away underneath. Not while a focus
+  // or a picked day is on — those show exactly what was asked for, past or not.
+  const folding = !activeFocus && !dateActive;
+  const upcoming = useMemo(
+    () => (folding ? filtered.filter((e) => !isPast(e)) : filtered),
+    [filtered, folding, isPast]
+  );
+  const past = useMemo(
+    () =>
+      folding
+        ? filtered
+            .filter(isPast)
+            // Most recent first: the show that just happened is the one looked up.
+            .sort(byDateThen(stageMinutes, true))
+        : [],
+    [filtered, folding, isPast]
+  );
+
+  const showBandColumn = mode !== "band";
+  const showRosters = mode === "band";
+
+  const boardBuckets = useMemo(
+    () =>
+      bucketize(upcoming, mode, bands, bandFilter, {
+        // Empty band sections stay for their rosters — not under a focus, which is
+        // a list of things to act on.
+        keepEmptyBands: showRosters && !activeFocus,
+      }),
+    [upcoming, mode, bands, bandFilter, showRosters, activeFocus]
+  );
+  const pastBuckets = useMemo(
+    () => bucketize(past, mode, bands, bandFilter, { keepEmptyBands: false, newestFirst: true }),
+    [past, mode, bands, bandFilter]
+  );
+
+  // The JPG is what the staffer is looking at: the upcoming board, plus the past only
+  // while its fold is open (or whatever a focus / picked day shows) — in date order,
+  // one section per band / show / period, as before the fold existed.
+  const exportEvents = pastOpen ? filtered : upcoming;
+  const exportBuckets = useMemo(
+    () => bucketize(exportEvents, mode, bands, bandFilter, { keepEmptyBands: false }),
+    [exportEvents, mode, bands, bandFilter]
+  );
 
   const bandFilterLabel =
     bandFilter === "all"
       ? "ทุกวง"
       : bands.find((b) => b.id === bandFilter)?.name ?? "ทุกวง";
 
-  const dateActive = dateFilter !== "all" && availableDates.includes(dateFilter);
-
   const modeLabel = VIEW_MODES.find((m) => m.value === mode)?.label ?? "";
 
   // Contact block for the export: label crew first, then a rep for each band that
-  // appears in the current (filtered) view — unique, in first-appearance order.
+  // appears in the current (exported) view — unique, in first-appearance order.
   const bandById = useMemo(() => new Map(bands.map((b) => [b.id, b])), [bands]);
   const exportContacts = useMemo(() => {
     type Row = {
@@ -1116,7 +1599,7 @@ export function OverviewClient({
       }));
     const seen = new Set<string>();
     const reps: Row[] = [];
-    for (const ev of filtered) {
+    for (const ev of exportEvents) {
       if (seen.has(ev.group_id)) continue;
       seen.add(ev.group_id);
       const b = bandById.get(ev.group_id);
@@ -1131,7 +1614,7 @@ export function OverviewClient({
       }
     }
     return { crew, reps };
-  }, [staffContacts, filtered, bandById]);
+  }, [staffContacts, exportEvents, bandById]);
 
   async function exportImage() {
     const el = exportRef.current;
@@ -1157,224 +1640,263 @@ export function OverviewClient({
     }
   }
 
-  // In "band" mode we list every band (even with 0 events) so rosters show.
-  const buckets = useMemo<Bucket[]>(() => {
-    if (mode === "band") {
-      const shown = bandFilter === "all" ? bands : bands.filter((b) => b.id === bandFilter);
-      return shown.map((b) => ({
-        key: b.id,
-        label: b.name,
-        color: b.color,
-        events: filtered.filter((e) => e.group_id === b.id),
-      }));
-    }
-    if (mode === "event") {
-      // Group by (date + name): one header per show, with its bands listed beneath.
-      // A festival where several bands share a name + day collapses to ONE header;
-      // a day with two differently-named shows gets two. `filtered` is already in
-      // date→time order, and Map keeps first-seen order, so groups stay sorted.
-      const map = new Map<string, Bucket>();
-      for (const ev of filtered) {
-        const key = `${ev.event_date ?? NO_DATE_KEY}__${ev.name}`;
-        const b =
-          map.get(key) ??
-          ({ key, label: ev.name, date: ev.event_date, events: [] } as Bucket);
-        b.events.push(ev);
-        map.set(key, b);
-      }
-      return Array.from(map.values());
-    }
-    const map = new Map<string, Bucket>();
-    for (const ev of filtered) {
-      const { key, label } = bucketOf(ev, mode);
-      const b = map.get(key) ?? { key, label, events: [] };
-      b.events.push(ev);
-      map.set(key, b);
-    }
-    return Array.from(map.values()).sort((a, b) => a.key.localeCompare(b.key));
-  }, [mode, bandFilter, bands, filtered]);
+  // One board section (a band, a show, a day …): its header, the three activity
+  // sections, and — in รายวง — the band's roster. `newestFirst` for the Past fold.
+  const renderBucket = (bucket: Bucket, rosters: boolean, newestFirst = false) => {
+    const band = rosters ? bands.find((b) => b.id === bucket.key) : undefined;
+    return (
+      <section key={bucket.key} className="space-y-3">
+        {(bucket.label || bucket.date) && (
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
+            {bucket.color !== undefined && (
+              <BandSquare color={bucket.color} className="h-3.5 w-3.5 rounded-[2px]" />
+            )}
+            {bucket.label && (
+              <h3 className="disp min-w-0 break-words text-[20px] leading-tight">
+                {bucket.label}
+              </h3>
+            )}
+            {bucket.date && (
+              <span className="chip chip-neutral">
+                <CalendarDays aria-hidden />
+                <span className="num text-[13px]">{fmtDateWd(bucket.date)}</span>
+              </span>
+            )}
+            <span className="text-[13px] text-muted-foreground">
+              · <span className="num text-[14px] text-foreground">{bucket.events.length}</span>{" "}
+              {mode === "event" ? "วง" : "งาน"}
+              {band ? (
+                <>
+                  {" "}
+                  · <span className="num text-[14px] text-foreground">{band.members.length}</span> คน
+                </>
+              ) : null}
+            </span>
+            {canApproveEvents && mode !== "band" && (
+              <FestivalRunControls
+                bucketEvents={bucket.events}
+                runOrderSet={runOrderSet}
+              />
+            )}
+          </div>
+        )}
 
-  const showBandColumn = mode !== "band";
-  const showRosters = mode === "band";
+        {bucket.events.length > 0 && (
+          // Three time-ordered sections (Stage / Photo / Booth) — same at every
+          // view mode. The bucket header already carries the name/date, so the
+          // rows lead with the act and its time.
+          <ActivityTables
+            events={bucket.events}
+            showBandColumn={showBandColumn}
+            canOpenDetail={canOpenDetail}
+            isLabelWide={isLabelWide}
+            canApproveEvents={canApproveEvents}
+            onStatusChanged={handleStatusChanged}
+            todayKey={todayKey}
+            newestFirst={newestFirst}
+          />
+        )}
+
+        {band && band.members.length > 0 && (
+          <div className="flex flex-wrap items-center gap-1.5">
+            <Users className="h-4 w-4 text-muted-foreground" aria-label="สมาชิก" />
+            {band.members.map((m) => (
+              <span key={m.id} className="chip chip-neutral text-foreground">
+                {m.mic_number != null && (
+                  <span className="num text-[13px] text-muted-foreground">{m.mic_number}</span>
+                )}
+                {m.label}
+              </span>
+            ))}
+          </div>
+        )}
+      </section>
+    );
+  };
+
+  const boardHasRows = boardBuckets.some((b) => b.events.length > 0);
+  const boardTitle = activeFocus
+    ? FOCUS_TITLE[activeFocus]
+    : dateActive
+      ? "Day"
+      : "Upcoming";
 
   return (
     <PhotoSaveContext.Provider value={handlePhotoSaved}>
-    <div className="space-y-6">
-      {/* Filter controls */}
-      <div className="flex flex-wrap items-center gap-3 rounded-lg border bg-muted/20 p-3">
-        <div className="flex flex-wrap items-center gap-1">
+    <div className="space-y-4">
+      <TodayHero
+        todayKey={todayKey}
+        events={mergedEvents}
+        canOpenDetail={canOpenDetail}
+        actions={
+          <>
+            {/* Only approvers see it, and only when something is actually waiting —
+                a chip reading "รออนุมัติ 0" is furniture. */}
+            {canApproveEvents && pendingCount > 0 && (
+              <Button
+                type="button"
+                data-testid="approval-queue-chip"
+                aria-pressed={queueActive}
+                onClick={() => toggleFocus("queue")}
+                title={
+                  queueActive
+                    ? "กลับไปดูตารางทั้งหมด"
+                    : "ดูเฉพาะงานที่รออนุมัติ (รวมงานที่วันงานผ่านไปแล้ว)"
+                }
+                className="h-12 flex-1 px-3 aria-pressed:bg-foreground aria-pressed:text-background sm:flex-none sm:px-6"
+              >
+                <Hourglass aria-hidden />
+                รออนุมัติ <span className="num text-[19px]">{pendingCount}</span>
+              </Button>
+            )}
+            <Button
+              variant="secondary"
+              onClick={exportImage}
+              disabled={exporting || exportEvents.length === 0}
+              title="บันทึกตารางงานเป็นรูปไปแจกให้สตาฟ/วง"
+              className="h-12 flex-1 px-3 sm:flex-none sm:px-6"
+            >
+              {exporting ? (
+                <Loader2 className="animate-spin" aria-hidden />
+              ) : (
+                <ImageDown aria-hidden />
+              )}
+              บันทึกเป็นรูป
+            </Button>
+          </>
+        }
+      />
+
+      <div role="group" aria-label="ตัวกรองด่วน" className="grid grid-cols-3 gap-[2px]">
+        <KpiTile
+          icon={CalendarDays}
+          iconClass="text-primary-ink"
+          count={counts.week}
+          label="งานใน 7 วัน"
+          active={activeFocus === "week"}
+          onToggle={() => toggleFocus("week")}
+          title="ดูเฉพาะงานตั้งแต่วันนี้ถึงอีก 7 วัน"
+        />
+        <KpiTile
+          icon={TriangleAlert}
+          iconClass="text-warning-ink"
+          count={counts.missing}
+          label="ยังเตรียมไม่ครบ"
+          active={activeFocus === "missing"}
+          onToggle={() => toggleFocus("missing")}
+          title="ดูเฉพาะงานที่จะถึงซึ่งยังขาดข้อมูลที่ต้องมี"
+        />
+        <KpiTile
+          icon={ShieldAlert}
+          iconClass={counts.rightsRejected > 0 ? "text-destructive" : "text-warning-ink"}
+          count={counts.rights}
+          label="ติดลิขสิทธิ์"
+          active={activeFocus === "rights"}
+          onToggle={() => toggleFocus("rights")}
+          title="ดูเฉพาะงานที่จะถึงซึ่งมีเพลงรอตรวจหรือไม่ผ่านลิขสิทธิ์"
+        />
+      </div>
+
+      {/* View + filters */}
+      <div className="space-y-2">
+        <div
+          role="group"
+          aria-label="มุมมอง"
+          className="seg grid-flow-row grid-cols-3 sm:grid-flow-col sm:grid-cols-none [&>*]:h-11 sm:[&>*]:h-[38px]"
+        >
           {VIEW_MODES.map((m) => (
             <button
               key={m.value}
               type="button"
+              aria-pressed={mode === m.value}
               onClick={() => setMode(m.value)}
               className={cn(
-                "rounded-md px-3 py-1.5 text-sm font-medium transition-colors",
-                mode === m.value
-                  ? "bg-primary text-primary-foreground"
-                  : "text-muted-foreground hover:bg-muted"
+                "transition-colors duration-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
+                mode === m.value ? "on" : "hover:text-foreground"
               )}
             >
               {m.label}
             </button>
           ))}
         </div>
-        <div className="ml-auto flex flex-wrap items-center gap-2">
-          {/* Only approvers see it, and only when something is actually waiting —
-              a chip reading "รออนุมัติ 0" is furniture. */}
-          {canApproveEvents && pendingCount > 0 && (
-            <button
-              type="button"
-              data-testid="approval-queue-chip"
-              aria-pressed={queueActive}
-              onClick={() => {
-                // Switching the queue ON clears the band and date filters. `filtered`
-                // already ignores them, but the BUCKETS are built from `bandFilter`
-                // (in รายวง mode the board renders one section per selected band), so
-                // without this a band filter still hid rows the chip was counting —
-                // the very bug the count exists to prevent, one level down. Clearing
-                // them also makes the two selects SAY "ทุกวง / ทุกวัน", so the
-                // controls agree with what is on screen instead of contradicting it.
-                setQueueOnly((v) => {
-                  if (!v) {
-                    setBandFilter("all");
-                    setDateFilter("all");
-                  }
-                  return !v;
-                });
-              }}
-              title={
-                queueActive
-                  ? "กลับไปดูตารางทั้งหมด"
-                  : "ดูเฉพาะงานที่รออนุมัติ (รวมงานที่วันงานผ่านไปแล้ว)"
-              }
-              className={cn(
-                "inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm font-medium transition-colors",
-                queueActive
-                  ? "border-warning bg-warning text-warning-foreground"
-                  : "border-warning/60 text-warning hover:bg-warning/10"
-              )}
-            >
-              <Inbox className="h-4 w-4" />
-              รออนุมัติ {pendingCount}
-            </button>
-          )}
-          {availableDates.length > 1 && (
-            <select
-              value={dateFilter}
-              onChange={(e) => setDateFilter(e.target.value)}
-              className="rounded-md border bg-background px-2 py-1.5 text-base sm:text-sm"
-              title="กรองเฉพาะวันที่เลือก — ถ่ายรูปเฉพาะวันนั้น"
-            >
-              <option value="all">ทุกวัน</option>
-              {availableDates.map((d) => (
-                <option key={d} value={d}>
-                  {fmtDateWd(d)}
-                </option>
-              ))}
-            </select>
-          )}
-          {bands.length > 1 && (
-            <select
-              value={bandFilter}
-              onChange={(e) => setBandFilter(e.target.value)}
-              className="rounded-md border bg-background px-2 py-1.5 text-base sm:text-sm"
-            >
-              <option value="all">ทุกวง</option>
-              {bands.map((b) => (
-                <option key={b.id} value={b.id}>
-                  {b.name}
-                </option>
-              ))}
-            </select>
-          )}
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={exportImage}
-            disabled={exporting || filtered.length === 0}
-            title="บันทึกตารางงานเป็นรูปไปแจกให้สตาฟ/วง"
-          >
-            {exporting ? (
-              <Loader2 className="h-4 w-4 animate-spin" />
-            ) : (
-              <ImageDown className="h-4 w-4" />
+        {(availableDates.length > 1 || bands.length > 1) && (
+          <div className="flex flex-wrap gap-2">
+            {availableDates.length > 1 && (
+              <select
+                value={dateFilter}
+                onChange={(e) => setDateFilter(e.target.value)}
+                aria-label="เลือกวัน"
+                className={cn(FIELD, "h-11 min-w-0 flex-1 px-3 text-base sm:h-10 sm:flex-none sm:text-sm")}
+                title="กรองเฉพาะวันที่เลือก — ถ่ายรูปเฉพาะวันนั้น"
+              >
+                <option value="all">ทุกวัน</option>
+                {availableDates.map((d) => (
+                  <option key={d} value={d}>
+                    {fmtDateWd(d)}
+                  </option>
+                ))}
+              </select>
             )}
-            บันทึกเป็นรูป
-          </Button>
-        </div>
+            {bands.length > 1 && (
+              <select
+                value={bandFilter}
+                onChange={(e) => setBandFilter(e.target.value)}
+                aria-label="เลือกวง"
+                className={cn(FIELD, "h-11 min-w-0 flex-1 px-3 text-base sm:h-10 sm:flex-none sm:text-sm")}
+              >
+                <option value="all">ทุกวง</option>
+                {bands.map((b) => (
+                  <option key={b.id} value={b.id}>
+                    {b.name}
+                  </option>
+                ))}
+              </select>
+            )}
+          </div>
+        )}
       </div>
 
-      {buckets.length === 0 || buckets.every((b) => b.events.length === 0 && !showRosters) ? (
-        <p className="rounded-lg border border-dashed py-16 text-center text-muted-foreground">
+      <div className="flex items-end justify-between gap-3 pt-2">
+        <h2 className="h2">{boardTitle}</h2>
+        <span className="pb-0.5 text-[13px] text-muted-foreground">
+          <span className="num text-[16px] text-foreground">{upcoming.length}</span> งาน
+        </span>
+      </div>
+
+      {!boardHasRows && !showRosters ? (
+        <p className="rounded-[2px] border border-dashed border-border py-12 text-center text-[14px] text-muted-foreground">
+          {past.length > 0 ? "ไม่มีงานที่จะถึงในมุมมองนี้ — งานที่ผ่านไปแล้วอยู่ด้านล่าง" : "ไม่มีงานในมุมมองนี้"}
+        </p>
+      ) : boardBuckets.length === 0 ? (
+        <p className="rounded-[2px] border border-dashed border-border py-12 text-center text-[14px] text-muted-foreground">
           ไม่มีงานในมุมมองนี้
         </p>
       ) : (
-        buckets.map((bucket) => {
-          const band = showRosters ? bands.find((b) => b.id === bucket.key) : undefined;
-          // Hide empty time/event buckets; keep empty band sections (for rosters).
-          if (!showRosters && bucket.events.length === 0) return null;
-          return (
-            <section key={bucket.key} className="space-y-3">
-              {(bucket.label || bucket.date) && (
-                <div className="flex flex-wrap items-center gap-2">
-                  {bucket.color !== undefined && (
-                    <span
-                      className="inline-block h-3 w-3 rounded-full"
-                      style={{ background: bucket.color || "var(--primary)" }}
-                    />
-                  )}
-                  {bucket.label && (
-                    <h2 className="text-lg font-semibold">{bucket.label}</h2>
-                  )}
-                  {bucket.date && (
-                    <span className="rounded-md bg-muted px-2 py-0.5 text-sm font-medium tabular-nums text-muted-foreground">
-                      {fmtDateWd(bucket.date)}
-                    </span>
-                  )}
-                  <span className="text-sm text-muted-foreground">
-                    · {bucket.events.length} {mode === "event" ? "วง" : "งาน"}
-                    {band ? ` · ${band.members.length} คน` : ""}
-                  </span>
-                  {canApproveEvents && mode !== "band" && (
-                    <FestivalRunControls
-                      bucketEvents={bucket.events}
-                      runOrderSet={runOrderSet}
-                    />
-                  )}
-                </div>
-              )}
+        <div className="space-y-6">{boardBuckets.map((b) => renderBucket(b, showRosters))}</div>
+      )}
 
-              {bucket.events.length > 0 && (
-                // Three time-ordered tables (Stage / Photo / Booth) — same at every
-                // view mode. The bucket header already carries the name/date, so the
-                // tables lead with the act and its time.
-                <ActivityTables
-                  events={bucket.events}
-                  showBandColumn={showBandColumn}
-                  canOpenDetail={canOpenDetail}
-                  isLabelWide={isLabelWide}
-                  canApproveEvents={canApproveEvents}
-                  onStatusChanged={handleStatusChanged}
-                />
-              )}
-
-              {band && band.members.length > 0 && (
-                <div className="flex flex-wrap items-center gap-1.5">
-                  <Users className="h-4 w-4 text-muted-foreground" />
-                  {band.members.map((m) => (
-                    <span key={m.id} className="rounded-full border px-2 py-0.5 text-xs">
-                      {m.mic_number != null && (
-                        <span className="mr-1 font-semibold tabular-nums">{m.mic_number}</span>
-                      )}
-                      {m.label}
-                    </span>
-                  ))}
-                </div>
-              )}
-            </section>
-          );
-        })
+      {/* The past, folded. A <details> keeps the rows in the document while shut —
+          they are still part of the board, one tap away — and the export follows
+          whether it is open. */}
+      {past.length > 0 && (
+        <details
+          open={pastOpen}
+          onToggle={(e) => setPastOpen(e.currentTarget.open)}
+          className="group pt-2"
+        >
+          <summary className="flex min-h-11 cursor-pointer list-none items-center gap-2 rounded-[2px] bg-card px-3 py-2 shadow-edge transition-colors duration-2 hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
+            <History className="h-[18px] w-[18px] shrink-0 text-muted-foreground" aria-hidden />
+            <span className="h2 text-[22px]">Past</span>
+            <span className="text-[13px] text-muted-foreground">
+              <span className="num text-[15px] text-foreground">{past.length}</span> งานที่ผ่านไปแล้ว
+            </span>
+            <ChevronDown
+              aria-hidden
+              className="ml-auto h-5 w-5 shrink-0 text-muted-foreground transition-transform duration-2 group-open:rotate-180"
+            />
+          </summary>
+          <div className="mt-4 space-y-6">{pastBuckets.map((b) => renderBucket(b, false, true))}</div>
+        </details>
       )}
 
       {/* Off-screen clean schedule — rendered only so it can be captured as a JPG
@@ -1384,6 +1906,7 @@ export function OverviewClient({
           schedule can exceed 10000px and its right edge then bleeds back over the
           page, covering the top with its bg-card.) exportRef keeps its full natural
           size for the capture; the helper forces a light palette + fixed width on it.
+          Flat and upright, tokens only (spec §D) — none of the board's stage dress.
           Gated on `mounted` so it's client-only — see the note by the state. */}
       {mounted && (
       <div className="pointer-events-none fixed left-0 top-0 h-0 w-0 overflow-hidden" aria-hidden>
@@ -1391,17 +1914,17 @@ export function OverviewClient({
           <div className="border-b pb-3">
             <h2 className="text-xl font-bold leading-tight">{labelName}</h2>
             <p className="text-sm text-muted-foreground">
-              {queueActive ? "งานที่รออนุมัติ" : `ตารางงาน · ${modeLabel} · ${bandFilterLabel}`}
-              {!queueActive && dateActive ? ` · ${fmtDateWd(dateFilter)}` : ""} ·{" "}
-              {filtered.length} งาน
+              {activeFocus
+                ? FOCUS_EXPORT_LABEL[activeFocus]
+                : `ตารางงาน · ${modeLabel} · ${bandFilterLabel}`}
+              {!activeFocus && dateActive ? ` · ${fmtDateWd(dateFilter)}` : ""} ·{" "}
+              {exportEvents.length} งาน
             </p>
           </div>
           {/* Mirror the on-screen grouping (buckets follow the current view mode)
               so "capture" produces whatever arrangement the staff are looking at —
               by band, by day, by week/month/year, or the flat report. */}
-          {buckets
-            .filter((b) => b.events.length > 0)
-            .map((bucket) => {
+          {exportBuckets.map((bucket) => {
               // The flat period views (รายวัน/สัปดาห์/เดือน/ปี) sub-group each
               // period's shows by event so a festival's name + date sit ONCE in a
               // sub-header with its bands beneath — not repeated on every row. The

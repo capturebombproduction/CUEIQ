@@ -1,8 +1,8 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useRef, useState, type CSSProperties } from "react";
 import { toast } from "sonner";
-import { Plus, Trash2, Users } from "lucide-react";
+import { Mic, Plus, Trash2, Users } from "lucide-react";
 import { BulkAddMembers } from "@/components/group/bulk-add-members";
 import { createClient } from "@/lib/supabase/client";
 import { removeEventAudio } from "@/lib/audio-remote";
@@ -10,10 +10,11 @@ import { noRowsMessage, wroteNothing } from "@/lib/write-guard";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
-import { Card, CardContent, CardHeader } from "@/components/ui/card";
-import { canEditGroup, isAdmin, type Perms } from "@/lib/permissions";
+import { canEditGroup, groupRoleOf, isAdmin, type Perms } from "@/lib/permissions";
 import { useConfirm } from "@/components/ui/confirm-dialog";
 import type { Group, Member } from "@/lib/types";
+import { bandTriplet } from "@/lib/band-triplet";
+import { cn } from "@/lib/utils";
 
 export function GroupManager({
   tenantId,
@@ -261,10 +262,20 @@ export function GroupManager({
     }
   }
 
+  // The viewer's own band is the screen's one lit hero, first in the list: the band
+  // they hold a role in, or the only band they can see. An admin with no band of
+  // their own gets no hero — every band reads the same.
+  const ownId =
+    groups.find((g) => groupRoleOf(perms, g.id) !== null)?.id ??
+    (groups.length === 1 ? groups[0].id : null);
+  const ordered = ownId
+    ? [...groups.filter((g) => g.id === ownId), ...groups.filter((g) => g.id !== ownId)]
+    : groups;
+
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
       {admin && (
-        <div className="flex gap-2">
+        <div className="flex gap-2 sm:max-w-md">
           <Input
             value={newGroup}
             onChange={(e) => setNewGroup(e.target.value)}
@@ -272,235 +283,328 @@ export function GroupManager({
               if (e.key === "Enter") addGroup();
             }}
             placeholder="ชื่อวงใหม่ (เช่น Seishin Kakumei)"
-            className="max-w-xs"
+            aria-label="ชื่อวงใหม่"
+            className="min-w-0 flex-1"
           />
-          <Button onClick={addGroup} disabled={busy}>
-            <Plus className="h-4 w-4" /> เพิ่มวง
+          <Button onClick={addGroup} disabled={busy} className="shrink-0">
+            <Plus aria-hidden /> เพิ่มวง
           </Button>
         </div>
       )}
 
       {groups.length === 0 ? (
-        <div className="flex flex-col items-center gap-3 rounded-lg border border-dashed py-16 text-center">
-          <Users className="h-10 w-10 text-muted-foreground" />
+        <div className="flex flex-col items-center gap-3 rounded-[2px] border border-dashed border-border py-16 text-center">
+          <Users className="h-10 w-10 text-muted-foreground" aria-hidden />
           <p className="text-muted-foreground">ยังไม่มีวง</p>
         </div>
       ) : (
-        groups.map((g) => {
-          const gm = membersOf(g.id);
-          return (
-            <Card key={g.id}>
-              <CardHeader className="flex flex-row flex-wrap items-center gap-2 space-y-0">
-                <input
-                  type="color"
-                  value={g.color ?? "#7c3aed"}
-                  disabled={!admin}
-                  onChange={(e) => setGroupLocal(g.id, { color: e.target.value })}
-                  onBlur={(e) => persistGroup(g.id, { color: e.target.value })}
-                  className="h-8 w-8 shrink-0 cursor-pointer rounded border bg-transparent"
-                  aria-label="สีวง"
-                />
-                <Input
-                  value={g.name}
-                  disabled={!admin}
-                  onChange={(e) => setGroupLocal(g.id, { name: e.target.value })}
-                  onFocus={() => {
-                    nameAtFocus.current[g.id] = g.name;
-                  }}
-                  onBlur={(e) => {
-                    const name = e.target.value.trim();
-                    // `g.name` is ALREADY the edited (emptied) value by the time blur
-                    // fires, so the old `|| g.name` fallback was '' || '' — clearing the
-                    // field saved an empty name and the band went blank everywhere
-                    // (Overview, export, event list, band dropdowns) with no way to tell
-                    // which row is which. Put the name back instead of persisting it.
-                    if (!name) {
-                      setGroupLocal(g.id, { name: nameAtFocus.current[g.id] ?? g.name });
-                      toast.error("ชื่อวงว่างไม่ได้ — คืนชื่อเดิมให้แล้ว");
-                      return;
-                    }
-                    persistGroup(g.id, { name });
-                  }}
-                  className="h-9 max-w-xs flex-1 text-base font-semibold"
-                />
-                <Badge variant="secondary">{gm.length} คน</Badge>
-                {admin &&
-                  (g.skin ? (
-                    <div className="flex items-center gap-1 text-xs text-muted-foreground">
-                      <span>ธีมแอป</span>
-                      <input
-                        type="color"
-                        value={g.skin}
-                        onChange={(e) => setGroupLocal(g.id, { skin: e.target.value })}
-                        onBlur={(e) => persistGroup(g.id, { skin: e.target.value })}
-                        className="h-7 w-7 shrink-0 cursor-pointer rounded border bg-transparent"
-                        aria-label="สีธีมทั้งแอปของวง"
-                        title="สีธีมทั้งแอปเวลาดูงานของวงนี้"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setGroupLocal(g.id, { skin: null });
-                          persistGroup(g.id, { skin: null });
-                        }}
-                        className="rounded px-1.5 py-0.5 hover:bg-muted"
-                      >
-                        ปิด
-                      </button>
-                    </div>
+        <div className="space-y-3">
+          {ordered.map((g) => {
+            const gm = membersOf(g.id);
+            const hero = g.id === ownId;
+            const editable = canEditRoster(g.id);
+            return (
+              <section
+                key={g.id}
+                aria-label={g.name}
+                data-band-hero={hero || undefined}
+                className={cn(hero ? "lit cut sweep [--cut:20px]" : "slab", "space-y-4 p-4")}
+                style={hero ? ({ "--lit": bandTriplet(g.color) } as CSSProperties) : undefined}
+              >
+                {/* Identity: colour square + name + head count. */}
+                <div className="flex flex-wrap items-center gap-3">
+                  {admin ? (
+                    <input
+                      type="color"
+                      value={g.color ?? "#7c3aed"}
+                      onChange={(e) => setGroupLocal(g.id, { color: e.target.value })}
+                      onBlur={(e) => persistGroup(g.id, { color: e.target.value })}
+                      className={SWATCH}
+                      aria-label="สีวง"
+                      title="สีวง"
+                    />
                   ) : (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        const hex = g.color ?? "#7c3aed";
-                        setGroupLocal(g.id, { skin: hex });
-                        persistGroup(g.id, { skin: hex });
+                    <span
+                      aria-hidden
+                      className="h-7 w-7 shrink-0 rounded-[2px]"
+                      style={{ background: `hsl(${bandTriplet(g.color)})` }}
+                    />
+                  )}
+                  {admin ? (
+                    <Input
+                      value={g.name}
+                      onChange={(e) => setGroupLocal(g.id, { name: e.target.value })}
+                      onFocus={() => {
+                        nameAtFocus.current[g.id] = g.name;
                       }}
-                      className="rounded border px-2 py-1 text-xs text-muted-foreground hover:bg-muted"
-                      title="ทำให้ทั้งแอปเป็นธีมสีวงนี้เวลาดูงานของวง"
-                    >
-                      + ธีมแอปวง
-                    </button>
-                  ))}
-                {admin && (
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="text-destructive hover:text-destructive"
-                    onClick={() => deleteGroup(g)}
-                    aria-label="ลบวง"
-                  >
-                    <Trash2 className="h-4 w-4" />
-                  </Button>
-                )}
-              </CardHeader>
-              <CardContent className="space-y-2">
-                {admin && (
-                  <div className="flex flex-wrap items-center gap-2 rounded-md border bg-muted/20 p-2">
-                    <span className="text-xs font-medium text-muted-foreground">
-                      ผู้ติดต่อวง:
-                    </span>
-                    <Input
-                      value={g.contact_name ?? ""}
-                      placeholder="ชื่อผู้ติดต่อ"
-                      className="h-8 min-w-[140px] flex-1"
-                      onChange={(e) =>
-                        setGroupLocal(g.id, { contact_name: e.target.value })
-                      }
-                      onBlur={(e) =>
-                        persistGroup(g.id, {
-                          contact_name: e.target.value.trim() || null,
-                        })
-                      }
+                      onBlur={(e) => {
+                        const name = e.target.value.trim();
+                        // `g.name` is ALREADY the edited (emptied) value by the time blur
+                        // fires, so the old `|| g.name` fallback was '' || '' — clearing the
+                        // field saved an empty name and the band went blank everywhere
+                        // (Overview, export, event list, band dropdowns) with no way to tell
+                        // which row is which. Put the name back instead of persisting it.
+                        if (!name) {
+                          setGroupLocal(g.id, { name: nameAtFocus.current[g.id] ?? g.name });
+                          toast.error("ชื่อวงว่างไม่ได้ — คืนชื่อเดิมให้แล้ว");
+                          return;
+                        }
+                        persistGroup(g.id, { name });
+                      }}
+                      aria-label="ชื่อวง"
+                      className="min-w-0 flex-1 text-[17px] font-semibold sm:max-w-xs sm:text-[17px]"
                     />
-                    <Input
-                      value={g.contact_phone ?? ""}
-                      placeholder="เบอร์โทร"
-                      className="h-8 min-w-[120px] flex-1 tabular-nums"
-                      onChange={(e) =>
-                        setGroupLocal(g.id, { contact_phone: e.target.value })
-                      }
-                      onBlur={(e) =>
-                        persistGroup(g.id, {
-                          contact_phone: e.target.value.trim() || null,
-                        })
-                      }
-                    />
+                  ) : (
+                    <h2 className="disp min-w-0 flex-1 break-words text-[22px] leading-tight">{g.name}</h2>
+                  )}
+                  <Badge variant="secondary">
+                    <Users aria-hidden />
+                    <span className="num text-[14px]">{gm.length}</span> คน
+                  </Badge>
+                </div>
+
+                {admin && (
+                  <div className="space-y-2 rounded-[2px] bg-muted p-3">
+                    {/* The app-wide skin while viewing this band's shows. */}
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="text-[13px] font-semibold text-muted-foreground">ธีมแอป</span>
+                      {g.skin ? (
+                        <>
+                          <input
+                            type="color"
+                            value={g.skin}
+                            onChange={(e) => setGroupLocal(g.id, { skin: e.target.value })}
+                            onBlur={(e) => persistGroup(g.id, { skin: e.target.value })}
+                            className={SWATCH}
+                            aria-label="สีธีมทั้งแอปของวง"
+                            title="สีธีมทั้งแอปเวลาดูงานของวงนี้"
+                          />
+                          <Button
+                            variant="secondary"
+                            size="sm"
+                            className="h-11 min-w-11 sm:h-9"
+                            onClick={() => {
+                              setGroupLocal(g.id, { skin: null });
+                              persistGroup(g.id, { skin: null });
+                            }}
+                          >
+                            ปิด
+                          </Button>
+                        </>
+                      ) : (
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          className="h-11 sm:h-9"
+                          onClick={() => {
+                            const hex = g.color ?? "#7c3aed";
+                            setGroupLocal(g.id, { skin: hex });
+                            persistGroup(g.id, { skin: hex });
+                          }}
+                          title="ทำให้ทั้งแอปเป็นธีมสีวงนี้เวลาดูงานของวง"
+                        >
+                          <Plus aria-hidden /> ธีมแอปวง
+                        </Button>
+                      )}
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="text-[13px] font-semibold text-muted-foreground">
+                        ผู้ติดต่อวง:
+                      </span>
+                      <Input
+                        value={g.contact_name ?? ""}
+                        placeholder="ชื่อผู้ติดต่อ"
+                        aria-label="ชื่อผู้ติดต่อวง"
+                        className="min-w-[140px] flex-1"
+                        onChange={(e) =>
+                          setGroupLocal(g.id, { contact_name: e.target.value })
+                        }
+                        onBlur={(e) =>
+                          persistGroup(g.id, {
+                            contact_name: e.target.value.trim() || null,
+                          })
+                        }
+                      />
+                      <Input
+                        value={g.contact_phone ?? ""}
+                        type="tel"
+                        inputMode="tel"
+                        placeholder="เบอร์โทร"
+                        aria-label="เบอร์โทรผู้ติดต่อวง"
+                        className="num min-w-[120px] flex-1 placeholder:font-sans placeholder:font-normal"
+                        onChange={(e) =>
+                          setGroupLocal(g.id, { contact_phone: e.target.value })
+                        }
+                        onBlur={(e) =>
+                          persistGroup(g.id, {
+                            contact_phone: e.target.value.trim() || null,
+                          })
+                        }
+                      />
+                    </div>
                   </div>
                 )}
+
                 {gm.length === 0 && (
                   <p className="py-2 text-center text-sm text-muted-foreground">
                     ยังไม่มีสมาชิก
                   </p>
                 )}
-                {gm.map((m) => (
-                  <div key={m.id} className="flex flex-wrap items-center gap-2">
-                    <Input
-                      value={m.name}
-                      disabled={!canEditRoster(g.id)}
-                      placeholder="ชื่อ"
-                      className="min-w-[120px] flex-1"
-                      onChange={(e) => setMemberLocal(m.id, { name: e.target.value })}
-                      onBlur={(e) => persistMember(m.id, { name: e.target.value })}
-                    />
-                    <Input
-                      value={m.nickname ?? ""}
-                      disabled={!canEditRoster(g.id)}
-                      placeholder="ชื่อเล่น"
-                      className="min-w-[100px] flex-1"
-                      onChange={(e) =>
-                        setMemberLocal(m.id, { nickname: e.target.value })
-                      }
-                      onBlur={(e) =>
-                        persistMember(m.id, {
-                          nickname: e.target.value.trim() || null,
-                        })
-                      }
-                    />
-                    <Input
-                      type="number"
-                      min={0}
-                      value={m.mic_number ?? ""}
-                      disabled={!canEditRoster(g.id)}
-                      placeholder="ไมค์"
-                      className="w-20 tabular-nums"
-                      onChange={(e) =>
-                        setMemberLocal(m.id, {
-                          mic_number:
-                            e.target.value === "" ? null : Number(e.target.value),
-                        })
-                      }
-                      onBlur={(e) =>
-                        persistMember(m.id, {
-                          mic_number:
-                            e.target.value === "" ? null : Number(e.target.value),
-                        })
-                      }
-                    />
-                    <input
-                      type="color"
-                      value={m.color ?? "#7c3aed"}
-                      disabled={!canEditRoster(g.id)}
-                      onChange={(e) =>
-                        setMemberLocal(m.id, { color: e.target.value })
-                      }
-                      onBlur={(e) =>
-                        persistMember(m.id, { color: e.target.value })
-                      }
-                      className="h-9 w-9 shrink-0 cursor-pointer rounded border bg-transparent"
-                      aria-label="สีสมาชิก"
-                    />
-                    {canEditRoster(g.id) && (
+
+                {editable ? (
+                  // Roster editor: one row per member, every field saves on blur.
+                  gm.length > 0 && (
+                    <ul className="stack">
+                      {gm.map((m) => (
+                        <li
+                          key={m.id}
+                          className="grid grid-cols-[minmax(0,1fr)_5.5rem_2.75rem_2.75rem] items-center gap-2 rounded-[2px] bg-muted p-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_5.5rem_2.75rem_2.75rem]"
+                        >
+                          <Input
+                            value={m.name}
+                            placeholder="ชื่อ"
+                            aria-label="ชื่อ"
+                            className="col-span-4 sm:col-span-1"
+                            onChange={(e) => setMemberLocal(m.id, { name: e.target.value })}
+                            onBlur={(e) => persistMember(m.id, { name: e.target.value })}
+                          />
+                          <Input
+                            value={m.nickname ?? ""}
+                            placeholder="ชื่อเล่น"
+                            aria-label="ชื่อเล่น"
+                            onChange={(e) =>
+                              setMemberLocal(m.id, { nickname: e.target.value })
+                            }
+                            onBlur={(e) =>
+                              persistMember(m.id, {
+                                nickname: e.target.value.trim() || null,
+                              })
+                            }
+                          />
+                          <Input
+                            type="number"
+                            min={0}
+                            value={m.mic_number ?? ""}
+                            placeholder="ไมค์"
+                            aria-label="เบอร์ไมค์"
+                            className="num placeholder:font-sans placeholder:font-normal"
+                            onChange={(e) =>
+                              setMemberLocal(m.id, {
+                                mic_number:
+                                  e.target.value === "" ? null : Number(e.target.value),
+                              })
+                            }
+                            onBlur={(e) =>
+                              persistMember(m.id, {
+                                mic_number:
+                                  e.target.value === "" ? null : Number(e.target.value),
+                              })
+                            }
+                          />
+                          <input
+                            type="color"
+                            value={m.color ?? "#7c3aed"}
+                            onChange={(e) =>
+                              setMemberLocal(m.id, { color: e.target.value })
+                            }
+                            onBlur={(e) =>
+                              persistMember(m.id, { color: e.target.value })
+                            }
+                            className={SWATCH}
+                            aria-label="สีสมาชิก"
+                          />
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="text-destructive hover:text-destructive"
+                            onClick={() => deleteMember(m.id)}
+                            aria-label="ลบสมาชิก"
+                          >
+                            <Trash2 aria-hidden />
+                          </Button>
+                        </li>
+                      ))}
+                    </ul>
+                  )
+                ) : (
+                  // Read-only: the roster as people, not as disabled form fields.
+                  gm.length > 0 && (
+                    <ul className="grid grid-cols-2 gap-[2px] sm:grid-cols-3 lg:grid-cols-4" aria-label="สมาชิก">
+                      {gm.map((m) => (
+                        <MemberTile key={m.id} m={m} />
+                      ))}
+                    </ul>
+                  )
+                )}
+
+                {(editable || admin) && (
+                  <div className="flex flex-wrap items-center gap-2">
+                    {editable && (
+                      <>
+                        <Button variant="secondary" onClick={() => addMember(g.id)}>
+                          <Plus aria-hidden /> เพิ่มสมาชิก
+                        </Button>
+                        <BulkAddMembers onAdd={(text) => bulkAddMembers(g.id, text)} />
+                      </>
+                    )}
+                    {admin && (
                       <Button
-                        variant="ghost"
-                        size="icon"
-                        className="text-destructive hover:text-destructive"
-                        onClick={() => deleteMember(m.id)}
-                        aria-label="ลบสมาชิก"
+                        variant="destructive-outline"
+                        className="ml-auto"
+                        onClick={() => deleteGroup(g)}
                       >
-                        <Trash2 className="h-4 w-4" />
+                        <Trash2 aria-hidden /> ลบวง
                       </Button>
                     )}
                   </div>
-                ))}
-                {canEditRoster(g.id) && (
-                  <div className="flex flex-wrap gap-2">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => addMember(g.id)}
-                      className="mt-1"
-                    >
-                      <Plus className="h-4 w-4" /> เพิ่มสมาชิก
-                    </Button>
-                    <BulkAddMembers onAdd={(text) => bulkAddMembers(g.id, text)} />
-                  </div>
                 )}
-              </CardContent>
-            </Card>
-          );
-        })
+              </section>
+            );
+          })}
+        </div>
       )}
     </div>
+  );
+}
+
+/** A native colour input drawn as a plain 44 px swatch (no browser chrome). */
+const SWATCH =
+  "h-11 w-11 shrink-0 cursor-pointer rounded-[2px] border-0 bg-transparent p-0 shadow-edge [&::-moz-color-swatch]:rounded-[2px] [&::-moz-color-swatch]:border-0 [&::-webkit-color-swatch-wrapper]:p-0 [&::-webkit-color-swatch]:rounded-[2px] [&::-webkit-color-swatch]:border-0";
+
+/** A Thai name's first letter, keeping a leading vowel with its consonant ("เช"). */
+function initialOf(label: string): string {
+  const chars = Array.from(label.trim());
+  if (!chars.length) return "?";
+  return /^[เแโใไ]$/.test(chars[0]) && chars[1] ? chars[0] + chars[1] : chars[0].toUpperCase();
+}
+
+/** One member in the read-only roster: a ring in their colour, nickname, mic. */
+function MemberTile({ m }: { m: Member }) {
+  const label = m.nickname?.trim() || m.name.trim() || "—";
+  const ring = m.color ? `hsl(${bandTriplet(m.color)})` : "hsl(var(--border))";
+  return (
+    <li className="flex min-w-0 items-center gap-3 rounded-[2px] bg-muted p-3">
+      <span
+        aria-hidden
+        className="grid h-12 w-12 shrink-0 place-items-center rounded-full bg-card text-[17px] font-semibold"
+        style={{ boxShadow: `0 0 0 3px ${ring}` }}
+      >
+        {initialOf(label)}
+      </span>
+      <div className="min-w-0 flex-1">
+        <p className="truncate text-[15px] font-semibold leading-tight">{label}</p>
+        {m.nickname && m.name && m.name.trim() !== label && (
+          <p className="truncate text-[12.5px] text-muted-foreground">{m.name}</p>
+        )}
+        <p className="mt-0.5 flex items-center gap-1 text-[12.5px] text-muted-foreground">
+          <Mic className="h-3.5 w-3.5" aria-hidden />
+          {m.mic_number != null ? (
+            <span className="num text-[15px] text-foreground">{m.mic_number}</span>
+          ) : (
+            "ไม่มีไมค์"
+          )}
+        </p>
+      </div>
+    </li>
   );
 }

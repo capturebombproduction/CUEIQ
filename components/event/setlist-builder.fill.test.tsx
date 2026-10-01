@@ -163,6 +163,30 @@ describe("SetlistBuilder — review fixes", () => {
     expect(screen.queryByRole("button", { name: /เวลาที่เหลือ/ })).toBeNull();
   });
 
+  // The RUN TIME slab (spec G.3) moved the fill button beside the in-time / over
+  // line. It must stay inside the "there IS a hard out" guard: with none, the slot
+  // is unknown, `hardOutSec - endSec` is NaN-or-worse, and a "fill" toward a
+  // missing hard out would stretch the closing row to nonsense.
+  it("offers no fill at all when the show has no hard out", () => {
+    render(
+      <ConfirmProvider>
+        <SetlistBuilder
+          eventId={EVENT_ID}
+          tenantId={TENANT_ID}
+          editable
+          initialItems={set(100)}
+          showStartTime="13:00:00"
+          hardOutTime={null}
+          members={[]}
+          songs={[]}
+          eventName="Test show"
+        />
+      </ConfirmProvider>
+    );
+    expect(screen.queryByRole("button", { name: /เติมให้พอดี/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /เวลาที่เหลือ/ })).toBeNull();
+  });
+
   it("offers no banner fill when the set ends on a SONG — that length is the track's", () => {
     const items = set(100).slice(0, 4); // ends on "Overclock Strike", with slack
     mountWith(items, "13:00:00");

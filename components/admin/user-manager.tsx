@@ -2,12 +2,12 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
-import { Plus, Pencil, Trash2, Loader2, UserPlus, ShieldCheck, Lock, KeyRound, Copy } from "lucide-react";
+import { Plus, Pencil, Trash2, Loader2, UserPlus, ShieldCheck, Lock, KeyRound, Copy, Search } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
-import { Card, CardContent } from "@/components/ui/card";
+import { cn } from "@/lib/utils";
 import {
   Dialog,
   DialogContent,
@@ -59,6 +59,10 @@ const BAND_ROLE_LABELS: Record<BandRole, string> = {
   member: "สมาชิก (ดูอย่างเดียว)",
   artist_manager: "Ar (แก้ไขวงได้)",
 };
+
+/** The users list's columns from md (name · role · bands · actions); one stacked
+ *  slab per user below that. The action column is fixed so every row lines up. */
+const USER_COLS = "md:grid-cols-[minmax(0,1.2fr)_8.5rem_minmax(0,1.6fr)_9rem]";
 
 function levelOf(u: ManagedUser): AccessLevel {
   if (u.tenantRole === "admin" || u.tenantRole === "ceo" || u.tenantRole === "label_staff") {
@@ -286,110 +290,155 @@ export function UserManager({
   }
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-3">
       <div className="flex items-center justify-between gap-3">
-        <span className="shrink-0 text-sm text-muted-foreground">
-          {query.trim() ? `${visibleUsers.length}/${users.length}` : users.length} บัญชี
+        <span className="shrink-0 text-[13px] text-muted-foreground">
+          <span className="num text-[17px] text-foreground">
+            {query.trim() ? `${visibleUsers.length}/${users.length}` : users.length}
+          </span>{" "}
+          บัญชี
         </span>
         <Button onClick={openCreate}>
-          <UserPlus className="h-4 w-4" /> สร้างบัญชีใหม่
+          <UserPlus aria-hidden /> สร้างบัญชีใหม่
         </Button>
       </div>
 
-      <Input
-        type="text"
-        value={query}
-        onChange={(e) => setQuery(e.target.value)}
-        placeholder="ค้นหา: ชื่อผู้ใช้ / ชื่อ / วง / สิทธิ์"
-        className="max-w-sm"
-      />
-
-      <div className="space-y-2">
-        {visibleUsers.length === 0 && (
-          <p className="py-6 text-center text-sm text-muted-foreground">
-            ไม่พบบัญชีที่ตรงกับ &ldquo;{query.trim()}&rdquo;
-          </p>
-        )}
-        {visibleUsers.map((u) => {
-          const level = levelOf(u);
-          const isMaster = isMasterAdminEmail(u.email);
-          return (
-            <Card key={u.user_id}>
-              <CardContent className="flex flex-wrap items-center gap-3 p-4">
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-2">
-                    <span className="truncate font-medium">
-                      {u.full_name || displayLoginId(u.email) || u.user_id}
-                    </span>
-                    {u.user_id === currentUserId && (
-                      <Badge variant="outline" className="text-[10px]">
-                        คุณ
-                      </Badge>
-                    )}
-                    {isMaster && (
-                      <Badge className="gap-1 text-[10px]">
-                        <Lock className="h-3 w-3" />
-                        Master
-                      </Badge>
-                    )}
-                  </div>
-                  {u.email && (
-                    <div className="truncate text-xs text-muted-foreground">
-                      {displayLoginId(u.email)}
-                    </div>
-                  )}
-                  <div className="mt-1 flex flex-wrap items-center gap-1">
-                    <Badge variant="secondary" className="gap-1">
-                      <ShieldCheck className="h-3 w-3" />
-                      {level === "band" ? "เฉพาะวง" : ROLE_SHORT[u.tenantRole]}
-                    </Badge>
-                    {u.groupRoles.map((gr) => (
-                      <Badge key={gr.group_id} variant="outline" className="text-[10px]">
-                        {groupName[gr.group_id] ?? "?"} ·{" "}
-                        {gr.role === "artist_manager" ? "Ar" : "สมาชิก"}
-                      </Badge>
-                    ))}
-                  </div>
-                </div>
-                <div className="flex shrink-0 items-center gap-1">
-                  {(!isMaster || u.user_id === currentUserId) && (
-                    <Button variant="ghost" size="icon" onClick={() => openEdit(u)}>
-                      <Pencil className="h-4 w-4" />
-                    </Button>
-                  )}
-                  {(!isMaster || u.user_id === currentUserId) && (
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      title="ตั้งรหัสผ่านใหม่"
-                      onClick={() => openReset(u)}
-                    >
-                      <KeyRound className="h-4 w-4" />
-                    </Button>
-                  )}
-                  {u.user_id !== currentUserId && !isMaster && (
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="text-destructive hover:text-destructive"
-                      onClick={() => remove(u)}
-                    >
-                      <Trash2 className="h-4 w-4" />
-                    </Button>
-                  )}
-                </div>
-              </CardContent>
-            </Card>
-          );
-        })}
+      <div className="relative sm:max-w-sm">
+        <Search
+          aria-hidden
+          className="pointer-events-none absolute left-3.5 top-1/2 h-[18px] w-[18px] -translate-y-1/2 text-muted-foreground"
+        />
+        <Input
+          type="text"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="ค้นหา: ชื่อผู้ใช้ / ชื่อ / วง / สิทธิ์"
+          aria-label="ค้นหาบัญชี"
+          className="h-[46px] pl-10"
+        />
       </div>
+
+      {visibleUsers.length === 0 && (
+        <p className="py-6 text-center text-sm text-muted-foreground">
+          ไม่พบบัญชีที่ตรงกับ &ldquo;{query.trim()}&rdquo;
+        </p>
+      )}
+      {visibleUsers.length > 0 && (
+        <div>
+          {/* md+: the stack lines up under column heads and reads as a table. */}
+          <div
+            aria-hidden
+            className={cn(
+              "hidden h-9 items-center gap-3 px-4 font-display text-[12.5px] font-bold uppercase tracking-[.1em] text-muted-foreground [font-synthesis:none] md:grid",
+              USER_COLS
+            )}
+          >
+            <span>User</span>
+            <span>Role</span>
+            <span>Bands</span>
+            <span className="sr-only">Actions</span>
+          </div>
+          <ul className="stack">
+            {visibleUsers.map((u) => {
+              const level = levelOf(u);
+              const isMaster = isMasterAdminEmail(u.email);
+              const loginId = displayLoginId(u.email);
+              return (
+                <li
+                  key={u.user_id}
+                  className={cn(
+                    "slab flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-3 md:grid",
+                    USER_COLS
+                  )}
+                >
+                  <div className="min-w-0 flex-1">
+                    <div className="flex min-w-0 items-center gap-2">
+                      <span className="truncate text-[15px] font-semibold">
+                        {u.full_name || loginId || u.user_id}
+                      </span>
+                      {u.user_id === currentUserId && (
+                        <Badge variant="secondary" className="shrink-0">
+                          คุณ
+                        </Badge>
+                      )}
+                      {isMaster && (
+                        <Badge className="en shrink-0">
+                          <Lock aria-hidden />
+                          Master
+                        </Badge>
+                      )}
+                    </div>
+                    {u.email && (
+                      <div className="num truncate text-[14px] font-semibold text-muted-foreground">
+                        {loginId}
+                      </div>
+                    )}
+                  </div>
+                  <div className="flex shrink-0 items-center gap-1 md:order-last md:justify-end">
+                    {(!isMaster || u.user_id === currentUserId) && (
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        title="แก้ไขสิทธิ์"
+                        aria-label="แก้ไขสิทธิ์"
+                        onClick={() => openEdit(u)}
+                      >
+                        <Pencil aria-hidden />
+                      </Button>
+                    )}
+                    {(!isMaster || u.user_id === currentUserId) && (
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        title="ตั้งรหัสผ่านใหม่"
+                        aria-label="ตั้งรหัสผ่านใหม่"
+                        onClick={() => openReset(u)}
+                      >
+                        <KeyRound aria-hidden />
+                      </Button>
+                    )}
+                    {u.user_id !== currentUserId && !isMaster && (
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        title="ลบบัญชี"
+                        aria-label="ลบบัญชี"
+                        className="text-destructive hover:text-destructive"
+                        onClick={() => remove(u)}
+                      >
+                        <Trash2 aria-hidden />
+                      </Button>
+                    )}
+                  </div>
+                  {/* Role, then bands: a full row under the name on a phone; their
+                      own columns from md. `contents` lets both join the row grid. */}
+                  <div className="flex w-full flex-wrap items-center gap-1.5 md:contents">
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <Badge variant="secondary">
+                        <ShieldCheck aria-hidden />
+                        {level === "band" ? "เฉพาะวง" : ROLE_SHORT[u.tenantRole]}
+                      </Badge>
+                    </div>
+                    <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+                      {u.groupRoles.map((gr) => (
+                        <Badge key={gr.group_id} variant="outline">
+                          {groupName[gr.group_id] ?? "?"} ·{" "}
+                          {gr.role === "artist_manager" ? "Ar" : "สมาชิก"}
+                        </Badge>
+                      ))}
+                    </div>
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      )}
 
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent className="max-h-[90vh] overflow-y-auto">
           <DialogHeader>
-            <DialogTitle>
-              {editing ? "แก้ไขสิทธิ์ผู้ใช้" : "สร้างบัญชีใหม่"}
-            </DialogTitle>
+            <DialogTitle>{editing ? "Edit access" : "New account"}</DialogTitle>
             <DialogDescription>
               {editing
                 ? `${displayLoginId(editing.email) || editing.user_id}`
@@ -491,7 +540,7 @@ export function UserManager({
                 {groups.length === 0 ? (
                   <p className="text-xs text-muted-foreground">ยังไม่มีวง</p>
                 ) : (
-                  <div className="space-y-2 rounded-lg border p-3">
+                  <div className="space-y-2 rounded-[2px] bg-muted p-3 shadow-edge">
                     {groups.map((g) => (
                       <div key={g.id} className="flex items-center gap-2">
                         <span className="min-w-0 flex-1 truncate text-sm">{g.name}</span>
@@ -523,7 +572,7 @@ export function UserManager({
             )}
 
             {editing && (
-              <p className="rounded-md bg-muted/50 px-3 py-2 text-xs text-muted-foreground">
+              <p className="rounded-[2px] bg-muted px-3 py-2 text-[12.5px] text-muted-foreground">
                 บทบาทปัจจุบัน: {ROLE_LABELS[editing.tenantRole]}
               </p>
             )}
@@ -550,7 +599,7 @@ export function UserManager({
       <Dialog open={!!pwTarget} onOpenChange={(o) => !pwBusy && !o && setPwTarget(null)}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>ตั้งรหัสผ่านใหม่</DialogTitle>
+            <DialogTitle>Reset password</DialogTitle>
             <DialogDescription>
               {pwTarget ? displayLoginId(pwTarget.email) || pwTarget.user_id : ""} — ผู้ใช้จะใช้รหัสใหม่นี้ล็อกอินครั้งต่อไป
             </DialogDescription>

@@ -52,15 +52,18 @@ export function ErrorCard({
 
   if (offline) {
     return (
-      <div className="mx-auto max-w-md space-y-4 px-4 py-16 text-center">
-        <CloudOff className="mx-auto h-10 w-10 text-amber-500" />
-        <h1 className="text-xl font-bold">ออฟไลน์</h1>
-        <p className="text-sm text-muted-foreground">
-          ตอนนี้ไม่มีการเชื่อมต่อ จึงเปิดหน้านี้ไม่ได้ — เชื่อมต่ออินเทอร์เน็ตแล้วลองโหลดใหม่อีกครั้ง
-        </p>
-        <div className="flex justify-center gap-2">
-          <Button onClick={() => window.location.reload()}>
-            <RotateCw className="h-4 w-4" /> โหลดใหม่
+      <div className="mx-auto max-w-md px-4 py-12">
+        <div className="slab space-y-4 rounded-[3px] p-6 text-center">
+          <span className="mx-auto grid h-12 w-12 place-items-center rounded-[2px] bg-warning/[.16] text-warning-ink">
+            <CloudOff className="h-6 w-6" aria-hidden />
+          </span>
+          <h1 className="h2 text-[30px]">Offline</h1>
+          <p className="text-[15px] font-semibold">ออฟไลน์</p>
+          <p className="text-sm leading-relaxed text-muted-foreground">
+            ตอนนี้ไม่มีการเชื่อมต่อ จึงเปิดหน้านี้ไม่ได้ — เชื่อมต่ออินเทอร์เน็ตแล้วลองโหลดใหม่อีกครั้ง
+          </p>
+          <Button size="lg" className="w-full" onClick={() => window.location.reload()}>
+            <RotateCw aria-hidden /> โหลดใหม่
           </Button>
         </div>
       </div>
@@ -91,44 +94,47 @@ export function ErrorCard({
     // supplies its own padding — the ROOT one does not, and max-w-md (448px) is wider
     // than the 375px phone this is actually read on at a venue, so without it the
     // digest box the copy asks the operator to send runs edge to edge.
-    <div className="mx-auto max-w-md space-y-4 px-4 py-16 text-center">
-      <AlertTriangle className="mx-auto h-10 w-10 text-destructive" />
-      <h1 className="text-xl font-bold">หน้านี้มีปัญหา</h1>
-      {/* Say only what the boundary can actually know. Next redacts EVERY server
-          throw the same way — a statement timeout and a deterministic render bug
-          arrive here identically — so the old copy's "เพราะดึงข้อมูลจากเซิร์ฟเวอร์ไม่ได้"
-          was a guess at the cause. On a repeatable bug it read as a network blip and
-          taught the user to keep pressing ลองใหม่ instead of telling anyone.
-          "ข้อมูลยังอยู่ครบ" is safe to keep: this repo has no "use server" actions, so
-          a redacted throw is always a render, never a half-finished write. */}
-      <p className="text-sm text-muted-foreground">
-        {redacted
-          ? "เปิดหน้านี้ไม่สำเร็จ เซิร์ฟเวอร์ตอบกลับมาเป็นข้อผิดพลาด — ข้อมูลที่บันทึกไว้ยังอยู่ครบ ไม่มีอะไรหาย ลองใหม่อีกครั้ง"
-          : "เกิดข้อผิดพลาดระหว่างแสดงผลหน้านี้ ลองโหลดใหม่อีกครั้ง"}
-        {hasClue
-          ? " ถ้ายังไม่หาย ส่งข้อความสีเทาด้านล่างนี้ให้ทีมพัฒนา (โจเซฟิน) จะได้ตามหาสาเหตุได้"
-          : " ถ้ายังไม่หาย บอกทีมพัฒนา (โจเซฟิน) ว่ากำลังทำอะไรอยู่ตอนที่หน้านี้ขึ้น"}
-      </p>
-      <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-words rounded-md border bg-muted/40 p-3 text-left text-xs text-muted-foreground">
-        {details}
-      </pre>
-      {/* ⚠️ ONE BUTTON, AND IT RELOADS. This used to offer a filled "ลองใหม่" calling
-          Next's reset() with "โหลดหน้าใหม่" beside it as the quiet outline option —
-          and reset() CANNOT RECOVER THE ERROR THIS BOUNDARY NOW MOSTLY CATCHES.
-          Measured in the shipped runtime, not reasoned: next 15.5.22's
-          error-boundary.js defines reset as setState({error: null}); render then
-          returns the same LayoutRouter whose cacheNode.rsc is the already-errored
-          Flight element, which layout-router.js re-reads and re-throws on the spot
-          (the refetch branch never runs — an errored element is truthy, not null).
-          So the big obvious button did nothing, on a card an operator meets at a
-          venue with nineteen phones behind them, while the one that worked looked
-          secondary. router.refresh() inside a transition is the documented way to
-          recover an RSC throw softly; it is not here because a full reload is
-          CERTAINLY correct for both error classes and one button that always works
-          beats two where the prominent one might not. */}
-      <div className="flex justify-center">
-        <Button onClick={() => window.location.reload()}>
-          <RotateCw className="h-4 w-4" /> โหลดหน้าใหม่
+    <div className="mx-auto max-w-md px-4 py-12">
+      <div className="slab space-y-4 rounded-[3px] p-6 text-center">
+        <span className="mx-auto grid h-12 w-12 place-items-center rounded-[2px] bg-destructive/[.16] text-destructive">
+          <AlertTriangle className="h-6 w-6" aria-hidden />
+        </span>
+        <h1 className="h2 text-[30px]">Page Error</h1>
+        <p className="text-[15px] font-semibold">หน้านี้มีปัญหา</p>
+        {/* Say only what the boundary can actually know. Next redacts EVERY server
+            throw the same way — a statement timeout and a deterministic render bug
+            arrive here identically — so the old copy's "เพราะดึงข้อมูลจากเซิร์ฟเวอร์ไม่ได้"
+            was a guess at the cause. On a repeatable bug it read as a network blip and
+            taught the user to keep pressing ลองใหม่ instead of telling anyone.
+            "ข้อมูลยังอยู่ครบ" is safe to keep: this repo has no "use server" actions, so
+            a redacted throw is always a render, never a half-finished write. */}
+        <p className="text-sm leading-relaxed text-muted-foreground">
+          {redacted
+            ? "เปิดหน้านี้ไม่สำเร็จ เซิร์ฟเวอร์ตอบกลับมาเป็นข้อผิดพลาด — ข้อมูลที่บันทึกไว้ยังอยู่ครบ ไม่มีอะไรหาย ลองใหม่อีกครั้ง"
+            : "เกิดข้อผิดพลาดระหว่างแสดงผลหน้านี้ ลองโหลดใหม่อีกครั้ง"}
+          {hasClue
+            ? " ถ้ายังไม่หาย ส่งข้อความสีเทาด้านล่างนี้ให้ทีมพัฒนา (โจเซฟิน) จะได้ตามหาสาเหตุได้"
+            : " ถ้ายังไม่หาย บอกทีมพัฒนา (โจเซฟิน) ว่ากำลังทำอะไรอยู่ตอนที่หน้านี้ขึ้น"}
+        </p>
+        <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-words rounded-[2px] bg-muted p-3 text-left font-mono text-xs text-muted-foreground shadow-edge">
+          {details}
+        </pre>
+        {/* ⚠️ ONE BUTTON, AND IT RELOADS. This used to offer a filled "ลองใหม่" calling
+            Next's reset() with "โหลดหน้าใหม่" beside it as the quiet outline option —
+            and reset() CANNOT RECOVER THE ERROR THIS BOUNDARY NOW MOSTLY CATCHES.
+            Measured in the shipped runtime, not reasoned: next 15.5.22's
+            error-boundary.js defines reset as setState({error: null}); render then
+            returns the same LayoutRouter whose cacheNode.rsc is the already-errored
+            Flight element, which layout-router.js re-reads and re-throws on the spot
+            (the refetch branch never runs — an errored element is truthy, not null).
+            So the big obvious button did nothing, on a card an operator meets at a
+            venue with nineteen phones behind them, while the one that worked looked
+            secondary. router.refresh() inside a transition is the documented way to
+            recover an RSC throw softly; it is not here because a full reload is
+            CERTAINLY correct for both error classes and one button that always works
+            beats two where the prominent one might not. */}
+        <Button size="lg" className="w-full" onClick={() => window.location.reload()}>
+          <RotateCw aria-hidden /> โหลดหน้าใหม่
         </Button>
       </div>
     </div>

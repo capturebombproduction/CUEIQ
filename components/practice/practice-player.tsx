@@ -6,6 +6,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type CSSProperties,
   type Dispatch,
   type SetStateAction,
 } from "react";
@@ -16,13 +17,16 @@ import {
   Gauge,
   Volume2,
   SkipBack,
+  SkipForward,
+  RotateCcw,
+  RotateCw,
+  AudioLines,
   Search,
   MapPin,
   Plus,
   Repeat,
   Pencil,
   X,
-  ListMusic,
   Trash2,
   ChevronDown,
 } from "lucide-react";
@@ -36,12 +40,14 @@ import { getLocalSource, listLocalSourceIds } from "@/lib/local-source";
 import { MGMT_OUTBOX_EVENT } from "@/lib/mgmt-outbox";
 import { PracticeAudioEngine } from "@/lib/practice-audio";
 import { detectBeats } from "@/lib/bpm-detect";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { useConfirm } from "@/components/ui/confirm-dialog";
 import { Input } from "@/components/ui/input";
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogHeader,
   DialogTitle,
   DialogTrigger,
@@ -51,6 +57,7 @@ import { Metronome } from "@/components/practice/metronome";
 import { SetlistRunCard } from "@/components/practice/setlist-run-card";
 import type { QueueEntry } from "@/lib/practice-setlist";
 import { cn } from "@/lib/utils";
+import { hasThai } from "@/lib/thai";
 import { MARKER_PRESETS, type Song, type SongMarker, type PracticeSong } from "@/lib/types";
 
 // Speed presets — slowing down for practice. The engine (SoundTouchJS) time-
@@ -102,6 +109,7 @@ function mmss(sec: number) {
  * online: audio streams from R2 on demand. For a timed run-through use Live Mode.
  */
 export function PracticePlayer({
+  roomName,
   eventId,
   groupId,
   currentUserId,
@@ -114,6 +122,8 @@ export function PracticePlayer({
   canCurate,
   onRunLogged,
 }: {
+  /** shown under the now-playing title ("ห้องซ้อม — RED REVOLUTION · 1 / 5") */
+  roomName?: string;
   eventId: string;
   groupId: string; // the band — "ซ้อมตามเซ็ตลิสต์" lists this band's shows
   currentUserId: string;
@@ -661,97 +671,287 @@ export function PracticePlayer({
     }
   }
 
-  return (
-    <div className="space-y-4">
-      <div className="flex flex-wrap items-start justify-end gap-2">
-        <Metronome
-          song={current}
-          canManage={canManage}
-          playing={playing}
-          position={cur}
-          speed={speed}
-          onDetectBeats={async () => {
-            const buf = await engineRef.current?.getBuffer();
-            return buf ? detectBeats(buf) : null;
-          }}
-        />
-        <BreakTimer />
-      </div>
+  // --- presentation only: where the hero says we are, and the transport's song
+  // steps. Every step goes through selectSong / playFromRun / seek above, so the
+  // audio, the run and the iOS unlock behave exactly as a row tap does. ---
+  const listPos = currentId ? practiceSongs.findIndex((x) => x.song.id === currentId) : -1;
+  const queuePos = run ? run.pos : listPos;
+  const queueLen = run ? run.queue.length : practiceSongs.length;
+  const canNext =
+    !!current &&
+    (run ? run.pos + 1 < run.queue.length : listPos >= 0 && listPos + 1 < practiceSongs.length);
+  /** ⏮: back to the top of the song a few seconds in, else the song before it */
+  function stepBack() {
+    if (!current) return;
+    if (cur > 3) {
+      seek(0);
+      return;
+    }
+    if (run && run.pos > 0) playFromRun(run.showId, run.queue, run.pos - 1);
+    else if (!run && listPos > 0) void selectSong(practiceSongs[listPos - 1].song);
+    else seek(0);
+  }
+  /** ⏭: the next song of the set being run, else the next one on the list */
+  function stepNext() {
+    if (!canNext) return;
+    if (run) playFromRun(run.showId, run.queue, run.pos + 1);
+    else void selectSong(practiceSongs[listPos + 1].song);
+  }
+  // The section the playhead is in: the last mark at or before it.
+  let activeMarkerId: string | null = null;
+  for (const m of curMarkers) if (m.position_seconds <= cur + 0.25) activeMarkerId = m.id;
+  const at = (t: number) => `${dur > 0 ? Math.min(100, Math.max(0, (t / dur) * 100)) : 0}%`;
+  // a loop end reads as its section's name when it sits on a mark ("วน Hook → Bridge")
+  const pointLabel = (t: number) =>
+    curMarkers.find((m) => Math.abs(m.position_seconds - t) < 0.75)?.label ?? mmss(t);
+  const presetLabel = (label: string) => (MARKER_PRESETS as readonly string[]).includes(label);
 
-      {/* Now playing + transport */}
-      <div className="rounded-xl border bg-card p-4 shadow-sm">
-        {current ? (
-          <>
-            <div className="mb-3 flex items-center justify-between gap-2">
-              <p className="min-w-0 truncate font-semibold">{current.title}</p>
-              {speed !== 1 && (
-                <span className="shrink-0 rounded-full bg-amber-500/15 px-2 py-0.5 text-xs font-medium text-amber-600 dark:text-amber-400">
-                  ช้า {speed}× · คีย์เดิม
-                </span>
+  return (
+    <div className="space-y-3">
+      {/* Now Playing — the room's one lit hero (spec §G.6). */}
+      <section
+        aria-label="Now playing"
+        className="lit cut sweep p-4"
+        style={{ "--cut": "22px" } as CSSProperties}
+      >
+        <div className="flex items-center gap-3.5">
+          {/* band cover: the fill with one hard 60° white wedge, never a glow */}
+          <span
+            aria-hidden
+            className="grid h-[84px] w-[84px] flex-none place-items-center rounded-[2px] text-primary-foreground"
+            style={{
+              background:
+                "conic-gradient(from 150deg at 50% -40%, transparent 0deg, hsl(0 0% 100% / .22) .3deg 59.7deg, transparent 60deg), hsl(var(--primary))",
+            }}
+          >
+            <AudioLines className="h-[38px] w-[38px]" strokeWidth={2.4} />
+          </span>
+          <div className="min-w-0 flex-1">
+            <div className="eyebrow key">Now Playing</div>
+            {/* .95 leading is Barlow's; a Thai title needs room for its tone marks,
+                which the 2-line clamp's overflow would otherwise shave off */}
+            <div
+              className={cn(
+                "disp clamp-2 mt-1",
+                current && hasThai(current.title)
+                  ? "text-[28px] font-bold leading-[1.3]"
+                  : "text-[34px] leading-[.95]"
+              )}
+            >
+              {current ? current.title : "—"}
+            </div>
+            <div className="mt-1 truncate text-[12.5px] text-muted-foreground">
+              {roomName ?? "ห้องซ้อม"}
+              {current && queuePos >= 0 && (
+                <>
+                  {" · "}
+                  <span className="num text-[15px]">
+                    {queuePos + 1} / {queueLen}
+                  </span>
+                </>
               )}
             </div>
+            {current && speed !== 1 && (
+              <Badge variant="warning" className="mt-1.5">
+                <Gauge aria-hidden />
+                ช้า <span className="num text-[14px]">{speed}×</span> · คีย์เดิม
+              </Badge>
+            )}
+          </div>
+        </div>
 
-            <input
-              type="range"
-              min={0}
-              max={dur || 0}
-              step={0.1}
-              value={cur}
-              onChange={(e) => seek(Number(e.target.value))}
-              className="w-full accent-primary"
-            />
-            <div className="mb-3 flex justify-between text-xs tabular-nums text-muted-foreground">
-              <span>{mmss(cur)}</span>
-              <span>{mmss(dur)}</span>
-            </div>
-
-            <div className="flex items-center gap-2">
-              <Button variant="outline" size="icon" onClick={() => seek(0)} title="กลับไปต้นเพลง">
-                <SkipBack className="h-4 w-4" />
-              </Button>
-              <Button size="icon" className="h-11 w-11" onClick={togglePlay}>
-                {playing ? <Pause className="h-5 w-5" /> : <Play className="h-5 w-5" />}
-              </Button>
-
-              <div className="ml-1 flex items-center gap-1">
-                <Gauge className="h-4 w-4 text-muted-foreground" />
-                {SPEEDS.map((s) => (
-                  <button
-                    key={s}
-                    disabled={preparing}
-                    onClick={() => {
-                      setSpeed(s);
-                      engineRef.current?.unlock();
-                      engineRef.current?.setTempo(s);
-                    }}
-                    className={cn(
-                      "rounded-md px-2 py-1 text-xs font-medium transition-colors disabled:opacity-50",
-                      speed === s
-                        ? "bg-primary text-primary-foreground"
-                        : "bg-muted text-muted-foreground hover:bg-muted/70"
-                    )}
-                  >
-                    {s}×
-                  </button>
-                ))}
-                {preparing && (
-                  <Loader2 className="ml-0.5 h-3.5 w-3.5 animate-spin text-muted-foreground" />
+        {current ? (
+          <>
+            {/* section marks: tap to jump; the one the playhead is in is solid. In
+                edit mode each chip carries its own 44 × 44 delete key (instant, and
+                the marks are the song's, so every room loses it): the key stands 3 px
+                off its chip and the next chip a wider 8 px off the key. */}
+            {curMarkers.length > 0 && (
+              <div
+                role="group"
+                aria-label="ท่อนเพลง"
+                className={cn(
+                  "-mx-4 mt-4 flex overflow-x-auto px-4 [mask-image:linear-gradient(90deg,#000_85%,transparent)] [scrollbar-width:none]",
+                  canCurate && editMarkers ? "gap-2" : "gap-[3px]"
                 )}
+              >
+                {curMarkers.map((m) => (
+                  <span key={m.id} className="flex shrink-0 gap-[3px]">
+                    <button
+                      type="button"
+                      onClick={() => jumpTo(m.position_seconds)}
+                      aria-pressed={m.id === activeMarkerId}
+                      title={`ไปที่ ${m.label} (${mmss(m.position_seconds)})`}
+                      className={cn(
+                        "chip chip-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
+                        // presets are English chrome; a typed label stays as typed
+                        presetLabel(m.label) && "en",
+                        m.id === activeMarkerId ? "chip-solid" : "chip-neutral"
+                      )}
+                    >
+                      {m.label}
+                      <span className="num text-[13px] opacity-70">{mmss(m.position_seconds)}</span>
+                    </button>
+                    {canCurate && editMarkers && (
+                      <button
+                        type="button"
+                        onClick={() => deleteMarker(m.id)}
+                        aria-label={`ลบท่อน ${m.label}`}
+                        title="ลบท่อนนี้"
+                        className="grid h-11 w-11 place-items-center rounded-[2px] text-destructive hover:bg-destructive/10"
+                      >
+                        <X className="h-4 w-4" aria-hidden />
+                      </button>
+                    )}
+                  </span>
+                ))}
               </div>
+            )}
 
-            </div>
-
-            {/* song volume — always visible (separate from the metronome's volume) */}
-            <div className="mt-3 flex items-center gap-2">
-              <Volume2 className="h-4 w-4 shrink-0 text-muted-foreground" />
-              <span className="w-16 shrink-0 text-xs text-muted-foreground">เสียงเพลง</span>
+            {/* scrubber: the native range (stage.css), with the A–B loop band and
+                the section ticks drawn on the track under it */}
+            <div className="relative mt-4">
+              <div
+                aria-hidden
+                className="pointer-events-none absolute inset-x-[4px] top-1/2 h-4 -translate-y-1/2"
+              >
+                {loopA != null && dur > 0 && (
+                  <i
+                    className="absolute top-[5px] h-[6px] bg-primary/30"
+                    style={{
+                      left: at(loopA),
+                      width: `calc(${at(loopB ?? dur)} - ${at(loopA)})`,
+                    }}
+                  />
+                )}
+                {curMarkers.map((m) => (
+                  <i
+                    key={m.id}
+                    className="absolute top-0 h-4 w-[2px] -translate-x-1/2 bg-foreground/40"
+                    style={{ left: at(m.position_seconds) }}
+                  />
+                ))}
+              </div>
               <input
                 type="range"
+                aria-label="ตำแหน่งในเพลง"
+                min={0}
+                max={dur || 0}
+                step={0.1}
+                value={cur}
+                onChange={(e) => seek(Number(e.target.value))}
+                className="relative w-full"
+              />
+            </div>
+            <div className="mt-1.5 flex items-center justify-between gap-2 text-[12px] text-muted-foreground">
+              <span className="num text-[16px] text-foreground">{mmss(cur)}</span>
+              {loopA != null && loopB != null && (
+                <span className="flex min-w-0 items-center gap-1 truncate">
+                  <Repeat className="h-[13px] w-[13px] shrink-0" strokeWidth={2.2} aria-hidden />
+                  วน {pointLabel(loopA)} → {pointLabel(loopB)}
+                  {!loopOn && " (ปิดอยู่)"}
+                </span>
+              )}
+              <span className="num text-[16px]">{mmss(dur)}</span>
+            </div>
+
+            {/* transport: −5s · ⏮ · PLAY (the chamfered key) · ⏭ · +5s */}
+            <div className="mt-2 flex items-center justify-between px-1">
+              <Button
+                variant="ghost"
+                size="icon"
+                aria-label="ย้อน 5 วินาที"
+                className="text-muted-foreground"
+                onClick={() => seek(cur - 5)}
+              >
+                <span className="relative grid place-items-center">
+                  <RotateCcw className="h-6 w-6" aria-hidden />
+                  <span className="num absolute text-[9px] leading-none">5</span>
+                </span>
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon"
+                aria-label="กลับต้นเพลง / เพลงก่อนหน้า"
+                onClick={stepBack}
+              >
+                <SkipBack className="h-[26px] w-[26px]" strokeWidth={2.2} aria-hidden />
+              </Button>
+              <Button
+                aria-label={playing ? "หยุดชั่วคราว" : "เล่น"}
+                className="cut h-[72px] w-[72px] px-0 [--cut:14px]"
+                onClick={togglePlay}
+              >
+                {playing ? (
+                  <Pause className="h-[30px] w-[30px]" strokeWidth={2.4} aria-hidden />
+                ) : (
+                  <Play className="h-[30px] w-[30px]" strokeWidth={2.4} aria-hidden />
+                )}
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon"
+                aria-label="เพลงถัดไป"
+                disabled={!canNext}
+                onClick={stepNext}
+              >
+                <SkipForward className="h-[26px] w-[26px]" strokeWidth={2.2} aria-hidden />
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon"
+                aria-label="ข้ามไป 5 วินาที"
+                className="text-muted-foreground"
+                onClick={() => seek(cur + 5)}
+              >
+                <span className="relative grid place-items-center">
+                  <RotateCw className="h-6 w-6" aria-hidden />
+                  <span className="num absolute text-[9px] leading-none">5</span>
+                </span>
+              </Button>
+            </div>
+
+            {/* speed (pitch held) + the song's own volume */}
+            <div className="mt-3 flex items-center gap-2">
+              <Gauge className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden />
+              <div role="group" aria-label="ความเร็ว" className="seg min-w-0 flex-1">
+                {[...SPEEDS]
+                  .sort((a, b) => a - b)
+                  .map((s) => (
+                    <button
+                      key={s}
+                      type="button"
+                      disabled={preparing}
+                      aria-pressed={speed === s}
+                      onClick={() => {
+                        setSpeed(s);
+                        engineRef.current?.unlock();
+                        engineRef.current?.setTempo(s);
+                      }}
+                      className={cn(
+                        "num !text-[15px] font-bold [font-family:var(--font-num)] transition-colors duration-2 disabled:opacity-50",
+                        speed === s && "on"
+                      )}
+                    >
+                      {s}×
+                    </button>
+                  ))}
+              </div>
+              {preparing && (
+                <Loader2 className="h-4 w-4 shrink-0 animate-spin text-muted-foreground" aria-hidden />
+              )}
+            </div>
+            <div className="mt-2 flex items-center gap-2">
+              <Volume2 className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden />
+              <span className="w-16 shrink-0 text-[12.5px] text-muted-foreground">เสียงเพลง</span>
+              <input
+                type="range"
+                aria-label="เสียงเพลง"
                 min={0}
                 max={100}
                 value={vol}
                 onChange={(e) => setVol(Number(e.target.value))}
-                className="w-full accent-primary"
+                className="w-full"
               />
             </div>
 
@@ -765,142 +965,153 @@ export function PracticePlayer({
               <button
                 type="button"
                 onClick={() => setDrillOpen(true)}
-                className="mt-3 flex w-full items-center justify-center gap-1.5 border-t pt-3 text-xs font-medium text-muted-foreground hover:text-foreground sm:hidden"
+                className="mt-3 flex h-11 w-full items-center justify-center gap-1.5 border-t border-foreground/10 text-[13px] font-medium text-muted-foreground hover:text-foreground sm:hidden"
               >
-                <Repeat className="h-3.5 w-3.5" /> วนท่อน / ท่อนเพลง
-                <ChevronDown className="h-3.5 w-3.5" />
+                <Repeat className="h-4 w-4" aria-hidden /> วนท่อน / ท่อนเพลง
+                <ChevronDown className="h-4 w-4" aria-hidden />
               </button>
             )}
             <div className={showDrill ? "" : "hidden sm:block"}>
-            {/* A-B loop */}
-            <div className="mt-3 flex flex-wrap items-center gap-2 border-t pt-3">
-              <span className="flex items-center gap-1 text-xs font-medium text-muted-foreground">
-                <Repeat className="h-3.5 w-3.5" /> วนท่อน
-              </span>
-              <Button variant={loopA != null ? "secondary" : "outline"} size="sm" onClick={setA}>
-                Mark In{loopA != null ? ` · ${mmss(loopA)}` : ""}
-              </Button>
-              <Button variant={loopB != null ? "secondary" : "outline"} size="sm" onClick={setB}>
-                Mark Out{loopB != null ? ` · ${mmss(loopB)}` : ""}
-              </Button>
-              <Button
-                variant={loopOn ? "default" : "outline"}
-                size="sm"
-                disabled={loopA == null || loopB == null}
-                onClick={() => setLoopOn((v) => !v)}
-              >
-                <Repeat className="h-4 w-4" /> {loopOn ? "กำลังวน" : "วน"}
-              </Button>
-              {(loopA != null || loopB != null) && (
-                <Button variant="ghost" size="sm" onClick={clearLoop}>
-                  ล้าง
-                </Button>
-              )}
-            </div>
-
-            {/* markers */}
-            <div className="mt-3 border-t pt-3">
-              <div className="mb-2 flex items-center justify-between">
-                <span className="flex items-center gap-1 text-xs font-medium text-muted-foreground">
-                  <MapPin className="h-3.5 w-3.5" /> ท่อนเพลง
+              {/* A-B loop */}
+              <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-foreground/10 pt-3">
+                <span className="flex items-center gap-1 text-[12.5px] font-medium text-muted-foreground">
+                  <Repeat className="h-4 w-4" aria-hidden /> วนท่อน
                 </span>
-                {canCurate && curMarkers.length > 0 && (
-                  <div className="flex items-center gap-3">
-                    {editMarkers && (
-                      <button
-                        onClick={clearMarkers}
-                        className="flex items-center gap-1 text-xs text-destructive hover:underline"
-                      >
-                        <Trash2 className="h-3.5 w-3.5" /> ล้างทั้งหมด
-                      </button>
-                    )}
-                    <button
-                      onClick={() => setEditMarkers((v) => !v)}
-                      className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
-                    >
-                      <Pencil className="h-3.5 w-3.5" /> {editMarkers ? "เสร็จ" : "แก้ไข"}
-                    </button>
-                  </div>
+                <Button
+                  variant={loopA != null ? "outline" : "secondary"}
+                  size="sm"
+                  className="h-11 sm:h-9"
+                  onClick={setA}
+                >
+                  <span className="en text-[14px]">Mark In</span>
+                  {loopA != null && <span className="num text-[14px]">{mmss(loopA)}</span>}
+                </Button>
+                <Button
+                  variant={loopB != null ? "outline" : "secondary"}
+                  size="sm"
+                  className="h-11 sm:h-9"
+                  onClick={setB}
+                >
+                  <span className="en text-[14px]">Mark Out</span>
+                  {loopB != null && <span className="num text-[14px]">{mmss(loopB)}</span>}
+                </Button>
+                <Button
+                  variant={loopOn ? "default" : "secondary"}
+                  size="sm"
+                  className="h-11 sm:h-9"
+                  aria-pressed={loopOn}
+                  disabled={loopA == null || loopB == null}
+                  onClick={() => setLoopOn((v) => !v)}
+                >
+                  <Repeat className="h-4 w-4" /> {loopOn ? "กำลังวน" : "วน"}
+                </Button>
+                {(loopA != null || loopB != null) && (
+                  <Button variant="ghost" size="sm" className="h-11 sm:h-9" onClick={clearLoop}>
+                    ล้าง
+                  </Button>
                 )}
               </div>
 
-              {curMarkers.length === 0 ? (
-                <p className="text-xs text-muted-foreground">
-                  {canCurate ? "ยังไม่มีท่อน — เพิ่มจากปุ่มด้านล่าง" : "ยังไม่มีท่อน"}
-                </p>
-              ) : (
-                <div className="flex flex-wrap gap-1.5">
-                  {curMarkers.map((m) => (
-                    <span
-                      key={m.id}
-                      className="inline-flex items-center overflow-hidden rounded-full border bg-muted/50"
-                    >
-                      <button
-                        onClick={() => jumpTo(m.position_seconds)}
-                        className="px-2.5 py-1 text-xs font-medium hover:bg-muted"
-                      >
-                        {m.label}
-                        <span className="ml-1 tabular-nums text-muted-foreground">
-                          {mmss(m.position_seconds)}
-                        </span>
-                      </button>
-                      {canCurate && editMarkers && (
-                        <button
-                          onClick={() => deleteMarker(m.id)}
-                          className="border-l px-1.5 py-1 text-destructive hover:bg-destructive/10"
-                          title="ลบท่อนนี้"
+              {/* markers: the chips above jump; adding and removing lives here */}
+              <div className="mt-3 border-t border-foreground/10 pt-3">
+                <div className="mb-2 flex items-center justify-between gap-2">
+                  <span className="flex items-center gap-1 text-[12.5px] font-medium text-muted-foreground">
+                    <MapPin className="h-4 w-4" aria-hidden /> ท่อนเพลง
+                    {curMarkers.length > 0 && (
+                      <span className="num text-[14px]">{curMarkers.length}</span>
+                    )}
+                  </span>
+                  {canCurate && curMarkers.length > 0 && (
+                    <div className="flex items-center gap-1">
+                      {editMarkers && (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-11 sm:h-9 [&_svg]:text-destructive"
+                          onClick={clearMarkers}
                         >
-                          <X className="h-3 w-3" />
-                        </button>
+                          <Trash2 className="h-4 w-4" /> ล้างทั้งหมด
+                        </Button>
                       )}
-                    </span>
-                  ))}
-                </div>
-              )}
-
-              {canCurate && (
-                <div className="mt-2.5 space-y-2">
-                  <div className="flex flex-wrap gap-1.5">
-                    {MARKER_PRESETS.map((p) => (
-                      <button
-                        key={p}
-                        onClick={() => addMarker(p)}
-                        className="rounded-md border border-dashed px-2 py-1 text-xs text-muted-foreground hover:border-solid hover:bg-muted hover:text-foreground"
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-11 sm:h-9"
+                        aria-pressed={editMarkers}
+                        onClick={() => setEditMarkers((v) => !v)}
                       >
-                        <Plus className="mr-0.5 inline h-3 w-3" />
-                        {p}
-                      </button>
-                    ))}
-                  </div>
-                  <div className="flex items-center gap-1.5">
-                    <Input
-                      value={customLabel}
-                      onChange={(e) => setCustomLabel(e.target.value)}
-                      placeholder={`ชื่อท่อนเอง แล้วเพิ่มที่ ${mmss(cur)}`}
-                      className="h-9"
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter" && customLabel.trim()) addMarker(customLabel.trim());
-                      }}
-                    />
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      disabled={!customLabel.trim()}
-                      onClick={() => addMarker(customLabel.trim())}
-                    >
-                      <Plus className="h-4 w-4" /> เพิ่ม
-                    </Button>
-                  </div>
+                        <Pencil className="h-4 w-4" /> {editMarkers ? "เสร็จ" : "แก้ไข"}
+                      </Button>
+                    </div>
+                  )}
                 </div>
-              )}
-            </div>
+
+                {curMarkers.length === 0 && (
+                  <p className="text-[12.5px] text-muted-foreground">
+                    {canCurate ? "ยังไม่มีท่อน — เพิ่มจากปุ่มด้านล่าง" : "ยังไม่มีท่อน"}
+                  </p>
+                )}
+
+                {canCurate && (
+                  <div className="mt-2 space-y-2">
+                    <div className="flex flex-wrap gap-1.5">
+                      {MARKER_PRESETS.map((p) => (
+                        <button
+                          key={p}
+                          type="button"
+                          onClick={() => addMarker(p)}
+                          className="chip chip-lg chip-neutral en hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+                        >
+                          <Plus aria-hidden />
+                          {p}
+                        </button>
+                      ))}
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <Input
+                        value={customLabel}
+                        onChange={(e) => setCustomLabel(e.target.value)}
+                        aria-label="ชื่อท่อนเอง"
+                        className="min-w-0"
+                        placeholder={`ชื่อท่อนเอง แล้วเพิ่มที่ ${mmss(cur)}`}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter" && customLabel.trim()) addMarker(customLabel.trim());
+                        }}
+                      />
+                      <Button
+                        variant="secondary"
+                        disabled={!customLabel.trim()}
+                        onClick={() => addMarker(customLabel.trim())}
+                      >
+                        <Plus className="h-4 w-4" /> เพิ่ม
+                      </Button>
+                    </div>
+                  </div>
+                )}
+              </div>
             </div>
           </>
         ) : (
-          <p className="py-6 text-center text-sm text-muted-foreground">
+          <p className="mt-4 text-[13px] text-muted-foreground">
             ยังไม่ได้เลือกเพลง — แตะเพลงด้านล่าง หรือกด “เล่นทั้งเซ็ต” เพื่อเริ่มซ้อม
           </p>
         )}
+      </section>
+
+      {/* practice tools: closed they are two keys; open, each is its own slab */}
+      <div className="flex flex-wrap items-start gap-2">
+        <Metronome
+          song={current}
+          canManage={canManage}
+          playing={playing}
+          position={cur}
+          speed={speed}
+          onDetectBeats={async () => {
+            const buf = await engineRef.current?.getBuffer();
+            return buf ? detectBeats(buf) : null;
+          }}
+        />
+        <BreakTimer />
       </div>
 
       <SetlistRunCard
@@ -918,107 +1129,127 @@ export function PracticePlayer({
       {/* Practice list — only the songs chosen for this room. Any band member
           curates it (add from library / take out) and plays. For a timed run-through
           of the whole show, use Live Mode instead. */}
-      <div className="space-y-2">
-        <div className="flex items-center justify-between gap-2">
-          <span className="flex items-center gap-1.5 text-sm font-medium">
-            <ListMusic className="h-4 w-4" /> ลิสต์ซ้อม
-            {practiceSongs.length > 0 && (
-              <span className="text-xs font-normal text-muted-foreground">
-                · {practiceSongs.length} เพลง
-              </span>
+      <section aria-label="Queue" className="space-y-2.5">
+        {/* The one Add to Queue picker lives here, at the same place in the tree
+            whether the list is empty or not: it keeps its own open state, so a copy
+            inside either branch below would close mid-choice the moment the first
+            song (this phone's pick, or another phone's) flips the list. */}
+        <div className="flex items-center justify-between gap-3 px-0.5">
+          <h2 className="h2">Queue</h2>
+          <div className="flex min-w-0 items-center gap-3">
+            <span className="min-w-0 truncate text-[13px] text-muted-foreground">
+              ลิสต์ซ้อม
+              {practiceSongs.length > 0 && (
+                <>
+                  {" · "}
+                  <span className="num text-[15px] text-foreground">{practiceSongs.length}</span> เพลง
+                </>
+              )}
+            </span>
+            {canCurate && (
+              <AddPracticeSongDialog library={library} listedIds={listedIds} onAdd={addSong} />
             )}
-          </span>
-          {canCurate && (
-            <AddPracticeSongDialog
-              library={library}
-              listedIds={listedIds}
-              onAdd={addSong}
-            />
-          )}
+          </div>
         </div>
 
         {practiceSongs.length === 0 ? (
-          <div className="rounded-lg border border-dashed py-10 text-center text-sm text-muted-foreground">
-            ยังไม่มีเพลงในลิสต์ซ้อม
-            <br />
-            {canCurate
-              ? "กด “เพิ่มเพลง” เพื่อเลือกเพลงจากคลังมาซ้อม"
-              : "วงนี้ยังไม่ได้เลือกเพลงมาซ้อม"}
+          <div className="slab px-4 py-10 text-center text-sm text-muted-foreground">
+            <p>
+              ยังไม่มีเพลงในลิสต์ซ้อม
+              <br />
+              {canCurate
+                ? "กด “เพิ่มเพลง” เพื่อเลือกเพลงจากคลังมาซ้อม"
+                : "วงนี้ยังไม่ได้เลือกเพลงมาซ้อม"}
+            </p>
           </div>
         ) : (
           <>
             <div className="relative">
-              <Search className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+              <Search
+                className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground"
+                aria-hidden
+              />
               <Input
+                type="search"
+                aria-label="ค้นหาเพลงในลิสต์ซ้อม"
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
                 placeholder="ค้นหาเพลงในลิสต์ซ้อม..."
-                className="pl-8"
+                className="pl-10"
               />
             </div>
 
-            <div className="divide-y rounded-lg border">
+            <div className="stack">
               {filtered.map(({ item, song: s }) => {
                 const active = s.id === currentId;
                 const loading = s.id === loadingId;
                 const mCount = (markers[s.id] ?? []).length;
+                const n = practiceSongs.findIndex((x) => x.item.id === item.id) + 1;
                 return (
                   <div
                     key={item.id}
+                    aria-current={active ? "true" : undefined}
                     className={cn(
-                      "flex items-center gap-3 px-3 py-2.5 transition-colors",
-                      active ? "bg-primary/10" : "hover:bg-muted/50"
+                      "slab flex min-h-[50px] items-center gap-1 pr-1",
+                      active &&
+                        "bg-[linear-gradient(90deg,hsl(var(--primary)/.14),transparent_70%)] shadow-[inset_4px_0_0_hsl(var(--primary)),inset_0_0_0_1px_hsl(var(--border))]"
                     )}
                   >
                     <button
+                      type="button"
                       onClick={() => selectSong(s)}
-                      className="flex min-w-0 flex-1 items-center gap-3 text-left"
+                      className="flex min-h-[50px] min-w-0 flex-1 items-center gap-3 rounded-[2px] pl-3 pr-2 text-left transition-colors duration-2 hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
                     >
-                      <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-muted">
+                      <span className="grid w-5 shrink-0 place-items-center">
                         {loading ? (
-                          <Loader2 className="h-4 w-4 animate-spin" />
+                          <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
                         ) : active && playing ? (
-                          <Pause className="h-4 w-4" />
+                          <AudioLines className="h-4 w-4 text-primary-ink" strokeWidth={2.8} aria-hidden />
                         ) : (
-                          <Play className="h-4 w-4" />
+                          <span className="num text-[14px] text-faint">{n}</span>
                         )}
                       </span>
-                      <span className="min-w-0 flex-1">
-                        <span className="block truncate text-sm font-medium">{s.title}</span>
-                        <span className="flex flex-wrap items-center gap-x-2 text-xs text-muted-foreground">
-                          {s.duration_seconds > 0 && (
-                            <span>Duration {mmss(s.duration_seconds)}</span>
-                          )}
-                          {mCount > 0 && (
-                            <span>
-                              {s.duration_seconds > 0 ? "· " : ""}
-                              {mCount} Mark{mCount > 1 ? "s" : ""}
-                            </span>
-                          )}
-                        </span>
+                      <span
+                        className={cn(
+                          "min-w-0 flex-1 truncate text-[14.5px]",
+                          active ? "font-semibold text-primary-ink" : "font-medium"
+                        )}
+                      >
+                        {s.title}
                       </span>
+                      {mCount > 0 && (
+                        <span className="flex shrink-0 items-center gap-0.5 text-[12px] text-muted-foreground">
+                          <MapPin className="h-3.5 w-3.5" aria-hidden />
+                          <span className="num text-[14px]">{mCount}</span>
+                        </span>
+                      )}
+                      {s.duration_seconds > 0 && (
+                        <span className="num shrink-0 text-[16px]">{mmss(s.duration_seconds)}</span>
+                      )}
                     </button>
                     {canCurate && (
-                      <button
+                      <Button
+                        variant="ghost"
+                        size="icon"
                         onClick={() => removeSong(item.id)}
                         title="เอาออกจากลิสต์ซ้อม"
-                        className="shrink-0 rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
+                        className="shrink-0 text-muted-foreground hover:text-destructive"
                       >
                         <X className="h-4 w-4" />
-                      </button>
+                      </Button>
                     )}
                   </div>
                 );
               })}
               {filtered.length === 0 && (
-                <p className="px-3 py-6 text-center text-sm text-muted-foreground">
+                <p className="slab px-3 py-6 text-center text-sm text-muted-foreground">
                   ไม่พบเพลงที่ค้นหา
                 </p>
               )}
             </div>
           </>
         )}
-      </div>
+      </section>
     </div>
   );
 }
@@ -1046,13 +1277,14 @@ function AddPracticeSongDialog({
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild>
-        <Button size="sm" variant="outline">
+        <Button variant="secondary" className="shrink-0">
           <Plus className="h-4 w-4" /> เพิ่มเพลง
         </Button>
       </DialogTrigger>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>เพิ่มเพลงเข้าลิสต์ซ้อม</DialogTitle>
+          <DialogTitle>Add to Queue</DialogTitle>
+          <DialogDescription>เลือกเพลงจากคลังมาใส่ลิสต์ซ้อม — เลือกต่อได้หลายเพลง</DialogDescription>
         </DialogHeader>
         {library.length === 0 ? (
           <p className="py-6 text-center text-sm text-muted-foreground">
@@ -1066,11 +1298,13 @@ function AddPracticeSongDialog({
           <div className="space-y-2">
             <Input
               autoFocus
+              type="search"
+              aria-label="ค้นหาชื่อเพลง"
               placeholder="ค้นหาชื่อเพลง…"
               value={q}
               onChange={(e) => setQ(e.target.value)}
             />
-            <div className="max-h-72 space-y-1 overflow-auto">
+            <div className="stack max-h-72 overflow-auto">
               {filtered.length === 0 ? (
                 <p className="py-4 text-center text-sm text-muted-foreground">ไม่พบเพลง</p>
               ) : (
@@ -1078,14 +1312,17 @@ function AddPracticeSongDialog({
                   <button
                     key={s.id}
                     type="button"
-                    className="flex w-full items-center justify-between gap-3 rounded-md border px-3 py-2 text-left text-sm transition-colors hover:bg-muted"
+                    className="slab flex min-h-11 w-full items-center justify-between gap-3 px-3 py-2 text-left text-[15px] transition-colors duration-2 hover:bg-muted"
                     onClick={() => {
                       onAdd(s);
                       setQ("");
                     }}
                   >
-                    <span className="font-medium">{s.title}</span>
-                    <span className="shrink-0 tabular-nums text-muted-foreground">
+                    <span className="flex min-w-0 items-center gap-2">
+                      <Plus className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden />
+                      <span className="truncate font-medium">{s.title}</span>
+                    </span>
+                    <span className="num shrink-0 text-[15px] text-muted-foreground">
                       {s.duration_seconds ? mmss(s.duration_seconds) : "—"}
                     </span>
                   </button>

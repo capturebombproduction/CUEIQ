@@ -1,6 +1,8 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { flushSync } from "react-dom";
+import Link from "next/link";
 import type { RealtimeChannel } from "@supabase/supabase-js";
 import {
   Play,
@@ -8,7 +10,6 @@ import {
   SkipForward,
   SkipBack,
   RotateCcw,
-  Radio,
   FolderOpen,
   Music2,
   Volume2,
@@ -25,8 +26,19 @@ import {
   Flag,
   Timer,
   GripVertical,
-  CheckCircle2,
   HardDriveDownload,
+  ArrowLeft,
+  Wifi,
+  WifiOff,
+  Ellipsis,
+  Lightbulb,
+  Check,
+  Mic,
+  GraduationCap,
+  X,
+  Maximize,
+  SlidersHorizontal,
+  Pencil,
 } from "lucide-react";
 import { toast } from "sonner";
 import { createClient } from "@/lib/supabase/client";
@@ -56,9 +68,15 @@ import {
   removeEventAudio,
 } from "@/lib/audio-remote";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
 import { LiveStatusStrip } from "@/components/event/live-status-strip";
 import { AudioOutputPicker, AUDIO_SINK_KEY, loadAudioSink } from "@/components/event/audio-output-picker";
+import { NowCard } from "@/components/live/now-card";
+import { KindChip, KindTile } from "@/components/event/kind";
+import { MicGrid } from "@/components/event/mic-grid";
+import { RunMeter } from "@/components/event/run-meter";
+import { OfflineBanner } from "@/components/offline-banner";
+import { useFullscreen } from "@/components/kiosk-mode";
+import { FeedbackButton } from "@/components/feedback-button";
 import { cn } from "@/lib/utils";
 import { liveTopic, privateChannel, songsTopic } from "@/lib/realtime";
 import {
@@ -66,8 +84,8 @@ import {
   type SetlistItem,
   type SetlistKind,
 } from "@/lib/types";
-import { formatCountdown, formatDuration, nowClock } from "@/lib/time";
-import { liveZone, zoneCaption } from "@/lib/live-zone";
+import { formatDuration, nowClock, pad2 } from "@/lib/time";
+import { liveZone } from "@/lib/live-zone";
 
 type ShowMode = "manual" | "auto";
 
@@ -101,6 +119,11 @@ function blockSeconds(it: SetlistItem) {
   );
 }
 
+/** What a non-admin may and may not do here — the โหมดซ้อม chip's title and the
+ *  first line of Live tools. */
+const REHEARSAL_NOTE =
+  "โหมดซ้อม — เล่น/รันเพื่อซ้อมจับเวลาได้ แต่ปรับลำดับ/เปลี่ยนไฟล์/บันทึก “จบโชว์” สงวนไว้สำหรับแอดมิน";
+
 function fmtTime(sec: number) {
   const m = Math.floor(sec / 60);
   const s = Math.floor(sec % 60);
@@ -127,6 +150,8 @@ export function LiveMode({
   canEdit,
   lastRunSeconds,
   lastRunAt,
+  userId,
+  tenantId,
 }: {
   eventId: string;
   groupId: string;
@@ -138,6 +163,10 @@ export function LiveMode({
   canEdit: boolean;
   lastRunSeconds: number | null;
   lastRunAt: string | null;
+  /** Who is reporting, for the Feedback form in Live tools (this screen has no
+   *  app header and no floating button). Without both, the form is not offered. */
+  userId?: string | null;
+  tenantId?: string | null;
 }) {
   const [state, setState] = useState<LiveState>(INITIAL);
   // The setlist is held in state (seeded from the server prop) so edits made on
@@ -283,6 +312,14 @@ export function LiveMode({
     const id = setInterval(() => setNow(Date.now()), 500);
     return () => clearInterval(id);
   }, []);
+
+  // Live tools sheet (presentation only): open/closed + where focus goes.
+  const [toolsOpen, setToolsOpen] = useState(false);
+  const toolsBtnRef = useRef<HTMLButtonElement>(null);
+  const toolsCloseRef = useRef<HTMLButtonElement>(null);
+  // Stage running order (presentation only): the admin's row keys show in edit mode
+  // only. Read by CSS through `data-edit`, so the memoized rows never re-render for it.
+  const [orderEdit, setOrderEdit] = useState(false);
 
   // apply the PLAYING track's own volume to the primary element (per-track)
   useEffect(() => {
@@ -2393,17 +2430,53 @@ export function LiveMode({
   // Warning ladder (lib/live-zone): warn/urgent scale to the item's own block.
   const zoneBlock = current ? blockSeconds(current) : 0;
   const zone = liveZone({ running: state.running, remaining, blockSec: zoneBlock });
+  // The zone's look is components/live/now-card.tsx + app/stage.css (.zone-warn /
+  // .zone-urgent / .alarm-plate), on tokens no band skin writes.
 
-  // warn/urgent wear the old amber/red until the Live slice lands. The red is the
-  // FIXED one (--notify), never --destructive: a band skin moves --destructive off
-  // a red band's hue (Seishin's turns violet), and the ladder must read the same
-  // on every band's device. lib/skin.test.ts reads this map and holds it to that.
-  const zoneClasses = {
-    over: "bg-notify text-notify-foreground animate-pulse-ring",
-    urgent: "bg-notify text-notify-foreground",
-    warn: "bg-warning text-warning-foreground",
-    ok: "bg-card text-foreground",
-  }[zone];
+  // ── display-only figures (O(n) arithmetic per 500 ms tick; nothing here is state) ──
+  const futureSec = items.slice(state.currentIndex + 1).reduce((s, it) => s + blockSeconds(it), 0);
+  const plannedBefore = items.slice(0, state.currentIndex).reduce((s, it) => s + blockSeconds(it), 0);
+  const plannedTotal = plannedBefore + zoneBlock + futureSec;
+  // What is left of the PLAN from here: this item's remaining time plus every block
+  // after it. (The slot / Hard Out version needs the show's times — not passed here.)
+  const showRemaining = Math.max(0, remaining) + futureSec;
+  const projectedEnd = nowClock(new Date(now + showRemaining * 1000)).slice(0, 5);
+  const itemEndClock = nowClock(new Date(now + Math.max(0, remaining) * 1000));
+  // the dock strip's playhead: where the show is in its PLAN, not wall-clock time
+  const playheadSec = Math.min(plannedTotal, plannedBefore + Math.min(Math.max(0, elapsedItem), zoneBlock));
+  const runBlocks = items.map((it) => ({ kind: it.kind as SetlistKind, seconds: blockSeconds(it) }));
+  const audioItems = items.filter((it) => it.audio_path);
+  const readyCount = audioItems.filter((it) => audioUrls[it.id]).length;
+  const allReady = readyCount === audioItems.length;
+  const downloadingAudio = audioItems.some((it) => audioBusy[it.id] === "down");
+  const readinessSentence = allReady
+    ? `เสียงพร้อมครบ ${audioItems.length} เพลง — เล่นได้แม้เน็ตหลุด`
+    : downloadingAudio
+      ? `กำลังโหลดเสียงลงเครื่อง ${readyCount}/${audioItems.length}…`
+      : `เสียงในเครื่องนี้ ${readyCount}/${audioItems.length} — อีก ${audioItems.length - readyCount} เพลงจะดึงจากเน็ตตอนเล่น`;
+  const syncLabel = syncReady
+    ? "ซิงค์แล้ว"
+    : isOffline()
+      ? "ออฟไลน์ · โชว์เดินต่อ"
+      : syncStatus === "init"
+        ? "กำลังเชื่อม…"
+        : syncStatus;
+  // ONE lock for NEXT's `disabled` AND its overtime invite ring, so the ring can never
+  // pulse on a key that cannot be pressed (the last item, a viewer, Auto).
+  const nextLocked = !isController || state.mode === "auto" || state.currentIndex >= items.length - 1;
+  // An offline cached row can lack `kind`: no "(undefined)" under START.
+  const firstKind = items[0]?.kind ? SETLIST_KIND_SHORT[items[0].kind as SetlistKind] : undefined;
+  // Live tools: focus moves into the sheet when it opens and back to ⋯ when it
+  // closes (so Escape, handled on the sheet, reaches it). flushSync un-hides the
+  // sheet before the focus call; neither touches the show.
+  const openTools = () => {
+    flushSync(() => setToolsOpen(true));
+    toolsCloseRef.current?.focus();
+  };
+  const closeTools = () => {
+    setToolsOpen(false);
+    toolsBtnRef.current?.focus();
+  };
 
   // Play an item's audio if a file is loaded; otherwise stop current playback.
   function playItemAudio(itemId: string) {
@@ -2973,6 +3046,21 @@ export function LiveMode({
   // memoize it — otherwise every 500ms tick and every audio timeupdate would re-render
   // all N rows. Recompute only when the setlist or the playback selection changes.
   // (Handlers read state/playingId/items/audioUrls — all in the dep list.)
+  // Each row's planned start on the wall clock: when the show first ran + the planned
+  // blocks before it. Display only; nothing reads it back. Blank until the show has
+  // a start. Depends on nothing the rows below do not already depend on.
+  const plannedStarts = useMemo(() => {
+    let at = 0;
+    return items.map((it) => {
+      const clock = state.startedAt != null ? nowClock(new Date(state.startedAt + at * 1000)).slice(0, 5) : "";
+      at += blockSeconds(it);
+      return clock;
+    });
+  }, [items, state.startedAt]);
+
+  // Stage rows (spec §G.10): idx · kind · title · planned start · length, and the
+  // admin's row keys only in edit mode (`data-edit` on the Running Order section,
+  // read by CSS, so the memo below never depends on it).
   const upcomingRows = useMemo(
     () =>
       items.map((it, i) => {
@@ -2981,6 +3069,7 @@ export function LiveMode({
         const busy = audioBusy[it.id];
         const isPlayingThis = playingId === it.id && audioPlaying;
         const locked = state.mode === "auto" || !isController;
+        const plannedStart = plannedStarts[i];
         return (
           <div
             key={it.id}
@@ -2994,8 +3083,12 @@ export function LiveMode({
               dragIndexRef.current = null;
             }}
             className={cn(
-              "flex w-full items-center gap-2 border-b px-3 py-2 last:border-0",
-              i === state.currentIndex && "bg-primary/10"
+              // shrink-0: in the stage column's fixed-height stack an edit-mode row
+              // (44 px of ▲▼) must scroll the list, never be squeezed under its keys
+              "slab relative flex min-h-[52px] w-full shrink-0 items-center gap-2 px-3 stage:min-h-[29px] stage:gap-1.5 stage:rounded-none stage:px-2.5 stage:shadow-none",
+              i < state.currentIndex && "text-faint",
+              i === state.currentIndex &&
+                "bg-primary/[.14] shadow-[inset_4px_0_0_hsl(var(--primary))] stage:bg-primary/[.16] stage:shadow-[inset_4px_0_0_hsl(var(--primary))]"
             )}
           >
             {!locked && canEdit && (
@@ -3008,7 +3101,13 @@ export function LiveMode({
                   dragIndexRef.current = null;
                 }}
                 title="ลากเพื่อสลับลำดับ (เดสก์ท็อป) — มือถือใช้ปุ่ม ▲▼"
-                className="-ml-1 shrink-0 cursor-grab text-muted-foreground/40 hover:text-muted-foreground active:cursor-grabbing"
+                // A phone (coarse pointer, not stage) gets the ▲▼ keys only, and the
+                // title its room back. Stage shows the grip in edit mode only, on the
+                // iPad too: iPadOS starts HTML drag from a long-press. The edit-mode
+                // rule outranks the coarse-pointer one by specificity, because an
+                // arbitrary @media variant is emitted AFTER the stage screen and a
+                // plain `stage:inline` would lose to it.
+                className="-ml-1 shrink-0 cursor-grab text-muted-foreground/40 hover:text-muted-foreground active:cursor-grabbing [@media(pointer:coarse)]:hidden stage:hidden stage:group-data-[edit=on]/ro:inline-flex"
               >
                 <GripVertical className="h-4 w-4" />
               </span>
@@ -3022,76 +3121,120 @@ export function LiveMode({
                   : undefined
               }
               className={cn(
-                "flex min-w-0 flex-1 items-center gap-2 text-left text-sm",
+                "flex min-w-0 flex-1 items-center gap-2 self-stretch text-left text-[15px] stage:gap-1.5 stage:text-[13.5px]",
                 locked && "cursor-default"
               )}
             >
-              <span className="w-5 shrink-0 text-center text-xs text-muted-foreground tabular-nums">
-                {i + 1}
-              </span>
-              <Badge variant="outline" className="shrink-0">
-                {SETLIST_KIND_SHORT[it.kind as SetlistKind]}
-              </Badge>
-              <span
-                className={cn(
-                  "min-w-0 flex-1 truncate",
-                  i === state.currentIndex && "font-medium"
+              <span className="w-6 shrink-0 text-center stage:w-[18px] stage:text-right">
+                {i < state.currentIndex ? (
+                  <>
+                    <Check aria-hidden className="inline size-3.5 text-success-ink" />
+                    <span className="sr-only">{i + 1}</span>
+                  </>
+                ) : (
+                  <span
+                    className={cn(
+                      "num text-[15px] stage:text-[14px]",
+                      i === state.currentIndex ? "text-primary-ink" : "text-faint"
+                    )}
+                  >
+                    {i + 1}
+                  </span>
                 )}
-              >
-                {it.title || "—"}
               </span>
-              <span className="shrink-0 tabular-nums text-xs text-muted-foreground">
-                {formatDuration(it.duration_seconds)}
+              {/* stage edit mode lends the tile's 28 px to the title, beside the keys */}
+              <KindTile
+                kind={it.kind as SetlistKind}
+                className="stage:!size-[22px] stage:[&_svg]:!size-3 stage:group-data-[edit=on]/ro:hidden"
+              />
+              {/* Phone: the title gets the row's whole width on its own line, the
+                  marks and the length under it (an admin's edit keys take the right
+                  side). Stage: one 29 px line ending in two right-aligned columns,
+                  planned start and length; edit mode goes back to two lines, so the
+                  title keeps its room beside the keys. */}
+              <span className="flex min-w-0 flex-1 flex-col justify-center gap-0.5 stage:flex-row stage:items-center stage:justify-start stage:gap-1.5 stage:group-data-[edit=on]/ro:flex-col stage:group-data-[edit=on]/ro:items-stretch stage:group-data-[edit=on]/ro:justify-center stage:group-data-[edit=on]/ro:gap-0.5">
+                <span
+                  className={cn(
+                    "min-w-0 truncate stage:flex-1 stage:group-data-[edit=on]/ro:flex-none",
+                    i === state.currentIndex && "font-semibold"
+                  )}
+                >
+                  {it.title || "—"}
+                </span>
+                <span className="flex shrink-0 items-center gap-1.5">
+                  {i === state.currentIndex && (
+                    <span aria-hidden className={cn("onair-dot", !state.running && "animate-none")} />
+                  )}
+                  {/* the track sounding right now (static: no pulse on this screen) */}
+                  {isPlayingThis && <Volume2 aria-hidden className="size-3.5 shrink-0 text-primary-ink" />}
+                  {busy && !canEdit && (
+                    <Loader2 aria-hidden className="size-3.5 shrink-0 animate-spin text-muted-foreground" />
+                  )}
+                  {i === state.currentIndex + 1 && (
+                    <span className="chip chip-neutral en h-5 shrink-0 px-1.5 !text-[11px] !tracking-[.12em]">Next</span>
+                  )}
+                  <span
+                    title={plannedStart ? "เริ่มตามแผน" : undefined}
+                    className="num hidden min-w-[38px] text-right text-[14px] text-faint stage:inline-block stage:group-data-[edit=on]/ro:hidden"
+                  >
+                    {plannedStart}
+                  </span>
+                  <span className="num text-[13px] text-muted-foreground stage:min-w-[36px] stage:text-right stage:text-[15px]">
+                    {formatDuration(it.duration_seconds)}
+                  </span>
+                </span>
               </span>
             </button>
 
-            <div className="flex shrink-0 items-center gap-1">
-              {/* quick reorder — Admin + Manual + controller only (detailed edits = setlist editor) */}
-              {!locked && canEdit && (
-                <div className="flex flex-col">
+            {/* The admin's row keys. Every slot is kept on every row (a row with no
+                file holds an empty loop slot), so the keys and the lengths line up
+                down the list. Stage: only in edit mode, at 36 px. */}
+            {canEdit && (
+              <div className="flex shrink-0 items-center gap-1 stage:hidden stage:group-data-[edit=on]/ro:flex">
+                {/* quick reorder — Admin + Manual + controller only (detailed edits = setlist editor) */}
+                {!locked && (
+                  <div className="flex flex-col">
+                    <button
+                      onClick={() => moveItem(i, -1)}
+                      disabled={i === 0}
+                      title="เลื่อนขึ้น"
+                      className="flex h-[22px] w-7 items-center justify-center rounded-[2px] text-muted-foreground/50 hover:text-foreground disabled:opacity-20"
+                    >
+                      <ChevronUp aria-hidden className="size-3.5" />
+                    </button>
+                    <button
+                      onClick={() => moveItem(i, 1)}
+                      disabled={i === items.length - 1}
+                      title="เลื่อนลง"
+                      className="flex h-[22px] w-7 items-center justify-center rounded-[2px] text-muted-foreground/50 hover:text-foreground disabled:opacity-20"
+                    >
+                      <ChevronDown aria-hidden className="size-3.5" />
+                    </button>
+                  </div>
+                )}
+                {hasFile ? (
                   <button
-                    onClick={() => moveItem(i, -1)}
-                    disabled={i === 0}
-                    title="เลื่อนขึ้น"
-                    className="flex h-3.5 w-5 items-center justify-center rounded text-muted-foreground/50 hover:text-foreground disabled:opacity-20"
+                    onClick={() => toggleLoop(it.id)}
+                    disabled={locked}
+                    title={
+                      locked
+                        ? "ตั้ง Loop ได้ตอน Manual เท่านั้น"
+                        : it.loop_audio
+                          ? "Loop เปิด — วนจนครบเวลาแล้วเฟดจบเอง (แตะเพื่อปิด)"
+                          : "Loop ปิด — แตะเพื่อให้วนจนครบเวลา (เฟดจบเอง)"
+                    }
+                    className={cn(
+                      "flex h-11 w-11 items-center justify-center rounded-[2px] transition-colors hover:bg-muted disabled:cursor-default disabled:opacity-40 disabled:hover:bg-transparent stage:h-9 stage:w-9",
+                      it.loop_audio
+                        ? "text-primary-ink"
+                        : "text-muted-foreground/40 hover:text-muted-foreground"
+                    )}
                   >
-                    <ChevronUp className="h-3.5 w-3.5" />
+                    <Repeat aria-hidden className="size-3.5" />
                   </button>
-                  <button
-                    onClick={() => moveItem(i, 1)}
-                    disabled={i === items.length - 1}
-                    title="เลื่อนลง"
-                    className="flex h-3.5 w-5 items-center justify-center rounded text-muted-foreground/50 hover:text-foreground disabled:opacity-20"
-                  >
-                    <ChevronDown className="h-3.5 w-3.5" />
-                  </button>
-                </div>
-              )}
-              {isPlayingThis && (
-                <Volume2 className="h-3.5 w-3.5 animate-pulse text-primary" />
-              )}
-              {hasFile && canEdit && (
-                <button
-                  onClick={() => toggleLoop(it.id)}
-                  disabled={locked}
-                  title={
-                    locked
-                      ? "ตั้ง Loop ได้ตอน Manual เท่านั้น"
-                      : it.loop_audio
-                        ? "Loop เปิด — วนจนครบเวลาแล้วเฟดจบเอง (แตะเพื่อปิด)"
-                        : "Loop ปิด — แตะเพื่อให้วนจนครบเวลา (เฟดจบเอง)"
-                  }
-                  className={cn(
-                    "flex h-7 w-7 items-center justify-center rounded-md transition-colors hover:bg-muted disabled:cursor-default disabled:opacity-40 disabled:hover:bg-transparent",
-                    it.loop_audio
-                      ? "text-primary"
-                      : "text-muted-foreground/40 hover:text-muted-foreground"
-                  )}
-                >
-                  <Repeat className="h-3.5 w-3.5" />
-                </button>
-              )}
-              {canEdit ? (
+                ) : (
+                  <span aria-hidden className="h-11 w-11 shrink-0 stage:h-9 stage:w-9" />
+                )}
                 <button
                   onClick={() => openFilePicker(it.id)}
                   disabled={!!busy}
@@ -3107,40 +3250,98 @@ export function LiveMode({
                             : "โหลดไฟล์เพลง (อัปโหลดขึ้นคลาวด์)"
                   }
                   className={cn(
-                    "flex h-7 w-7 items-center justify-center rounded-md transition-colors hover:bg-muted disabled:cursor-default disabled:hover:bg-transparent",
+                    "flex h-11 w-11 items-center justify-center rounded-[2px] transition-colors hover:bg-muted disabled:cursor-default disabled:hover:bg-transparent stage:h-9 stage:w-9",
                     hasFile
-                      ? "text-primary"
+                      ? "text-primary-ink"
                       : "text-muted-foreground/40 hover:text-muted-foreground"
                   )}
                 >
                   {busy ? (
-                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    <Loader2 aria-hidden className="size-3.5 animate-spin" />
                   ) : (
-                    <FolderOpen className="h-3.5 w-3.5" />
+                    <FolderOpen aria-hidden className="size-3.5" />
                   )}
                 </button>
-              ) : busy ? (
-                <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
-              ) : null}
-            </div>
+              </div>
+            )}
           </div>
         );
       }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [items, state, playingId, audioPlaying, audioUrls, audioBusy, isController]
+    [items, state, playingId, audioPlaying, audioUrls, audioBusy, isController, plannedStarts]
   );
 
   if (items.length === 0) {
     return (
-      <div className="rounded-xl border bg-card p-10 text-center text-muted-foreground">
-        ยังไม่มีรายการในเซ็ตลิสต์ — เพิ่มเพลงก่อนเริ่ม Live Mode
+      <div className="flex flex-col gap-3 px-4 py-6">
+        <Link href={`/events/${eventId}`} className="inline-flex h-11 items-center gap-2 self-start text-[15px]">
+          <ArrowLeft aria-hidden className="size-5" />
+          กลับไปหน้างาน
+        </Link>
+        <div className="slab p-10 text-center text-muted-foreground">
+          ยังไม่มีรายการในเซ็ตลิสต์ — เพิ่มเพลงก่อนเริ่ม Live Mode
+        </div>
       </div>
     );
   }
 
+  // The one-tap fades. Rendered in the NOW card, and again in Live tools for the
+  // landscape phone only, where the card has no room for them (CSS picks one; the
+  // keys carry no test id, so nothing that counts ids sees two).
+  const fadeKeys = (
+    <>
+      <Button
+        type="button"
+        variant="secondary"
+        onClick={() => fadeVolumeTo(0, 3000)}
+        disabled={!isController}
+        title="ค่อย ๆ ปิดเสียงเป็น 0% ใน 3 วินาที"
+        className="en h-11 min-w-0 gap-1.5 rounded-[2px] px-1 !text-[14px] stage:h-12 stage:!text-[16px]"
+      >
+        <VolumeX aria-hidden />
+        Auto Mute
+      </Button>
+      <Button
+        type="button"
+        variant="secondary"
+        onClick={() => fadeVolumeTo(30)}
+        disabled={!isController}
+        title="ค่อย ๆ ลดเสียงลงเป็น 30% ใน 2 วินาที (ช่วง MC)"
+        className="en h-11 min-w-0 gap-1.5 rounded-[2px] px-1 !text-[14px] stage:h-12 stage:!text-[16px]"
+      >
+        <Volume1 aria-hidden />
+        MC
+      </Button>
+      <Button
+        type="button"
+        variant="secondary"
+        onClick={() => fadeVolumeTo(100, 2500)}
+        disabled={!isController}
+        title="ค่อย ๆ เพิ่มเสียงกลับเป็น 100% ใน 2.5 วินาที"
+        className="en h-11 min-w-0 gap-1.5 rounded-[2px] px-1 !text-[14px] stage:h-12 stage:!text-[16px]"
+      >
+        <Volume2 aria-hidden />
+        Auto Loudness
+      </Button>
+    </>
+  );
+
   return (
     <div
-      className="mx-auto max-w-2xl space-y-4 landscape:max-w-5xl"
+      // ONE DOM for every screen, reflowed by CSS only (a JS media query would
+      // remount the audio engine). Phone: a scrolling column over the fixed dock.
+      // Stage (landscape iPad / laptop): exactly one screen tall, nothing scrolls.
+      // `zone-over` lights the hazard rails and the screen-edge alarm frame
+      // (app/stage.css). No transform or filter here — they would trap the fixed
+      // dock, the Live tools sheet and that frame inside this box.
+      // Landscape phone: a wrapping ROW, so NOW | NEXT sit side by side right under
+      // the top bar and `order` sends the status rows below them — the 390 px height
+      // cannot hold a status row AND the NOW card above the dock. (A grid would end
+      // the sticky top bar at its own row; a flex container keeps it sticky.)
+      className={cn(
+        "live-root relative mx-auto flex w-full max-w-2xl flex-col gap-2 px-4 pb-[calc(84px+max(12px,env(safe-area-inset-bottom)))] [@media(orientation:landscape)_and_(max-height:699.98px)]:max-w-none [@media(orientation:landscape)_and_(max-height:699.98px)]:flex-row [@media(orientation:landscape)_and_(max-height:699.98px)]:flex-wrap [@media(orientation:landscape)_and_(max-height:699.98px)]:content-start [@media(orientation:landscape)_and_(max-height:699.98px)]:items-start [@media(orientation:landscape)_and_(max-height:699.98px)]:gap-x-3 [@media(orientation:landscape)_and_(max-height:699.98px)]:px-6 stage:h-[100dvh] stage:max-w-none stage:gap-0 stage:overflow-hidden stage:px-0 stage:pb-[calc(112px+env(safe-area-inset-bottom))] stage:pl-[env(safe-area-inset-left)] stage:pr-[env(safe-area-inset-right)]",
+        zone === "over" && "zone-over"
+      )}
       // ── WHAT THIS DEVICE THINKS IT IS, readable from outside the process ──────
       // The same convention as `data-cueiq-screen` on the desktop shell, and here
       // for the same reason: the two-device smoke (desktop/scripts/run-smoke.mjs,
@@ -3171,73 +3372,124 @@ export function LiveMode({
         onChange={handleFileChange}
       />
 
-      {/* rehearsal notice — non-admins may play/รัน to rehearse but never edit live */}
-      {!canEdit && (
-        <div className="rounded-lg border border-amber-400/40 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:bg-amber-950/40 dark:text-amber-200">
-          โหมดซ้อม — เล่น/รันเพื่อซ้อมจับเวลาได้ แต่ปรับลำดับ/เปลี่ยนไฟล์/บันทึก “จบโชว์” สงวนไว้สำหรับแอดมิน
+      {/* ── TOP BAR ── back · ON AIR + sync · the show · (stage: the show stats) · the
+          wall clock · Live tools. Glass, sticky, edge to edge. It also hosts the offline
+          strip, so the page-level copy stands down and can never push this screen
+          into a scroll in exactly the airplane case. The back control is an <a>: the
+          leave guard above intercepts a[href], so leaving a running show still asks. */}
+      <header className="live-top glass glass-top sticky top-0 z-40 -mx-4 shrink-0 pt-[env(safe-area-inset-top)] [@media(orientation:landscape)_and_(max-height:699.98px)]:-mx-6 [@media(orientation:landscape)_and_(max-height:699.98px)]:min-w-0 [@media(orientation:landscape)_and_(max-height:699.98px)]:basis-[calc(100%+48px)] stage:mx-0">
+        <div className="flex h-[54px] items-center gap-1 px-1 stage:h-16 stage:gap-3 stage:pl-3 stage:pr-4">
+          <Link
+            href={`/events/${eventId}`}
+            aria-label="กลับไปหน้างาน"
+            title="กลับไปหน้างาน"
+            className="grid size-11 shrink-0 place-items-center rounded-[3px] hover:bg-muted"
+          >
+            <ArrowLeft aria-hidden className="size-6" />
+          </Link>
+          <div className="min-w-0 flex-1">
+            <div className="flex min-w-0 items-center gap-1.5">
+              {/* ON AIR blinks only while the clock runs; a paused or cued show holds it still. */}
+              <span className="onair-tag">
+                <i className={cn(!state.running && "!animate-none")} />
+                On Air
+              </span>
+              <span
+                title={syncReady ? "Sync ready" : `สถานะ: ${syncStatus}`}
+                className={cn(
+                  "flex min-w-0 items-center gap-1 text-[12px]",
+                  syncReady ? "text-success-ink" : "text-warning-ink"
+                )}
+              >
+                {syncReady ? (
+                  <Wifi aria-hidden className="size-[13px] shrink-0" />
+                ) : (
+                  <WifiOff aria-hidden className="size-[13px] shrink-0" />
+                )}
+                <span className="truncate" suppressHydrationWarning>
+                  {syncLabel}
+                </span>
+                {syncReady && state.begun && (
+                  <span className="hidden shrink-0 stage:inline">
+                    · {isController ? "เครื่องนี้คุมโชว์" : "ดูอย่างเดียว"}
+                  </span>
+                )}
+              </span>
+            </div>
+            <div className="mt-[3px] truncate text-[14px] font-semibold leading-tight stage:font-display stage:text-[21px] stage:font-extrabold stage:[font-synthesis:none]">
+              {eventName}
+            </div>
+          </div>
+          {/* Stage and a phone held sideways: the show strip rides up here (a phone
+              upright keeps its own row). The landscape phone has no other place for
+              the running totals, and an operator who cannot see them walks the show
+              without noticing the accumulated clock. */}
+          <div className="hidden items-center gap-3 [@media(orientation:landscape)_and_(max-height:699.98px)]:flex stage:flex stage:gap-5">
+            <Stat label="ผ่านไป">{formatDuration(totalElapsed)}</Stat>
+            <Stat label="เหลือทั้งโชว์">{formatDuration(showRemaining)}</Stat>
+            <Stat label="คาดจบ" suppress>
+              {projectedEnd}
+            </Stat>
+            <div aria-hidden className="h-10 w-[3px] bg-foreground/15" />
+          </div>
+          <div className="shrink-0 pr-1 text-right stage:flex stage:flex-col-reverse">
+            <div className="num text-[25px] leading-none stage:text-[28px]" suppressHydrationWarning>
+              {wallClock}
+            </div>
+            <div className="mt-[2px] text-[10.5px] text-faint stage:mt-0 stage:text-[11px] stage:text-muted-foreground">
+              เวลาจริง
+            </div>
+          </div>
+          <button
+            ref={toolsBtnRef}
+            type="button"
+            aria-label="Live tools"
+            title="Live tools"
+            aria-haspopup="dialog"
+            aria-expanded={toolsOpen}
+            onClick={openTools}
+            className="grid size-11 shrink-0 place-items-center rounded-[3px] hover:bg-muted"
+          >
+            <Ellipsis aria-hidden className="size-[22px]" />
+          </button>
         </div>
-      )}
+        {/* A phone held sideways has no 28 px to spare above the NOW card: there the
+            sync line beside ON AIR already reads "ออฟไลน์ · โชว์เดินต่อ". The strip
+            stays mounted, so the page-level copy still stands down. */}
+        <div className="[@media(orientation:landscape)_and_(max-height:699.98px)]:hidden">
+          <OfflineBanner placement="header" />
+        </div>
+      </header>
 
-      {/* top bar */}
-      <div className="flex items-center justify-between gap-3 rounded-xl border bg-card px-4 py-3">
-        <div className="flex min-w-0 flex-1 items-center gap-2 font-medium">
-          <Radio
-            className={cn(
-              "h-4 w-4 shrink-0",
-              state.running ? "text-destructive" : "text-muted-foreground"
-            )}
-          />
-          <span className="truncate">{eventName}</span>
-          <span
-            title={syncReady ? "Sync ready" : `สถานะ: ${syncStatus}`}
-            className={cn(
-              "h-2 w-2 shrink-0 rounded-full",
-              syncReady ? "bg-green-500" : "animate-pulse bg-yellow-400"
-            )}
-          />
-          {!syncReady && (
-            <span className="shrink-0 text-[10px] font-normal text-muted-foreground">
-              {syncStatus === "init" ? "กำลังเชื่อม…" : syncStatus}
-            </span>
-          )}
-        </div>
-        {/* Landscape only: the running total sits up here beside the clock instead
-            of taking a full-width row of its own under the cards. On an iPad in
-            landscape (1180×820) that row, the app header and the two cards put
-            the START / NEXT button ~940px down — below the screen, so the
-            operator scrolled before every press (2026-09-28). Portrait keeps its
-            own box, unchanged. */}
-        <div className="hidden shrink-0 text-right landscape:block">
-          <p className="text-xs text-muted-foreground">เวลาสะสม</p>
-          <p className="font-semibold tabular-nums">{formatDuration(totalElapsed)}</p>
-        </div>
-        <div className="shrink-0 text-right">
-          <p className="text-xs text-muted-foreground">เวลาจริง</p>
-          <p className="font-semibold tabular-nums" suppressHydrationWarning>
-            {wallClock}
-          </p>
-        </div>
-      </div>
+      {/* ── TRANSIENT BANNERS ── between the top bar and the status row (a phone held
+          sideways moves the informational ones below NOW | NEXT; the two that ask
+          for a tap stay on top). */}
+      {/* "What is this device right now" — it only shows when something needs attention. */}
+      <LiveStatusStrip
+        eventId={eventId}
+        isController={isController}
+        soundOutput={soundOutput}
+        className="stage:mx-5 stage:mb-2 [@media(orientation:landscape)_and_(max-height:699.98px)]:order-1 [@media(orientation:landscape)_and_(max-height:699.98px)]:basis-full"
+      />
 
-      {/* "What is this device right now" — Show Main / Audio Host / online / sync. */}
-      <LiveStatusStrip eventId={eventId} isController={isController} soundOutput={soundOutput} />
-
-      {/* Audio needs a tap to (re)start — after a reload / autoplay block. Big target. */}
+      {/* Audio needs a tap to (re)start — after a reload / autoplay block. The one
+          allowed fill on this screen, because it IS the action. */}
       {needsAudioResume && (
         <button
+          type="button"
           onClick={resumeAudio}
-          className="flex w-full items-center justify-center gap-2 rounded-xl border border-amber-400 bg-amber-500 px-4 py-3 text-base font-bold text-black shadow-sm animate-pulse hover:bg-amber-400"
+          className="flex h-[52px] shrink-0 items-center justify-center gap-2 rounded-[2px] bg-warning px-4 font-semibold text-warning-foreground [@media(orientation:landscape)_and_(max-height:699.98px)]:basis-full stage:mx-5 stage:mb-2"
         >
-          <Volume2 className="h-5 w-5" /> แตะเพื่อเล่นเสียงต่อ (ตำแหน่งปัจจุบัน)
+          <Volume2 aria-hidden className="size-5 shrink-0" /> แตะเพื่อเล่นเสียงต่อ (ตำแหน่งปัจจุบัน)
         </button>
       )}
 
       {/* A real playback failure on this device — the countdown keeps running, so
           say WHY the PA is silent instead of leaving the operator guessing. */}
       {audioFault && (
-        <div className="flex items-center justify-between gap-2 rounded-xl border border-rose-400 bg-rose-500/10 px-4 py-2 text-sm font-medium text-rose-800 dark:text-rose-300">
+        <div className="flex shrink-0 items-center justify-between gap-2 rounded-[2px] bg-destructive/[.14] py-1 pl-3 pr-1 text-[13px] font-medium text-foreground [@media(orientation:landscape)_and_(max-height:699.98px)]:basis-full stage:mx-5 stage:mb-2 [&_svg]:text-destructive">
           <span className="flex min-w-0 items-center gap-1.5">
-            <VolumeX className="h-4 w-4 shrink-0" />
+            <VolumeX aria-hidden className="size-4 shrink-0" />
             <span className="min-w-0">
               เล่นไฟล์เสียงไม่สำเร็จ: “{audioFault.title}” — เครื่องนี้ไม่มีเสียง (โชว์ยังเดินต่อ) · ลองโหลดไฟล์เพลงใหม่
             </span>
@@ -3249,7 +3501,7 @@ export function LiveMode({
               setAudioFault(null);
             }}
             title="ปิดข้อความนี้"
-            className="shrink-0 rounded-md px-2 py-0.5 text-xs underline-offset-2 hover:underline"
+            className="h-11 shrink-0 rounded-[2px] px-3 text-[13px] hover:bg-foreground/10"
           >
             ปิด
           </button>
@@ -3258,121 +3510,586 @@ export function LiveMode({
 
       {/* Realtime dropped mid-show — make it obvious; the local show keeps running */}
       {state.begun && !syncReady && (
-        <div className="flex items-center justify-center gap-2 rounded-xl border border-amber-300 bg-amber-50 px-4 py-2 text-sm font-medium text-amber-900">
-          <span className="h-2 w-2 shrink-0 animate-pulse rounded-full bg-amber-500" />
+        <div className="flex shrink-0 items-center justify-center gap-2 rounded-[2px] bg-warning/[.16] px-3 py-2 text-[13px] font-medium text-warning-ink [@media(orientation:landscape)_and_(max-height:699.98px)]:order-1 [@media(orientation:landscape)_and_(max-height:699.98px)]:basis-full stage:mx-5 stage:mb-2">
+          <span aria-hidden className="h-2 w-2 shrink-0 bg-warning" />
           การเชื่อมต่อหลุด — กำลังต่อใหม่ (โชว์ยังเดินต่อ)
         </div>
       )}
 
-      {/* Pre-flight audio readiness — read-only: does THIS device hold every track's
-          file so the show plays offline? Before START it always shows; once running it
-          only warns if something's still missing. Derived from existing state. */}
-      {(() => {
-        const audioItems = items.filter((it) => it.audio_path);
-        if (audioItems.length === 0) return null;
-        const total = audioItems.length;
-        const ready = audioItems.filter((it) => audioUrls[it.id]).length;
-        const allReady = ready === total;
-        if (allReady && state.begun) return null; // don't nag once running & all set
-        const downloading = audioItems.some((it) => audioBusy[it.id] === "down");
-        return (
-          <div
-            className={cn(
-              "flex items-center justify-center gap-2 rounded-xl border px-4 py-2 text-sm font-medium",
-              allReady
-                ? "border-green-500/40 bg-green-500/10 text-green-700 dark:text-green-400"
-                : "border-amber-400 bg-amber-500/10 text-amber-800 dark:text-amber-300"
+      {/* ── STATUS ROW ── this device's sound · audio readiness · Manual | Auto. A
+          viewer gets its banner (and, on a sound device, ขอควบคุม) in place of the
+          controls. Sound is LOCAL per device (never broadcast): the PA on, a remote
+          off, so the remote stays silent without muting the PA. A phone held
+          sideways shows it under NOW | NEXT (one short scroll), never hides it:
+          Live tools has no copy of the sound key, Manual | Auto or ขอควบคุม. */}
+      <div className="flex h-11 min-w-0 shrink-0 items-center gap-1.5 [@media(orientation:landscape)_and_(max-height:699.98px)]:order-1 [@media(orientation:landscape)_and_(max-height:699.98px)]:basis-full stage:h-[60px] stage:gap-2 stage:px-5 stage:pt-3">
+        <button
+          type="button"
+          data-testid="sound-output-toggle"
+          onClick={() => setSoundOutput((v) => !v)}
+          title={
+            soundOutput
+              ? "เสียงออกที่เครื่องนี้ — แตะเพื่อปิดเสียงเฉพาะเครื่องนี้"
+              : "เครื่องนี้เงียบอยู่ — แตะเพื่อให้เสียงออก"
+          }
+          className={cn(
+            "chip chip-lg shrink-0 gap-[5px] px-2 text-[13px] stage:px-[11px] stage:text-[13.5px]",
+            soundOutput ? "chip-success" : "chip-neutral"
+          )}
+        >
+          {soundOutput ? (
+            <>
+              <Volume2 aria-hidden />
+              เสียงออกเครื่องนี้
+            </>
+          ) : (
+            <>
+              <VolumeX aria-hidden />
+              ปิดเสียงเครื่องนี้
+            </>
+          )}
+        </button>
+        {isController ? (
+          <>
+            {/* Pre-flight readiness — does THIS device hold every track's file, so the
+                show plays offline? The full sentence is in Live tools. */}
+            {audioItems.length > 0 && (
+              <span
+                title={readinessSentence}
+                className={cn(
+                  "chip chip-lg min-w-0 gap-[5px] overflow-hidden px-2 text-[13px] stage:text-[13.5px]",
+                  allReady ? "chip-neutral" : "chip-warning",
+                  !canEdit && "hidden stage:inline-flex"
+                )}
+              >
+                {downloadingAudio && !allReady ? (
+                  <Loader2 aria-hidden className="animate-spin" />
+                ) : (
+                  <HardDriveDownload aria-hidden />
+                )}
+                <span className="min-w-0 truncate">
+                  {allReady ? "พร้อม" : downloadingAudio ? "กำลังโหลด" : "ในเครื่อง"}{" "}
+                  <span className="num text-[16px]">
+                    {readyCount}/{audioItems.length}
+                  </span>
+                  {allReady && <span className="hidden stage:inline"> · เล่นได้แม้เน็ตหลุด</span>}
+                </span>
+              </span>
             )}
+            {/* Non-admins may play/รัน to rehearse but never edit live. */}
+            {!canEdit && (
+              <span title={REHEARSAL_NOTE} className="chip chip-lg chip-info shrink-0 gap-[5px] px-2 text-[13px]">
+                <GraduationCap aria-hidden />
+                โหมดซ้อม
+              </span>
+            )}
+            <div
+              role="group"
+              aria-label="Show mode"
+              className="seg quiet en ml-auto w-[100px] flex-none stage:w-[210px]"
+            >
+              <button
+                type="button"
+                onClick={() => setMode("manual")}
+                disabled={!isController}
+                aria-pressed={state.mode === "manual"}
+                className={cn(
+                  "!px-1 !text-[13px] disabled:opacity-50 stage:!text-[15px]",
+                  state.mode === "manual" && "on"
+                )}
+              >
+                <Hand aria-hidden className="hidden size-4 stage:block" />
+                Manual
+              </button>
+              <button
+                type="button"
+                onClick={() => setMode("auto")}
+                disabled={!isController}
+                aria-pressed={state.mode === "auto"}
+                className={cn(
+                  "!px-1 !text-[13px] disabled:opacity-50 stage:!text-[15px]",
+                  state.mode === "auto" && "on"
+                )}
+              >
+                <Sparkles aria-hidden className="hidden size-4 stage:block" />
+                Auto
+              </button>
+            </div>
+          </>
+        ) : (
+          <div
+            data-testid="viewer-banner"
+            className="flex h-11 min-w-0 flex-1 items-center gap-2 rounded-[2px] bg-info/[.15] pl-2.5 pr-1 text-info-ink"
           >
-            {allReady ? (
+            {audioPlaying ? (
+              <Volume2 aria-hidden className="size-4 shrink-0" />
+            ) : (
+              <Eye aria-hidden className="size-4 shrink-0" />
+            )}
+            <span className="min-w-0 flex-1 truncate text-[13px] font-medium">
+              {audioPlaying ? "เครื่องนี้เล่นเสียงอยู่ — คุมจากเครื่องอื่น" : "ดูอย่างเดียว — ซิงค์จากเครื่องคุม"}
+            </span>
+            {/* เครื่องเสียงคุมคนเดียว: only a sound-output device may take control.
+                A muted viewer sees no take-control button — turn its sound on first
+                to become the show device (audio + control move here together). */}
+            {soundOutput && (
+              <Button
+                size="sm"
+                variant="secondary"
+                data-testid="request-control"
+                onClick={takeControl}
+                className="h-9 shrink-0"
+              >
+                ขอควบคุม
+              </Button>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* ── SHOW STRIP ── phone portrait only (stage carries it in the top bar). */}
+      <div className="grid shrink-0 grid-cols-3 gap-[2px] [@media(orientation:landscape)_and_(max-height:699.98px)]:hidden stage:hidden">
+        <div className="slab min-w-0 px-3 py-1">
+          <div className="truncate text-[11px] text-muted-foreground">ผ่านไป</div>
+          <div className="num text-[25px] leading-[1.05]">{formatDuration(totalElapsed)}</div>
+        </div>
+        <div className="slab min-w-0 px-3 py-1">
+          <div className="truncate text-[11px] text-muted-foreground">เหลือทั้งโชว์</div>
+          <div className="num text-[25px] leading-[1.05]">{formatDuration(showRemaining)}</div>
+        </div>
+        <div className="slab min-w-0 px-3 py-1">
+          <div className="truncate text-[11px] text-muted-foreground">คาดจบ</div>
+          <div className="num text-[25px] leading-[1.05]" suppressHydrationWarning>
+            {projectedEnd}
+          </div>
+        </div>
+      </div>
+
+      {/* ── THE BOARD ── phone: one column. Landscape phone: `contents`, so NOW and
+          NEXT become two half-width items of the root's wrapping row (the status
+          rows, then the order, follow them). Stage: NOW | NEXT + SHOW | the running
+          order, no page scroll. */}
+      <div className="flex flex-col gap-2 [@media(orientation:landscape)_and_(max-height:699.98px)]:contents stage:grid stage:min-h-0 stage:flex-1 stage:grid-cols-[minmax(0,1fr)_300px_320px] stage:grid-rows-[minmax(0,1fr)] stage:gap-4 stage:px-5 stage:pb-3 stage:pt-2">
+        <NowCard
+          zone={zone}
+          blockSec={zoneBlock}
+          remaining={remaining}
+          elapsed={elapsedItem}
+          index={state.currentIndex + 1}
+          total={items.length}
+          kind={(current?.kind as SetlistKind | undefined) ?? null}
+          title={current?.title || "—"}
+          note={current?.notes ?? null}
+          endClock={itemEndClock}
+          canAdvance={!nextLocked}
+        >
+          {/* The one-tap fades — on the device that holds the file, or the controller
+              riding the speaker device's level by remote. */}
+          {current && (currentAudioUrl || (isController && state.begun)) ? (
+            <>
+              <div className="grid grid-cols-[1.05fr_.72fr_1.25fr] gap-[3px]">{fadeKeys}</div>
+              {/* Stage only: the track's level under the fades (the phone has it in Live tools). */}
+              <div className="mt-2.5 hidden min-w-0 items-center gap-2.5 text-[12.5px] text-muted-foreground stage:flex">
+                <Volume1 aria-hidden className="size-4 shrink-0" />
+                <span className="shrink-0">ความดัง</span>
+                <input
+                  type="range"
+                  min={0}
+                  max={100}
+                  step={1}
+                  value={volumes[current.id] ?? 100}
+                  onChange={(e) => setVolumeFor(current.id, Number(e.target.value))}
+                  disabled={!isController}
+                  title={
+                    isController
+                      ? "ความดังของแทร็คนี้ (ตั้งล่วงหน้าได้)"
+                      : "ดูอย่างเดียว — คุมความดังที่เครื่องคุม"
+                  }
+                  className="min-w-0 flex-1 disabled:cursor-not-allowed disabled:opacity-50"
+                />
+                <span className="num shrink-0 text-[16px] text-foreground">{volumes[current.id] ?? 100}%</span>
+                {currentAudioUrl && (
+                  <span className="min-w-0 max-w-[40%] truncate">· {audioNames[current.id]}</span>
+                )}
+              </div>
+            </>
+          ) : null}
+        </NowCard>
+
+        {/* NEXT (and, on stage, the SHOW totals under it) */}
+        <div className="flex min-w-0 flex-col gap-2 [@media(orientation:landscape)_and_(max-height:699.98px)]:basis-[calc(50%-6px)] stage:min-h-0 stage:gap-3">
+          <section className="slab shrink-0 px-4 pb-3 pt-2 stage:px-5 stage:pb-4 stage:pt-3.5">
+            {next ? (
               <>
-                <CheckCircle2 className="h-4 w-4 shrink-0" />
-                เสียงพร้อมครบ {total} เพลง — เล่นได้แม้เน็ตหลุด
-              </>
-            ) : downloading ? (
-              <>
-                <Loader2 className="h-4 w-4 shrink-0 animate-spin" />
-                กำลังโหลดเสียงลงเครื่อง {ready}/{total}…
+                {/* The length rides the label row on every screen, so the title gets
+                    the column's whole width: at stage a 48 px length beside a 30 px
+                    title left ~170 px and cut "Seishin Kakumei" to "Seishin Kak…". */}
+                <div className="flex h-7 min-w-0 items-center gap-2 stage:h-12">
+                  <span className="nlabel">Next</span>
+                  {/* the index alone: "/ 16" no longer fits beside a 48 px length at
+                      stage, and the NOW card and the running order both print it */}
+                  <span className="num shrink-0 text-[16px] text-faint">{pad2(state.currentIndex + 2)}</span>
+                  {next.kind && <KindChip kind={next.kind as SetlistKind} className="shrink-0" />}
+                  <span className="num ml-auto shrink-0 text-[26px] leading-none stage:text-[48px] stage:font-extrabold">
+                    {formatDuration(blockSeconds(next))}
+                  </span>
+                </div>
+                <div className="disp min-w-0 truncate text-[22px] leading-tight stage:mt-1 stage:text-[30px] stage:leading-[1.02]">
+                  {next.title || "—"}
+                </div>
+                <div className="mb-1.5 mt-2.5 hidden items-center gap-1.5 text-[12.5px] text-muted-foreground stage:flex">
+                  <Mic aria-hidden className="size-3.5" />
+                  เตรียมไมค์
+                </div>
+                {next.mic_slots?.length > 0 ? (
+                  <MicGrid
+                    className="mt-2 stage:mt-0"
+                    mics={next.mic_slots.map((s) => ({
+                      mic: s.mic,
+                      name: s.member,
+                      color: "hsl(var(--foreground) / .3)",
+                    }))}
+                  />
+                ) : (
+                  <p className="mt-2 text-[13px] text-muted-foreground">— ไม่มีไมค์ที่ต้องเตรียม —</p>
+                )}
+                {/* The cue the band typed for what's coming — capped and scrollable,
+                    never cut, so a long MC script stays reachable. */}
+                {next.notes && (
+                  <p className="mt-2 flex max-h-16 items-start gap-1.5 overflow-y-auto break-words text-[13px] text-muted-foreground stage:mt-3 stage:bg-muted stage:px-3 stage:py-2">
+                    <Lightbulb aria-hidden className="mt-0.5 size-3.5 shrink-0" />
+                    <span className="min-w-0">{next.notes}</span>
+                  </p>
+                )}
               </>
             ) : (
-              <>
-                <HardDriveDownload className="h-4 w-4 shrink-0" />
-                เสียงในเครื่องนี้ {ready}/{total} — อีก {total - ready} เพลงจะดึงจากเน็ตตอนเล่น
-              </>
+              <div className="py-3 text-center text-muted-foreground">
+                <p className="text-lg font-semibold">— จบโชว์ —</p>
+                <p className="text-sm">ไม่มีรายการถัดไปแล้ว</p>
+              </div>
+            )}
+          </section>
+
+          <section className="slab hidden min-h-0 flex-1 flex-col overflow-hidden px-5 pb-4 pt-3.5 stage:flex">
+            <span className="nlabel">Show</span>
+            <div className="mt-2 flex items-baseline gap-2">
+              <span className="num text-[50px] font-extrabold leading-none">{formatDuration(totalElapsed)}</span>
+              <span className="num text-[24px] text-faint">/ {formatDuration(plannedTotal)}</span>
+            </div>
+            <div className="mt-3 grid grid-cols-2 gap-[2px]">
+              <div className="well min-w-0 px-3 py-1.5">
+                <div className="truncate text-[11px] text-muted-foreground">จบประมาณ</div>
+                <div className="num text-[32px] leading-[1.05]" suppressHydrationWarning>
+                  {projectedEnd}
+                </div>
+              </div>
+              <div className="well min-w-0 px-3 py-1.5">
+                <div className="truncate text-[11px] text-muted-foreground">เหลือทั้งโชว์</div>
+                <div className="num text-[32px] leading-[1.05]">{formatDuration(showRemaining)}</div>
+              </div>
+            </div>
+          </section>
+        </div>
+
+        {/* RUNNING ORDER (memoized — see upcomingRows) */}
+        <section
+          data-edit={orderEdit ? "on" : "off"}
+          className="group/ro [@media(orientation:landscape)_and_(max-height:699.98px)]:order-2 [@media(orientation:landscape)_and_(max-height:699.98px)]:basis-full stage:flex stage:min-h-0 stage:flex-col stage:rounded-[2px] stage:bg-card stage:p-2.5 stage:shadow-edge"
+        >
+          <div className="hidden items-center gap-2 px-2 pb-1.5 pt-1 stage:flex">
+            <h3 className="nlabel text-[19px]">Running Order</h3>
+            <span className="ml-auto text-[12.5px] text-muted-foreground">
+              <span className="num text-[15px] text-foreground">{state.currentIndex + 1}</span> /{" "}
+              <span className="num text-[15px]">{items.length}</span>
+            </span>
+            {/* Stage only (phones always show their row keys): the admin's reorder,
+                Loop and file keys stay out of the running order until asked for. */}
+            {canEdit && (
+              <button
+                type="button"
+                aria-pressed={orderEdit}
+                onClick={() => setOrderEdit((v) => !v)}
+                // (never the word ไฟล์เพลง: tests find a row's file key by it)
+                title={orderEdit ? "ซ่อนปุ่มแก้ไขของแต่ละแถว" : "แสดงปุ่มแก้ไขของแต่ละแถว (สลับลำดับ · Loop · ไฟล์)"}
+                className={cn("chip -my-1 h-8 shrink-0 gap-1.5 px-2.5 text-[13px]", orderEdit ? "chip-solid" : "chip-neutral")}
+              >
+                <Pencil aria-hidden />
+                แก้ไข
+              </button>
             )}
           </div>
-        );
-      })()}
+          <div className="stack stage:min-h-0 stage:flex-1 stage:gap-px stage:overflow-y-auto">{upcomingRows}</div>
+        </section>
+      </div>
 
-      {/* current item + next-up prep — stacked in portrait, side by side in
-          landscape (e.g. iPad) so the crew can ready the next item's mics/props */}
-      <div className="grid gap-4 landscape:grid-cols-2 landscape:items-stretch">
-      {/* main countdown */}
-      <div
-        className={cn(
-          "rounded-2xl border p-6 text-center shadow-sm transition-colors",
-          zoneClasses
-        )}
-      >
-        <div className="mb-1 flex items-center justify-center gap-2">
-          {current && (
-            <Badge variant="secondary" className="bg-black/10">
-              {SETLIST_KIND_SHORT[current.kind as SetlistKind]}
-            </Badge>
-          )}
-          <span className="text-sm opacity-80 tabular-nums">
-            {state.currentIndex + 1} / {items.length}
-          </span>
-        </div>
-        <h2 className="mb-3 break-words px-1 text-xl font-bold leading-tight sm:text-2xl">
-          {current?.title || "—"}
-        </h2>
-        <p className="text-5xl font-bold tabular-nums sm:text-6xl lg:text-7xl">
-          {formatCountdown(Math.round(remaining))}
-        </p>
-        <p className="mt-2 text-sm opacity-80">{zoneCaption(zone, zoneBlock)}</p>
-        {current && current.mic_slots?.length > 0 && (
-          <div className="mt-4 flex flex-wrap justify-center gap-1.5">
-            {current.mic_slots.map((s, i) => (
-              <Badge
-                key={i}
-                variant="outline"
-                className="border-black/20 bg-black/5"
-              >
-                {s.mic} → {s.member}
-              </Badge>
-            ))}
+      {/* last-show time record — saved by จบโชว์, survives a normal Reset Show,
+          cleared only by its own ล้าง button. On stage it lives in Live tools. */}
+      {lastRun && (
+        <LastRunRecord
+          seconds={lastRun.seconds}
+          at={lastRun.at}
+          onClear={canEdit ? clearLastRun : null}
+          className="shrink-0 [@media(orientation:landscape)_and_(max-height:699.98px)]:order-3 [@media(orientation:landscape)_and_(max-height:699.98px)]:basis-full stage:hidden"
+        />
+      )}
+
+      <p className="px-1 text-center text-[11px] text-faint [@media(orientation:landscape)_and_(max-height:699.98px)]:order-3 [@media(orientation:landscape)_and_(max-height:699.98px)]:basis-full stage:hidden">
+        <CloudUpload aria-hidden className="mr-1 inline size-3" />
+        ไฟล์เพลงเก็บออนไลน์แบบส่วนตัว (เฉพาะคนที่ล็อกอิน) — ทุกเครื่องเล่นได้ และลบได้
+      </p>
+
+      {/* ── THE DOCK ── fixed 64 px side keys + a flex NEXT; nothing reflows when the
+          show starts. Before START the centre slot is START and the side keys are
+          inert placeholders (no test id, no handler: a live run-toggle before START
+          would bypass the authority probe in start()). NEXT and its overtime invite
+          share ONE lock, so the ring can never pulse on a key that cannot be pressed. */}
+      <div className="dock glass glass-bottom fixed inset-x-0 bottom-0 z-40 px-4 pb-[max(12px,env(safe-area-inset-bottom))] pt-3 stage:flex stage:h-[calc(112px+env(safe-area-inset-bottom))] stage:items-center stage:gap-3 stage:px-5 stage:pb-[env(safe-area-inset-bottom)] stage:pt-2">
+        <RunMeter
+          blocks={runBlocks}
+          playheadSeconds={state.begun ? playheadSec : null}
+          className="absolute inset-x-0 top-0 hidden stage:block"
+          trackClassName="h-2"
+        />
+        <div className="hidden w-[236px] shrink-0 text-[12.5px] leading-snug text-muted-foreground stage:block">
+          <div className="flex items-center gap-1.5 font-medium text-foreground">
+            {soundOutput ? (
+              <Volume2 aria-hidden className="size-4 shrink-0 text-success-ink" />
+            ) : (
+              <VolumeX aria-hidden className="size-4 shrink-0" />
+            )}
+            <span className="truncate">
+              {soundOutput ? "เสียงออกเครื่องนี้" : "ปิดเสียงเครื่องนี้"} · Crossfade {crossfade ? "เปิด" : "ปิด"}
+            </span>
           </div>
-        )}
-        {/* The crew's cue text for the item that's ON NOW (โปรย confetti / เปลี่ยนชุด /
-            สคริปต์ MC). It used to live ONLY on the next-up prep card, so it vanished
-            the instant the item became current — exactly when the cue is due — and that
-            card is landscape-only. Capped + scrollable (never truncated) so a long MC
-            script can't push the countdown off a phone screen. */}
-        {current?.notes && (
-          <p className="mt-3 max-h-24 overflow-y-auto break-words rounded-lg bg-black/10 px-3 py-2 text-left text-sm">
-            📝 {current.notes}
-          </p>
-        )}
+          {isController && (
+            <div className="mt-1.5 flex items-center gap-1">
+              <kbd>Space</kbd> รัน <kbd className="ml-1">N</kbd> ถัดไป <kbd className="ml-1">←</kbd> ย้อน
+            </div>
+          )}
+        </div>
+        <div className="mx-auto flex max-w-2xl gap-2 stage:mx-0 stage:max-w-none stage:flex-1 stage:gap-3">
+          {state.begun ? (
+            <Button
+              variant="dock"
+              data-testid="prev"
+              onClick={() => goto(state.currentIndex - 1)}
+              disabled={!isController || state.mode === "auto" || state.currentIndex === 0}
+              title={state.mode === "auto" ? "สลับเป็น Manual เพื่อข้ามเอง" : "ย้อนกลับ"}
+            >
+              <SkipBack aria-hidden />
+              Prev
+            </Button>
+          ) : (
+            <Button variant="dock" type="button" disabled tabIndex={-1} aria-hidden className="disabled:opacity-40">
+              <SkipBack aria-hidden />
+              Prev
+            </Button>
+          )}
+          {state.begun ? (
+            <Button
+              variant="next"
+              data-testid="next"
+              className={cn("min-w-0 flex-1", zone === "over" && !nextLocked && "next-invite")}
+              onClick={() => goto(state.currentIndex + 1)}
+              disabled={nextLocked}
+              title={state.mode === "auto" ? "สลับเป็น Manual เพื่อข้ามเอง" : "รายการถัดไป"}
+            >
+              <span className="min-w-0 text-left leading-none">
+                <span className="block font-display-x text-[32px] font-extrabold uppercase italic leading-[.82] tracking-[.03em] [font-synthesis:none] stage:text-[36px]">
+                  Next
+                </span>
+                <span className="mt-[5px] block max-w-[170px] truncate text-[12.5px] font-medium opacity-90 stage:max-w-none stage:text-[13.5px]">
+                  {next ? next.title || "—" : "— จบโชว์ —"}
+                  {next && (
+                    <span className="hidden stage:inline">
+                      {" "}
+                      · <span className="num text-[16px]">{formatDuration(blockSeconds(next))}</span>
+                    </span>
+                  )}
+                </span>
+              </span>
+              <SkipForward aria-hidden className="size-7 shrink-0 stage:size-8" />
+            </Button>
+          ) : (
+            <Button
+              variant="next"
+              data-testid="start-show"
+              className="min-w-0 flex-1"
+              onClick={start}
+              disabled={!isController || !syncSettled || starting}
+              title={!syncSettled ? "กำลังซิงค์สถานะโชว์กับเครื่องอื่น…" : undefined}
+            >
+              <span className="min-w-0 text-left leading-none">
+                {/* 26 px, not NEXT's 32: "START SHOW" measured 154 px at 32 and ran
+                    into the Play icon on a 390 px phone (125 px fits; under 380 px the
+                    icon steps aside instead). */}
+                <span className="block font-display-x text-[26px] font-extrabold uppercase italic leading-[.82] tracking-[.03em] [font-synthesis:none] stage:text-[36px]">
+                  Start Show
+                </span>
+                <span className="mt-[5px] block max-w-[170px] truncate text-[12.5px] font-medium opacity-90 stage:max-w-none stage:text-[13.5px]">
+                  {/* The authority probe is in flight (bounded to 1.5s): saying so beats a
+                      key that looks alive and does nothing on a half-dead link. */}
+                  {starting
+                    ? "กำลังเริ่ม…"
+                    : !syncSettled
+                      ? "กำลังซิงค์สถานะโชว์…"
+                      : `เริ่ม ${items[0]?.title || "—"}${firstKind ? ` (${firstKind})` : ""}`}
+                </span>
+              </span>
+              {starting || !syncSettled ? (
+                <Loader2 aria-hidden className="size-7 shrink-0 animate-spin [@media(max-width:379.98px)]:hidden" />
+              ) : (
+                <Play aria-hidden className="size-7 shrink-0 [@media(max-width:379.98px)]:hidden" />
+              )}
+            </Button>
+          )}
+          {state.begun ? (
+            <Button
+              variant="dock"
+              data-testid="run-toggle"
+              onClick={toggleShowRun}
+              disabled={!isController}
+              /* Nothing else on this screen says this key starts the accumulated
+                 clock — an operator who only presses NEXT walks the whole show with
+                 the timer at zero. The meaning lives in the tooltip. */
+              title={state.running ? "กำลังจับเวลาโชว์ — แตะเพื่อพัก" : "เริ่มรันโชว์ (เริ่มจับเวลาสะสม)"}
+            >
+              {state.running ? (
+                <>
+                  <Pause aria-hidden />
+                  Pause
+                </>
+              ) : (
+                <>
+                  <Play aria-hidden />
+                  Run
+                </>
+              )}
+            </Button>
+          ) : (
+            <Button variant="dock" type="button" disabled tabIndex={-1} aria-hidden className="disabled:opacity-40">
+              <Pause aria-hidden />
+              Pause
+            </Button>
+          )}
+        </div>
+      </div>
 
-        {/* Audio player for current item */}
-        {current && (
-          <div className="mt-4 flex items-center justify-center gap-2">
-            {currentAudioUrl || (isController && state.begun) ? (
-              <div className="w-full space-y-1.5 rounded-lg bg-black/10 px-3 py-2">
-                {/* scrubber — only when THIS device holds the audio file */}
-                {currentAudioUrl && (
-                <div className="flex items-center gap-2">
-                  {/* status glyph only — play/pause is controlled by the รันโชว์ button */}
+      {/* ── LIVE TOOLS ── everything a show needs only now and then. Always mounted (the
+          output picker inside keeps watching for an unplugged device) and NOT a Radix
+          dialog: nothing may stand between a tap and its handler on this screen. It
+          sits outside the glass bars, whose backdrop-filter would trap a fixed child. */}
+      <div
+        hidden={!toolsOpen}
+        className="fixed inset-0 z-50"
+        onKeyDown={(e) => {
+          if (e.key === "Escape") {
+            // Only Escape pressed IN the sheet: the Feedback dialog is portalled out of
+            // this DOM, and its own Escape must close it, not the sheet under it.
+            if (e.currentTarget.contains(e.target as Node)) closeTools();
+            return;
+          }
+          // Every other key stays in the modal. The window's Live shortcuts would
+          // otherwise fire behind it: Space on the focused ปิด would START the show
+          // (or pause it mid-show) and N / → / ← would walk the setlist. React's
+          // stopPropagation halts the native event at the React root, or at the
+          // portal container for the Feedback dialog opened from here, so it never
+          // reaches the window listener.
+          e.stopPropagation();
+        }}
+      >
+        <div aria-hidden className="absolute inset-0 bg-[hsl(var(--scrim)/var(--scrim-a))]" onClick={closeTools} />
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="Live tools"
+          // Focusable, so a click on the sheet's own padding keeps focus (and every
+          // key after it) inside the sheet instead of dropping it to <body>.
+          tabIndex={-1}
+          className="absolute inset-x-0 bottom-0 max-h-[88dvh] animate-sheet-in overflow-y-auto overscroll-contain rounded-t-[12px] bg-popover px-5 pb-[calc(env(safe-area-inset-bottom)+20px)] pt-2 text-popover-foreground shadow-elev-2 outline-none sm:bottom-auto sm:left-1/2 sm:right-auto sm:top-1/2 sm:max-h-[85vh] sm:w-full sm:max-w-lg sm:-translate-x-1/2 sm:-translate-y-1/2 sm:animate-none sm:rounded-[4px] sm:p-6"
+        >
+          <div aria-hidden className="mx-auto mb-3 mt-1 h-1 w-9 rounded-[2px] bg-foreground/25 sm:hidden" />
+          <h3 className="h2 pr-12">Live Tools</h3>
+          <button
+            ref={toolsCloseRef}
+            type="button"
+            aria-label="ปิด"
+            title="ปิด"
+            onClick={closeTools}
+            className="absolute right-3 top-3 grid size-11 place-items-center rounded-[2px]"
+          >
+            <span className="grid size-8 place-items-center rounded-[2px] bg-muted">
+              <X aria-hidden className="size-4" />
+            </span>
+          </button>
+
+          {/* Show */}
+          <h4 className="eyebrow key mb-2 mt-5">Show</h4>
+          {!canEdit && (
+            <p className="mb-2 flex items-start gap-1.5 text-[13px] text-info-ink">
+              <GraduationCap aria-hidden className="mt-0.5 size-4 shrink-0" />
+              <span className="min-w-0">{REHEARSAL_NOTE}</span>
+            </p>
+          )}
+          {/* จบโชว์ — freezes + saves the accumulated time as the last-show record.
+              Not a reset: Reset Show still clears the live state separately. */}
+          {state.begun && isController && canEdit && (
+            <Button
+              variant="outline"
+              data-testid="end-show"
+              className="h-12 w-full justify-start"
+              onClick={endShow}
+              title="หยุดนับเวลาสะสม + บันทึกเป็นเวลาโชว์ล่าสุด (ไม่ใช่รีเซ็ต)"
+            >
+              <Flag aria-hidden />
+              จบโชว์ · บันทึกเวลาสะสม
+            </Button>
+          )}
+          {state.begun && (
+            <Button
+              variant="destructive-outline"
+              data-testid="reset"
+              className="mt-2 h-12 w-full justify-start"
+              onClick={reset}
+              disabled={!isController}
+              title="รีเซ็ตสถานะโชว์"
+            >
+              <RotateCcw aria-hidden />
+              รีเซ็ตสถานะโชว์
+            </Button>
+          )}
+          {!state.begun && canEdit && (
+            <p className="text-[13px] text-muted-foreground">เริ่มโชว์แล้ว ปุ่มจบโชว์และรีเซ็ตจะอยู่ตรงนี้</p>
+          )}
+          {lastRun && (
+            <LastRunRecord
+              seconds={lastRun.seconds}
+              at={lastRun.at}
+              onClear={canEdit ? clearLastRun : null}
+              className="mt-2"
+            />
+          )}
+
+          {/* Audio */}
+          <h4 className="eyebrow key mb-2 mt-5">Audio</h4>
+          {/* Landscape phone only: the NOW card drops its fade row there (spec §G.10,
+              "everything else in the tools sheet"). Same condition as the card's. */}
+          {current && (currentAudioUrl || (isController && state.begun)) && (
+            <div className="mb-2.5 hidden grid-cols-[1.05fr_.72fr_1.25fr] gap-[3px] [@media(orientation:landscape)_and_(max-height:699.98px)]:grid">
+              {fadeKeys}
+            </div>
+          )}
+          {current && (currentAudioUrl || (isController && state.begun)) ? (
+            <div className="space-y-2.5">
+              {/* scrubber — only when THIS device holds the audio file */}
+              {currentAudioUrl && (
+                <div className="flex min-w-0 items-center gap-2">
+                  {/* status glyph only — play/pause is the dock's RUN / PAUSE key */}
                   <span
                     title={state.running ? "กำลังเล่น (คุมที่ปุ่มรันโชว์)" : "หยุดอยู่ (กดรันโชว์เพื่อเล่น)"}
-                    className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-white/15 text-white/80"
+                    className="flex size-8 shrink-0 items-center justify-center rounded-[2px] bg-foreground/10 text-foreground/80"
                   >
-                    {state.running ? (
-                      <Pause className="h-4 w-4" />
-                    ) : (
-                      <Play className="h-4 w-4" />
-                    )}
+                    {state.running ? <Pause aria-hidden className="size-4" /> : <Play aria-hidden className="size-4" />}
                   </span>
                   <input
                     type="range"
@@ -3391,379 +4108,102 @@ export function LiveMode({
                           ? "ดูอย่างเดียว"
                           : "เลื่อนเวลาเพลง"
                     }
-                    className={cn(
-                      "h-1.5 flex-1 accent-white",
-                      state.mode === "auto" || !isController
-                        ? "cursor-not-allowed opacity-50"
-                        : "cursor-pointer"
-                    )}
+                    className="min-w-0 flex-1 disabled:cursor-not-allowed disabled:opacity-50"
                   />
-                  <span className="w-16 shrink-0 text-right text-xs tabular-nums opacity-80">
+                  <span className="num shrink-0 text-right text-[13px]">
                     {playingId === current.id
                       ? `${fmtTime(audioCurrent)} / ${fmtTime(audioDuration)}`
                       : fmtTime(audioDuration)}
                   </span>
                 </div>
-                )}
-
-                {/* per-track volume slider — set each track's level (in advance too).
-                    View-only devices can see the level but only the controller sets it. */}
-                <div className="flex items-center gap-2">
-                  <Volume1 className="h-4 w-4 shrink-0 opacity-80" />
-                  <input
-                    type="range"
-                    min={0}
-                    max={100}
-                    step={1}
-                    value={volumes[current.id] ?? 100}
-                    onChange={(e) => setVolumeFor(current.id, Number(e.target.value))}
-                    disabled={!isController}
-                    title={
-                      isController
-                        ? "ความดังของแทร็คนี้ (ตั้งล่วงหน้าได้)"
-                        : "ดูอย่างเดียว — คุมความดังที่เครื่องคุม"
-                    }
-                    className={cn(
-                      "h-1.5 flex-1 accent-white",
-                      isController
-                        ? "cursor-pointer"
-                        : "cursor-not-allowed opacity-50"
-                    )}
-                  />
-                  <span className="w-9 shrink-0 text-right text-xs tabular-nums opacity-80">
-                    {volumes[current.id] ?? 100}%
-                  </span>
-                </div>
-                {/* iOS hands back a READ-ONLY HTMLMediaElement.volume: the assignment
-                    is accepted and does nothing, so this slider, the 3-second Auto
-                    Mute fade and the MC duck all animate convincingly while the PA
-                    stays at full level. Only says so on the device that is actually
-                    the sound host — if the speakers hang off a laptop or the desktop
-                    app, an iPad operator's slider works fine (the level is broadcast
-                    and applied over there). */}
-                {volumeIsDead && soundOutput && (
-                  <p className="text-[11px] leading-snug text-amber-200">
-                    เครื่องนี้ (iPhone/iPad) ปรับ “ระดับเสียง” ในแอปไม่ได้ — สไลเดอร์กับปุ่มหรี่เสียงจะไม่มีผลจริง
-                    ใช้ปุ่มเพิ่ม/ลดเสียงข้างเครื่อง หรือให้เครื่องอื่นเป็นตัวปล่อยเสียงแทน (ปุ่มปิดเสียงยังใช้ได้)
-                  </p>
-                )}
-
-                {/* big one-tap auto-fade buttons — controller only */}
-                <div className="grid grid-cols-3 gap-2">
-                  <button
-                    onClick={() => fadeVolumeTo(0, 3000)}
-                    disabled={!isController}
-                    title="ค่อย ๆ ปิดเสียงเป็น 0% ใน 3 วินาที"
-                    className="flex items-center justify-center gap-1.5 rounded-lg bg-rose-600/85 py-3 text-sm font-bold text-white shadow-sm ring-1 ring-rose-400/40 hover:bg-rose-600 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-rose-600/85"
-                  >
-                    <VolumeX className="h-4 w-4" /> Auto Mute
-                  </button>
-                  <button
-                    onClick={() => fadeVolumeTo(30)}
-                    disabled={!isController}
-                    title="ค่อย ๆ ลดเสียงลงเป็น 30% ใน 2 วินาที (ช่วง MC)"
-                    className="flex items-center justify-center gap-1.5 rounded-lg bg-amber-400/90 py-3 text-sm font-bold text-black shadow-sm ring-1 ring-amber-300/50 hover:bg-amber-400 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-amber-400/90"
-                  >
-                    <Volume1 className="h-4 w-4" /> MC
-                  </button>
-                  <button
-                    onClick={() => fadeVolumeTo(100, 2500)}
-                    disabled={!isController}
-                    title="ค่อย ๆ เพิ่มเสียงกลับเป็น 100% ใน 2.5 วินาที"
-                    className="flex items-center justify-center gap-1.5 rounded-lg bg-emerald-600/85 py-3 text-sm font-bold text-white shadow-sm ring-1 ring-emerald-400/40 hover:bg-emerald-600 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-emerald-600/85"
-                  >
-                    <Volume2 className="h-4 w-4" /> Auto Loudness
-                  </button>
-                </div>
-
-                {currentAudioUrl ? (
-                  <div className="flex items-center gap-2">
-                    <p className="min-w-0 flex-1 truncate text-left text-[10px] opacity-60">
-                      <Music2 className="mr-1 inline h-3 w-3" />
-                      {audioNames[current.id]}
-                    </p>
-                  </div>
-                ) : currentBusy === "down" ? (
-                  // an online file exists; this device is fetching it
-                  <div className="flex items-center gap-2">
-                    <p className="min-w-0 flex-1 truncate text-left text-[10px] opacity-60">
-                      <Loader2 className="mr-1 inline h-3 w-3 animate-spin" /> กำลังดาวน์โหลดเพลงจากคลาวด์…
-                    </p>
-                  </div>
-                ) : (
-                  // controller with no local file: these controls ride the speaker
-                  // device's volume by remote
-                  <div className="flex items-center justify-between gap-2">
-                    <p className="min-w-0 flex-1 truncate text-left text-[10px] opacity-60">
-                      <Volume2 className="mr-1 inline h-3 w-3" /> คุมเสียงของเครื่องที่เล่นไฟล์ (รีโมท)
-                    </p>
-                    <button
-                      onClick={() => openFilePicker(current.id)}
-                      title="เปลี่ยน/อัปโหลดไฟล์เพลงสำหรับรายการนี้"
-                      className="flex shrink-0 items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] opacity-70 hover:bg-white/15 hover:opacity-100"
-                    >
-                      <FolderOpen className="h-3 w-3" /> โหลดไฟล์ที่นี่
-                    </button>
-                  </div>
-                )}
-              </div>
-            ) : currentBusy === "down" || currentHasOnline ? (
-              // an online file exists for this item — it auto-downloads to this device
-              <span className="flex items-center gap-1.5 rounded-lg border border-white/20 bg-black/10 px-3 py-1.5 text-xs opacity-70">
-                <Loader2 className="h-3.5 w-3.5 animate-spin" /> กำลังเตรียมไฟล์เพลงจากคลาวด์…
-              </span>
-            ) : (
-              <button
-                onClick={() => openFilePicker(current.id)}
-                className="flex items-center gap-1.5 rounded-lg border border-white/20 bg-black/10 px-3 py-1.5 text-xs opacity-70 hover:opacity-100"
-              >
-                <FolderOpen className="h-3.5 w-3.5" /> โหลดไฟล์เพลงสำหรับรายการนี้
-              </button>
-            )}
-          </div>
-        )}
-      </div>
-
-        {/* NEXT-UP prep card — shown in landscape so the team can ready mics/props
-            for what's coming while the current item is still playing. Spacing
-            tightened 2026-09-28: this card sets the height of the whole card row,
-            which pushed the START / NEXT button below an iPad's screen. Content
-            unchanged. */}
-        <div className="hidden rounded-2xl border bg-card p-4 text-left shadow-sm landscape:flex landscape:flex-col">
-          <div className="mb-2 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-            <SkipForward className="h-3.5 w-3.5" /> รายการถัดไป
-          </div>
-          {next ? (
-            <>
-              <div className="mb-1 flex items-center gap-2">
-                <Badge variant="secondary">
-                  {SETLIST_KIND_SHORT[next.kind as SetlistKind]}
-                </Badge>
-                <span className="tabular-nums text-xs text-muted-foreground">
-                  {state.currentIndex + 2} / {items.length}
-                </span>
-              </div>
-              <h3 className="mb-2 break-words text-lg font-bold leading-tight">
-                {next.title || "—"}
-              </h3>
-              {/* time slot — the FULL block (buffers included) + the bare song length */}
-              <div className="mb-2 grid grid-cols-2 gap-2">
-                <div className="rounded-lg bg-muted/50 px-3 py-1.5">
-                  <p className="text-[10px] text-muted-foreground">
-                    เวลาเต็ม (รวมบัฟเฟอร์)
-                  </p>
-                  <p className="text-lg font-bold tabular-nums">
-                    {formatDuration(blockSeconds(next))}
-                  </p>
-                </div>
-                <div className="rounded-lg bg-muted/50 px-3 py-1.5">
-                  <p className="text-[10px] text-muted-foreground">ความยาวเพลง</p>
-                  <p className="text-lg font-bold tabular-nums">
-                    {formatDuration(next.duration_seconds)}
-                  </p>
-                </div>
-              </div>
-              {next.mic_slots?.length > 0 ? (
-                <div>
-                  <p className="mb-1.5 flex items-center gap-1 text-xs font-medium text-muted-foreground">
-                    <Radio className="h-3 w-3" /> เตรียมไมค์
-                  </p>
-                  <div className="flex flex-wrap gap-1.5">
-                    {next.mic_slots.map((s, i) => (
-                      <Badge key={i} variant="outline" className="text-sm">
-                        {s.mic} → {s.member}
-                      </Badge>
-                    ))}
-                  </div>
-                </div>
-              ) : (
-                <p className="text-sm text-muted-foreground">
-                  — ไม่มีไมค์ที่ต้องเตรียม —
-                </p>
               )}
-              {next.notes && (
-                <p className="mt-2 rounded-lg bg-muted/60 px-3 py-1.5 text-sm">
-                  📝 {next.notes}
-                </p>
-              )}
-              {/* pre-set the next track's volume — syncs to the speaker device so the
-                  crew can dial the next song's level before it even starts */}
-              <div className="mt-2">
-                <div className="mb-1 flex items-center justify-between">
-                  <p className="flex items-center gap-1 text-xs font-medium text-muted-foreground">
-                    <Volume1 className="h-3 w-3" /> ตั้งความดังล่วงหน้า
-                  </p>
-                  <span className="text-xs font-semibold tabular-nums">
-                    {volumes[next.id] ?? 100}%
-                  </span>
-                </div>
+              {/* per-track volume — set each track's level (in advance too). View-only
+                  devices can see the level; only the controller sets it. */}
+              <div className="flex min-w-0 items-center gap-2">
+                <Volume1 aria-hidden className="size-4 shrink-0 text-muted-foreground" />
                 <input
                   type="range"
                   min={0}
                   max={100}
                   step={1}
-                  value={volumes[next.id] ?? 100}
-                  onChange={(e) => setVolumeFor(next.id, Number(e.target.value))}
+                  value={volumes[current.id] ?? 100}
+                  onChange={(e) => setVolumeFor(current.id, Number(e.target.value))}
                   disabled={!isController}
                   title={
                     isController
-                      ? "ตั้งระดับเสียงของเพลงถัดไปล่วงหน้า (ซิงค์ไปเครื่องที่เล่นไฟล์)"
+                      ? "ความดังของแทร็คนี้ (ตั้งล่วงหน้าได้)"
                       : "ดูอย่างเดียว — คุมความดังที่เครื่องคุม"
                   }
-                  className={cn(
-                    "h-1.5 w-full accent-primary",
-                    isController ? "cursor-pointer" : "cursor-not-allowed opacity-50"
-                  )}
+                  className="min-w-0 flex-1 disabled:cursor-not-allowed disabled:opacity-50"
                 />
+                <span className="num w-11 shrink-0 text-right text-[13px]">{volumes[current.id] ?? 100}%</span>
               </div>
-              <p className="mt-auto pt-2 text-xs text-muted-foreground">
-                {audioUrls[next.id] ? (
-                  <>
-                    <Music2 className="mr-1 inline h-3 w-3" /> ไฟล์เพลงพร้อมบนเครื่องนี้
-                  </>
-                ) : audioBusy[next.id] === "down" || next.audio_path ? (
-                  <>
-                    <Loader2 className="mr-1 inline h-3 w-3 animate-spin" /> กำลังเตรียมไฟล์จากคลาวด์…
-                  </>
-                ) : (
-                  <>
-                    <FolderOpen className="mr-1 inline h-3 w-3" /> ยังไม่ได้โหลดไฟล์เพลง
-                  </>
-                )}
-              </p>
-            </>
-          ) : (
-            <div className="flex flex-1 flex-col items-center justify-center text-center text-muted-foreground">
-              <p className="text-lg font-semibold">— จบโชว์ —</p>
-              <p className="text-sm">ไม่มีรายการถัดไปแล้ว</p>
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* stats — portrait only now: in landscape the total rides in the top bar
-          and the next title is in the prep card, so this row held nothing new. */}
-      <div className="grid grid-cols-2 gap-3 landscape:hidden">
-        <div className="rounded-xl border bg-card p-4 text-center">
-          <p className="text-xs text-muted-foreground">เวลาสะสม (Accumulated)</p>
-          <p className="text-2xl font-bold tabular-nums">
-            {formatDuration(totalElapsed)}
-          </p>
-        </div>
-        {/* next-title mini box — redundant with the prep card in landscape, so hide it there */}
-        <div className="rounded-xl border bg-card p-4 text-center landscape:hidden">
-          <p className="text-xs text-muted-foreground">รายการถัดไป</p>
-          <p className="truncate text-lg font-semibold">
-            {next?.title || "— จบโชว์ —"}
-          </p>
-          {/* …and its cue text with it: the prep card that carries 📝 is landscape-only,
-              so on a phone held UPRIGHT — how an operator actually holds it — the note
-              the band typed had nowhere at all to appear. Same cap-and-scroll rule as
-              the countdown card: compact, but the full text stays reachable. */}
-          {next?.notes && (
-            <p className="mt-1.5 max-h-16 overflow-y-auto break-words rounded-lg bg-muted/60 px-2 py-1 text-left text-xs">
-              📝 {next.notes}
-            </p>
-          )}
-        </div>
-      </div>
-
-      {/* show controls */}
-      <div className="rounded-xl border bg-card p-3">
-        {/* control vs view-only — only one device drives the show */}
-        {!isController ? (
-          <div
-            data-testid="viewer-banner"
-            className="mb-2 flex items-center justify-between gap-2 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-amber-900"
-          >
-            <span className="flex items-center gap-1.5 text-sm font-medium">
-              {audioPlaying ? (
-                <>
-                  <Volume2 className="h-4 w-4 shrink-0" /> เครื่องนี้เล่นเสียงอยู่ —
-                  คุมจากเครื่องอื่น
-                </>
-              ) : (
-                <>
-                  <Eye className="h-4 w-4 shrink-0" /> ดูอย่างเดียว — ซิงค์จากเครื่องคุม
-                </>
+              {/* iOS hands back a READ-ONLY HTMLMediaElement.volume: the assignment is
+                  accepted and does nothing, so the slider, the 3-second Auto Mute fade
+                  and the MC duck all animate convincingly while the PA stays at full
+                  level. Said only on the device that actually is the sound host. */}
+              {volumeIsDead && soundOutput && (
+                <p className="text-[12.5px] leading-snug text-warning-ink">
+                  เครื่องนี้ (iPhone/iPad) ปรับ “ระดับเสียง” ในแอปไม่ได้ — สไลเดอร์กับปุ่มหรี่เสียงจะไม่มีผลจริง
+                  ใช้ปุ่มเพิ่ม/ลดเสียงข้างเครื่อง หรือให้เครื่องอื่นเป็นตัวปล่อยเสียงแทน (ปุ่มปิดเสียงยังใช้ได้)
+                </p>
               )}
-            </span>
-            {/* เครื่องเสียงคุมคนเดียว: only a sound-output device may take control.
-                A muted viewer sees no take-control button — turn on "เสียงออก" below
-                to become the show device (audio + control move here together). */}
-            {soundOutput && (
-              <Button
-                size="sm"
-                variant="outline"
-                data-testid="request-control"
-                onClick={takeControl}
-                className="shrink-0 border-amber-400 bg-white"
-              >
-                ขอควบคุม
-              </Button>
-            )}
-          </div>
-        ) : (
-          state.begun && (
-            <p className="mb-2 text-center text-[11px] text-muted-foreground">
-              <Radio className="mr-1 inline h-3 w-3" /> เครื่องนี้กำลังคุมโชว์
+              {currentAudioUrl ? (
+                <p className="flex min-w-0 items-center gap-1.5 text-[12.5px] text-muted-foreground">
+                  <Music2 aria-hidden className="size-3.5 shrink-0" />
+                  <span className="truncate">{audioNames[current.id]}</span>
+                </p>
+              ) : currentBusy === "down" ? (
+                // an online file exists; this device is fetching it
+                <p className="flex min-w-0 items-center gap-1.5 text-[12.5px] text-muted-foreground">
+                  <Loader2 aria-hidden className="size-3.5 shrink-0 animate-spin" />
+                  กำลังดาวน์โหลดเพลงจากคลาวด์…
+                </p>
+              ) : (
+                // controller with no local file: the fades ride the speaker device's
+                // volume by remote
+                <div className="flex min-w-0 items-center justify-between gap-2">
+                  <p className="flex min-w-0 items-center gap-1.5 text-[12.5px] text-muted-foreground">
+                    <Volume2 aria-hidden className="size-3.5 shrink-0" />
+                    <span className="min-w-0">คุมเสียงของเครื่องที่เล่นไฟล์ (รีโมท)</span>
+                  </p>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => openFilePicker(current.id)}
+                    title="เปลี่ยน/อัปโหลดไฟล์เพลงสำหรับรายการนี้"
+                    className="h-11 shrink-0 gap-1.5 px-3 text-[13px]"
+                  >
+                    <FolderOpen aria-hidden className="size-4" />
+                    โหลดไฟล์ที่นี่
+                  </Button>
+                </div>
+              )}
+            </div>
+          ) : current && (currentBusy === "down" || currentHasOnline) ? (
+            // an online file exists for this item — it auto-downloads to this device
+            <p className="flex items-center gap-1.5 text-[12.5px] text-muted-foreground">
+              <Loader2 aria-hidden className="size-3.5 shrink-0 animate-spin" />
+              กำลังเตรียมไฟล์เพลงจากคลาวด์…
             </p>
-          )
-        )}
+          ) : current ? (
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => openFilePicker(current.id)}
+              className="h-11 w-full justify-start gap-1.5 text-[14px]"
+            >
+              <FolderOpen aria-hidden className="size-4" />
+              โหลดไฟล์เพลงสำหรับรายการนี้
+            </Button>
+          ) : null}
 
-        {/* control row — per-device sound output (left) + run mode. Sound is LOCAL
-            per device (not broadcast): the PA device ON, a remote OFF to stay silent
-            without muting the PA. Mode is controller-only. */}
-        <div className="mb-2 grid grid-cols-3 gap-2">
+          {/* per-device playback options: crossfade (opt-in) + output routing
+              (desktop-only picker). Defaults keep the old behaviour exactly. */}
           <button
             type="button"
-            data-testid="sound-output-toggle"
-            onClick={() => setSoundOutput((v) => !v)}
-            title={
-              soundOutput
-                ? "เสียงออกที่เครื่องนี้ — แตะเพื่อปิดเสียงเฉพาะเครื่องนี้"
-                : "เครื่องนี้เงียบอยู่ — แตะเพื่อให้เสียงออก"
-            }
-            className={cn(
-              "flex h-9 items-center justify-center gap-1.5 rounded-md border px-2 text-sm font-semibold transition-colors",
-              soundOutput
-                ? "border-green-600 bg-green-600 text-white hover:bg-green-700"
-                : "border-muted-foreground/30 bg-muted text-muted-foreground hover:bg-muted/70"
-            )}
-          >
-            {soundOutput ? (
-              <>
-                <Volume2 className="h-4 w-4 shrink-0" /> เสียงออก
-              </>
-            ) : (
-              <>
-                <VolumeX className="h-4 w-4 shrink-0" /> ปิดเสียง
-              </>
-            )}
-          </button>
-          <Button
-            variant={state.mode === "manual" ? "default" : "outline"}
-            size="sm"
-            onClick={() => setMode("manual")}
-            disabled={!isController}
-          >
-            <Hand className="h-4 w-4" /> Manual
-          </Button>
-          <Button
-            variant={state.mode === "auto" ? "default" : "outline"}
-            size="sm"
-            onClick={() => setMode("auto")}
-            disabled={!isController}
-          >
-            <Sparkles className="h-4 w-4" /> Auto
-          </Button>
-        </div>
-
-        {/* per-device playback options: crossfade (opt-in) + output routing
-            (desktop-only picker). Defaults keep the old behavior exactly. */}
-        <div className="mb-2 flex flex-wrap items-center gap-2">
-          <button
-            type="button"
+            role="switch"
+            aria-checked={crossfade}
             onClick={() => {
               const next = !crossfade;
               setCrossfade(next);
@@ -3778,222 +4218,217 @@ export function LiveMode({
                 ? "Crossfade เปิด — ตอนเปลี่ยนเพลง เพลงเดิมจะเฟดออก ~2 วิ (แตะเพื่อปิด)"
                 : "Crossfade ปิด — เปลี่ยนเพลงแบบตัดทันที (แตะเพื่อเปิดเฟดไขว้)"
             }
-            className={cn(
-              "flex h-7 shrink-0 items-center gap-1 rounded-md border px-2 text-xs font-medium transition-colors",
-              crossfade
-                ? "border-primary/50 bg-primary/15 text-primary"
-                : "text-muted-foreground hover:bg-muted"
-            )}
+            className="mt-2.5 flex h-11 w-full items-center justify-between rounded-[2px] px-3 text-[14px] hover:bg-muted"
           >
-            <Volume1 className="h-3.5 w-3.5" /> Crossfade {crossfade ? "เปิด" : "ปิด"}
+            <span className="flex items-center gap-2">
+              <Volume1 aria-hidden className="size-4" />
+              Crossfade
+            </span>
+            <span className={cn("font-semibold", crossfade ? "text-primary-ink" : "text-muted-foreground")}>
+              {crossfade ? "เปิด" : "ปิด"}
+            </span>
           </button>
+          {/* The ONLY output picker on this screen: its effect resets the sink and
+              toasts when a device vanishes, and two would toast twice. */}
           <AudioOutputPicker value={sinkId} onChange={setSinkId} />
-        </div>
 
-        {!state.begun ? (
-          <Button
-            size="xl"
-            className="w-full"
-            data-testid="start-show"
-            onClick={start}
-            disabled={!isController || !syncSettled || starting}
-            title={!syncSettled ? "กำลังซิงค์สถานะโชว์กับเครื่องอื่น…" : undefined}
-          >
-            {starting ? (
-              // The authority probe is in flight (bounded to 1.5s). Saying so beats
-              // a button that looks alive and does nothing on a half-dead link.
-              <>
-                <Loader2 className="h-5 w-5 animate-spin" /> กำลังเริ่ม…
-              </>
-            ) : syncSettled ? (
-              <>
-                <Play className="h-5 w-5" /> START SHOW
-              </>
-            ) : (
-              <>
-                <Loader2 className="h-5 w-5 animate-spin" /> กำลังซิงค์สถานะโชว์…
-              </>
-            )}
-          </Button>
-        ) : (
-          /* ── THE TRANSPORT ROW — measured on a 360px phone, not eyeballed ─────────────
-             What it used to do there: SkipBack 44 · run 172 · **NEXT 24** · Reset 44. The
-             24px was the button's own padding with ZERO content width, because NEXT carried
-             `min-w-0 flex-1` (basis 0, shrink to nothing) while the run button carried a
-             long label and only `shrink`. So the control pressed between every single song
-             was the smallest thing in the row, its icon and the word NEXT rendered ~20px
-             OUTSIDE its own pill, and what sat under that overflow was RESET.
-             Worse, the row MOVED: the instant the show started, the run label changed length,
-             NEXT jumped 31px left and grew 2.3×. A thumb travelling to a target in the dark
-             arrived where the target no longer was.
-             Three changes, all of them layout only:
-               · the run button is a FIXED width and its two labels are the same short length
-                 (P'Patz chose the words) — so the row cannot reflow when the show starts;
-               · NEXT keeps `flex-1` but can no longer collapse below its own content;
-               · the row may WRAP. On a very narrow screen something has to give, and the
-                 thing that should give is Reset dropping to a second line — never NEXT
-                 shrinking into the button beside it.
-             📏 THE BUDGET IS AGAINST 302px, NOT 360. The first version of this fix sized the
-             row against the VIEWPORT and wrapped on the most common Android phone as a
-             result: `.container` contributes 32px of padding and this card's `p-3` another
-             24px, so a 360px device gives the row 302px — measured, in the browser, with
-             the real ancestors. 44 + 108 + 92 + 44 + 3 gaps of 4px = 300px. One line at
-             360px and 390px; wraps below ~330px, which is where wrapping was always the
-             intended answer. */
-          <div className="flex flex-wrap items-center gap-1">
-            <Button
-              variant="outline"
-              size="icon"
-              data-testid="prev"
-              className="h-11 w-11 shrink-0"
-              onClick={() => goto(state.currentIndex - 1)}
-              disabled={!isController || state.mode === "auto" || state.currentIndex === 0}
-              title={state.mode === "auto" ? "สลับเป็น Manual เพื่อข้ามเอง" : "ย้อนกลับ"}
-            >
-              <SkipBack className="h-5 w-5" />
-            </Button>
-            {/* play/stop — distinct color + label so it isn't mistaken for skip.
-                🔒 FIXED WIDTH ON PURPOSE: this button is the only thing in the row whose
-                content changes, and every pixel it gains or loses is a pixel NEXT moves.
-                📏 MEASURED IN KANIT AT 16px, NOT ESTIMATED — "กำลังรัน" is 54px, "รันโชว์"
-                is 41px, and the dot/icon plus the button's gap add 28px, so the widest
-                content is 82px. `size="lg"` brings px-6 (48px), which would need a 130px
-                box; the padding is pulled back to px-3 so 6.75rem/108px clears the worst
-                case by 2px and still fits the row's real 302px. */}
-            <Button
-              size="lg"
-              data-testid="run-toggle"
-              onClick={toggleShowRun}
-              disabled={!isController}
-              /* 🔤 The label lost the words "(จับเวลา)" to fit the fixed width, and nothing
-                 else on this screen says this button starts the accumulated clock — an
-                 operator who only presses NEXT walks the whole show with the timer at zero
-                 and no way to reconstruct it afterwards. The meaning moves to the tooltip,
-                 which every other control in this row now carries. */
-              title={
-                state.running
-                  ? "กำลังจับเวลาโชว์ — แตะเพื่อพัก"
-                  : "เริ่มรันโชว์ (เริ่มจับเวลาสะสม)"
-              }
+          {/* pre-set the next track's volume — syncs to the speaker device so the
+              crew can dial the next song's level before it even starts */}
+          {next && (
+            <div className="mt-3">
+              <div className="mb-1 flex min-w-0 items-center justify-between gap-2">
+                <p className="flex min-w-0 items-center gap-1.5 text-[12.5px] text-muted-foreground">
+                  <Volume1 aria-hidden className="size-3.5 shrink-0" />
+                  <span className="truncate">ตั้งความดังล่วงหน้า · {next.title || "—"}</span>
+                </p>
+                <span className="num shrink-0 text-[13px]">{volumes[next.id] ?? 100}%</span>
+              </div>
+              <input
+                type="range"
+                min={0}
+                max={100}
+                step={1}
+                value={volumes[next.id] ?? 100}
+                onChange={(e) => setVolumeFor(next.id, Number(e.target.value))}
+                disabled={!isController}
+                title={
+                  isController
+                    ? "ตั้งระดับเสียงของเพลงถัดไปล่วงหน้า (ซิงค์ไปเครื่องที่เล่นไฟล์)"
+                    : "ดูอย่างเดียว — คุมความดังที่เครื่องคุม"
+                }
+                className="w-full disabled:cursor-not-allowed disabled:opacity-50"
+              />
+              <p className="mt-1 flex items-center gap-1.5 text-[12.5px] text-muted-foreground">
+                {audioUrls[next.id] ? (
+                  <>
+                    <Music2 aria-hidden className="size-3.5 shrink-0" /> ไฟล์เพลงพร้อมบนเครื่องนี้
+                  </>
+                ) : audioBusy[next.id] === "down" || next.audio_path ? (
+                  <>
+                    <Loader2 aria-hidden className="size-3.5 shrink-0 animate-spin" /> กำลังเตรียมไฟล์จากคลาวด์…
+                  </>
+                ) : (
+                  <>
+                    <FolderOpen aria-hidden className="size-3.5 shrink-0" /> ยังไม่ได้โหลดไฟล์เพลง
+                  </>
+                )}
+              </p>
+            </div>
+          )}
+
+          {/* Pre-flight readiness, in full: does THIS device hold every track's file? */}
+          {audioItems.length > 0 && (
+            <p
               className={cn(
-                "w-[6.75rem] shrink-0 justify-center px-3 font-semibold text-white",
-                state.running
-                  ? "bg-green-600 hover:bg-green-700"
-                  : "bg-amber-500 hover:bg-amber-600"
+                "mt-3 flex items-start gap-1.5 rounded-[2px] px-2.5 py-2 text-[13px] font-medium",
+                allReady ? "bg-success/[.16] text-success-ink" : "bg-warning/[.16] text-warning-ink"
               )}
             >
-              {state.running ? (
-                <>
-                  <span className="h-2 w-2 shrink-0 animate-pulse rounded-full bg-white" />
-                  กำลังรัน
-                </>
+              {allReady ? (
+                <Check aria-hidden className="mt-0.5 size-4 shrink-0" />
+              ) : downloadingAudio ? (
+                <Loader2 aria-hidden className="mt-0.5 size-4 shrink-0 animate-spin" />
               ) : (
-                <>
-                  <Play className="h-5 w-5 shrink-0" /> รันโชว์
-                </>
+                <HardDriveDownload aria-hidden className="mt-0.5 size-4 shrink-0" />
               )}
-            </Button>
-            <Button
-              size="lg"
-              data-testid="next"
-              className="min-w-[5.75rem] flex-1 justify-center px-3"
-              onClick={() => goto(state.currentIndex + 1)}
-              disabled={!isController || state.mode === "auto" || state.currentIndex >= items.length - 1}
-              title={state.mode === "auto" ? "สลับเป็น Manual เพื่อข้ามเอง" : "รายการถัดไป"}
-            >
-              <SkipForward className="h-5 w-5 shrink-0" /> NEXT
-            </Button>
-            <Button
-              variant="ghost"
-              size="icon"
-              data-testid="reset"
-              className="h-11 w-11 shrink-0"
-              onClick={reset}
-              disabled={!isController}
-              title="รีเซ็ตสถานะโชว์"
-            >
-              <RotateCcw className="h-5 w-5" />
-            </Button>
-          </div>
-        )}
-        {/* จบโชว์ — freezes + saves the accumulated time as the last-show record below.
-            Not a reset: Reset Show (↺) still clears the live state separately. */}
-        {state.begun && isController && canEdit && (
-          <Button
-            variant="outline"
-            size="sm"
-            data-testid="end-show"
-            className="mt-2 w-full"
-            onClick={endShow}
-            title="หยุดนับเวลาสะสม + บันทึกเป็นเวลาโชว์ล่าสุด (ไม่ใช่รีเซ็ต)"
-          >
-            <Flag className="h-4 w-4" /> จบโชว์ · บันทึกเวลาสะสม
-          </Button>
-        )}
-        <p className="mt-2 text-center text-xs text-muted-foreground">
-          <Radio className="mr-1 inline h-3 w-3" />
-          {state.mode === "auto"
-            ? "Auto: เปลี่ยนรายการเองเมื่อเพลงจบ — กด Manual เพื่อคุมเอง"
-            : "Manual: กด NEXT เพื่อข้ามรายการ — ซิงค์หลายเครื่องอัตโนมัติ"}
-        </p>
-        {isController && (
-          <p className="mt-1 hidden text-center text-[11px] text-muted-foreground/70 sm:block">
-            ⌨️ คีย์ลัด: <kbd className="rounded border px-1">Space</kbd> เริ่ม/รัน ·{" "}
-            <kbd className="rounded border px-1">→</kbd>/<kbd className="rounded border px-1">N</kbd> ถัดไป ·{" "}
-            <kbd className="rounded border px-1">←</kbd> ย้อน
+              <span className="min-w-0">{readinessSentence}</span>
+            </p>
+          )}
+
+          {/* Control */}
+          <h4 className="eyebrow key mb-2 mt-5">Control</h4>
+          <p className="flex min-w-0 items-center gap-1.5 text-[14px] font-medium">
+            {isController ? (
+              <SlidersHorizontal aria-hidden className="size-4 shrink-0" />
+            ) : (
+              <Eye aria-hidden className="size-4 shrink-0" />
+            )}
+            <span className="min-w-0 truncate">
+              {isController ? "เครื่องนี้กำลังคุมโชว์" : "ดูอย่างเดียว"}
+              {toolsOpen && <span className="font-normal text-muted-foreground"> · {deviceLabel()}</span>}
+            </span>
           </p>
-        )}
-      </div>
-
-      {/* upcoming list (memoized — see upcomingRows) */}
-      <div className="rounded-xl border bg-card">{upcomingRows}</div>
-
-      {/* last-show time record — saved by จบโชว์, survives a normal Reset Show,
-          cleared only by its own ล้าง button. (Stored per device.) */}
-      {lastRun && (
-        <div className="flex items-center justify-between gap-2 rounded-xl border bg-card px-4 py-3">
-          <div className="min-w-0">
-            <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
-              <Timer className="h-3.5 w-3.5" /> เวลาโชว์ล่าสุด (บันทึกไว้)
+          <p className="mt-1 text-[12.5px] text-muted-foreground">
+            {state.mode === "auto"
+              ? "Auto: เปลี่ยนรายการเองเมื่อเพลงจบ — กด Manual เพื่อคุมเอง"
+              : "Manual: กด NEXT เพื่อข้ามรายการ — ซิงค์หลายเครื่องอัตโนมัติ"}
+          </p>
+          <LiveFullscreenRow />
+          {isController && (
+            <p className="mt-2 hidden text-[12.5px] text-muted-foreground [@media(hover:hover)_and_(pointer:fine)]:block">
+              คีย์ลัด: <kbd>Space</kbd> เริ่ม/รัน · <kbd>→</kbd>/<kbd>N</kbd> ถัดไป · <kbd>←</kbd> ย้อน
             </p>
-            <p className="text-xl font-bold tabular-nums">
-              {formatDuration(lastRun.seconds)}
-              <span className="ml-2 text-[11px] font-normal text-muted-foreground">
-                ·{" "}
-                {/* timeZone pinned on purpose. lastRun is seeded from props in a
-                    useState initialiser, so this renders during SSR too — and the
-                    server is UTC, which printed a 21:30 finish as 14:30 (and the
-                    wrong DAY for anything before 07:00) until hydration replaced
-                    it. Every show this label runs is in Thailand, so Bangkok is
-                    the right answer on both sides and the mismatch disappears. */}
-                {new Date(lastRun.at).toLocaleString("th-TH", {
-                  timeZone: "Asia/Bangkok",
-                  day: "2-digit",
-                  month: "short",
-                  hour: "2-digit",
-                  minute: "2-digit",
-                })}
-              </span>
-            </p>
-          </div>
-          {canEdit && (
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={clearLastRun}
-              className="shrink-0 text-muted-foreground"
-              title="ล้างเวลาโชว์ล่าสุดที่บันทึกไว้"
-            >
-              ล้าง
-            </Button>
+          )}
+
+          {/* Feedback — the floating button is gone, and a member mid-show still has
+              to be able to report from the one screen they cannot leave. */}
+          {userId && tenantId && (
+            <>
+              <h4 className="eyebrow key mb-2 mt-5">Feedback</h4>
+              <FeedbackButton userId={userId} tenantId={tenantId} />
+            </>
           )}
         </div>
-      )}
+      </div>
+    </div>
+  );
+}
 
-      <p className="px-1 text-center text-[11px] text-muted-foreground">
-        <CloudUpload className="mr-1 inline h-3 w-3" />
-        ไฟล์เพลงเก็บออนไลน์แบบส่วนตัว (เฉพาะคนที่ล็อกอิน) — ทุกเครื่องเล่นได้ และลบได้
-      </p>
+/** One figure in the top bar (stage, landscape phone): a Thai label over a big
+ *  numeral — 22 px beside the landscape phone's 25 px wall clock, 28 px at stage. */
+function Stat({
+  label,
+  suppress,
+  children,
+}: {
+  label: string;
+  /** the value comes from the wall clock, so SSR and the client differ by a tick */
+  suppress?: boolean;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="text-right">
+      <div className="text-[11px] text-muted-foreground">{label}</div>
+      <div className="num text-[22px] leading-none stage:text-[28px]" suppressHydrationWarning={suppress}>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+/** The fullscreen switch for Live tools: the header that carries it elsewhere is
+ *  hidden on this screen. Renders nothing where fullscreen cannot work (every
+ *  iPhone, an installed app). */
+function LiveFullscreenRow() {
+  const { fs, available, toggle } = useFullscreen();
+  if (!available) return null;
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={fs}
+      onClick={toggle}
+      className="mt-2 flex h-11 w-full items-center justify-between rounded-[2px] px-3 text-[14px] hover:bg-muted"
+    >
+      <span className="flex items-center gap-2">
+        <Maximize aria-hidden className="size-4" />
+        เต็มจอ
+      </span>
+      <span className={cn("font-semibold", fs ? "text-primary-ink" : "text-muted-foreground")}>
+        {fs ? "เปิด" : "ปิด"}
+      </span>
+    </button>
+  );
+}
+
+/** "เวลาโชว์ล่าสุด" — the run time จบโชว์ saved, with its own ล้าง (admins only). */
+function LastRunRecord({
+  seconds,
+  at,
+  onClear,
+  className,
+}: {
+  seconds: number;
+  at: number;
+  onClear: (() => void) | null;
+  className?: string;
+}) {
+  return (
+    <div className={cn("slab flex items-center justify-between gap-2 px-4 py-3", className)}>
+      <div className="min-w-0">
+        <p className="flex items-center gap-1.5 text-[12.5px] text-muted-foreground">
+          <Timer aria-hidden className="size-3.5 shrink-0" /> เวลาโชว์ล่าสุด (บันทึกไว้)
+        </p>
+        <p className="num text-[22px] leading-tight">
+          {formatDuration(seconds)}
+          <span className="ml-2 font-sans text-[11px] font-normal text-muted-foreground">
+            ·{" "}
+            {/* timeZone pinned on purpose. lastRun is seeded from props in a
+                useState initialiser, so this renders during SSR too — and the
+                server is UTC, which printed a 21:30 finish as 14:30 (and the
+                wrong DAY for anything before 07:00) until hydration replaced
+                it. Every show this label runs is in Thailand, so Bangkok is
+                the right answer on both sides and the mismatch disappears. */}
+            {new Date(at).toLocaleString("th-TH", {
+              timeZone: "Asia/Bangkok",
+              day: "2-digit",
+              month: "short",
+              hour: "2-digit",
+              minute: "2-digit",
+            })}
+          </span>
+        </p>
+      </div>
+      {onClear && (
+        <Button
+          variant="ghost"
+          onClick={onClear}
+          className="h-11 shrink-0 text-muted-foreground"
+          title="ล้างเวลาโชว์ล่าสุดที่บันทึกไว้"
+        >
+          ล้าง
+        </Button>
+      )}
     </div>
   );
 }

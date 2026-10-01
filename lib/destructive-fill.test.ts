@@ -14,7 +14,6 @@ import { describe, expect, it } from "vitest";
 // chip, not a fill.
 const ALLOWED = new Set(["components/ui/confirm-dialog.tsx", "components/event/delete-event-button.tsx"]);
 const BUDGET: Record<string, number> = {
-  "components/overview/event-status-actions.tsx": 1,
   "components/song/song-library.tsx": 1,
 };
 

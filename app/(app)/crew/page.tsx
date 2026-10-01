@@ -1,9 +1,9 @@
 import { redirect } from "next/navigation";
-import { Users } from "lucide-react";
 import { getWorkspace } from "@/lib/queries";
 import { canApprove } from "@/lib/permissions";
 import { createClient } from "@/lib/supabase/server";
 import { StaffContactsManager } from "@/components/admin/staff-contacts";
+import { PageTitle } from "@/components/page-title";
 import type { StaffContact } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
@@ -28,14 +28,18 @@ export default async function CrewPage() {
   ).data ?? []) as StaffContact[];
 
   return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="flex items-center gap-2 text-2xl font-bold tracking-tight">
-          <Users className="h-6 w-6" /> Crew
-        </h1>
-        <p className="text-sm text-muted-foreground">
-          {ws.tenant.name} · ทีมงานประจำค่าย — ระบบใส่ลงในรูป “บันทึกเป็นรูป” ของหน้า Overview
-          ให้อัตโนมัติทุกงาน
+    <div className="space-y-4">
+      <div className="space-y-2">
+        <PageTitle
+          title="Crew"
+          right={
+            <span className="pb-0.5 text-right text-[13px] leading-tight text-muted-foreground">
+              {ws.tenant.name}
+            </span>
+          }
+        />
+        <p className="text-[14px] text-muted-foreground">
+          ทีมงานประจำค่าย — ระบบใส่ลงในรูป “บันทึกเป็นรูป” ของหน้า Overview ให้อัตโนมัติทุกงาน
         </p>
       </div>
 

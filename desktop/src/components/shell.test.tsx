@@ -101,4 +101,25 @@ describe("desktop Shell — frame", () => {
       expect(document.querySelector('[data-cueiq-screen="shell"]')).toBeTruthy();
     }
   );
+
+  // The show screens are edge to edge and own their gutter: with the page frame's
+  // container + py-6 left on, Live's gutter doubled, the overtime plate stopped short
+  // of the window edge and the stage layout (one window tall) scrolled.
+  it.each(["/events/e1/live", "/events/e1/run-order/live"])(
+    "%s: <main> drops the container and its padding",
+    async (path) => {
+      await at(path);
+      const cls = document.querySelector("main")!.className.split(/\s+/);
+      expect(cls).not.toContain("container");
+      expect(cls.filter((c) => /(^|:)p[trblxy]?-/.test(c))).toEqual([]);
+      expect(cls).toContain("overflow-x-clip");
+    }
+  );
+
+  it("an ordinary page keeps the framed <main>", async () => {
+    await at("/dashboard");
+    expect(document.querySelector("main")!.className.split(/\s+/)).toEqual(
+      expect.arrayContaining(["container", "py-6", "overflow-x-clip"])
+    );
+  });
 });

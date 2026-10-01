@@ -10,7 +10,7 @@
 // that could not execute; a rendered trace from a real entry point is the only
 // thing that catches that class.
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, act, fireEvent } from "@testing-library/react";
+import { render, screen, act, fireEvent, within } from "@testing-library/react";
 import {
   makeSupabaseFake,
   instrumentMediaElements,
@@ -21,6 +21,7 @@ import {
   type MediaInstrumentation,
 } from "@/test/fakes/supabase";
 import { liveTopic } from "@/lib/realtime";
+import { nowClock } from "@/lib/time";
 import type { SetlistItem } from "@/lib/types";
 
 // ── the one seam ─────────────────────────────────────────────────────────────
@@ -45,6 +46,7 @@ vi.mock("@/lib/audio-store", () => ({
 
 import { LiveMode } from "./live-mode";
 import { deleteAudio } from "@/lib/audio-store";
+import { OfflineBanner } from "@/components/offline-banner";
 
 const EVENT_ID = "11111111-2222-4333-8444-555555555555";
 const GROUP_ID = "66666666-7777-4888-8999-000000000000";
@@ -883,61 +885,350 @@ describe("LiveMode · a swapped row never plays the old song", () => {
 // rather than a constant, and maps the zones onto the card it colours.
 // ─────────────────────────────────────────────────────────────────────────────
 describe("LiveMode · the warning ladder", () => {
-  it("a 1:32 SE starts neutral, then warns and urges at its own scaled thresholds", async () => {
+  const SE = makeItem(1, {
+    kind: "se",
+    title: "Opening SE",
+    duration_seconds: 80,
+    buffer_before_seconds: 4,
+    buffer_after_seconds: 8,
+  });
+  const heading = () => screen.getByRole("heading", { level: 2 });
+  const card = () => heading().closest("[data-zone]") as HTMLElement;
+  const root = () => document.querySelector("[data-cueiq-live]") as HTMLElement;
+  const advance = (ms: number) =>
+    act(async () => {
+      vi.advanceTimersByTime(ms);
+    });
+
+  it("a 1:32 SE starts neutral, then warns, urges and inverts at its own scaled thresholds", async () => {
     // Block 92 s = 4 + 80 + 8. The split is the point: a screen that fed the ladder
     // duration_seconds (80 → 40/20) instead of the block `remaining` runs on would
-    // still be neutral at 46 s left, and this test would catch it.
-    const se = [
-      makeItem(1, {
-        kind: "se",
-        title: "Opening SE",
-        duration_seconds: 80,
-        buffer_before_seconds: 4,
-        buffer_after_seconds: 8,
-      }),
-    ];
-    supa.setTable("setlist_items", ok(se));
-    await mountLive({ items: se });
+    // still be neutral at 46 s left, and this test would catch it. A second item, so
+    // NEXT can actually be pressed when the overtime invite appears.
+    const items = [SE, makeItem(2, { title: "Track 2" })];
+    supa.setTable("setlist_items", ok(items));
+    await mountLive({ items });
     await startShowFromUi();
 
-    const heading = () => screen.getByRole("heading", { level: 2 });
-    const caption = () => heading().nextElementSibling?.nextElementSibling?.textContent;
-    const card = () => heading().parentElement as HTMLElement;
+    /** the zone, and the card that wears it — never the old dimming pulse */
+    const zoneIs = (zone: string) => {
+      expect(card()).toHaveAttribute("data-zone", zone);
+      expect(card()).not.toHaveClass("animate-pulse-ring");
+    };
 
     // The old ladder painted this red ("เหลือน้อยกว่า 2 นาที") from its first second.
     expect(heading()).toHaveTextContent("Opening SE");
-    expect(caption()).toBe("เวลาคงเหลือของรายการ");
-    expect(card()).toHaveClass("bg-card");
+    expect(card()).toHaveTextContent("เวลาคงเหลือของรายการ");
+    zoneIs("ok");
+    expect(card()).toHaveClass("lit");
 
     // 50 s left: under a full song's 60 s cap, but NOT under this item's own 46 s —
     // a screen that fed liveZone a fixed block instead of the item's would warn here.
+    await advance(42_000);
+    zoneIs("ok");
+
+    await advance(4_000); // 46 s left — half the block
+    expect(card()).toHaveTextContent("เหลือไม่ถึง 46 วินาที");
+    zoneIs("warn");
+    expect(card()).toHaveClass("zone-warn"); // the frame step: the card stays dark
+
+    await advance(21_000); // 25 s left — under 30, over this item's 23
+    zoneIs("warn");
+
+    await advance(2_000); // 23 s left — a quarter
+    expect(card()).toHaveTextContent("เหลือไม่ถึง 23 วินาที");
+    zoneIs("urgent");
+    expect(card()).toHaveClass("zone-urgent");
+    // URGENT is a low-luminance fill — only overtime ever becomes the light plate
+    expect(card()).not.toHaveClass("alarm-plate");
+    expect(root()).not.toHaveClass("zone-over");
+    expect(screen.getByTestId("next")).not.toHaveClass("next-invite");
+
+    await advance(23_000);
+    expect(card()).toHaveTextContent("เลยเวลาแล้ว");
+    zoneIs("over");
+    expect(card()).toHaveClass("alarm-plate");
+    expect(card()).not.toHaveClass("settled");
+    // the screen frame + hazard rails, and the invitation to move on
+    expect(root()).toHaveClass("zone-over");
+    expect(screen.getByTestId("next")).toHaveClass("next-invite");
+    expect(screen.getByTestId("next")).toBeEnabled();
+    // overtime announces itself once
+    expect(within(card()).getByRole("alert")).toHaveTextContent(/Overtime/);
+
+    // Ten seconds of the full-luminance flip is enough to have been seen — and the
+    // clock counts UP with a "+", never the "-" that reads as time left.
+    await advance(10_000);
+    expect(card()).toHaveClass("alarm-plate", "settled");
+    expect(screen.getByRole("timer")).toHaveTextContent("+0:10");
+  });
+
+  it("never invites a press NEXT cannot take: the last item runs over with the key locked", async () => {
+    supa.setTable("setlist_items", ok([SE]));
+    await mountLive({ items: [SE] });
+    await startShowFromUi();
+
+    await advance(100_000);
+    expect(card()).toHaveAttribute("data-zone", "over");
+    expect(root()).toHaveClass("zone-over");
+    expect(screen.getByTestId("next")).toBeDisabled();
+    expect(screen.getByTestId("next")).not.toHaveClass("next-invite");
+    // …and the card does not tell this device to press it either
+    expect(card()).not.toHaveTextContent("กด NEXT เมื่อพร้อม");
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// THE DOCK, THE TOP BAR AND LIVE TOOLS (FINAL-SPEC-v2 §G.10)
+//
+// The desktop smoke clicks these by data-testid with querySelector, so each must
+// exist exactly ONCE — jsdom has no CSS, so a copy hidden by a class would still
+// be a second node here, exactly as it would be to the smoke.
+// ─────────────────────────────────────────────────────────────────────────────
+describe("LiveMode · the dock", () => {
+  const count = (id: string) => screen.queryAllByTestId(id).length;
+
+  it("before START the centre key is START; after it, every transport id exists exactly once", async () => {
+    await mountLive();
+    expect(screen.getByTestId("start-show")).toHaveClass("cut");
+    for (const id of ["prev", "run-toggle", "next", "reset", "end-show"]) expect(count(id), id).toBe(0);
+
+    await startShowFromUi();
+    for (const id of ["prev", "run-toggle", "next", "reset", "end-show", "sound-output-toggle"]) {
+      expect(count(id), id).toBe(1);
+    }
+    expect(count("start-show")).toBe(0);
+    // NEXT took START's slot: the same chamfered key, so a thumb finds it again
+    expect(screen.getByTestId("next")).toHaveClass("cut");
+  });
+
+  it("START's subtitle never prints '(undefined)' for a cached row that lost its kind", async () => {
+    const bare = [makeItem(1, { title: "Overture", kind: undefined as never })];
+    supa.setTable("setlist_items", ok(bare));
+    await mountLive({ items: bare });
     await act(async () => {
-      vi.advanceTimersByTime(42_000);
+      live().setStatus("SUBSCRIBED");
     });
-    expect(card()).toHaveClass("bg-card");
+    await act(async () => {
+      vi.advanceTimersByTime(2_000);
+    });
+    expect(screen.getByTestId("start-show")).toHaveTextContent("เริ่ม Overture");
+    expect(screen.getByTestId("start-show")).not.toHaveTextContent("undefined");
+  });
+});
+
+describe("LiveMode · the top bar", () => {
+  it("leaves through a real link (the leave guard intercepts a[href]) inside the immersive top bar", async () => {
+    await mountLive();
+    const link = document.querySelector(`header.live-top a[href="/events/${EVENT_ID}"]`);
+    expect(link).not.toBeNull();
+    expect(link!.closest("[data-cueiq-live]")).not.toBeNull();
+  });
+
+  it("hosts the offline strip, so the page-level copy stands down and never pushes the screen", async () => {
+    const onLine = vi.spyOn(navigator, "onLine", "get").mockReturnValue(false);
+    try {
+      render(<OfflineBanner />); // the root layout's flow copy
+      await mountLive();
+      const strips = screen.getAllByTestId("offline-strip");
+      expect(strips).toHaveLength(1);
+      expect(strips[0].closest("header.live-top")).not.toBeNull();
+    } finally {
+      onLine.mockRestore();
+    }
+  });
+});
+
+describe("LiveMode · Live tools", () => {
+  const sheet = () => screen.getByRole("dialog", { name: "Live tools", hidden: true });
+  const open = () => fireEvent.click(screen.getByRole("button", { name: "Live tools" }));
+
+  it("opens from ⋯ with focus inside, holds the show's rarer controls, and closes on Escape", async () => {
+    await mountLive();
+    expect(sheet()).not.toBeVisible();
+
+    await startShowFromUi();
+    await act(async () => open());
+    expect(sheet()).toBeVisible();
+    expect(sheet()).toContainElement(document.activeElement as HTMLElement);
+    expect(within(sheet()).getByTestId("end-show")).toBeTruthy();
+    expect(within(sheet()).getByTestId("reset")).toBeTruthy();
 
     await act(async () => {
-      vi.advanceTimersByTime(4_000); // 46 s left — half the block
+      fireEvent.keyDown(document.activeElement!, { key: "Escape" });
     });
-    expect(caption()).toBe("เหลือไม่ถึง 46 วินาที");
-    expect(card()).toHaveClass("bg-warning");
+    expect(sheet()).not.toBeVisible();
+    // focus goes back to the key that opened it
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Live tools" }));
+  });
+
+  it("offers แจ้งปัญหา mid-show — there is no floating button, and this screen has no header", async () => {
+    await mountLive({ userId: "u1", tenantId: "t1" });
+    await act(async () => open());
+    expect(within(sheet()).getByTitle(/แจ้งปัญหา|มีคำตอบ/)).toBeTruthy();
+  });
+
+  it("without an account to report as, the form is not offered", async () => {
+    await mountLive();
+    await act(async () => open());
+    expect(within(sheet()).queryByTitle(/แจ้งปัญหา|มีคำตอบ/)).toBeNull();
+  });
+
+  // The sheet is aria-modal and puts focus on its ปิด key; Space is how a keyboard
+  // presses a focused button. The window's Live shortcuts must never see a key
+  // pressed in here, or that Space starts the show behind the scrim.
+  const root = () => document.querySelector("[data-cueiq-live]") as HTMLElement;
+
+  it("keeps the Live shortcuts out while open: Space on its focused ปิด never starts the show", async () => {
+    await mountLive();
+    // Open the START gate first, so a Space that leaked to the window WOULD start.
+    await act(async () => {
+      live().setStatus("SUBSCRIBED");
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(2_000);
+    });
+    expect(screen.getByTestId("start-show")).toBeEnabled();
+
+    await act(async () => open());
+    const close = document.activeElement as HTMLElement;
+    expect(close).toHaveAccessibleName("ปิด");
+    await act(async () => {
+      fireEvent.keyDown(close, { key: " ", code: "Space" });
+    });
+    await act(async () => {});
+
+    expect(root()).toHaveAttribute("data-cueiq-live-begun", "0");
+    expect(stateSends()).toHaveLength(0);
+  });
+
+  it("mid-show, Space / N / → pressed in the sheet neither run the clock nor walk the setlist", async () => {
+    seedSnapshot(); // begun, paused, item 1 of 3, Manual, this device in control
+    await mountLive();
+    await act(async () => open());
+
+    for (const key of [
+      { key: " ", code: "Space" },
+      { key: "n", code: "KeyN" },
+      { key: "ArrowRight", code: "ArrowRight" },
+    ]) {
+      await act(async () => {
+        fireEvent.keyDown(document.activeElement!, key);
+      });
+    }
+
+    expect(stateSends()).toHaveLength(0);
+    expect(root()).toHaveAttribute("data-cueiq-live-index", "0");
+    expect(screen.getByTestId("run-toggle")).toHaveTextContent("Run");
+  });
+
+  it("…nor from the Feedback form opened from it, which is portalled out of the sheet", async () => {
+    seedSnapshot();
+    await mountLive({ userId: "u1", tenantId: "t1" });
+    await act(async () => open());
+    await act(async () => {
+      fireEvent.click(within(sheet()).getByTitle(/แจ้งปัญหา|มีคำตอบ/));
+    });
+    const form = screen.getByRole("dialog", { name: "Feedback" });
+    const newTab = within(form).getByRole("button", { name: "ส่งใหม่" });
+
+    for (const key of [
+      { key: " ", code: "Space" },
+      { key: "n", code: "KeyN" },
+    ]) {
+      await act(async () => {
+        fireEvent.keyDown(newTab, key);
+      });
+    }
+
+    expect(stateSends()).toHaveLength(0);
+    expect(root()).toHaveAttribute("data-cueiq-live-index", "0");
+  });
+
+  it("carries the fade keys too, for the landscape phone whose NOW card has no room for them", async () => {
+    await mountLive();
+    await startShowFromUi();
+    await act(async () => open());
+    for (const name of ["Auto Mute", "MC", "Auto Loudness"]) {
+      expect(within(sheet()).getByRole("button", { name })).toBeTruthy();
+    }
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// THE RUNNING ORDER — stage rows are idx · kind · title · planned start · length;
+// the admin's row keys wait behind one Edit toggle there. jsdom has no CSS, so what
+// is pinned here is the wiring the stylesheet reads, never a measurement.
+// ─────────────────────────────────────────────────────────────────────────────
+describe("LiveMode · the running order", () => {
+  const order = () => screen.getByRole("heading", { name: "Running Order" }).closest("section") as HTMLElement;
+
+  it("an admin's row keys sit behind one Edit toggle, which the stylesheet reads off the section", async () => {
+    await mountLive();
+    const toggle = within(order()).getByRole("button", { name: "แก้ไข" });
+    expect(toggle).toHaveAttribute("aria-pressed", "false");
+    expect(order()).toHaveAttribute("data-edit", "off");
+    expect(order()).toHaveClass("group/ro");
 
     await act(async () => {
-      vi.advanceTimersByTime(21_000); // 25 s left — under 30, over this item's 23
+      fireEvent.click(toggle);
     });
-    expect(card()).toHaveClass("bg-warning");
+    expect(toggle).toHaveAttribute("aria-pressed", "true");
+    expect(order()).toHaveAttribute("data-edit", "on");
+  });
 
-    await act(async () => {
-      vi.advanceTimersByTime(2_000); // 23 s left — a quarter
-    });
-    expect(caption()).toBe("เหลือไม่ถึง 23 วินาที");
-    expect(card()).toHaveClass("bg-notify"); // the fixed red: a band skin never moves it
-    expect(card()).not.toHaveClass("animate-pulse-ring");
+  it("a member gets no Edit toggle and no row keys", async () => {
+    await mountLive({ canEdit: false });
+    expect(within(order()).queryByRole("button", { name: "แก้ไข" })).toBeNull();
+    expect(within(order()).queryAllByTitle(/^(เลื่อนขึ้น|เลื่อนลง)$/)).toHaveLength(0);
+  });
 
+  it("every admin row keeps the same key slots, so a row with no audio file does not shift the column", async () => {
+    const items = [makeItem(1, { audio_path: "t/g/one.mp3" }), makeItem(2, { kind: "mc", title: "MC 1" }), makeItem(3)];
+    supa.setTable("setlist_items", ok(items));
+    await mountLive({ items });
+    // every title the file key can wear (row 1 may still be fetching its file)
+    const fileKeys = screen.getAllByTitle(/^(มีไฟล์บนคลาวด์|โหลดไฟล์เพลง|เปลี่ยนไฟล์เพลง|กำลัง(ดาวน์|อัป)โหลด)/);
+    expect(fileKeys).toHaveLength(3);
+    const slots = fileKeys.map((b) => b.parentElement!.children.length);
+    expect(new Set(slots).size).toBe(1);
+  });
+
+  it("prints each row's planned start once the show has a start: first run + the blocks before it", async () => {
+    await mountLive();
+    expect(screen.queryAllByTitle("เริ่มตามแผน")).toHaveLength(0); // nothing to count from yet
+
+    const ts = await startShowFromUi();
+    // ITEMS are three 4-minute blocks
+    expect(screen.getAllByTitle("เริ่มตามแผน").map((el) => el.textContent)).toEqual(
+      [0, 240, 480].map((s) => nowClock(new Date(ts + s * 1000)).slice(0, 5))
+    );
+  });
+});
+
+describe("LiveMode · the NEXT card", () => {
+  it("prints NEXT's length once, on its label row, so the title keeps the column's width", async () => {
+    await mountLive();
+    const nextCard = screen.getByText("Next", { selector: ".nlabel" }).closest("section") as HTMLElement;
+    const lengths = within(nextCard).getAllByText("4:00");
+    expect(lengths).toHaveLength(1);
+    expect(lengths[0].parentElement).toContainElement(within(nextCard).getByText("Next", { selector: ".nlabel" }));
+    expect(nextCard).toHaveTextContent("Track 2");
+  });
+});
+
+describe("LiveMode · a viewer device", () => {
+  it("keeps its sound toggle beside the viewer banner, and ขอควบคุม only while it outputs sound", async () => {
+    seedSnapshot({ isController: false });
+    await mountLive();
+    expect(screen.getByTestId("viewer-banner")).toBeInTheDocument();
+    expect(screen.getByTestId("sound-output-toggle")).toBeInTheDocument();
+    expect(screen.getByTestId("request-control")).toBeInTheDocument();
+
+    // เครื่องเสียงคุมคนเดียว: a muted viewer cannot take the show
     await act(async () => {
-      vi.advanceTimersByTime(23_000);
+      fireEvent.click(screen.getByTestId("sound-output-toggle"));
     });
-    expect(caption()).toBe("เลยเวลาแล้ว");
-    expect(card()).toHaveClass("animate-pulse-ring");
+    expect(screen.queryByTestId("request-control")).toBeNull();
   });
 });

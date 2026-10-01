@@ -1,11 +1,12 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { toast } from "sonner";
 import {
   Plus,
   Pencil,
   Trash2,
+  Music,
   Music2,
   FileAudio,
   Loader2,
@@ -13,12 +14,17 @@ import {
   CloudUpload,
   CloudOff,
   Volume2,
+  VolumeX,
   Clock3,
   Lock,
   FolderInput,
   Undo2,
   Play,
   Pause,
+  AudioLines,
+  AudioWaveform,
+  Hourglass,
+  CircleX,
 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { notify } from "@/lib/notify-client";
@@ -57,6 +63,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
+import { MetaIcon } from "@/components/status-icon";
 import {
   Dialog,
   DialogContent,
@@ -92,11 +99,79 @@ import { canApprove, canEditGroup, type Perms } from "@/lib/permissions";
 import { useConfirm } from "@/components/ui/confirm-dialog";
 import { privateChannel, songsTopic } from "@/lib/realtime";
 import { cn } from "@/lib/utils";
+import { THAI_RE } from "@/lib/thai";
 import { useLibraryPreview } from "@/components/song/use-library-preview";
 import { LibraryMiniPlayer } from "@/components/song/library-mini-player";
 
 const NONE = "__none__";
 const COPYRIGHT_KEYS = Object.keys(COPYRIGHT_META) as CopyrightStatus[];
+
+/**
+ * A song's rights entry, never undefined: an offline cached row (or one written
+ * before the column existed) can arrive without copyright_status, and reading
+ * `.variant` off nothing took the whole คลังเพลง down. Unknown reads as รอตรวจ —
+ * the status every new song starts in, and the one that asks for a look.
+ */
+function rightsOf(song: Song) {
+  return Object.prototype.hasOwnProperty.call(COPYRIGHT_META, song.copyright_status ?? "")
+    ? COPYRIGHT_META[song.copyright_status]
+    : COPYRIGHT_META.pending;
+}
+
+/**
+ * Sound-effect files share the library with songs (the show's "[SYSTEM_BOOT] SE",
+ * an overture). Nothing in the row marks them, so the cover tile reads it off the
+ * category or a standalone "SE" in the title — decoration only, nothing filters on it.
+ */
+function isSoundEffect(song: Song): boolean {
+  if (/^(se|sfx)$/i.test((song.category ?? "").trim())) return true;
+  return /(^|[\s([])SE([\s)\]]|$)/.test(song.title ?? "");
+}
+
+/**
+ * The 44 px cover (spec §G.5): a song is a solid band tile with a note, an SE a
+ * well with a waveform, and the one in the player shows the EQ glyph instead.
+ */
+function CoverTile({ song, current }: { song: Song; current: boolean }) {
+  const se = isSoundEffect(song);
+  const Icon = current ? AudioLines : se ? AudioWaveform : Music;
+  return (
+    <span
+      aria-hidden
+      className={cn(
+        "grid h-11 w-11 flex-none place-items-center rounded-[2px]",
+        se && !current ? "well text-muted-foreground" : "bg-primary text-primary-foreground"
+      )}
+    >
+      <Icon className="h-[19px] w-[19px]" strokeWidth={current ? 2.8 : 1.9} />
+    </span>
+  );
+}
+
+/** A tappable filter chip (44 px, `chip-lg`): solid when on, never colour alone. */
+function FilterChip({
+  on,
+  onClick,
+  children,
+}: {
+  on: boolean;
+  onClick: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      aria-pressed={on}
+      onClick={onClick}
+      className={cn(
+        "chip chip-lg shrink-0 transition-colors duration-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
+        on ? "chip-solid" : "chip-neutral hover:text-foreground"
+      )}
+    >
+      {children}
+    </button>
+  );
+}
 
 /** The songs guard (0018/0034) speaks English — say it in Thai, and say what to do. */
 function friendlyError(message?: string): string | undefined {
@@ -139,11 +214,21 @@ export function SongLibrary({
   groups,
   initialSongs,
   perms,
+  toolbarEnd,
+  footer,
 }: {
   tenantId: string;
   groups: Group[];
   initialSongs: Song[];
   perms: Perms;
+  /** the page's own control (its refresh button) at the end of the search row */
+  toolbarEnd?: ReactNode;
+  /**
+   * What the page puts after the list (its save bar). Rendered here, not after this
+   * component, so it sits ABOVE the room kept for the preview player: placed after
+   * the library it ended under the fixed player and its note could not be read.
+   */
+  footer?: ReactNode;
 }) {
   const supabase = createClient();
   const confirm = useConfirm();
@@ -165,6 +250,12 @@ export function SongLibrary({
   const [groupFilter, setGroupFilter] = useState<string>("all");
   const [query, setQuery] = useState("");
   const [copyFilter, setCopyFilter] = useState<string>("all");
+  // the "มีเสียง" chip: only songs this device can play (canPreview)
+  const [audioOnly, setAudioOnly] = useState(false);
+  // Phone: the song whose sheet is open (edit, audio, rights, delete live there —
+  // the 62 px row holds only the cover, title, rights and ▶). By id, so the sheet
+  // follows the row's live state and closes itself if the song goes away.
+  const [sheetId, setSheetId] = useState<string | null>(null);
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState<FormState>(emptyForm(editGroups[0]?.id ?? ""));
   const [saving, setSaving] = useState(false);
@@ -550,6 +641,7 @@ export function SongLibrary({
     return songs.filter((s) => {
       if (groupFilter !== "all" && s.group_id !== groupFilter) return false;
       if (copyFilter !== "all" && s.copyright_status !== copyFilter) return false;
+      if (audioOnly && !(s.audio_path || localIds.has(s.id))) return false;
       if (
         // โน้ต is in the haystack because it's now shown on the row: an Ar who
         // typed "คีย์ต่ำลง 2" there must be able to find that song by it.
@@ -561,7 +653,23 @@ export function SongLibrary({
         return false;
       return true;
     });
-  }, [songs, groupFilter, copyFilter, query]);
+  }, [songs, groupFilter, copyFilter, query, audioOnly, localIds]);
+
+  // How many songs each rights chip would show, within the band filter — the
+  // chip says "รอตรวจ 2" before it is pressed, not after.
+  const rightsCount = useMemo(() => {
+    const n = { pending: 0, rejected: 0 };
+    for (const s of songs) {
+      if (groupFilter !== "all" && s.group_id !== groupFilter) continue;
+      if (s.copyright_status === "pending") n.pending++;
+      else if (s.copyright_status === "rejected") n.rejected++;
+    }
+    return n;
+  }, [songs, groupFilter]);
+  const filtered = copyFilter !== "all" || audioOnly || groupFilter !== "all" || !!query.trim();
+
+  // The sheet's song, live from `songs`: gone (deleted elsewhere) closes the sheet.
+  const sheetSong = sheetId ? songs.find((s) => s.id === sheetId) ?? null : null;
 
   function openAdd() {
     setPickedFile(null);
@@ -679,7 +787,7 @@ export function SongLibrary({
     if (pickedFile) {
       await uploadSongAudio(saved, pickedFile);
     } else {
-      toast.success(form.id ? "บันทึกเพลงแล้ว" : "เพิ่มเพลงแล้ว 🎵");
+      toast.success(form.id ? "บันทึกเพลงแล้ว" : "เพิ่มเพลงแล้ว");
     }
     // A newly-added song is forced to copyright 'pending' (DB trigger) for a
     // non-approver → let the approvers know it's waiting (route no-ops otherwise).
@@ -700,7 +808,7 @@ export function SongLibrary({
       title: `ลบเพลง “${song.title}” ออกจากคลัง?`,
       description:
         used > 0
-          ? `⚠️ เพลงนี้ถูกใช้อยู่ใน ${used} รายการของงาน — ลบแล้วงานพวกนั้นจะไม่มีไฟล์เพลงนี้`
+          ? `เพลงนี้ถูกใช้อยู่ใน ${used} รายการของงาน — ลบแล้วงานพวกนั้นจะไม่มีไฟล์เพลงนี้`
           : undefined,
       confirmText: "ลบเพลง",
     });
@@ -821,7 +929,7 @@ export function SongLibrary({
         });
       }
       broadcastSongsChanged(song.group_id); // live update any open Live Mode
-      toast.success("อัปโหลดไฟล์เพลงขึ้นคลังแล้ว 🎵");
+      toast.success("อัปโหลดไฟล์เพลงขึ้นคลังแล้ว");
       return path;
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
@@ -973,7 +1081,7 @@ export function SongLibrary({
       });
       await setLocalSource(song.id, blob, picked.name);
       setLocalIds((prev) => new Set(prev).add(song.id));
-      toast.success("ใช้ไฟล์ในเครื่องนี้เป็นแหล่งเล่นแล้ว 📁", {
+      toast.success("ใช้ไฟล์ในเครื่องนี้เป็นแหล่งเล่นแล้ว", {
         description: `${picked.name} — เฉพาะเครื่องนี้`,
       });
     } catch (e) {
@@ -998,7 +1106,7 @@ export function SongLibrary({
         n.delete(song.id);
         return n;
       });
-      toast.success("กลับไปใช้ต้นฉบับ (R2) แล้ว ☁");
+      toast.success("กลับไปใช้ต้นฉบับ (R2) แล้ว");
     } catch (e) {
       toast.error("เปลี่ยนกลับไม่สำเร็จ", {
         description: e instanceof Error ? e.message : String(e),
@@ -1165,15 +1273,20 @@ export function SongLibrary({
 
   // Per-song render pieces shared by the desktop table and the mobile cards so
   // the two layouts can never drift apart.
-  function audioStatus(song: Song) {
+  // "table": one line (the md+ Audio column); "sheet": wraps under the thumb.
+  function audioStatus(song: Song, layout: "table" | "sheet" = "sheet") {
+    const row =
+      layout === "table"
+        ? "flex flex-nowrap items-center gap-0.5"
+        : "flex flex-wrap items-center gap-1.5";
     const busy = audioBusy[song.id];
     const hasAudio = !!song.audio_path;
     const songEditable = canEditSong(song);
     const tempLeft = tempDaysLeft(song);
     if (busy) {
       return (
-        <span className="flex items-center gap-1 text-xs text-muted-foreground">
-          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+        <span className="flex items-center gap-1.5 text-[12.5px] text-muted-foreground">
+          <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
           {busy === "up" ? "กำลังอัป…" : "กำลังลบ…"}
         </span>
       );
@@ -1183,19 +1296,17 @@ export function SongLibrary({
     // otherwise look untouched right after the user just gave it a file).
     if (pendingUploads.has(song.id)) {
       return (
-        <div className="flex flex-wrap items-center gap-1.5">
+        <div className={row}>
           <Badge
             variant="secondary"
-            className="gap-1"
             title="เก็บไฟล์ไว้ในเครื่องนี้แล้ว — เล่นบนเครื่องนี้ได้เลย และจะอัปขึ้นคลังให้เองเมื่อเน็ตกลับ"
           >
-            <CloudOff className="h-3 w-3" /> รออัปโหลด
+            <CloudOff aria-hidden /> รออัปโหลด
           </Badge>
-          {songEditable && (
+          {songEditable && layout === "sheet" && (
             <Button
               variant="ghost"
               size="icon"
-              className="h-9 w-9"
               title="เลือกไฟล์ใหม่แทนไฟล์ที่รออัปโหลด"
               onClick={() => {
                 audioTargetRef.current = song;
@@ -1210,77 +1321,86 @@ export function SongLibrary({
     }
     if (hasAudio) {
       return (
-        <div className="flex flex-wrap items-center gap-1.5">
+        <div className={row}>
           {tempLeft != null ? (
-            <Badge variant="secondary" className="gap-1" title={TEMP_BADGE_RULE}>
-              <Clock3 className="h-3 w-3" />{" "}
+            <Badge variant="secondary" title={TEMP_BADGE_RULE}>
+              <Clock3 aria-hidden />
               {tempLeft > 0 ? `ชั่วคราว ${tempLeft}ว.` : "ชั่วคราว — เลยกำหนดแล้ว"}
             </Badge>
           ) : (
-            <span className="flex items-center gap-1 text-xs font-medium text-green-600">
-              <Volume2 className="h-3.5 w-3.5" /> มีไฟล์
-            </span>
+            <Badge variant="success">
+              <Volume2 aria-hidden /> มีไฟล์
+            </Badge>
           )}
-          {songEditable && (
+          {/* 44 px icon buttons. The 🔒 escape hatch shows wherever the badge does;
+              replacing or removing the file lives in the song's sheet (and the
+              table's ⬆ action), so the Audio column stays one short line. */}
+          {songEditable && tempLeft != null && (
+            <Button
+              variant="ghost"
+              size="icon"
+              title="เก็บเป็นเพลงถาวร (ไม่ให้หมดอายุ)"
+              onClick={() => promoteSong(song)}
+            >
+              <Lock className="h-4 w-4" />
+            </Button>
+          )}
+          {songEditable && layout === "sheet" && (
             <>
-              {tempLeft != null && (
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="h-7 w-7"
-                  title="เก็บเป็นเพลงถาวร (ไม่ให้หมดอายุ)"
-                  onClick={() => promoteSong(song)}
-                >
-                  <Lock className="h-3.5 w-3.5" />
-                </Button>
-              )}
               <Button
                 variant="ghost"
                 size="icon"
-                className="h-7 w-7"
                 title="เปลี่ยนไฟล์เสียง"
                 onClick={() => {
                   audioTargetRef.current = song;
                   audioFileRef.current?.click();
                 }}
               >
-                <CloudUpload className="h-3.5 w-3.5" />
+                <CloudUpload className="h-4 w-4" />
               </Button>
               <Button
                 variant="ghost"
                 size="icon"
-                className="h-7 w-7 text-destructive hover:text-destructive"
+                className="[&_svg]:text-destructive"
                 title="ลบไฟล์เสียง"
                 onClick={() => removeSongAudio(song)}
               >
-                <Trash2 className="h-3.5 w-3.5" />
+                <Trash2 className="h-4 w-4" />
               </Button>
             </>
           )}
         </div>
       );
     }
-    if (songEditable) {
+    if (songEditable && layout === "sheet") {
       return (
         <Button
-          variant="outline"
-          size="sm"
-          className="h-7"
+          variant="secondary"
+          className="h-11"
           onClick={() => {
             audioTargetRef.current = song;
             audioFileRef.current?.click();
           }}
         >
-          <CloudUpload className="h-3.5 w-3.5" /> อัปไฟล์
+          <CloudUpload className="h-4 w-4" /> อัปไฟล์
         </Button>
       );
     }
-    return <span className="text-xs text-muted-foreground">—</span>;
+    return (
+      <span className="flex items-center gap-1.5 text-[12.5px] text-muted-foreground">
+        <VolumeX className="h-4 w-4" aria-hidden /> ไม่มีไฟล์
+      </span>
+    );
   }
 
-  function copyrightControl(song: Song) {
-    const cr = COPYRIGHT_META[song.copyright_status];
-    if (approver) {
+  // The rights StatusChip (icon + word). For an approver the chip is the control
+  // that cycles it, inside a 44 px-tall button so a thumb can hit it. `readOnly`
+  // (the phone row) shows just the chip: there it would sit a thumb's width from
+  // the ▶, and one stray tap writes copyright_status and notifies people — on a
+  // phone the change is made in the song's sheet.
+  function copyrightControl(song: Song, opts?: { readOnly?: boolean }) {
+    const cr = rightsOf(song);
+    if (approver && !opts?.readOnly) {
       return (
         <button
           type="button"
@@ -1291,24 +1411,28 @@ export function SongLibrary({
             updateCopyright(song, next);
           }}
           title="คลิกเพื่อเปลี่ยนสถานะลิขสิทธิ์ (รอตรวจ → ถูกต้อง → ถูกปฏิเสธ)"
+          className="group grid h-11 shrink-0 place-items-center rounded-[3px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
           <Badge
             variant={cr.variant}
-            className="cursor-pointer transition hover:opacity-80"
+            className="cursor-pointer transition-opacity duration-2 group-hover:opacity-80"
           >
-            {cr.emoji} {cr.label}
+            <MetaIcon icon={cr.icon} />
+            {cr.label}
           </Badge>
         </button>
       );
     }
     return (
-      <Badge variant={cr.variant}>
-        {cr.emoji} {cr.label}
+      <Badge variant={cr.variant} className="shrink-0">
+        <MetaIcon icon={cr.icon} />
+        {cr.label}
       </Badge>
     );
   }
 
-  // ▶ / ⏸ for one song — the same button on the table row and the phone card.
+  // ▶ / ⏸ for one song — the same 44 × 44 key on the table row and the phone row:
+  // a well at rest, the band fill while it is the song in the player.
   function previewButton(song: Song) {
     if (!canPreview(song)) return null;
     const isCurrent = preview.current?.id === song.id;
@@ -1317,9 +1441,9 @@ export function SongLibrary({
     return (
       <Button
         type="button"
-        variant={isCurrent ? "default" : "outline"}
+        variant={isCurrent ? "default" : "secondary"}
         size="icon"
-        className="h-9 w-9 shrink-0 rounded-full"
+        className="shrink-0 rounded-[2px]"
         aria-label={`${busy || sounding ? "หยุดตัวอย่าง" : "เล่นตัวอย่าง"} ${song.title}`}
         title={busy || sounding ? "หยุดฟัง" : "ฟังตัวอย่าง"}
         onClick={() => preview.play(song)}
@@ -1335,6 +1459,29 @@ export function SongLibrary({
     );
   }
 
+  /** length · language · BPM, numerals in Barlow; parts that are missing drop out */
+  function metaParts(song: Song): ReactNode[] {
+    const parts: ReactNode[] = [];
+    if (song.duration_seconds) {
+      parts.push(
+        <span key="len" className="num text-[15px] text-foreground/85">
+          {formatDuration(song.duration_seconds)}
+        </span>
+      );
+    }
+    if (song.language) {
+      parts.push(<span key="lang">{SONG_LANGUAGE_LABELS[song.language] ?? song.language}</span>);
+    }
+    if (song.bpm) {
+      parts.push(
+        <span key="bpm">
+          <span className="num text-[15px]">{song.bpm}</span> BPM
+        </span>
+      );
+    }
+    return parts;
+  }
+
   // Marks the song in the player: aria-current while it is loaded (playing or
   // paused), data-playing only while it is actually sounding.
   function previewMarks(song: Song) {
@@ -1345,17 +1492,40 @@ export function SongLibrary({
     };
   }
 
+  // The table's actions (spec §G.5): upload / replace the file, edit, delete.
+  // Removing just the file, and a desktop's local source, are in the song's sheet.
   function rowActions(song: Song) {
     if (!canEditSong(song)) return null;
     return (
       <>
-        <Button variant="ghost" size="icon" onClick={() => openEdit(song)}>
+        <Button
+          variant="ghost"
+          size="icon"
+          disabled={!!audioBusy[song.id]}
+          aria-label={`${song.audio_path ? "เปลี่ยนไฟล์เสียง" : "อัปไฟล์เสียง"} ${song.title}`}
+          title={song.audio_path ? "เปลี่ยนไฟล์เสียง" : "อัปไฟล์เสียง"}
+          onClick={() => {
+            audioTargetRef.current = song;
+            audioFileRef.current?.click();
+          }}
+        >
+          <CloudUpload className="h-4 w-4" />
+        </Button>
+        <Button
+          variant="ghost"
+          size="icon"
+          aria-label={`แก้ไขเพลง ${song.title}`}
+          title="แก้ไขเพลง"
+          onClick={() => openEdit(song)}
+        >
           <Pencil className="h-4 w-4" />
         </Button>
         <Button
           variant="ghost"
           size="icon"
-          className="text-destructive hover:text-destructive"
+          className="[&_svg]:text-destructive"
+          aria-label={`ลบเพลง ${song.title}`}
+          title="ลบเพลง"
           onClick={() => onDelete(song)}
         >
           <Trash2 className="h-4 w-4" />
@@ -1365,7 +1535,7 @@ export function SongLibrary({
   }
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-3">
       {/* hidden input for per-song audio upload to R2 (separate from the
           dialog's duration-detect picker) */}
       <input
@@ -1375,20 +1545,71 @@ export function SongLibrary({
         className="hidden"
         onChange={(e) => onPickAudioFile(e.target.files?.[0])}
       />
-      <div className="flex flex-wrap items-center gap-3">
-        <div className="relative w-full sm:w-64">
-          <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+      {/* Search row: the field takes what is left; the page's refresh and the
+          editor's + sit at its end (icon-only + on a phone, labelled from sm). */}
+      <div className="flex items-center gap-2">
+        <div className="relative min-w-0 flex-1 md:max-w-sm">
+          <Search
+            aria-hidden
+            className="pointer-events-none absolute left-3.5 top-1/2 h-[18px] w-[18px] -translate-y-1/2 text-muted-foreground"
+            strokeWidth={2.2}
+          />
           <Input
+            type="search"
+            aria-label="ค้นหาเพลง"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="ค้นหาเพลง / หมวดหมู่ / โน้ต…"
-            className="pl-9"
+            className="h-[46px] pl-10"
           />
         </div>
+        <div className="ml-auto flex shrink-0 items-center gap-2">
+          {toolbarEnd}
+          {canEditAny && (
+            <Button onClick={openAdd} className="h-[46px] min-w-[46px] px-3 sm:px-4" aria-label="เพิ่มเพลง">
+              <Plus className="h-[18px] w-[18px]" aria-hidden />
+              <span className="hidden sm:inline">เพิ่มเพลง</span>
+            </Button>
+          )}
+        </div>
+      </div>
+
+      {/* Filter chips (44 px). Scrolls sideways inside its own row on a narrow
+          phone; the page itself never does. */}
+      <div className="-mx-4 flex items-center gap-1.5 overflow-x-auto px-4 pb-0.5 [scrollbar-width:none] md:mx-0 md:px-0">
+        <FilterChip
+          on={copyFilter === "all" && !audioOnly}
+          onClick={() => {
+            setCopyFilter("all");
+            setAudioOnly(false);
+          }}
+        >
+          ทั้งหมด
+        </FilterChip>
+        <FilterChip on={audioOnly} onClick={() => setAudioOnly((v) => !v)}>
+          <Volume2 aria-hidden />
+          มีเสียง
+        </FilterChip>
+        <FilterChip
+          on={copyFilter === "pending"}
+          onClick={() => setCopyFilter((f) => (f === "pending" ? "all" : "pending"))}
+        >
+          <Hourglass aria-hidden />
+          รอตรวจ <span className="num text-[16px]">{rightsCount.pending}</span>
+        </FilterChip>
+        {(rightsCount.rejected > 0 || copyFilter === "rejected") && (
+          <FilterChip
+            on={copyFilter === "rejected"}
+            onClick={() => setCopyFilter((f) => (f === "rejected" ? "all" : "rejected"))}
+          >
+            <CircleX aria-hidden />
+            ถูกปฏิเสธ <span className="num text-[16px]">{rightsCount.rejected}</span>
+          </FilterChip>
+        )}
         {groups.length > 1 && (
-          <div className="w-40">
+          <div className="w-44 shrink-0">
             <Select value={groupFilter} onValueChange={setGroupFilter}>
-              <SelectTrigger>
+              <SelectTrigger aria-label="กรองตามวง">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -1402,30 +1623,13 @@ export function SongLibrary({
             </Select>
           </div>
         )}
-        <div className="w-40">
-          <Select value={copyFilter} onValueChange={setCopyFilter}>
-            <SelectTrigger>
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">ลิขสิทธิ์: ทั้งหมด</SelectItem>
-              <SelectItem value="cleared">✅ ถูกต้อง</SelectItem>
-              <SelectItem value="pending">🕒 รอตรวจ</SelectItem>
-              <SelectItem value="rejected">⛔ ถูกปฏิเสธ</SelectItem>
-            </SelectContent>
-          </Select>
-        </div>
-        <div className="ml-auto flex items-center gap-2">
-          <span className="tabular-nums text-xs text-muted-foreground">
-            {visible.length} เพลง
-          </span>
-          {canEditAny && (
-            <Button onClick={openAdd}>
-              <Plus className="h-4 w-4" /> เพิ่มเพลง
-            </Button>
-          )}
-        </div>
       </div>
+      {filtered && songs.length > 0 && (
+        <p className="px-0.5 text-[12.5px] text-muted-foreground">
+          แสดง <span className="num text-[15px] text-foreground">{visible.length}</span> จาก{" "}
+          <span className="num text-[15px]">{songs.length}</span> เพลง
+        </p>
+      )}
 
       {/* The temporary-song sweep's offer. This bar exists instead of the modal
           that used to appear by itself when คลังเพลง opened: a dialog nobody
@@ -1435,8 +1639,8 @@ export function SongLibrary({
           dismissed with ไว้ก่อน, and it comes back next open — retrying is free
           and the bytes are not. See the sweep effect above. */}
       {tempPurgeNow.length > 0 && (
-        <div className="flex flex-wrap items-center gap-3 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2">
-          <Clock3 className="h-4 w-4 shrink-0 text-amber-600" />
+        <div className="flex flex-wrap items-center gap-3 rounded-[2px] bg-warning/10 px-3 py-2.5 shadow-[inset_0_0_0_1px_hsl(var(--warning)/.45)]">
+          <Clock3 className="h-4 w-4 shrink-0 text-warning-ink" aria-hidden />
           <div className="min-w-0 text-sm">
             <span className="font-medium">
               เพลงชั่วคราวที่หมดอายุแล้ว {tempPurgeNow.length} เพลง
@@ -1450,13 +1654,16 @@ export function SongLibrary({
             <Button
               variant="ghost"
               size="sm"
+              className="h-11"
               onClick={() => setTempPurgeOffer(null)}
             >
               ไว้ก่อน
             </Button>
+            {/* outline: the solid red is the confirm sheet's, which this opens */}
             <Button
-              variant="destructive"
+              variant="destructive-outline"
               size="sm"
+              className="h-11"
               disabled={tempPurgeBusy}
               onClick={runTempPurge}
             >
@@ -1472,13 +1679,13 @@ export function SongLibrary({
       )}
 
       {visible.length === 0 ? (
-        <div className="flex flex-col items-center justify-center gap-3 rounded-lg border border-dashed py-16 text-center">
-          <Music2 className="h-10 w-10 text-muted-foreground" />
+        <div className="slab flex flex-col items-center justify-center gap-3 py-16 text-center">
+          <Music2 className="h-10 w-10 text-muted-foreground" aria-hidden />
           {songs.length === 0 ? (
             <>
               <p className="text-muted-foreground">ยังไม่มีเพลงในคลัง</p>
               {canEditAny && (
-                <Button variant="outline" onClick={openAdd}>
+                <Button variant="secondary" onClick={openAdd}>
                   <Plus className="h-4 w-4" /> เพิ่มเพลงแรก
                 </Button>
               )}
@@ -1489,40 +1696,61 @@ export function SongLibrary({
         </div>
       ) : (
         <>
-          {/* Desktop / tablet: full table */}
-          <div className="hidden rounded-lg border md:block">
+          {/* md and up: the Table primitive (one slab, hairlines, a band rail on the
+              song in the player). */}
+          <div className="hidden md:block">
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>เพลง</TableHead>
-                <TableHead className="w-24 text-right tabular-nums">
-                  ความยาว
+                <TableHead>Song</TableHead>
+                <TableHead className="w-24 text-right">Length</TableHead>
+                <TableHead className="w-[10rem]">Audio</TableHead>
+                <TableHead className="hidden w-24 lg:table-cell">Language</TableHead>
+                <TableHead className="hidden w-28 xl:table-cell">Category</TableHead>
+                <TableHead className="w-32">Rights</TableHead>
+                {groups.length > 1 && <TableHead className="w-36">Band</TableHead>}
+                <TableHead className="w-14">
+                  <span className="sr-only">ตัวอย่าง</span>
                 </TableHead>
-                <TableHead className="w-44">เสียง (คลาวด์)</TableHead>
-                <TableHead className="w-20">ภาษา</TableHead>
-                <TableHead className="w-32">หมวดหมู่</TableHead>
-                <TableHead className="w-28">ลิขสิทธิ์</TableHead>
-                {groups.length > 1 && <TableHead className="w-28">วง</TableHead>}
-                {canEditAny && <TableHead className="w-20" />}
+                {canEditAny && (
+                  <TableHead className="w-[9.5rem]">
+                    <span className="sr-only">จัดการ</span>
+                  </TableHead>
+                )}
               </TableRow>
             </TableHeader>
             <TableBody>
-              {visible.map((song) => (
+              {visible.map((song) => {
+                const isCurrent = preview.current?.id === song.id;
+                const band = groups.find((g) => g.id === song.group_id);
+                return (
                   <TableRow
                     key={song.id}
                     {...previewMarks(song)}
-                    className={cn(preview.current?.id === song.id && "bg-primary/5")}
+                    data-current={isCurrent}
+                    className={cn(isCurrent && "bg-primary/[.08]")}
                   >
                     <TableCell>
-                      <div className="flex items-start gap-2">
-                        {/* no file → an empty slot the button's size, so titles stay in one column */}
-                        {previewButton(song) ?? <span aria-hidden className="h-9 w-9 shrink-0" />}
+                      <div className="flex items-center gap-3">
+                        <CoverTile song={song} current={isCurrent} />
                         <div className="min-w-0">
-                          <div className="font-medium">{song.title}</div>
+                          {/* the title opens the song's sheet — the same one a phone row
+                              opens: notes in full, the file, removing it, local source */}
+                          <button
+                            type="button"
+                            aria-haspopup="dialog"
+                            onClick={() => setSheetId(song.id)}
+                            className={cn(
+                              "rounded-[2px] text-left text-[15px] font-medium leading-tight underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                              isCurrent && "font-semibold text-primary-ink"
+                            )}
+                          >
+                            {song.title}
+                          </button>
                           {/* โน้ตของเพลง — until now it was write-only (visible only by
                               reopening the edit dialog). Clamped so a long note can't
                               blow the row height up; the full text stays reachable via
-                              the tooltip, and the mobile card prints it whole. */}
+                              the tooltip, and the phone's song sheet prints it whole. */}
                           {song.notes && (
                             <div
                               className="line-clamp-2 whitespace-pre-wrap break-words text-xs text-muted-foreground"
@@ -1533,120 +1761,214 @@ export function SongLibrary({
                           )}
                           {song.file_name && (
                             <div className="flex items-center gap-1 text-xs text-muted-foreground">
-                              <FileAudio className="h-3 w-3" />
+                              <FileAudio className="h-3 w-3" aria-hidden />
                               {song.file_name}
                             </div>
                           )}
                         </div>
                       </div>
                     </TableCell>
-                    <TableCell className="text-right tabular-nums">
+                    <TableCell className="num text-right text-[15px]">
                       {song.duration_seconds
                         ? formatDuration(song.duration_seconds)
                         : "—"}
                     </TableCell>
-                    <TableCell>
+                    <TableCell className="whitespace-nowrap">
                       <div className="space-y-1.5">
-                        {audioStatus(song)}
+                        {audioStatus(song, "table")}
                         {localSourceControls(song)}
                       </div>
                     </TableCell>
-                    <TableCell className="text-muted-foreground">
+                    <TableCell className="hidden text-muted-foreground lg:table-cell">
                       {song.language
                         ? SONG_LANGUAGE_LABELS[song.language] ?? song.language
                         : "—"}
                     </TableCell>
-                    <TableCell className="text-muted-foreground">
+                    <TableCell className="hidden text-muted-foreground xl:table-cell">
                       {song.category || "—"}
                     </TableCell>
                     <TableCell>{copyrightControl(song)}</TableCell>
                     {groups.length > 1 && (
                       <TableCell className="text-muted-foreground">
-                        {groupName[song.group_id] ?? "—"}
+                        {band ? (
+                          <span className="flex items-center gap-2">
+                            <span
+                              aria-hidden
+                              className="h-2.5 w-2.5 shrink-0 rounded-[1px] bg-muted-foreground"
+                              style={band.color ? { background: band.color } : undefined}
+                            />
+                            <span className="truncate">{band.name}</span>
+                          </span>
+                        ) : (
+                          "—"
+                        )}
                       </TableCell>
                     )}
+                    <TableCell className="px-1.5">
+                      {/* no file → an empty slot the key's size, so the column holds */}
+                      {previewButton(song) ?? <span aria-hidden className="block h-11 w-11" />}
+                    </TableCell>
                     {canEditAny && (
-                      <TableCell>
-                        <div className="flex justify-end gap-1">
+                      <TableCell className="px-1.5">
+                        <div className="flex justify-end">
                           {rowActions(song)}
                         </div>
                       </TableCell>
                     )}
                   </TableRow>
-              ))}
+                );
+              })}
             </TableBody>
           </Table>
           </div>
 
-          {/* Mobile: one card per song so nothing scrolls sideways */}
-          <div className="space-y-3 md:hidden">
-            {visible.map((song) => (
-              <div
-                key={song.id}
-                {...previewMarks(song)}
-                className={cn(
-                  "space-y-3 rounded-lg border bg-card p-4",
-                  preview.current?.id === song.id && "border-primary/50"
-                )}
-              >
-                <div className="flex items-start justify-between gap-3">
-                  {previewButton(song)}
-                  <div className="min-w-0 flex-1">
-                    <div className="font-medium leading-tight">{song.title}</div>
-                    {/* Full text, no clamp: a card grows, and a phone has no
-                        hover to reveal a tooltip with the rest. */}
-                    {song.notes && (
-                      <div className="mt-0.5 whitespace-pre-wrap break-words text-xs text-muted-foreground">
-                        {song.notes}
-                      </div>
-                    )}
-                    {song.file_name && (
-                      <div className="mt-0.5 flex items-center gap-1 text-xs text-muted-foreground">
-                        <FileAudio className="h-3 w-3 shrink-0" />
-                        <span className="truncate">{song.file_name}</span>
-                      </div>
-                    )}
-                  </div>
-                  {canEditAny && (
-                    <div className="flex shrink-0 gap-1">{rowActions(song)}</div>
+          {/* Phone: 62 px media rows (spec §G.5) — cover, title, length · language ·
+              BPM, the rights chip and a 44 px ▶. Everything else a song has (notes,
+              its file, audio upload, edit, delete) is one tap away in its sheet. */}
+          <div className="stack md:hidden">
+            {visible.map((song) => {
+              const isCurrent = preview.current?.id === song.id;
+              const meta = metaParts(song);
+              return (
+                <div
+                  key={song.id}
+                  {...previewMarks(song)}
+                  className={cn(
+                    "slab flex min-h-[62px] items-center gap-2 py-2 pl-3 pr-2",
+                    isCurrent &&
+                      "bg-[linear-gradient(90deg,hsl(var(--primary)/.16),transparent_70%)] shadow-[inset_4px_0_0_hsl(var(--primary)),inset_0_0_0_1px_hsl(var(--border))]"
                   )}
-                </div>
-
-                <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 text-xs text-muted-foreground">
-                  <span className="tabular-nums">
-                    ⏱{" "}
-                    {song.duration_seconds
-                      ? formatDuration(song.duration_seconds)
-                      : "—"}
-                  </span>
-                  {song.language && (
-                    <span>
-                      {SONG_LANGUAGE_LABELS[song.language] ?? song.language}
+                >
+                  <button
+                    type="button"
+                    aria-haspopup="dialog"
+                    onClick={() => setSheetId(song.id)}
+                    className="-my-1 flex min-h-11 min-w-0 flex-1 items-center gap-3 rounded-[2px] text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  >
+                    <CoverTile song={song} current={isCurrent} />
+                    <span className="min-w-0 flex-1">
+                      <span
+                        className={cn(
+                          "block truncate text-[15px] font-medium leading-tight",
+                          isCurrent && "font-semibold text-primary-ink"
+                        )}
+                      >
+                        {song.title}
+                      </span>
+                      {meta.length > 0 && (
+                        <span className="mt-[3px] flex items-center gap-1.5 truncate text-[12.5px] text-muted-foreground">
+                          {meta.flatMap((p, i) =>
+                            i === 0 ? [p] : [<span key={`dot-${i}`} aria-hidden>·</span>, p]
+                          )}
+                        </span>
+                      )}
                     </span>
-                  )}
-                  {song.category && <span>{song.category}</span>}
-                  {groups.length > 1 && groupName[song.group_id] && (
-                    <span>{groupName[song.group_id]}</span>
-                  )}
+                  </button>
+                  {copyrightControl(song, { readOnly: true })}
+                  {previewButton(song)}
                 </div>
-
-                <div className="space-y-2 border-t pt-2">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    {audioStatus(song)}
-                    {copyrightControl(song)}
-                  </div>
-                  {localSourceControls(song)}
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </>
       )}
 
+      {/* The phone's song sheet: what used to be stacked on every card. Actions that
+          open their own dialog (edit, delete → confirm) close this one first, so
+          two modals never sit on each other. */}
+      <Dialog
+        open={!!sheetSong}
+        onOpenChange={(o) => {
+          if (!o) setSheetId(null);
+        }}
+      >
+        {sheetSong && (
+          <DialogContent>
+            <DialogHeader>
+              {/* a song title as typed: no caps, no italic (DialogTitle would set an
+                  English one as the italic caps H2) */}
+              <DialogTitle
+                className={
+                  THAI_RE.test(sheetSong.title)
+                    ? undefined
+                    : "font-display text-[24px] font-extrabold normal-case not-italic leading-tight tracking-normal [font-synthesis:none]"
+                }
+              >
+                {sheetSong.title}
+              </DialogTitle>
+              <DialogDescription>
+                {[
+                  sheetSong.duration_seconds ? formatDuration(sheetSong.duration_seconds) : null,
+                  sheetSong.language
+                    ? SONG_LANGUAGE_LABELS[sheetSong.language] ?? sheetSong.language
+                    : null,
+                  sheetSong.bpm ? `${sheetSong.bpm} BPM` : null,
+                  sheetSong.category || null,
+                  groups.length > 1 ? groupName[sheetSong.group_id] ?? null : null,
+                ]
+                  .filter(Boolean)
+                  .join(" · ") || "ยังไม่มีรายละเอียด"}
+              </DialogDescription>
+            </DialogHeader>
+
+            <div className="space-y-4">
+              {sheetSong.notes && (
+                <p className="whitespace-pre-wrap break-words text-[15px] leading-relaxed">
+                  {sheetSong.notes}
+                </p>
+              )}
+              <div className="flex items-center justify-between gap-3">
+                <span className="eyebrow text-muted-foreground">Rights</span>
+                {copyrightControl(sheetSong)}
+              </div>
+              <div className="space-y-2">
+                <span className="eyebrow text-muted-foreground">Audio</span>
+                {sheetSong.file_name && (
+                  <p className="flex items-center gap-1.5 text-[12.5px] text-muted-foreground">
+                    <FileAudio className="h-3.5 w-3.5 shrink-0" aria-hidden />
+                    <span className="truncate">{sheetSong.file_name}</span>
+                  </p>
+                )}
+                <div className="flex flex-wrap items-center gap-2">
+                  {audioStatus(sheetSong)}
+                  {previewButton(sheetSong)}
+                </div>
+                {localSourceControls(sheetSong)}
+              </div>
+            </div>
+
+            {canEditSong(sheetSong) && (
+              <DialogFooter>
+                <Button
+                  variant="destructive-outline"
+                  onClick={() => {
+                    const s = sheetSong;
+                    setSheetId(null);
+                    onDelete(s);
+                  }}
+                >
+                  <Trash2 className="h-4 w-4" /> ลบเพลง
+                </Button>
+                <Button
+                  variant="secondary"
+                  onClick={() => {
+                    const s = sheetSong;
+                    setSheetId(null);
+                    openEdit(s);
+                  }}
+                >
+                  <Pencil className="h-4 w-4" /> แก้ไข
+                </Button>
+              </DialogFooter>
+            )}
+          </DialogContent>
+        )}
+      </Dialog>
+
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>{form.id ? "แก้ไขเพลง" : "เพิ่มเพลง"}</DialogTitle>
+            <DialogTitle>{form.id ? "Edit Song" : "Add Song"}</DialogTitle>
             <DialogDescription>
               เลือกไฟล์เสียง — ระบบอ่านความยาวอัตโนมัติ และอัปโหลดไฟล์ขึ้นคลาวด์ให้
               เมื่อกดบันทึก (ใช้เล่นใน Live Mode ได้ทุกเครื่อง)
@@ -1784,7 +2106,10 @@ export function SongLibrary({
                   <SelectContent>
                     {COPYRIGHT_KEYS.map((k) => (
                       <SelectItem key={k} value={k}>
-                        {COPYRIGHT_META[k].emoji} {COPYRIGHT_META[k].label}
+                        <span className="inline-flex items-center gap-2">
+                          <MetaIcon icon={COPYRIGHT_META[k].icon} className="h-4 w-4 shrink-0" />
+                          {COPYRIGHT_META[k].label}
+                        </span>
                       </SelectItem>
                     ))}
                   </SelectContent>
@@ -1821,9 +2146,12 @@ export function SongLibrary({
         </DialogContent>
       </Dialog>
 
+      {footer}
+
       {preview.current && (
         <>
-          {/* room to scroll the last song out from under the fixed player */}
+          {/* room to scroll the last song, and the page's footer, out from under
+              the fixed player — so this stays the LAST thing in the page */}
           <div aria-hidden className="h-20" />
           <LibraryMiniPlayer
             title={preview.current.title}

@@ -89,15 +89,15 @@ export function AudioOutputPicker({
   if (!isDesktop) return null;
 
   return (
-    <label className="flex min-w-0 flex-1 items-center gap-1.5 text-xs text-muted-foreground">
-      <Speaker className="h-3.5 w-3.5 shrink-0" />
+    <label className="flex h-11 w-full min-w-0 items-center gap-2 text-[13px] text-muted-foreground">
+      <Speaker aria-hidden className="size-4 shrink-0" />
       <span className="shrink-0">เสียงออกที่</span>
       <select
         value={value}
         onChange={(e) => onChange(e.target.value)}
         disabled={disabled}
         title="ล็อกเสียงโชว์ให้ออกอุปกรณ์นี้ (กันเสียงโดน Bluetooth/HDMI แย่งกลางโชว์)"
-        className="h-7 min-w-0 flex-1 truncate rounded-md border bg-background px-1.5 text-xs text-foreground disabled:opacity-50"
+        className="h-11 min-w-0 flex-1 truncate rounded-[3px] bg-card px-2.5 text-[14px] text-foreground shadow-[inset_0_0_0_1.5px_hsl(var(--input))] focus-visible:outline-none focus-visible:shadow-[inset_0_0_0_2px_hsl(var(--ring))] disabled:opacity-50"
       >
         <option value="">ลำโพงเริ่มต้นของระบบ</option>
         {devices.map((d) => (

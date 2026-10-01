@@ -16,6 +16,7 @@ import { ErrorMonitor, AppErrorBoundary } from "@/components/error-monitor";
 import { FeedbackUnreadProvider } from "@/components/feedback-button";
 import { AccountButton, AccountPanel, AccountPanelProvider } from "@/components/account-panel";
 import { isImmersivePath } from "@/components/chrome-gate";
+import { IMMERSIVE_MAIN_CLASS } from "@/components/app-main";
 import { accountLine } from "@/lib/role-label";
 import { canEditAnyGroup } from "@/lib/permissions";
 import { MgmtSyncStatus } from "~/components/mgmt-sync-status";
@@ -137,7 +138,9 @@ export function Shell() {
               <OfflineBanner placement="header" />
             </header>
           )}
-          <main className="container relative z-[1] overflow-x-clip py-6">
+          {/* Immersive: no container and no padding — the show screens are edge to
+              edge and own their gutter (the web's components/app-main.tsx). */}
+          <main className={immersive ? IMMERSIVE_MAIN_CLASS : "container relative z-[1] overflow-x-clip py-6"}>
             {userId ? (
               // A render crash used to leave the desktop on a blank window with no
               // reload and nothing logged — mid-show, on the machine wired to the PA.

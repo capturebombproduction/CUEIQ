@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Music2, Dumbbell, NotebookPen } from "lucide-react";
+import { Headphones, NotebookPen } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { hasLiveSession } from "@/lib/auth-session";
 import {
@@ -101,28 +101,27 @@ export function PracticeMode({
   const canCurate = canWriteJournal(canManage, membership);
 
   return (
-    <div className="space-y-4">
-      <div>
-        <h1 className="flex items-center gap-2 text-xl font-bold tracking-tight">
-          <Music2 className="h-5 w-5" /> {roomName}
-        </h1>
-        <p className="text-xs text-muted-foreground">
-          Training — ปรับความเร็ว, วนท่อน, จับเวลาพัก และจดบันทึกการซ้อม
-        </p>
+    <div className="space-y-3">
+      {/* The room's name is the page's heading (it is what someone typed, so it is
+          set as typed — never the caps H1); "Training" above it is the place. */}
+      <div className="min-w-0">
+        <p className="eyebrow text-muted-foreground">Practice Room</p>
+        <h1 className="mt-0.5 truncate text-[20px] font-semibold leading-tight">{roomName}</h1>
       </div>
 
       <Tabs defaultValue="player">
-        <TabsList>
+        <TabsList className="sm:max-w-sm">
           <TabsTrigger value="player">
-            <Dumbbell className="mr-1.5 h-4 w-4" /> เครื่องเล่น
+            <Headphones className="h-4 w-4" aria-hidden /> เครื่องเล่น
           </TabsTrigger>
           <TabsTrigger value="journal">
-            <NotebookPen className="mr-1.5 h-4 w-4" /> สมุดซ้อม
+            <NotebookPen className="h-4 w-4" aria-hidden /> สมุดซ้อม
           </TabsTrigger>
         </TabsList>
 
-        <TabsContent value="player" className="mt-4">
+        <TabsContent value="player" className="mt-3">
           <PracticePlayer
+            roomName={roomName}
             eventId={eventId}
             groupId={groupId}
             currentUserId={currentUserId}
@@ -137,7 +136,7 @@ export function PracticeMode({
           />
         </TabsContent>
 
-        <TabsContent value="journal" className="mt-4">
+        <TabsContent value="journal" className="mt-3">
           <PracticeJournal
             eventId={eventId}
             groupId={groupId}

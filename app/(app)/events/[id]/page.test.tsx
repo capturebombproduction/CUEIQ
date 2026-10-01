@@ -3,6 +3,10 @@ import { makeSupabaseFake, ok, fail, type SupabaseFake } from "@/test/fakes/supa
 import { makePerms } from "@/lib/permissions";
 import EventPage from "@/app/(app)/events/[id]/page";
 import { EventWorkspace } from "@/components/event/event-workspace";
+import { EventHero } from "@/components/event/event-hero";
+import { EventCopyrightPanel } from "@/components/event/event-copyright-panel";
+import type { ComponentProps } from "react";
+import { render, screen } from "@testing-library/react";
 
 // getEventBundle is already all-or-none about its six child reads — it throws
 // rather than hand the page five good lists and one silently-emptied one. This
@@ -166,5 +170,84 @@ describe("EventPage — the header says when to be there", () => {
     const text = textOf(await call());
     expect(text).toContain("ขึ้นเวที 18:00");
     expect(text).not.toContain("นัด");
+  });
+});
+
+// The hero's practice button (spec G.3) shows for a band member before the show
+// day. It said "ซ้อมตามเซ็ต" — the dashboard ticket's words for the band's practice
+// ROOM — but always opened the Training list, because nothing passed it a room.
+// Same words, two places. The room is now found the ticket's way.
+describe("EventPage — the practice button opens the band's room", () => {
+  const asMemberBeforeTheShow = () => {
+    (h.ws as { perms: unknown }).perms = makePerms("member", [
+      { group_id: "g1", role: "member" } as never,
+    ]);
+    (h.bundle as { event: { event_date: string } }).event.event_date = "2099-12-01";
+  };
+  /** Render the hero the page built, and return its practice link. */
+  const practiceLink = async () => {
+    const hero = findEl(await call(), EventHero);
+    expect(hero).not.toBeNull();
+    render(
+      <EventHero {...(hero!.props as ComponentProps<typeof EventHero>)} statusActions={null} more={null} />
+    );
+    return screen.getByRole("link", { name: /ซ้อม/ });
+  };
+
+  it("for a member before the show day: the room the band last practised in", async () => {
+    asMemberBeforeTheShow();
+    supa.setTable(
+      "events",
+      ok([
+        { id: "room-new", group_id: "g1" },
+        { id: "room-used", group_id: "g1" },
+      ])
+    );
+    supa.setTable("practice_runs", ok([{ event_id: "room-used", group_id: "g1" }]));
+    const link = await practiceLink();
+    expect(link).toHaveAttribute("href", "/events/room-used/practice");
+    expect(link).toHaveTextContent("ซ้อมตามเซ็ต");
+  });
+
+  it("a failed room read does not fail the page: it opens the Training list, labelled ห้องซ้อม", async () => {
+    asMemberBeforeTheShow();
+    supa.setTable("events", fail("boom-rooms", 500));
+    supa.setTable("practice_runs", ok([]));
+    const link = await practiceLink();
+    expect(link).toHaveAttribute("href", "/practice");
+    expect(link).toHaveTextContent("ห้องซ้อม");
+    expect(link).not.toHaveTextContent("ซ้อมตามเซ็ต");
+  });
+
+  it("asks nothing extra when Live Mode leads (an admin)", async () => {
+    await call();
+    expect(supa.calls.map((c) => c.table)).not.toContain("practice_runs");
+  });
+});
+
+// Spec G.3: the approvers' copyright triage belongs to the Summary. Rendered here
+// between the hero and the workspace, its one row per song pushed the tabs off a
+// phone's first screen (~800 px for twelve songs).
+describe("EventPage — copyright triage sits under the run sheet", () => {
+  it("hands the panel to the workspace's Summary instead of stacking it above the tabs", async () => {
+    const b = h.bundle as { setlist: unknown[]; songs: unknown[] };
+    b.setlist = [{ id: "i1", song_id: "s1", sort_order: 1 }];
+    b.songs = [{ id: "s1", title: "Akai Hana", copyright_status: "pending" }];
+    const tree = await call();
+    expect(findEl(tree, EventCopyrightPanel)).toBeNull();
+    const footer = findEl(tree, EventWorkspace)!.props!.summaryFooter as Elementish;
+    expect(footer?.type).toBe(EventCopyrightPanel);
+    expect(footer.props!.songs).toEqual([{ id: "s1", title: "Akai Hana", copyright_status: "pending" }]);
+  });
+
+  it("gives a member no panel at all", async () => {
+    (h.ws as { perms: unknown }).perms = makePerms("member", [{ group_id: "g1", role: "member" } as never]);
+    const b = h.bundle as { setlist: unknown[]; songs: unknown[] };
+    b.setlist = [{ id: "i1", song_id: "s1", sort_order: 1 }];
+    b.songs = [{ id: "s1", title: "Akai Hana", copyright_status: "pending" }];
+    supa.setTable("events", ok([]));
+    supa.setTable("practice_runs", ok([]));
+    const tree = await call();
+    expect(findEl(tree, EventWorkspace)!.props!.summaryFooter ?? null).toBeNull();
   });
 });

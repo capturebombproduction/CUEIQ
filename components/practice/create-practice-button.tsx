@@ -34,11 +34,16 @@ export function CreatePracticeButton({
   userId,
   groups,
   label = "สร้างห้องซ้อม",
+  variant = "secondary",
+  className,
 }: {
   tenantId: string;
   userId: string;
   groups: { id: string; name: string }[];
   label?: string;
+  /** secondary in the page header (spec §G.6); the empty state's first room is primary */
+  variant?: "default" | "secondary";
+  className?: string;
 }) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
@@ -79,13 +84,13 @@ export function CreatePracticeButton({
 
   return (
     <>
-      <Button onClick={() => setOpen(true)}>
+      <Button variant={variant} className={className} onClick={() => setOpen(true)}>
         <Plus className="h-4 w-4" /> {label}
       </Button>
       <Dialog open={open} onOpenChange={(o) => !busy && setOpen(o)}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>สร้างห้องซ้อม</DialogTitle>
+            <DialogTitle>New Practice Room</DialogTitle>
             <DialogDescription>
               ห้องซ้อมใช้ซ้ำได้เรื่อย ๆ — เพิ่มเพลงที่จะซ้อมเข้าไปในห้องได้ในหน้าซ้อม
             </DialogDescription>

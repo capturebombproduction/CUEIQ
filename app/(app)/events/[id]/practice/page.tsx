@@ -1,11 +1,10 @@
 import { notFound, redirect } from "next/navigation";
 import Link from "next/link";
-import { ArrowLeft } from "lucide-react";
+import { ChevronLeft } from "lucide-react";
 import { createClient } from "@/lib/supabase/server";
 import { getEventBundle, getWorkspace } from "@/lib/queries";
 import { canEditGroup, canViewGroup } from "@/lib/permissions";
 import { PracticeMode } from "@/components/practice/practice-mode";
-import { Button } from "@/components/ui/button";
 import type { SongMarker, PracticeSong } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
@@ -52,14 +51,16 @@ export default async function PracticePlayPage({
   const practiceList = (practiceRows ?? []) as PracticeSong[];
 
   return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <Button asChild variant="ghost" size="sm" className="-ml-2">
-          <Link href="/practice">
-            <ArrowLeft className="h-4 w-4" /> ห้องซ้อม
-          </Link>
-        </Button>
-      </div>
+    <div className="space-y-3">
+      {/* On a phone the header already reads "‹ TRAINING" (components/header-brand.tsx);
+          from lg the header shows the wordmark, so the way back sits here. */}
+      <Link
+        href="/practice"
+        className="caps -ml-2 hidden h-11 w-fit items-center gap-0.5 rounded-[3px] pr-2 text-[15px] text-primary-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring lg:flex"
+      >
+        <ChevronLeft className="h-5 w-5" strokeWidth={2.6} aria-hidden />
+        Training
+      </Link>
       <PracticeMode
         roomName={bundle.event.name}
         eventId={bundle.event.id}

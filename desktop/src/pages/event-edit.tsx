@@ -7,6 +7,7 @@ import { ArrowLeft } from "lucide-react";
 import { canApprove, canEditGroup, editableGroups } from "@/lib/permissions";
 import { EventForm } from "@/components/event/event-form";
 import { Button } from "@/components/ui/button";
+import { PageTitle } from "@/components/page-title";
 import { loadEventBundle, type EventBundle } from "~/data/event-bundle";
 import { useWorkspace } from "~/data/workspace-context";
 
@@ -40,15 +41,14 @@ export function EditEventPage() {
   }
 
   return (
-    <div className="mx-auto max-w-2xl space-y-6">
-      <div>
-        <Button asChild variant="ghost" size="sm" className="-ml-2 mb-2">
-          <Link to={`/events/${id}`}>
-            <ArrowLeft className="h-4 w-4" /> กลับไปหน้างาน
-          </Link>
-        </Button>
-        <h1 className="text-2xl font-bold tracking-tight">แก้ไขข้อมูลงาน</h1>
-      </div>
+    <div className="mx-auto max-w-2xl space-y-3">
+      <Button asChild variant="ghost" className="no-print -ml-3 text-primary-ink">
+        <Link to={`/events/${id}`}>
+          <ArrowLeft aria-hidden /> กลับไปหน้างาน
+        </Link>
+      </Button>
+      <PageTitle title="Edit Event" />
+      <p className="truncate text-[13px] text-muted-foreground">แก้ไขข้อมูลงาน — {bundle.event.name}</p>
       <EventForm
         mode="edit"
         event={bundle.event}

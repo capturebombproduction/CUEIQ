@@ -126,7 +126,7 @@ export function DuplicateEventButton({
         // still tappable, sitting over the bottom-right corner of a card that is
         // itself a link. Reveal-on-hover only where hover exists; everywhere else it
         // is simply visible.
-        className="absolute bottom-2 right-2 z-10 flex h-9 w-9 items-center justify-center rounded-md border bg-background/80 text-muted-foreground shadow-sm backdrop-blur transition hover:text-primary focus:opacity-100 disabled:opacity-100 [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover:opacity-100"
+        className="absolute bottom-2 right-2 z-10 grid h-11 w-11 place-items-center rounded-[2px] bg-muted text-muted-foreground shadow-edge transition hover:text-primary-ink focus:opacity-100 disabled:opacity-100 [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover:opacity-100"
       >
         {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Copy className="h-4 w-4" />}
       </button>

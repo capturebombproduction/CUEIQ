@@ -201,9 +201,18 @@ button.en, a.en, button .en, a .en { font-size: 16px; }
 .cd-wrap { container-type: inline-size; }
 .cd { font-family: var(--font-num); font-variant-numeric: tabular-nums lining-nums; font-weight: 800; line-height: .8; letter-spacing: -.01em; text-align: center; white-space: nowrap;
   font-size: min(var(--cd-max, 164px), calc(100cqi / var(--cd-em, 1.84))); }
+/* --cd-em = the widest string of that length, in em, plus ~2%. Measured in Chrome at
+   Barlow Condensed 800 with the letter-spacing above: a digit is .51em, a colon .288,
+   the small "+" .356. Lengths 8–10 are an hour or more over ("+1:00:00") and the
+   Caller's elapsed clock on a forgotten act ("10:00:00", "100:00:00", "1000:00:00"):
+   with no rule they fell back to 1.84, stayed at --cd-max, and the card clipped
+   "+1:00:00" to "+1:00". components/live/countdown.test.tsx holds every length to this. */
 .cd[data-len="5"] { --cd-em: 2.38; }
 .cd[data-len="6"] { --cd-em: 2.78; }
 .cd[data-len="7"] { --cd-em: 3.18; }
+.cd[data-len="8"] { --cd-em: 3.7; }
+.cd[data-len="9"] { --cd-em: 4.22; }
+.cd[data-len="10"] { --cd-em: 4.74; }
 .cd .plus { font-size: .8em; vertical-align: .06em; margin-right: .02em; }
 
 /* ---------------- overtime: the luminance flip, identical for every band ---------------- */

@@ -6,10 +6,11 @@ import type { RealtimeChannel } from "@supabase/supabase-js";
 import { Plus, Trash2, ArrowUp, ArrowDown, Download, ImageDown } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import { FIELD, Input } from "@/components/ui/input";
 import { useConfirm } from "@/components/ui/confirm-dialog";
 import { captureElementToImage } from "@/lib/export-image";
 import { privateChannel, runOrderTopic } from "@/lib/realtime";
+import { cn } from "@/lib/utils";
 
 export type RunSequence = {
   id: string;
@@ -47,7 +48,10 @@ const KINDS: { value: string; label: string }[] = [
 ];
 
 const hhmm = (t: string | null) => (t ? t.slice(0, 5) : "");
-const selCls = "rounded-md border bg-background px-2 py-1.5 text-sm";
+// The native selects wear the Input primitive's field (FIELD: the ≥3:1 --input
+// boundary) at its height, and 16 px text below sm — iOS zooms the whole page into
+// any focused field under 16 px and never zooms back.
+const selCls = cn("h-11 min-w-0 max-w-full px-3 text-base text-foreground sm:text-sm", FIELD);
 
 // Shown when a write came back clean but touched 0 rows — see the .select("id") note
 // on persist(). There's no error text to quote, and 0 rows has three very different
@@ -544,7 +548,7 @@ export function RunOrderBuilder({
         width: 600,
       });
       if (how === "cancelled") return; // user dismissed the share sheet — nothing was saved
-      toast.success(how === "shared" ? "แชร์รูปแล้ว" : "บันทึกรูปแล้ว 🖼️");
+      toast.success(how === "shared" ? "แชร์รูปแล้ว" : "บันทึกรูปแล้ว");
     } catch (e) {
       toast.error("บันทึกรูปไม่สำเร็จ", {
         description: e instanceof Error ? e.message : String(e),
@@ -580,15 +584,14 @@ export function RunOrderBuilder({
   return (
     <div className="space-y-3">
       <div className="flex flex-wrap gap-2">
-        <Button variant="outline" size="sm" onClick={importBands} disabled={busy}>
+        <Button variant="secondary" onClick={importBands} disabled={busy}>
           <Download className="h-4 w-4" /> นำเข้าจากเวทีวง
         </Button>
-        <Button size="sm" onClick={addRow} disabled={busy}>
+        <Button onClick={addRow} disabled={busy}>
           <Plus className="h-4 w-4" /> เพิ่มลำดับ
         </Button>
         <Button
-          variant="outline"
-          size="sm"
+          variant="secondary"
           onClick={exportImage}
           disabled={busy || exportBusy || ordered.length === 0}
           title="บันทึกลำดับงานเป็นรูป ไว้แชร์ให้สมาชิกวง/ทีมงาน"
@@ -598,52 +601,55 @@ export function RunOrderBuilder({
       </div>
 
       {ordered.length === 0 ? (
-        <p className="rounded-lg border border-dashed py-10 text-center text-sm text-muted-foreground">
+        <p className="rounded-[2px] border border-dashed py-10 text-center text-sm text-muted-foreground">
           ยังไม่มีลำดับงาน — กด “นำเข้าจากเวทีวง” หรือ “เพิ่มลำดับ”
         </p>
       ) : (
-        <div className="space-y-2">
+        <div className="stack">
           {ordered.map((r, i) => (
-            <div key={r.id} className="rounded-lg border bg-card p-2">
-              <div className="flex flex-wrap items-center gap-2">
-                {/* These carried no size classes, so each button collapsed to its
-                    16px icon and the pair sat flush — one 16px target directly on
-                    top of a 16px target that does the opposite, and they are the
-                    ONLY reorder control here. A mis-tap reorders the festival
-                    running order and broadcasts it to the live คุมคิว board. */}
-                <div className="flex flex-col gap-0.5">
-                  <button
-                    type="button"
-                    onClick={() => move(r.id, -1)}
-                    disabled={i === 0}
-                    className="flex h-8 w-8 items-center justify-center rounded text-muted-foreground hover:bg-muted disabled:opacity-30"
-                    aria-label="เลื่อนขึ้น"
-                    title="เลื่อนขึ้น"
-                  >
-                    <ArrowUp className="h-4 w-4" />
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => move(r.id, 1)}
-                    disabled={i === ordered.length - 1}
-                    className="flex h-8 w-8 items-center justify-center rounded text-muted-foreground hover:bg-muted disabled:opacity-30"
-                    aria-label="เลื่อนลง"
-                    title="เลื่อนลง"
-                  >
-                    <ArrowDown className="h-4 w-4" />
-                  </button>
-                </div>
+            <div key={r.id} className="slab flex items-start gap-2 p-2.5">
+              {/* These once carried no size classes, so each button collapsed to its
+                  16px icon and the pair sat flush — one 16px target directly on top
+                  of a 16px target that does the opposite, and they are the ONLY
+                  reorder control here. A mis-tap reorders the festival running
+                  order and broadcasts it to the live คุมคิว board. 44 × 44 each:
+                  stacked beside the fields on a phone, side by side from sm up. */}
+              <div className="flex flex-none flex-col gap-0.5 sm:flex-row">
+                <button
+                  type="button"
+                  onClick={() => move(r.id, -1)}
+                  disabled={i === 0}
+                  className="flex h-11 w-11 items-center justify-center rounded-[3px] text-muted-foreground hover:bg-muted disabled:opacity-30"
+                  aria-label="เลื่อนขึ้น"
+                  title="เลื่อนขึ้น"
+                >
+                  <ArrowUp className="h-5 w-5" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => move(r.id, 1)}
+                  disabled={i === ordered.length - 1}
+                  className="flex h-11 w-11 items-center justify-center rounded-[3px] text-muted-foreground hover:bg-muted disabled:opacity-30"
+                  aria-label="เลื่อนลง"
+                  title="เลื่อนลง"
+                >
+                  <ArrowDown className="h-5 w-5" />
+                </button>
+              </div>
+              <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
                 <Input
                   type="time"
                   value={hhmm(r.planned_start)}
-                  className="w-[7.5rem] shrink-0"
+                  className="num w-[7.5rem] shrink-0"
                   onChange={(e) => update(r.id, { planned_start: e.target.value || null })}
                 />
-                <span className="text-muted-foreground">–</span>
+                <span aria-hidden className="text-muted-foreground">
+                  –
+                </span>
                 <Input
                   type="time"
                   value={hhmm(r.planned_end)}
-                  className="w-[7.5rem] shrink-0"
+                  className="num w-[7.5rem] shrink-0"
                   onChange={(e) => update(r.id, { planned_end: e.target.value || null })}
                 />
                 <select
@@ -688,13 +694,13 @@ export function RunOrderBuilder({
                     </option>
                   ))}
                 </select>
-                <label className="flex items-center gap-1 text-xs text-muted-foreground">
+                <label className="flex items-center gap-1.5 text-[13px] font-medium text-muted-foreground">
                   buffer
                   <Input
                     type="number"
                     min={0}
                     value={Math.round((r.buffer_seconds || 0) / 60)}
-                    className="w-16"
+                    className="num w-16"
                     onChange={(e) =>
                       update(r.id, {
                         buffer_seconds: Math.max(0, Number(e.target.value) || 0) * 60,
@@ -703,14 +709,20 @@ export function RunOrderBuilder({
                   />
                   น.
                 </label>
-                <button
+                {/* A row delete is the ghost trash key that opens the confirm sheet
+                    (§G.4, like the sibling editors) — 44 × 44, not a bare 16 px glyph
+                    at a row's edge, and not a loud dashed box on every row. */}
+                <Button
                   type="button"
+                  variant="ghost"
+                  size="icon"
                   onClick={() => removeRow(r.id)}
-                  className="ml-auto text-destructive"
+                  className="ml-auto text-destructive hover:text-destructive"
                   aria-label="ลบ"
+                  title="ลบลำดับนี้"
                 >
-                  <Trash2 className="h-4 w-4" />
-                </button>
+                  <Trash2 />
+                </Button>
               </div>
             </div>
           ))}
@@ -726,8 +738,9 @@ export function RunOrderBuilder({
           aria-hidden
           className="pointer-events-none fixed -left-[9999px] top-0 w-[600px] bg-card p-6 text-foreground"
         >
+          {/* flat and upright like every capture root (§D): poster title, num times */}
           <div className="mb-4 border-b pb-3">
-            <h2 className="text-2xl font-bold tracking-tight">{eventName}</h2>
+            <h2 className="poster text-[24px]">{eventName}</h2>
             <p className="text-sm text-muted-foreground">
               {eventDate ? `${eventDate} · ` : ""}ลำดับงาน (Running Order)
             </p>
@@ -740,7 +753,7 @@ export function RunOrderBuilder({
               const isBand = r.kind === "band";
               return (
                 <div key={r.id} className="flex items-baseline gap-3 py-2">
-                  <span className="w-28 shrink-0 text-sm font-medium tabular-nums text-muted-foreground">
+                  <span className="num w-28 shrink-0 text-sm text-muted-foreground">
                     {time}
                   </span>
                   <span className={isBand ? "text-base font-semibold" : "text-sm"}>

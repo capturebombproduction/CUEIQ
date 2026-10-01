@@ -1,4 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import type { ReactElement } from "react";
+import { render, screen } from "@testing-library/react";
 import { makeSupabaseFake, ok, fail, type SupabaseFake } from "@/test/fakes/supabase";
 import { makePerms } from "@/lib/permissions";
 import RunOrderPage from "@/app/(app)/events/[id]/run-order/page";
@@ -140,5 +142,35 @@ describe("RunOrderPage — an empty read is still an empty order", () => {
     const tree = await call();
     expect(supa.callsTo("schedule_items")).toHaveLength(0);
     expect(findEl(tree, RunOrderBuilder)!.props!.bandEvents).toEqual([]);
+  });
+});
+
+// Spec §G.4 / §E.11: an editor page carries the English display H1 (PageTitle), and
+// every way off it is a 44 px target — the back link was a bare 14 px line of text.
+describe("RunOrderPage — the page header", () => {
+  it("is an English display H1 with a 44 px way back and a 44 px way into the live caller", async () => {
+    render((await call()) as ReactElement);
+    const h1 = screen.getByRole("heading", { level: 1 });
+    expect(h1.textContent).toBe("Running Order");
+    expect(h1.classList.contains("h1")).toBe(true);
+
+    const back = screen.getByRole("link", { name: /Overview/ });
+    expect(back.getAttribute("href")).toBe("/overview");
+    expect(back.className).toMatch(/(^|\s)h-11(\s|$)/);
+
+    const live = screen.getByRole("link", { name: /คุมคิว/ });
+    expect(live.getAttribute("href")).toBe(`/events/${EVENT_ID}/run-order/live?from=overview`);
+    expect(live.className).toMatch(/(^|\s)h-11(\s|$)/);
+  });
+
+  it("opened from the event, back returns to the event by name", async () => {
+    const tree = await RunOrderPage({
+      params: Promise.resolve({ id: EVENT_ID }),
+      searchParams: Promise.resolve({}),
+    });
+    render(tree as ReactElement);
+    const back = screen.getByRole("link", { name: /A Lot Of Tone Fest/ });
+    expect(back.getAttribute("href")).toBe(`/events/${EVENT_ID}`);
+    expect(back.className).toMatch(/(^|\s)h-11(\s|$)/);
   });
 });

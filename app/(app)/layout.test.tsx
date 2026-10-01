@@ -25,6 +25,7 @@ import { FeedbackButton, FeedbackUnreadProvider } from "@/components/feedback-bu
 import { AccountPanel, AccountPanelProvider } from "@/components/account-panel";
 import { TabBar } from "@/components/tab-bar";
 import { ChromeGate } from "@/components/chrome-gate";
+import { AppMain } from "@/components/app-main";
 import { SiteHeader } from "@/components/site-header";
 import { PushNudge } from "@/components/notifications/push-nudge";
 
@@ -100,7 +101,9 @@ describe("(app) layout — the shell's parts", () => {
 
   it("pads <main> clear of the tab bar and clips sideways without breaking sticky", async () => {
     const all = await tree();
-    const main = all.find((n) => n.el.type === "main")!.el;
+    // <main> is rendered by AppMain (a client component: the immersive screens drop
+    // this padding, and only the client knows the path — components/app-main.test.tsx).
+    const main = all.find((n) => n.el.type === AppMain)!.el;
     const cls = String(main.props.className).split(/\s+/);
     expect(cls).toContain("pb-[calc(var(--tabbar-h)+env(safe-area-inset-bottom)+24px)]");
     expect(cls).toContain("overflow-x-clip");

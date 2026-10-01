@@ -36,20 +36,26 @@ export function DeadEndPage({ deadEnd }: { deadEnd: DeadEnd }) {
   const { heading, detail, backHref, backLabel } = deadEnd;
 
   return (
-    <div className="mx-auto flex max-w-md flex-col items-center gap-4 px-6 py-16 text-center">
-      <SearchX className="h-10 w-10 text-muted-foreground" aria-hidden />
-      <p className="text-4xl font-bold tracking-tight text-muted-foreground/50">404</p>
-      <h1 className="text-xl font-bold">{heading}</h1>
-      <p className="text-sm leading-relaxed text-muted-foreground">{detail}</p>
-      <div className="flex flex-wrap justify-center gap-2 pt-2">
-        <Button asChild>
-          <Link href={backHref}>
-            <Compass className="h-4 w-4" /> {backLabel}
-          </Link>
-        </Button>
-        <Button variant="outline" onClick={() => router.back()}>
-          <ArrowLeft className="h-4 w-4" /> ย้อนกลับ
-        </Button>
+    <div className="mx-auto max-w-md px-4 py-12">
+      <div className="slab flex flex-col items-center gap-4 rounded-[3px] p-6 text-center">
+        <span className="grid h-12 w-12 place-items-center rounded-[2px] bg-muted text-muted-foreground">
+          <SearchX className="h-6 w-6" aria-hidden />
+        </span>
+        <p className="num text-[64px] leading-[.8] text-faint" aria-hidden>
+          404
+        </p>
+        <h1 className="text-xl font-semibold leading-snug">{heading}</h1>
+        <p className="text-sm leading-relaxed text-muted-foreground">{detail}</p>
+        <div className="flex w-full flex-col gap-2 pt-1 sm:flex-row sm:justify-center">
+          <Button asChild size="lg" className="min-w-0">
+            <Link href={backHref}>
+              <Compass aria-hidden /> <span className="truncate">{backLabel}</span>
+            </Link>
+          </Button>
+          <Button variant="secondary" size="lg" onClick={() => router.back()}>
+            <ArrowLeft aria-hidden /> ย้อนกลับ
+          </Button>
+        </div>
       </div>
     </div>
   );

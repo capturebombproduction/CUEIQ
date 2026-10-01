@@ -2,6 +2,8 @@ import { redirect } from "next/navigation";
 import { getSongs, getWorkspace } from "@/lib/queries";
 import { JoinDemo } from "@/components/join-demo";
 import { SongLibrary } from "@/components/song/song-library";
+import { LibraryCount } from "@/components/song/library-count";
+import { PageTitle } from "@/components/page-title";
 import { RefreshButton } from "@/components/refresh-button";
 import { ConfirmSavedBar } from "@/components/confirm-saved-bar";
 import {
@@ -31,25 +33,30 @@ export default async function LibraryPage() {
   );
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight">คลังเพลง</h1>
-          <p className="text-sm text-muted-foreground">
-            {ws.tenant.name} · {songs.length} เพลง
-          </p>
-        </div>
-        <RefreshButton />
-      </div>
+    <div className="space-y-4">
+      <PageTitle
+        title="Library"
+        right={
+          <LibraryCount
+            count={songs.length}
+            scope={bands.length === 1 ? bands[0].name : ws.tenant.name}
+          />
+        }
+      />
       <SongLibrary
         tenantId={ws.membership.tenant_id}
         groups={bands}
         initialSongs={songs}
         perms={ws.perms}
+        toolbarEnd={<RefreshButton variant="secondary" className="h-[46px] px-3" />}
+        // Inside the library, not after it: the room kept for the preview player is
+        // the library's last child, so anything placed after it ends under the player.
+        footer={
+          (canEditAnyGroup(ws.perms) || canApprove(ws.perms)) && (
+            <ConfirmSavedBar note="เพลงบันทึกอัตโนมัติทุกครั้งที่เพิ่ม/แก้ — ปุ่มนี้ยืนยัน + โหลดข้อมูลล่าสุด" />
+          )
+        }
       />
-      {(canEditAnyGroup(ws.perms) || canApprove(ws.perms)) && (
-        <ConfirmSavedBar note="เพลงบันทึกอัตโนมัติทุกครั้งที่เพิ่ม/แก้ — ปุ่มนี้ยืนยัน + โหลดข้อมูลล่าสุด" />
-      )}
     </div>
   );
 }

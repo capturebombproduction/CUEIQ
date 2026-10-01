@@ -191,3 +191,26 @@ describe("ScheduleEditor · a field being edited never folds away", () => {
     expect(screen.queryByRole("button", { name: /\+ สถานที่ \/ โน้ต/ })).toBeNull();
   });
 });
+
+// A member opens the Schedule tab to read the day, and used to get a grid of
+// disabled fields in the order the rows were typed. Spec G.3: a call sheet — down
+// the clock, one line a row, the stage marked — and nothing that looks pressable.
+describe("ScheduleEditor · what a member reads", () => {
+  it("is a timeline in clock order, not disabled fields", () => {
+    mount(
+      [
+        row("stage", { kind: "stage", start_time: "18:00:00", end_time: "18:30:00", sort_order: 1 }),
+        row("call", { kind: "on_location", start_time: "16:00:00", location: "ประตูหลัง", sort_order: 2 }),
+        row("loose", { kind: "other", label: "รับของ", sort_order: 3 }),
+      ],
+      false
+    );
+    expect(screen.queryAllByRole("textbox")).toHaveLength(0);
+    expect(screen.queryAllByRole("combobox")).toHaveLength(0);
+    const lines = screen.getAllByRole("listitem").map((li) => li.textContent ?? "");
+    expect(lines).toHaveLength(3);
+    expect(lines[0]).toMatch(/^16:00.*ถึงสถานที่.*ประตูหลัง/);
+    expect(lines[1]).toMatch(/^18:0018:30.*ขึ้นเวที/);
+    expect(lines[2]).toMatch(/รับของ/); // no time: kept, at the end
+  });
+});

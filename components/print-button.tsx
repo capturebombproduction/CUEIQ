@@ -42,9 +42,11 @@ export function PrintButton({
             })
           : window.print()
       }
-      className="no-print inline-flex items-center gap-1.5 rounded-md border bg-card px-3 py-1.5 text-sm font-medium shadow-sm transition hover:bg-muted"
+      // The Button "secondary" look, written out: the public share page renders
+      // this too, outside the app's Button. 44 px tall, like every control.
+      className="no-print inline-flex h-11 items-center gap-2 rounded-[3px] bg-muted px-4 text-[15px] font-semibold shadow-edge transition hover:bg-muted/80"
     >
-      <Printer className="h-4 w-4" /> {label}
+      <Printer aria-hidden className="h-[18px] w-[18px]" /> {label}
     </button>
   );
 }

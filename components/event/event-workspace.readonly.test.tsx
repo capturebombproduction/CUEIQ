@@ -135,11 +135,40 @@ describe("EventWorkspace · the tab row", () => {
     }
   });
 
-  it("on arrival nothing is selected, and every label is still in foreground ink", () => {
+  // Spec G.3 fixed the cause instead of the symptom: Summary is the row's FIRST
+  // segment and the default view, so on arrival one segment is always the solid
+  // foreground block and the row can never read as a line of headings. (This used
+  // to pin the stop-gap: every label forced to foreground ink with nothing chosen.)
+  it("on arrival Summary is the one selected segment — the row always reads as a control", () => {
     mount(true);
-    for (const tab of screen.getAllByRole("tab")) {
-      expect(tab.getAttribute("data-state")).toBe("inactive");
-      expect(cls(tab)).toContain("data-[state=inactive]:text-foreground");
-    }
+    const tabs = screen.getAllByRole("tab");
+    expect(tabs[0].textContent).toBe("Summary");
+    expect(tabs.map((t) => t.getAttribute("data-state"))).toEqual([
+      "active",
+      ...tabs.slice(1).map(() => "inactive"),
+    ]);
+    expect(tabs[0].getAttribute("aria-selected")).toBe("true");
+  });
+});
+
+// §J Event, 2026-10-01: the "ดูสรุปงาน / บันทึก / อัปเดต" bar floated over a
+// member's first setlist row on first paint — for someone with nothing to save.
+// Summary is always one tap away in the sticky segment row above.
+describe("EventWorkspace · the save bar is for editors", () => {
+  afterEach(() => {
+    window.location.hash = "";
+  });
+
+  it("is not shown to someone who cannot edit", () => {
+    window.location.hash = "#setlist";
+    mount(false);
+    expect(screen.queryByRole("button", { name: /บันทึก \/ อัปเดต/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /ดูสรุปงาน/ })).toBeNull();
+  });
+
+  it("is there for an editor away from the Summary", () => {
+    window.location.hash = "#setlist";
+    mount(true);
+    expect(screen.getByRole("button", { name: /บันทึก \/ อัปเดต/ })).toBeInTheDocument();
   });
 });

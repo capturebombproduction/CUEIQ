@@ -1,11 +1,8 @@
 import { notFound } from "next/navigation";
-import Link from "next/link";
-import { ArrowLeft } from "lucide-react";
 import { getEventBundle, getWorkspace } from "@/lib/queries";
 import { canLiveEdit, canViewGroup } from "@/lib/permissions";
 import { type SongAudioMap } from "@/lib/audio-targets";
 import { LiveMode } from "@/components/event/live-mode";
-import { Button } from "@/components/ui/button";
 
 export const dynamic = "force-dynamic";
 
@@ -30,25 +27,21 @@ export default async function LivePage({
     bundle.songs.map((s) => [s.id, { path: s.audio_path ?? null, name: s.audio_name ?? null }])
   );
 
+  // Immersive: no app chrome on this route (components/chrome-gate.tsx). The back
+  // link lives in Live Mode's own top bar, so LiveMode IS the page — keep it at
+  // this one stable position (a remount would restart the audio engine).
   return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <Button asChild variant="ghost" size="sm" className="-ml-2">
-          <Link href={`/events/${id}`}>
-            <ArrowLeft className="h-4 w-4" /> กลับไปหน้างาน
-          </Link>
-        </Button>
-      </div>
-      <LiveMode
-        eventId={bundle.event.id}
-        groupId={bundle.event.group_id}
-        eventName={bundle.event.name}
-        items={bundle.setlist}
-        songAudio={songAudio}
-        canEdit={canEdit}
-        lastRunSeconds={bundle.event.last_run_seconds ?? null}
-        lastRunAt={bundle.event.last_run_at ?? null}
-      />
-    </div>
+    <LiveMode
+      eventId={bundle.event.id}
+      groupId={bundle.event.group_id}
+      eventName={bundle.event.name}
+      items={bundle.setlist}
+      songAudio={songAudio}
+      canEdit={canEdit}
+      lastRunSeconds={bundle.event.last_run_seconds ?? null}
+      lastRunAt={bundle.event.last_run_at ?? null}
+      userId={ws.user?.id ?? null}
+      tenantId={ws.membership?.tenant_id ?? null}
+    />
   );
 }

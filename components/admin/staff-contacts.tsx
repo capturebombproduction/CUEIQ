@@ -2,19 +2,27 @@
 
 import { useState, type KeyboardEvent } from "react";
 import { toast } from "sonner";
-import { ChevronUp, ChevronDown, Plus, Trash2, Users } from "lucide-react";
+import { Check, ChevronUp, ChevronDown, Pencil, Phone, Plus, Trash2 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { noRowsMessage, wroteNothing } from "@/lib/write-guard";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { useConfirm } from "@/components/ui/confirm-dialog";
 import type { StaffContact } from "@/lib/types";
+import { cn } from "@/lib/utils";
+
+/** A `tel:` link for a typed phone number ("081-234 5678" → tel:0812345678), or
+ *  null when there are not enough digits to dial. */
+export function telHref(phone: string | null | undefined): string | null {
+  const digits = (phone ?? "").replace(/[^\d+]/g, "");
+  return digits.replace(/\D/g, "").length >= 3 ? `tel:${digits}` : null;
+}
 
 /**
  * Label-wide crew directory (ช่างภาพ / ประสานงาน / …). Set once here; the Overview
  * "บันทึกเป็นรูป" export pulls these into its contact block automatically. Autosaves
- * each field on blur via RLS (admins only).
+ * each field on blur via RLS (admins + label staff). Each contact is a card with a
+ * tap-to-call button; the pencil opens its fields.
  */
 export function StaffContactsManager({
   tenantId,
@@ -27,6 +35,19 @@ export function StaffContactsManager({
   const confirm = useConfirm();
   const [rows, setRows] = useState<StaffContact[]>(initial);
   const [busy, setBusy] = useState(false);
+  // Rows open for editing. A contact reads as a card with a call button; its
+  // fields open on the pencil. A row that is still blank (and a row just added)
+  // starts open, so there is something to type into.
+  const [editing, setEditing] = useState<Set<string>>(
+    () => new Set(initial.filter((r) => !r.name && !r.role && !r.phone).map((r) => r.id))
+  );
+  const setEditingRow = (id: string, on: boolean) =>
+    setEditing((prev) => {
+      const next = new Set(prev);
+      if (on) next.add(id);
+      else next.delete(id);
+      return next;
+    });
 
   function setLocal(id: string, partial: Partial<StaffContact>) {
     setRows((prev) => prev.map((r) => (r.id === id ? { ...r, ...partial } : r)));
@@ -68,6 +89,7 @@ export function StaffContactsManager({
       return;
     }
     setRows((prev) => [...prev, data as StaffContact]);
+    setEditingRow((data as StaffContact).id, true);
   }
 
   async function moveRow(id: string, dir: 1 | -1) {
@@ -119,91 +141,125 @@ export function StaffContactsManager({
     }
   }
 
+  const sorted = [...rows].sort((a, b) => a.sort_order - b.sort_order);
+
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2 text-base">
-          <Users className="h-4 w-4" /> ทีมงานประจำค่าย (สำหรับตารางงาน)
-        </CardTitle>
-      </CardHeader>
-      <CardContent className="space-y-2">
-        <p className="text-sm text-muted-foreground">
-          ชื่อ · หน้าที่ · เบอร์ ของทีมงานประจำ (ช่างภาพ / ประสานงาน …) — ระบบจะใส่ลงในรูป
-          “บันทึกเป็นรูป” ของหน้า Overview ให้อัตโนมัติทุกงาน
-        </p>
-        {rows.length === 0 && (
-          <p className="py-2 text-center text-sm text-muted-foreground">
-            ยังไม่มีทีมงาน — กด “เพิ่มทีมงาน”
-          </p>
-        )}
-        {[...rows].sort((a, b) => a.sort_order - b.sort_order).map((r, i, sorted) => (
-          <div key={r.id} className="flex items-start gap-2">
-            {/* up/down reorder */}
-            <div className="flex shrink-0 flex-col pt-1">
-              <Button
-                variant="ghost" size="icon" className="h-5 w-6"
-                disabled={i === 0}
-                onClick={() => moveRow(r.id, -1)}
-                aria-label="ขยับขึ้น"
-              >
-                <ChevronUp className="h-3.5 w-3.5" />
-              </Button>
-              <Button
-                variant="ghost" size="icon" className="h-5 w-6"
-                disabled={i === sorted.length - 1}
-                onClick={() => moveRow(r.id, 1)}
-                aria-label="ขยับลง"
-              >
-                <ChevronDown className="h-3.5 w-3.5" />
-              </Button>
-            </div>
-            {/* fields: stacked full-width on phones, inline from sm up */}
-            <div className="flex min-w-0 flex-1 flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
-              <Input
-                value={r.name}
-                placeholder="ชื่อ (เช่น พี่พัชร์)"
-                className="w-full sm:min-w-[140px] sm:flex-1"
-                onChange={(e) => setLocal(r.id, { name: e.target.value })}
-                onBlur={(e) => persist(r.id, { name: e.target.value })}
-                onKeyDown={saveOnEnter}
-              />
-              <Input
-                value={r.role}
-                placeholder="หน้าที่ (เช่น ช่างภาพ)"
-                className="w-full sm:min-w-[140px] sm:flex-1"
-                onChange={(e) => setLocal(r.id, { role: e.target.value })}
-                onBlur={(e) => persist(r.id, { role: e.target.value })}
-                onKeyDown={saveOnEnter}
-              />
-              <Input
-                value={r.phone}
-                placeholder="เบอร์โทร"
-                className="w-full tabular-nums sm:min-w-[120px] sm:flex-1"
-                onChange={(e) => setLocal(r.id, { phone: e.target.value })}
-                onBlur={(e) => persist(r.id, { phone: e.target.value })}
-                onKeyDown={saveOnEnter}
-              />
-            </div>
-            <Button
-              variant="ghost" size="icon"
-              className="shrink-0 text-destructive hover:text-destructive"
-              onClick={() => removeRow(r.id)}
-              aria-label="ลบทีมงาน"
-            >
-              <Trash2 className="h-4 w-4" />
-            </Button>
-          </div>
-        ))}
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={addRow}
-          disabled={busy}
-          className="mt-1"
-        >
-          <Plus className="h-4 w-4" /> เพิ่มทีมงาน
+    <div className="space-y-3">
+      <div className="flex items-center justify-between gap-3">
+        <span className="text-[13px] text-muted-foreground">
+          <span className="num text-[17px] text-foreground">{rows.length}</span> คน
+        </span>
+        <Button onClick={addRow} disabled={busy}>
+          <Plus aria-hidden /> เพิ่มทีมงาน
         </Button>
-      </CardContent>
-    </Card>
+      </div>
+      {rows.length === 0 && (
+        <p className="rounded-[2px] border border-dashed border-border py-8 text-center text-sm text-muted-foreground">
+          ยังไม่มีทีมงาน — กด “เพิ่มทีมงาน”
+        </p>
+      )}
+      <ul className="stack">
+        {sorted.map((r, i) => {
+          if (editing.has(r.id)) {
+            return (
+              <li key={r.id} className="slab space-y-2 p-3">
+                {/* fields: stacked full-width on phones, inline from sm up */}
+                <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
+                  <Input
+                    value={r.name}
+                    placeholder="ชื่อ (เช่น พี่พัชร์)"
+                    aria-label="ชื่อ"
+                    className="w-full sm:min-w-[140px] sm:flex-1"
+                    onChange={(e) => setLocal(r.id, { name: e.target.value })}
+                    onBlur={(e) => persist(r.id, { name: e.target.value })}
+                    onKeyDown={saveOnEnter}
+                  />
+                  <Input
+                    value={r.role}
+                    placeholder="หน้าที่ (เช่น ช่างภาพ)"
+                    aria-label="หน้าที่"
+                    className="w-full sm:min-w-[140px] sm:flex-1"
+                    onChange={(e) => setLocal(r.id, { role: e.target.value })}
+                    onBlur={(e) => persist(r.id, { role: e.target.value })}
+                    onKeyDown={saveOnEnter}
+                  />
+                  <Input
+                    value={r.phone}
+                    type="tel"
+                    inputMode="tel"
+                    placeholder="เบอร์โทร"
+                    aria-label="เบอร์โทร"
+                    className="num w-full placeholder:font-sans placeholder:font-normal sm:min-w-[120px] sm:flex-1"
+                    onChange={(e) => setLocal(r.id, { phone: e.target.value })}
+                    onBlur={(e) => persist(r.id, { phone: e.target.value })}
+                    onKeyDown={saveOnEnter}
+                  />
+                </div>
+                <div className="flex items-center gap-1">
+                  {/* up/down reorder */}
+                  <Button
+                    variant="ghost" size="icon"
+                    disabled={i === 0}
+                    onClick={() => moveRow(r.id, -1)}
+                    aria-label="ขยับขึ้น"
+                  >
+                    <ChevronUp aria-hidden />
+                  </Button>
+                  <Button
+                    variant="ghost" size="icon"
+                    disabled={i === sorted.length - 1}
+                    onClick={() => moveRow(r.id, 1)}
+                    aria-label="ขยับลง"
+                  >
+                    <ChevronDown aria-hidden />
+                  </Button>
+                  <Button
+                    variant="ghost" size="icon"
+                    className="text-destructive hover:text-destructive"
+                    onClick={() => removeRow(r.id)}
+                    aria-label="ลบทีมงาน"
+                  >
+                    <Trash2 aria-hidden />
+                  </Button>
+                  <Button variant="secondary" className="ml-auto" onClick={() => setEditingRow(r.id, false)}>
+                    <Check aria-hidden /> เสร็จ
+                  </Button>
+                </div>
+              </li>
+            );
+          }
+          const tel = telHref(r.phone);
+          return (
+            <li key={r.id} className="slab flex items-center gap-3 px-4 py-3">
+              <div className="min-w-0 flex-1 space-y-1">
+                <div className="flex min-w-0 flex-wrap items-center gap-2">
+                  <span className={cn("truncate text-[15px] font-semibold", !r.name && "text-muted-foreground")}>
+                    {r.name || "ไม่มีชื่อ"}
+                  </span>
+                  {r.role && <span className="chip chip-neutral">{r.role}</span>}
+                </div>
+                {r.phone && <p className="num text-[16px] text-muted-foreground">{r.phone}</p>}
+              </div>
+              {tel && (
+                <Button asChild variant="secondary" size="icon">
+                  <a href={tel} aria-label={`โทรหา ${r.name || r.phone}`} title={`โทร ${r.phone}`}>
+                    <Phone aria-hidden />
+                  </a>
+                </Button>
+              )}
+              <Button
+                variant="ghost"
+                size="icon"
+                aria-label={`แก้ไข ${r.name || "ทีมงาน"}`}
+                title="แก้ไข"
+                onClick={() => setEditingRow(r.id, true)}
+              >
+                <Pencil aria-hidden />
+              </Button>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
   );
 }

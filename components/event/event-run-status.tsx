@@ -6,7 +6,6 @@ import type { RealtimeChannel } from "@supabase/supabase-js";
 import { Radio, Clock, CheckCircle2, ExternalLink } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { keepOnUntrustedEmpty } from "@/lib/read-guard";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { privateChannel, runOrderTopic } from "@/lib/realtime";
@@ -216,11 +215,11 @@ export function EventRunStatusCard({
         : 0;
       return (
         <div className="flex items-baseline gap-2">
-          <Badge className="gap-1 bg-primary text-primary-foreground">
-            <Radio className="h-3 w-3" /> คิวคุณ — กำลังเล่น
-          </Badge>
+          <span className="chip chip-primary">
+            <Radio aria-hidden /> คิวคุณ — กำลังเล่น
+          </span>
           {mounted && (
-            <span className="font-mono text-lg font-bold tabular-nums">
+            <span className="num text-[19px]">
               {Math.floor(elapsed / 60)}:
               {String(Math.floor(elapsed % 60)).padStart(2, "0")}
             </span>
@@ -234,16 +233,19 @@ export function EventRunStatusCard({
         <span
           className={cn(
             "inline-flex items-center gap-1.5 text-sm font-medium",
+            // late = a warning (never --destructive: a red band's skin moves it off
+            // red), early = info, on time = success — tokens, so the export and the
+            // light theme carry them too
             log == null
               ? "text-muted-foreground"
               : log > 0
-                ? "text-destructive"
+                ? "text-warning-ink"
                 : log < 0
-                  ? "text-sky-600 dark:text-sky-400"
-                  : "text-success"
+                  ? "text-info-ink"
+                  : "text-success-ink"
           )}
         >
-          <CheckCircle2 className="h-4 w-4" />
+          <CheckCircle2 aria-hidden className="h-4 w-4" />
           คิวคุณเล่นจบแล้ว{log != null ? ` · ${driftPhrase(log)}` : ""}
         </span>
       );
@@ -266,7 +268,7 @@ export function EventRunStatusCard({
           {proj != null && (
             <>
               {" · คาดเริ่ม "}
-              <b className="tabular-nums">{formatClockOfDay(proj)}</b>
+              <b className="num text-[16px]">{formatClockOfDay(proj)}</b>
             </>
           )}
         </p>
@@ -278,12 +280,14 @@ export function EventRunStatusCard({
         {mounted && started && countdown != null && (
           <p
             className={cn(
-              "text-sm font-medium tabular-nums",
-              countdown <= 0 ? "text-destructive" : "text-muted-foreground"
+              "text-sm font-medium",
+              countdown <= 0 ? "text-warning-ink" : "text-muted-foreground"
             )}
           >
             {countdown > 0 ? (
-              <>อีก {formatCountdown(Math.round(countdown))}</>
+              <>
+                อีก <span className="num text-[16px] text-foreground">{formatCountdown(Math.round(countdown))}</span>
+              </>
             ) : (
               <>ถึงคิวแล้ว — เตรียมขึ้นได้เลย</>
             )}
@@ -296,25 +300,29 @@ export function EventRunStatusCard({
   return (
     <div
       className={cn(
-        "rounded-xl border-l-4 bg-card p-4",
-        liveRow ? "border-l-primary" : "border-l-transparent"
+        "slab p-4",
+        // the band's rail while the festival has a set on stage
+        liveRow && "shadow-[inset_4px_0_0_hsl(var(--primary)),inset_0_0_0_1px_hsl(var(--border))]"
       )}
     >
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <p className="flex items-center gap-2 text-xs font-bold uppercase tracking-wide text-primary">
-          <Clock className="h-4 w-4" /> สถานะคิวงาน (Live)
-        </p>
-        <Badge
+        <p className="key text-[13px] font-semibold text-foreground">สถานะคิวงาน (Live)</p>
+        {/* the festival's drift: on time / late / early, as a word with its tone */}
+        <span
           className={cn(
-            "h-7 px-2.5 text-xs",
-            driftTone === "ok" && "bg-success/15 text-success",
-            driftTone === "late" && "bg-destructive/15 text-destructive",
-            driftTone === "early" && "bg-sky-500/15 text-sky-600 dark:text-sky-400"
+            "chip",
+            !started
+              ? "chip-neutral"
+              : driftTone === "ok"
+                ? "chip-success"
+                : driftTone === "late"
+                  ? "chip-warning"
+                  : "chip-info"
           )}
-          variant="secondary"
         >
+          <Clock aria-hidden />
           {started ? driftPhrase(drift) : "ยังไม่เริ่มงาน"}
-        </Badge>
+        </span>
       </div>
 
       {/* This band's own slot — the headline for a band watching its own page.
@@ -351,7 +359,10 @@ export function EventRunStatusCard({
       {/* Overall: what's playing festival-wide right now */}
       <p className="mt-3 border-t pt-3 text-sm text-muted-foreground">
         {allDone ? (
-          "จบงานแล้ว 🎉"
+          <span className="inline-flex items-center gap-1.5">
+            <CheckCircle2 aria-hidden className="h-4 w-4 text-success-ink" />
+            จบงานแล้ว
+          </span>
         ) : liveRow ? (
           <>
             ตอนนี้ทั้งงาน:{" "}
@@ -364,9 +375,9 @@ export function EventRunStatusCard({
         )}
       </p>
 
-      <Button variant="outline" size="sm" asChild className="mt-3">
+      <Button variant="secondary" asChild className="mt-3">
         <Link href={`/events/${selfEventId}/run-order/live`}>
-          <ExternalLink className="h-4 w-4" /> ดูบอร์ดเต็ม
+          <ExternalLink aria-hidden /> ดูบอร์ดเต็ม
         </Link>
       </Button>
     </div>

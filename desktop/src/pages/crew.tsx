@@ -3,12 +3,12 @@
 // fetches staff_contacts under RLS (admin + label_staff), so no server route or
 // secret is needed. Gate: canApprove (admins + label_staff).
 import { useEffect, useState } from "react";
-import { Users } from "lucide-react";
 import { RefreshButton } from "@/components/refresh-button";
 import { Card, CardContent } from "@/components/ui/card";
 import { createClient } from "@/lib/supabase/client";
 import { canApprove } from "@/lib/permissions";
 import { StaffContactsManager } from "@/components/admin/staff-contacts";
+import { PageTitle } from "@/components/page-title";
 import { hasLiveSession } from "@/lib/auth-session";
 import type { StaffContact } from "@/lib/types";
 import { useWorkspace } from "~/data/workspace-context";
@@ -90,14 +90,18 @@ export function Crew() {
   }
 
   return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="flex items-center gap-2 text-2xl font-bold tracking-tight">
-          <Users className="h-6 w-6" /> Crew
-        </h1>
-        <p className="text-sm text-muted-foreground">
-          {ws.tenant.name} · ทีมงานประจำค่าย — ระบบใส่ลงในรูป “บันทึกเป็นรูป” ของหน้า Overview
-          ให้อัตโนมัติทุกงาน
+    <div className="space-y-4">
+      <div className="space-y-2">
+        <PageTitle
+          title="Crew"
+          right={
+            <span className="pb-0.5 text-right text-[13px] leading-tight text-muted-foreground">
+              {ws.tenant.name}
+            </span>
+          }
+        />
+        <p className="text-[14px] text-muted-foreground">
+          ทีมงานประจำค่าย — ระบบใส่ลงในรูป “บันทึกเป็นรูป” ของหน้า Overview ให้อัตโนมัติทุกงาน
         </p>
       </div>
       {staff === null && loadError ? (

@@ -2,12 +2,11 @@
 // EventForm verbatim (it talks to the same Supabase, so a show created here syncs
 // to the web app automatically). useRouter()/createClient() resolve through the
 // desktop shims, so the form Just Works.
-import { Link, Navigate } from "react-router-dom";
-import { ArrowLeft } from "lucide-react";
+import { Navigate } from "react-router-dom";
 import { canApprove, canCreateAnyEvent, editableGroups } from "@/lib/permissions";
 import { EventForm } from "@/components/event/event-form";
-import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { PageTitle } from "@/components/page-title";
 import { useWorkspace } from "~/data/workspace-context";
 
 export function NewEventPage() {
@@ -21,15 +20,11 @@ export function NewEventPage() {
   const groups = editableGroups(ws.perms, ws.groups);
 
   return (
-    <div className="mx-auto max-w-2xl space-y-6">
-      <div>
-        <Button asChild variant="ghost" size="sm" className="-ml-2 mb-2">
-          <Link to="/dashboard">
-            <ArrowLeft className="h-4 w-4" /> กลับ
-          </Link>
-        </Button>
-        <h1 className="text-2xl font-bold tracking-tight">สร้างงานใหม่</h1>
-      </div>
+    <div className="mx-auto max-w-2xl space-y-3">
+      {/* Same as the web page: the header's Events nav (and the form's ยกเลิก) is
+          the way back. */}
+      <PageTitle title="New Event" />
+      <p className="text-[13px] text-muted-foreground">สร้างงานใหม่ — เติมเซ็ตลิสต์ ตารางเวลา และไมค์ได้หลังสร้าง</p>
 
       {groups.length === 0 ? (
         <Card>

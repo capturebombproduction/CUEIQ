@@ -92,7 +92,7 @@ export function SaveStatus({ state, className }: { state: SaveState; className?:
   if (state === "idle") return null;
   const map = {
     saving: { icon: Loader2, text: "กำลังบันทึก…", tone: "text-muted-foreground", spin: true },
-    saved: { icon: Check, text: "บันทึกแล้ว", tone: "text-success", spin: false },
+    saved: { icon: Check, text: "บันทึกแล้ว", tone: "text-success-ink", spin: false },
     failed: { icon: CloudOff, text: "ยังไม่ได้บันทึก", tone: "text-destructive", spin: false },
   } as const;
   const { icon: Icon, text, tone, spin } = map[state];
@@ -103,9 +103,9 @@ export function SaveStatus({ state, className }: { state: SaveState; className?:
       // aria-live so a screen reader hears the receipt too — this is a status, not
       // a decoration, and it changes without the user doing anything to it.
       aria-live="polite"
-      className={cn("inline-flex items-center gap-1 text-xs font-medium", tone, className)}
+      className={cn("inline-flex items-center gap-1 text-[12.5px] font-medium", tone, className)}
     >
-      <Icon className={cn("h-3.5 w-3.5", spin && "animate-spin")} />
+      <Icon aria-hidden className={cn("h-3.5 w-3.5", spin && "animate-spin")} />
       {text}
     </span>
   );

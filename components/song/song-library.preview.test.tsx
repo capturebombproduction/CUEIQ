@@ -352,4 +352,34 @@ describe("SongLibrary — preview playback", () => {
     expect(toastMock.error).not.toHaveBeenCalled();
     expect(within(player()!).getByText("I Am Who I Am")).toBeTruthy();
   });
+
+  // The page's save bar used to render AFTER the library, so the room kept for the
+  // fixed player sat between the list and the bar: scrolled to the end at 390 px the
+  // bar ran 654–762 under a player whose top was 715, and its note could not be read.
+  // The room has to be the last thing in the page, with the footer above it.
+  it("the page's footer sits above the room kept for the player, never under the player", async () => {
+    render(
+      <ConfirmProvider>
+        <SongLibrary
+          tenantId="t1"
+          groups={groups}
+          initialSongs={songs}
+          perms={makePerms(null)}
+          footer={<p>แถบบันทึกของหน้า</p>}
+        />
+      </ConfirmProvider>
+    );
+    const footer = screen.getByText("แถบบันทึกของหน้า");
+    await startPlaying("Neon Lullaby");
+    const room = player()!.previousElementSibling as HTMLElement;
+    expect(room.getAttribute("aria-hidden")).toBe("true");
+    expect(room.textContent).toBe("");
+    // footer → room → player, and nothing of the library's after the player
+    expect(footer.compareDocumentPosition(room) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(player()!.nextElementSibling).toBeNull();
+    // closing the player gives the room back; the footer stays
+    fireEvent.click(within(player()!).getByRole("button", { name: "ปิดตัวเล่น" }));
+    expect(room.isConnected).toBe(false);
+    expect(footer.isConnected).toBe(true);
+  });
 });

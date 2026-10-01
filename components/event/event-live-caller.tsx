@@ -1,13 +1,11 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import Link from "next/link";
 import type { RealtimeChannel } from "@supabase/supabase-js";
 import {
   Play,
   SkipForward,
-  Plus,
-  Minus,
   Flag,
   RotateCcw,
   Timer,
@@ -17,6 +15,21 @@ import {
   ListMusic,
   ImageDown,
   Loader2,
+  ChevronLeft,
+  Coffee,
+  Music,
+  Gamepad2,
+  Award,
+  Mic,
+  CircleDot,
+  OctagonAlert,
+  TriangleAlert,
+  CloudOff,
+  Eye,
+  Hourglass,
+  FastForward,
+  CircleDashed,
+  type LucideIcon,
 } from "lucide-react";
 import { toast } from "sonner";
 import { createClient } from "@/lib/supabase/client";
@@ -24,8 +37,9 @@ import { hasLiveSession } from "@/lib/auth-session";
 import { notify } from "@/lib/notify-client";
 import { captureElementToImage } from "@/lib/export-image";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
 import { useConfirm } from "@/components/ui/confirm-dialog";
+import { Countdown } from "@/components/live/countdown";
+import { OfflineBanner } from "@/components/offline-banner";
 import { cn } from "@/lib/utils";
 import { privateChannel, runOrderTopic } from "@/lib/realtime";
 import { isQueueableWriteError } from "@/lib/mgmt-outbox";
@@ -42,6 +56,8 @@ import {
 import {
   formatClockOfDay,
   formatCountdown,
+  formatDuration,
+  formatOvertime,
   parseClockToSeconds,
 } from "@/lib/time";
 
@@ -62,17 +78,46 @@ export type RunSeqLive = {
   offset_min: number | null; // drift carried by this row: late + / early −
 };
 
-// Colour + label per kind — drives the left rail + chip so a staffer can read the
-// board at a glance. Same kinds the builder offers.
-const KIND_META: Record<string, { label: string; rail: string; chip: string }> = {
-  band: { label: "วง", rail: "border-l-primary", chip: "bg-primary/15 text-primary" },
-  game: { label: "เกม", rail: "border-l-emerald-500", chip: "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400" },
-  ceremony: { label: "พิธี", rail: "border-l-violet-500", chip: "bg-violet-500/15 text-violet-600 dark:text-violet-400" },
-  mc: { label: "MC", rail: "border-l-sky-500", chip: "bg-sky-500/15 text-sky-600 dark:text-sky-400" },
-  break: { label: "Break", rail: "border-l-amber-500", chip: "bg-amber-500/15 text-amber-600 dark:text-amber-400" },
-  other: { label: "อื่นๆ", rail: "border-l-muted-foreground/40", chip: "bg-muted text-muted-foreground" },
+// Icon + label + rail per kind, so a staffer can read the board at a glance. Same
+// kinds the builder offers. Tokens only (spec §G.11): a band act takes the band
+// colour, everything else is neutral and told apart by its icon and word — the
+// break is a DASHED neutral rail + Coffee, never amber, which is the warning
+// ladder's colour. The labels are printed on the JPG report too: keep them as is.
+const KIND_META: Record<
+  string,
+  { label: string; icon: LucideIcon; en?: boolean; rail: string; chip: string }
+> = {
+  band: { label: "วง", icon: Music, rail: "bg-primary", chip: "chip-primary" },
+  game: { label: "เกม", icon: Gamepad2, rail: "bg-foreground/35", chip: "chip-neutral" },
+  ceremony: { label: "พิธี", icon: Award, rail: "bg-foreground/35", chip: "chip-neutral" },
+  mc: { label: "MC", icon: Mic, en: true, rail: "bg-foreground/35", chip: "chip-neutral" },
+  break: {
+    label: "Break",
+    icon: Coffee,
+    en: true,
+    rail: "border-l-4 border-dashed border-foreground/35 bg-transparent",
+    chip: "chip-neutral",
+  },
+  other: { label: "อื่นๆ", icon: CircleDot, rail: "bg-foreground/20", chip: "chip-neutral" },
 };
-const kindMeta = (k: string) => KIND_META[k] ?? KIND_META.other;
+// a cached row can come without `kind` at all — it reads as "other"
+const kindMeta = (k: string | null | undefined) => KIND_META[k ?? ""] ?? KIND_META.other;
+
+/** The kind as a chip: icon + word. English kinds (MC, Break) set in display caps. */
+function RunKindChip({ kind }: { kind: string | null | undefined }) {
+  const m = kindMeta(kind);
+  const Icon = m.icon;
+  return (
+    <span className={cn("chip flex-none", m.chip, m.en && "en")}>
+      <Icon aria-hidden />
+      {m.label}
+    </span>
+  );
+}
+
+/** Late = warning, early = info, on time = success — the drift chips' inks. */
+const toneInk = (min: number) =>
+  min > 0 ? "text-warning-ink" : min < 0 ? "text-info-ink" : "text-success-ink";
 
 // seconds-since-midnight (local) for a Date — to compare a live timestamp with the
 // planned clock-of-day.
@@ -128,6 +173,9 @@ export function EventLiveCaller({
   eventId,
   initial,
   canControl,
+  backHref,
+  backLabel,
+  notice,
 }: {
   tenantId: string;
   eventName: string;
@@ -137,6 +185,13 @@ export function EventLiveCaller({
   initial: RunSeqLive[];
   /** Approvers (admin + label_staff) run the show; everyone else watches read-only. */
   canControl: boolean;
+  /** The way back. This route is immersive (no app header), so the caller's own top
+   *  bar carries it; the page decides where it goes (builder / event / Overview). */
+  backHref?: string;
+  backLabel?: string;
+  /** A page-level notice (the desktop's "this is a saved copy") shown first in the
+   *  content, under the top bar. */
+  notice?: ReactNode;
 }) {
   const supabase = useMemo(() => createClient(), []);
   const confirm = useConfirm();
@@ -937,76 +992,168 @@ export function EventLiveCaller({
   const driftTone =
     drift === 0 ? "ok" : drift > 0 ? "late" : "early";
 
+  // presentation only (§G.11) — every now-based value stays behind `mounted`
+  const actOver = mounted && liveRemaining != null && liveRemaining < 0;
+  const actPct =
+    mounted && livePlannedDur ? Math.min(100, (liveElapsed / livePlannedDur) * 100) : 0;
+  const liveIdx = liveRow ? ordered.indexOf(liveRow) + 1 : 0;
+
   return (
-    <div className="space-y-4">
-      {/* Unsent presses. A board holding moves nobody else has seen looks exactly
-          like one that is in sync, and at a festival that gap is the difference
-          between "we are on time" and "nobody downstream knows we ran late". */}
-      {waiting.length > 0 && (
-        <div className="rounded-lg border border-amber-500/50 bg-amber-500/10 px-3 py-2 text-sm">
-          <span className="font-semibold text-amber-700 dark:text-amber-400">
-            ค้างซิงค์ {waiting.length} รายการ
-          </span>{" "}
-          <span className="text-muted-foreground">
-            — คิวบนเครื่องนี้เดินต่อตามที่กดไว้ เครื่องอื่นจะยังไม่เห็นจนกว่าเน็ตจะกลับมา
-          </span>
-        </div>
-      )}
-
-      {/* Parked: someone else drove the board while this device was offline. We do
-          not overwrite them and we do not throw this away — a human decides. */}
-      {parked.length > 0 && (
-        <div className="space-y-2 rounded-lg border border-destructive/50 bg-destructive/10 px-3 py-2 text-sm">
-          <p className="font-semibold text-destructive">
-            คิวถูกเปลี่ยนจากเครื่องอื่นระหว่างที่เครื่องนี้ออฟไลน์ ({parked.length})
-          </p>
-          <p className="text-muted-foreground">
-            สิ่งที่กดไว้บนเครื่องนี้ยังไม่ถูกบันทึก เพราะจะไปทับของคนอื่น —
-            ดูบอร์ดด้านล่างว่าตรงกับหน้างานไหม ถ้าตรงแล้วกดทิ้งได้
-          </p>
-          <ul className="space-y-1">
-            {parked.map((o) => (
-              <li key={o.rowId} className="flex flex-wrap items-center gap-2">
-                <span className="font-medium text-foreground">{o.label}</span>
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="outline"
-                  onClick={async () => {
-                    const ok = await confirm({
-                      title: "ทิ้งสิ่งที่กดไว้ตอนออฟไลน์?",
-                      description: `“${o.label}” จะถูกทิ้ง และใช้คิวที่อยู่บนเซิร์ฟเวอร์แทน`,
-                      confirmText: "ทิ้ง",
-                    });
-                    if (ok) await discardRunSeqOp(o.rowId);
-                  }}
-                >
-                  ทิ้งอันนี้
-                </Button>
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
-
-      {/* Top bar: wall clock + overall drift */}
-      <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border bg-card p-4">
-        <div className="flex items-center gap-3">
-          <Radio className="h-6 w-6 text-primary" />
-          <div>
-            <p className="text-xs uppercase tracking-wide text-muted-foreground">
-              เวลาขณะนี้
-            </p>
-            <p className="font-mono text-4xl font-bold leading-none tabular-nums sm:text-5xl">
-              {mounted ? wall : "··:··:··"}
+    // No transform / filter / backdrop-filter / container-type on this root or on the
+    // content wrapper: any of them makes the off-screen report's `fixed` relative to
+    // that box instead of the viewport, and the capture would shoot it in place.
+    <div className="live-root">
+      {/* The immersive top bar (this route has no app header): the way back, ON AIR,
+          the show, and the stage clock. Sticky, not fixed, so the offline strip it
+          hosts pushes the board down instead of sliding under the bar. */}
+      <header className="live-top glass glass-top sticky top-0 z-40 pt-[env(safe-area-inset-top)]">
+        <h1 className="sr-only">
+          คุมคิวงาน (Live) — {eventName}
+        </h1>
+        <div className="flex h-[54px] items-center gap-1 pl-1 pr-3 stage:h-16 stage:gap-3 stage:px-5">
+          {backHref && (
+            <Link
+              href={backHref}
+              aria-label={`กลับไป ${backLabel ?? ""}`.trim()}
+              title={backLabel}
+              className="flex h-11 min-w-[44px] flex-none items-center justify-center gap-1.5 rounded-[3px] text-foreground hover:bg-muted stage:px-2"
+            >
+              <ChevronLeft className="h-6 w-6" aria-hidden />
+              {/* as given — it can be the event name, so never caps */}
+              <span className="hidden max-w-[180px] truncate text-[15px] font-semibold stage:inline">
+                {backLabel}
+              </span>
+            </Link>
+          )}
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-1.5">
+              {/* The square blinks only while an act is live. Inline, because
+                  `.onair-tag i` out-ranks an animate-none utility. */}
+              <span className="onair-tag">
+                <i aria-hidden style={liveRow ? undefined : { animation: "none" }} />
+                On Air
+              </span>
+              <span className="eyebrow truncate text-[11.5px] text-muted-foreground">
+                Run Order
+              </span>
+            </div>
+            <p className="mt-[3px] truncate text-[14px] font-semibold leading-tight stage:font-display stage:text-[21px] stage:font-extrabold">
+              {eventName}
+              {eventDate ? ` · ${eventDate}` : ""}
             </p>
           </div>
+          <div className="flex-none text-right">
+            <div className="num text-[25px] leading-none stage:text-[28px]">
+              {mounted ? wall : "··:··:··"}
+            </div>
+            <div className="mt-[2px] text-[10.5px] text-faint">เวลาจริง</div>
+          </div>
         </div>
-        <div className="flex items-center gap-2">
+        {/* hosted here, the root layout's in-flow copy stands down */}
+        <OfflineBanner placement="header" />
+      </header>
+
+      {/* The content owns its gutter (the immersive <main> has none), and clears the
+          fixed dock by 20+ px when scrolled to the end. */}
+      <div
+        className={cn(
+          "mx-auto w-full max-w-5xl space-y-3 px-4 pt-3 stage:px-5 stage:pt-4",
+          canControl
+            ? "pb-[calc(112px+env(safe-area-inset-bottom))] stage:pb-[calc(124px+env(safe-area-inset-bottom))]"
+            : "pb-6"
+        )}
+      >
+        {notice}
+
+        {/* Unsent presses. A board holding moves nobody else has seen looks exactly
+            like one that is in sync, and at a festival that gap is the difference
+            between "we are on time" and "nobody downstream knows we ran late". */}
+        {waiting.length > 0 && (
+          <div className="flex items-start gap-2 rounded-[2px] bg-warning/[.12] px-3 py-2 text-[13px] shadow-[inset_3px_0_0_hsl(var(--warning))]">
+            <CloudOff className="mt-0.5 h-4 w-4 flex-none text-warning-ink" aria-hidden />
+            <p>
+              <span className="font-semibold text-warning-ink">
+                ค้างซิงค์ {waiting.length} รายการ
+              </span>{" "}
+              <span className="text-muted-foreground">
+                — คิวบนเครื่องนี้เดินต่อตามที่กดไว้ เครื่องอื่นจะยังไม่เห็นจนกว่าเน็ตจะกลับมา
+              </span>
+            </p>
+          </div>
+        )}
+
+        {/* Parked: someone else drove the board while this device was offline. We do
+            not overwrite them and we do not throw this away — a human decides. */}
+        {parked.length > 0 && (
+          <div className="space-y-2 rounded-[2px] bg-destructive/[.12] px-3 py-2 text-[13px] shadow-[inset_3px_0_0_hsl(var(--destructive))]">
+            <p className="flex items-start gap-1.5 font-semibold text-foreground">
+              <TriangleAlert className="mt-0.5 h-4 w-4 flex-none text-destructive" aria-hidden />
+              คิวถูกเปลี่ยนจากเครื่องอื่นระหว่างที่เครื่องนี้ออฟไลน์ ({parked.length})
+            </p>
+            <p className="text-muted-foreground">
+              สิ่งที่กดไว้บนเครื่องนี้ยังไม่ถูกบันทึก เพราะจะไปทับของคนอื่น —
+              ดูบอร์ดด้านล่างว่าตรงกับหน้างานไหม ถ้าตรงแล้วกดทิ้งได้
+            </p>
+            <ul className="space-y-1">
+              {parked.map((o) => (
+                <li key={o.rowId} className="flex flex-wrap items-center gap-2">
+                  <span className="font-medium text-foreground">{o.label}</span>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={async () => {
+                      const ok = await confirm({
+                        title: "ทิ้งสิ่งที่กดไว้ตอนออฟไลน์?",
+                        description: `“${o.label}” จะถูกทิ้ง และใช้คิวที่อยู่บนเซิร์ฟเวอร์แทน`,
+                        confirmText: "ทิ้ง",
+                      });
+                      if (ok) await discardRunSeqOp(o.rowId);
+                    }}
+                  >
+                    ทิ้งอันนี้
+                  </Button>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+
+        {!canControl && (
+          <p className="flex items-center gap-2 rounded-[2px] bg-info/[.12] px-3 py-2 text-[13px] text-info-ink">
+            <Eye className="h-4 w-4 flex-none" aria-hidden />
+            กำลังดูแบบอ่านอย่างเดียว — เฉพาะสตาฟ (แอดมิน/ทีมค่าย) คุมคิวได้
+          </p>
+        )}
+
+        {/* Overall drift (icon + word, never colour alone) + the report export */}
+        <div className="flex min-h-[44px] items-center gap-2">
+          <span
+            className={cn(
+              "chip chip-lg",
+              !started
+                ? "chip-neutral"
+                : driftTone === "ok"
+                  ? "chip-success"
+                  : driftTone === "late"
+                    ? "chip-warning"
+                    : "chip-info"
+            )}
+          >
+            {!started ? (
+              <CircleDashed aria-hidden />
+            ) : driftTone === "ok" ? (
+              <CheckCircle2 aria-hidden />
+            ) : driftTone === "late" ? (
+              <Hourglass aria-hidden />
+            ) : (
+              <FastForward aria-hidden />
+            )}
+            {started ? driftPhrase(drift) : "ยังไม่เริ่มงาน"}
+          </span>
           {mounted && doneRows.length > 0 && (
             <Button
-              variant="outline"
-              size="sm"
+              variant="secondary"
+              className="ml-auto"
               onClick={exportReport}
               disabled={reportBusy}
               title="บันทึกรายงานเวลาจริงเป็นรูป ไว้แชร์ให้ทีมงาน"
@@ -1019,344 +1166,333 @@ export function EventLiveCaller({
               บันทึกรายงาน
             </Button>
           )}
-          <Badge
-            className={cn(
-              "h-9 px-3 text-sm",
-              driftTone === "ok" && "bg-success/15 text-success",
-              driftTone === "late" && "bg-destructive/15 text-destructive",
-              driftTone === "early" && "bg-sky-500/15 text-sky-600 dark:text-sky-400"
-            )}
-            variant="secondary"
-          >
-            {started ? driftPhrase(drift) : "ยังไม่เริ่มงาน"}
-          </Badge>
         </div>
-      </div>
 
-      {/* NOW + NEXT */}
-      <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-        {/* NOW */}
-        <div
-          className={cn(
-            "rounded-xl border-l-4 bg-card p-4",
-            liveRow ? kindMeta(liveRow.kind).rail : "border-l-transparent"
-          )}
-        >
-          <p className="text-xs font-bold uppercase tracking-wide text-primary">
-            ● ตอนนี้ (NOW)
-          </p>
-          {liveRow ? (
-            <div className="mt-2 space-y-2">
-              <div className="flex items-start justify-between gap-2">
-                <h2 className="text-2xl font-bold leading-tight">
-                  {liveRow.title || "(ไม่มีชื่อ)"}
-                </h2>
-                <span
-                  className={cn(
-                    "shrink-0 rounded-md px-2 py-0.5 text-xs font-bold",
-                    kindMeta(liveRow.kind).chip
-                  )}
-                >
-                  {kindMeta(liveRow.kind).label}
-                </span>
-              </div>
-              <div className="flex items-baseline gap-3">
-                <span className="font-mono text-4xl font-bold tabular-nums">
-                  {mounted
-                    ? `${Math.floor(liveElapsed / 60)}:${String(
-                        Math.floor(liveElapsed % 60)
-                      ).padStart(2, "0")}`
-                    : "0:00"}
-                </span>
-                {mounted && liveRemaining != null && (
-                  <span
-                    className={cn(
-                      "font-mono text-lg tabular-nums",
-                      liveRemaining < 0 ? "text-destructive" : "text-muted-foreground"
-                    )}
-                  >
-                    {liveRemaining < 0 ? "เกิน " : "เหลือ "}
-                    {formatCountdown(Math.round(liveRemaining))}
+        {/* NOW, NEXT, the tools and the full board. Two column wrappers, because one
+            shared grid row ties NEXT's height to NOW's: at stage (landscape iPad /
+            laptop) a ~370 px NOW beside a ~120 px NEXT left a hole under NEXT and
+            pushed the Running Order — and the LIVE row — under the dock until you
+            scrolled, on the device that drives the festival. So:
+            • stage: the wrappers are flex columns — NOW over the tools on the left,
+              NEXT over the Running Order on the right — each as tall as its content.
+            • below stage: the wrappers are `display: contents`, so their children are
+              this grid's items, and `order` keeps the reading order NOW → NEXT →
+              tools → board (≥ md: NOW | NEXT side by side, the rest full width).
+            NEXT holds nothing focusable, so tab order matches what is seen. */}
+        <div className="grid grid-cols-1 items-start gap-3 md:grid-cols-[minmax(0,1.35fr)_minmax(0,1fr)]">
+          <div className="contents stage:flex stage:min-w-0 stage:flex-col stage:gap-3">
+            {/* NOW — the screen's ONE lit hero. No px-*: `.now` owns its padding. */}
+            <section className="now lit cut pb-3.5 [--cut:18px] stage:[--cut:26px] stage:[--pad:24px]">
+              <div className="zhead stage:h-[46px]">
+                <span className="ztag">Now</span>
+                {liveRow && (
+                  <span className="num zidx text-[16px]">
+                    {String(liveIdx).padStart(2, "0")} / {ordered.length}
+                  </span>
+                )}
+                {liveRow?.planned_start && (
+                  <span className="zend">
+                    แผน
+                    <b>
+                      {formatClockOfDay(parseClockToSeconds(liveRow.planned_start)!)}
+                      {liveRow.planned_end
+                        ? `–${formatClockOfDay(parseClockToSeconds(liveRow.planned_end)!)}`
+                        : ""}
+                    </b>
                   </span>
                 )}
               </div>
-              <p className="text-sm text-muted-foreground">
-                แผน{" "}
-                {liveRow.planned_start
-                  ? formatClockOfDay(parseClockToSeconds(liveRow.planned_start)!)
-                  : "—"}
-                {liveRow.planned_end
-                  ? `–${formatClockOfDay(parseClockToSeconds(liveRow.planned_end)!)}`
-                  : ""}{" "}
-                · เริ่มจริง{" "}
-                {mounted && liveRow.actual_start
-                  ? formatClockOfDay(secOfDay(new Date(liveRow.actual_start)))
-                  : "—"}{" "}
-                {mounted && startLateMin(liveRow) != null && (
-                  <span
-                    className={cn(
-                      "font-medium",
-                      startLateMin(liveRow)! > 0
-                        ? "text-destructive"
-                        : startLateMin(liveRow)! < 0
-                          ? "text-sky-600 dark:text-sky-400"
-                          : "text-success"
+              {liveRow ? (
+                <>
+                  <div className="mt-1.5 flex items-center gap-2">
+                    {/* the act's name as typed — display face, never caps */}
+                    <h2 className="disp min-w-0 flex-1 truncate text-[26px] leading-[1.04] stage:text-[40px]">
+                      {liveRow.title || "(ไม่มีชื่อ)"}
+                    </h2>
+                    <RunKindChip kind={liveRow.kind} />
+                  </div>
+                  <p className="mt-0.5 flex h-5 items-center gap-1.5 overflow-hidden whitespace-nowrap text-[13px] text-muted-foreground">
+                    เริ่มจริง{" "}
+                    <span className="num text-[15px] text-foreground">
+                      {mounted && liveRow.actual_start
+                        ? formatClockOfDay(secOfDay(new Date(liveRow.actual_start)))
+                        : "—"}
+                    </span>
+                    {mounted && startLateMin(liveRow) != null && (
+                      <span className={cn("font-semibold", toneInk(startLateMin(liveRow)!))}>
+                        ({driftPhrase(startLateMin(liveRow)!)})
+                      </span>
                     )}
-                  >
-                    ({driftPhrase(startLateMin(liveRow)!)})
-                  </span>
-                )}
-              </p>
-              {liveRow.linked_event_id && (
-                <Link
-                  href={`/events/${liveRow.linked_event_id}/live`}
-                  className="inline-flex items-center gap-1 text-sm text-primary hover:underline"
-                >
-                  <ListMusic className="h-3.5 w-3.5" /> เปิด setlist วงนี้
-                </Link>
-              )}
-            </div>
-          ) : (
-            <p className="mt-3 text-muted-foreground">
-              {started ? "จบงานแล้ว 🎉" : "ยังไม่เริ่ม — กด “เริ่มงาน”"}
-            </p>
-          )}
-        </div>
-
-        {/* NEXT */}
-        <div
-          className={cn(
-            "rounded-xl border-l-4 bg-card p-4",
-            nextPending ? kindMeta(nextPending.kind).rail : "border-l-transparent"
-          )}
-        >
-          <p className="text-xs font-bold uppercase tracking-wide text-muted-foreground">
-            ▸ ถัดไป (NEXT)
-          </p>
-          {nextPending ? (
-            <div className="mt-2 space-y-1.5">
-              <div className="flex items-start justify-between gap-2">
-                <h2 className="text-xl font-semibold leading-tight">
-                  {nextPending.title || "(ไม่มีชื่อ)"}
-                </h2>
-                <span
-                  className={cn(
-                    "shrink-0 rounded-md px-2 py-0.5 text-xs font-bold",
-                    kindMeta(nextPending.kind).chip
-                  )}
-                >
-                  {kindMeta(nextPending.kind).label}
-                </span>
-              </div>
-              <p className="text-sm text-muted-foreground">
-                คาดเริ่ม{" "}
-                <b className="text-foreground tabular-nums">
-                  {nextProjSec != null ? formatClockOfDay(nextProjSec) : "—"}
-                </b>
-                {/* Clock-of-day countdown is only meaningful once the show runs —
-                    pre-show it would falsely read "ถึงคิวแล้ว" (same gate as
-                    event-run-status.tsx). */}
-                {mounted &&
-                  started &&
-                  nextCountdown != null &&
-                  (nextCountdown > 0 ? (
-                    <> · อีก {formatCountdown(Math.round(nextCountdown))}</>
-                  ) : (
-                    <span className="text-destructive"> · ถึงคิวแล้ว</span>
-                  ))}
-              </p>
-            </div>
-          ) : (
-            <p className="mt-3 text-muted-foreground">— ไม่มีลำดับถัดไป —</p>
-          )}
-        </div>
-      </div>
-
-      {/* Controls (approvers only) */}
-      {canControl ? (
-        <div className="space-y-2 rounded-xl border bg-card p-4">
-          <div className="flex flex-wrap items-center gap-2">
-            {liveRow ? (
-              <Button size="lg" onClick={next} disabled={busy} className="text-base">
-                {nextPending ? (
-                  <>
-                    <SkipForward className="h-5 w-5" /> จบ + ต่อไป
-                  </>
-                ) : (
-                  <>
-                    <Flag className="h-5 w-5" /> จบงาน
-                  </>
-                )}
-              </Button>
-            ) : (
-              <Button
-                size="lg"
-                onClick={start}
-                disabled={busy || !firstPending}
-                className="text-base"
-              >
-                <Play className="h-5 w-5" />
-                {started ? "เริ่มลำดับถัดไป" : "เริ่มงาน"}
-              </Button>
-            )}
-
-            {/* time push — adjust drift on the live row */}
-            <div className="flex items-center gap-1 rounded-lg border p-1">
-              <Button variant="ghost" size="sm" disabled={!liveRow || busy} onClick={() => adjust(-5)}>
-                <Minus className="h-3.5 w-3.5" />5
-              </Button>
-              <Button variant="ghost" size="sm" disabled={!liveRow || busy} onClick={() => adjust(-1)}>
-                <Minus className="h-3.5 w-3.5" />1
-              </Button>
-              <span className="px-1 text-xs text-muted-foreground">นาที</span>
-              <Button variant="ghost" size="sm" disabled={!liveRow || busy} onClick={() => adjust(1)}>
-                <Plus className="h-3.5 w-3.5" />1
-              </Button>
-              <Button variant="ghost" size="sm" disabled={!liveRow || busy} onClick={() => adjust(5)}>
-                <Plus className="h-3.5 w-3.5" />5
-              </Button>
-            </div>
-
-            <Button variant="outline" size="sm" disabled={!liveRow || busy} onClick={takeBuffer}>
-              <Hand className="h-4 w-4" /> ดึง buffer
-            </Button>
-
-            <Button
-              variant="ghost"
-              size="sm"
-              disabled={!started || busy}
-              onClick={resetAll}
-              className="ml-auto text-muted-foreground"
-            >
-              <RotateCcw className="h-4 w-4" /> รีเซ็ต
-            </Button>
-          </div>
-          <p className="text-xs text-muted-foreground">
-            “จบ + ต่อไป” = ปิดลำดับนี้ (บันทึกเวลาจริง) แล้วเริ่มลำดับถัดไปทันที · ±นาที =
-            เลื่อนคิวข้างหน้า · ดึง buffer = ร่นเวลาให้ทันเมื่อช้า
-          </p>
-        </div>
-      ) : (
-        <p className="rounded-lg border border-dashed p-3 text-center text-sm text-muted-foreground">
-          กำลังดูแบบอ่านอย่างเดียว — เฉพาะสตาฟ (แอดมิน/ทีมค่าย) คุมคิวได้
-        </p>
-      )}
-
-      {/* Full board */}
-      <div className="space-y-1.5">
-        {ordered.length === 0 ? (
-          <p className="rounded-lg border border-dashed py-10 text-center text-sm text-muted-foreground">
-            ยังไม่มีลำดับงาน — สร้างที่ Running Order ก่อน
-          </p>
-        ) : (
-          ordered.map((r) => {
-            const meta = kindMeta(r.kind);
-            const proj = projectedStartSec(r);
-            const isLive = r.status === "live";
-            const isDone = r.status === "done";
-            return (
-              <div
-                key={r.id}
-                className={cn(
-                  "flex items-center gap-3 rounded-lg border border-l-4 bg-card p-2.5",
-                  meta.rail,
-                  isLive && "ring-2 ring-primary",
-                  isDone && "opacity-60"
-                )}
-              >
-                {/* time */}
-                <div className="w-[4.5rem] shrink-0 text-center">
-                  {isDone && r.actual_start && mounted ? (
-                    <span className="font-mono text-sm font-semibold tabular-nums text-muted-foreground">
-                      {formatClockOfDay(secOfDay(new Date(r.actual_start)))}
-                    </span>
-                  ) : proj != null ? (
-                    <span
-                      className={cn(
-                        "font-mono text-sm font-semibold tabular-nums",
-                        isLive && "text-primary"
-                      )}
-                    >
-                      {formatClockOfDay(proj)}
-                    </span>
-                  ) : (
-                    <span className="text-xs text-muted-foreground">—</span>
-                  )}
-                  {r.planned_start && proj != null && drift !== 0 && !isDone && (
-                    <span className="block font-mono text-[10px] text-muted-foreground line-through tabular-nums">
-                      {formatClockOfDay(parseClockToSeconds(r.planned_start)!)}
-                    </span>
-                  )}
-                </div>
-
-                {/* title + kind */}
-                <div className="min-w-0 flex-1">
-                  <p className="truncate text-sm font-medium">
-                    {r.title || "(ไม่มีชื่อ)"}
                   </p>
-                  <span
-                    className={cn(
-                      "mt-0.5 inline-block rounded px-1.5 text-[10px] font-bold",
-                      meta.chip
-                    )}
-                  >
-                    {meta.label}
-                  </span>
-                </div>
-
-                {/* status / log */}
-                <div className="shrink-0 text-right">
-                  {isLive ? (
-                    <Badge className="gap-1 bg-primary text-primary-foreground">
-                      <Radio className="h-3 w-3" /> LIVE
-                    </Badge>
-                  ) : isDone ? (
-                    (() => {
-                      const log = mounted ? startLateMin(r) : null;
-                      const dur = mounted ? durationDeltaMin(r) : null;
-                      return (
-                        <div className="flex flex-col items-end gap-0.5">
-                          <span
-                            className={cn(
-                              "inline-flex items-center gap-1 text-xs font-medium",
-                              log == null
-                                ? "text-muted-foreground"
-                                : log > 0
-                                  ? "text-destructive"
-                                  : log < 0
-                                    ? "text-sky-600 dark:text-sky-400"
-                                    : "text-success"
-                            )}
-                          >
-                            <CheckCircle2 className="h-3.5 w-3.5" />
-                            {log == null ? "เสร็จ" : driftPhrase(log)}
+                  {/* Elapsed, on the Live countdown face: fixed height, fitted to the
+                      column, never italic. */}
+                  <div className="mt-2">
+                    <Countdown seconds={mounted ? Math.floor(liveElapsed) : 0} max={164} />
+                  </div>
+                  {/* The act's planned slot: a meter inside it, hazard hatch past it. */}
+                  {actOver ? (
+                    <div className="hatch mt-3 h-2" aria-hidden />
+                  ) : (
+                    <div className="track mt-3" aria-hidden>
+                      <span style={{ width: `${actPct}%` }} />
+                    </div>
+                  )}
+                  <div className="mt-2 flex items-center justify-between gap-2 text-[11.5px] text-muted-foreground">
+                    <span>ผ่านไป</span>
+                    {mounted && liveRemaining != null ? (
+                      actOver ? (
+                        // past the planned end: the band-independent alarm, "+", octagon
+                        <span className="chip chip-alarm">
+                          <OctagonAlert aria-hidden />
+                          เกิน{" "}
+                          <span className="num">{formatOvertime(Math.round(liveRemaining))}</span>
+                        </span>
+                      ) : (
+                        <span>
+                          เหลือ{" "}
+                          <span className="num text-[14px] text-foreground">
+                            {formatCountdown(Math.round(liveRemaining))}
                           </span>
-                          {dur != null && dur !== 0 && (
-                            <span
-                              className={cn(
-                                "text-[10px] font-medium tabular-nums",
-                                dur > 0
-                                  ? "text-destructive"
-                                  : "text-muted-foreground"
-                              )}
-                            >
-                              {durPhrase(dur)}
+                        </span>
+                      )
+                    ) : (
+                      <span />
+                    )}
+                    <span>
+                      แผน{" "}
+                      <span className="num text-[14px] text-foreground">
+                        {livePlannedDur != null ? formatDuration(livePlannedDur) : "—"}
+                      </span>
+                    </span>
+                  </div>
+                  {liveRow.linked_event_id && (
+                    <Link
+                      href={`/events/${liveRow.linked_event_id}/live`}
+                      className="mt-2 inline-flex h-11 items-center gap-1.5 text-[14px] font-semibold text-primary-ink hover:underline"
+                    >
+                      <ListMusic className="h-4 w-4" aria-hidden /> เปิด setlist วงนี้
+                    </Link>
+                  )}
+                </>
+              ) : (
+                <p className="flex items-center justify-center gap-2 py-10 text-[15px] text-muted-foreground">
+                  {started ? (
+                    <>
+                      <CheckCircle2 className="h-5 w-5 text-success-ink" aria-hidden />
+                      จบงานแล้ว
+                    </>
+                  ) : (
+                    "ยังไม่เริ่ม — กด “เริ่มงาน”"
+                  )}
+                </p>
+              )}
+            </section>
+
+            {/* Tools (approvers only). START / จบ + ต่อไป and ±1 live in the dock; ±5 sit
+                here on a phone and move into the dock at stage width. The read-only
+                notice for everyone else is the banner at the top. order-1: after
+                NEXT below stage, under NOW at stage. */}
+            {canControl && (
+              <section className="slab order-1 space-y-2 p-3 md:col-span-2">
+                <div className="grid grid-cols-2 gap-[3px]">
+                  <Button
+                    variant="secondary"
+                    className="rounded-[2px] stage:hidden"
+                    disabled={!liveRow || busy}
+                    onClick={() => adjust(-5)}
+                  >
+                    <span className="num text-[17px] leading-none">−5</span> นาที
+                  </Button>
+                  <Button
+                    variant="secondary"
+                    className="rounded-[2px] stage:hidden"
+                    disabled={!liveRow || busy}
+                    onClick={() => adjust(5)}
+                  >
+                    <span className="num text-[17px] leading-none">+5</span> นาที
+                  </Button>
+                  <Button
+                    variant="secondary"
+                    className="rounded-[2px]"
+                    disabled={!liveRow || busy}
+                    onClick={takeBuffer}
+                  >
+                    <Hand className="h-4 w-4" /> ดึง buffer
+                  </Button>
+                  <Button
+                    variant="destructive-outline"
+                    className="rounded-[2px]"
+                    disabled={!started || busy}
+                    onClick={resetAll}
+                  >
+                    <RotateCcw className="h-4 w-4" /> รีเซ็ต
+                  </Button>
+                </div>
+                <p className="text-[12.5px] leading-relaxed text-muted-foreground">
+                  “จบ + ต่อไป” = ปิดลำดับนี้ (บันทึกเวลาจริง) แล้วเริ่มลำดับถัดไปทันที · ±นาที =
+                  เลื่อนคิวข้างหน้า · ดึง buffer = ร่นเวลาให้ทันเมื่อช้า
+                </p>
+              </section>
+            )}
+          </div>
+
+          <div className="contents stage:flex stage:min-w-0 stage:flex-col stage:gap-3">
+            {/* NEXT */}
+            <section className="slab px-4 pb-3 pt-2">
+              <div className="flex h-7 items-center gap-2">
+                <p className="nlabel">Next</p>
+                {nextPending && <RunKindChip kind={nextPending.kind} />}
+              </div>
+              {nextPending ? (
+                <div className="mt-1 space-y-1">
+                  <h2 className="disp truncate text-[22px] leading-tight stage:text-[30px]">
+                    {nextPending.title || "(ไม่มีชื่อ)"}
+                  </h2>
+                  <p className="text-[13px] text-muted-foreground">
+                    คาดเริ่ม{" "}
+                    <b className="num text-[17px] text-foreground">
+                      {nextProjSec != null ? formatClockOfDay(nextProjSec) : "—"}
+                    </b>
+                    {/* Clock-of-day countdown is only meaningful once the show runs —
+                        pre-show it would falsely read "ถึงคิวแล้ว" (same gate as
+                        event-run-status.tsx). */}
+                    {mounted &&
+                      started &&
+                      nextCountdown != null &&
+                      (nextCountdown > 0 ? (
+                        <>
+                          {" "}
+                          · อีก{" "}
+                          <span className="num text-[15px] text-foreground">
+                            {formatCountdown(Math.round(nextCountdown))}
+                          </span>
+                        </>
+                      ) : (
+                        <span className="font-semibold text-warning-ink"> · ถึงคิวแล้ว</span>
+                      ))}
+                  </p>
+                </div>
+              ) : (
+                <p className="mt-2 text-muted-foreground">— ไม่มีลำดับถัดไป —</p>
+              )}
+            </section>
+
+            {/* Full board. order-2: last below stage, under NEXT at stage. */}
+            <div className="order-2 space-y-3 md:col-span-2">
+              <p className="nlabel pt-2 text-[19px]">Running Order</p>
+              <div className="stack">
+                {ordered.length === 0 ? (
+                  <p className="rounded-[2px] border border-dashed py-10 text-center text-sm text-muted-foreground">
+                    ยังไม่มีลำดับงาน — สร้างที่ Running Order ก่อน
+                  </p>
+                ) : (
+                  ordered.map((r) => {
+                    const meta = kindMeta(r.kind);
+                    const KindIcon = meta.icon;
+                    const proj = projectedStartSec(r);
+                    const isLive = r.status === "live";
+                    const isDone = r.status === "done";
+                    return (
+                      <div
+                        key={r.id}
+                        className={cn(
+                          "slab relative flex min-h-[56px] items-center gap-3 py-2 pl-4 pr-3",
+                          isLive && "bg-primary/[.14]",
+                          isDone && "opacity-60"
+                        )}
+                      >
+                        {/* the kind's rail: band colour for a band act, neutral otherwise */}
+                        <i aria-hidden className={cn("absolute inset-y-0 left-0 w-1", meta.rail)} />
+
+                        {/* time — numerals are never band-coloured */}
+                        <div className="w-[4.5rem] shrink-0 text-center">
+                          {isDone && r.actual_start && mounted ? (
+                            <span className="num text-[15px] text-muted-foreground">
+                              {formatClockOfDay(secOfDay(new Date(r.actual_start)))}
+                            </span>
+                          ) : proj != null ? (
+                            <span className="num text-[15px]">{formatClockOfDay(proj)}</span>
+                          ) : (
+                            <span className="text-xs text-muted-foreground">—</span>
+                          )}
+                          {r.planned_start && proj != null && drift !== 0 && !isDone && (
+                            <span className="num block text-[11px] text-faint line-through">
+                              {formatClockOfDay(parseClockToSeconds(r.planned_start)!)}
                             </span>
                           )}
                         </div>
-                      );
-                    })()
-                  ) : r.buffer_seconds > 0 ? (
-                    <span className="inline-flex items-center gap-1 text-[11px] text-muted-foreground">
-                      <Timer className="h-3 w-3" />
-                      buffer {Math.round(r.buffer_seconds / 60)}น.
-                    </span>
-                  ) : null}
-                </div>
+
+                        {/* title + kind (icon + word, on a meta line so the row stays 56 px) */}
+                        <div className="min-w-0 flex-1">
+                          <p className="truncate text-[14px] font-medium">
+                            {isLive && (
+                              <span aria-hidden className="onair-dot mr-1.5 inline-block align-[1px]" />
+                            )}
+                            {r.title || "(ไม่มีชื่อ)"}
+                          </p>
+                          <span className="mt-0.5 flex items-center gap-1 text-[11.5px] text-muted-foreground">
+                            <KindIcon className="h-3 w-3 flex-none" aria-hidden />
+                            {meta.label}
+                          </span>
+                        </div>
+
+                        {/* status / log */}
+                        <div className="shrink-0 text-right">
+                          {isLive ? (
+                            <span className="chip chip-primary en">
+                              <Radio aria-hidden />
+                              Live
+                            </span>
+                          ) : isDone ? (
+                            (() => {
+                              const log = mounted ? startLateMin(r) : null;
+                              const dur = mounted ? durationDeltaMin(r) : null;
+                              return (
+                                <div className="flex flex-col items-end gap-0.5">
+                                  <span
+                                    className={cn(
+                                      "inline-flex items-center gap-1 text-[12.5px] font-semibold",
+                                      log == null ? "text-muted-foreground" : toneInk(log)
+                                    )}
+                                  >
+                                    <CheckCircle2 className="h-3.5 w-3.5" aria-hidden />
+                                    {log == null ? "เสร็จ" : driftPhrase(log)}
+                                  </span>
+                                  {dur != null && dur !== 0 && (
+                                    <span
+                                      className={cn(
+                                        "text-[11px] font-medium",
+                                        dur > 0 ? "text-warning-ink" : "text-muted-foreground"
+                                      )}
+                                    >
+                                      {durPhrase(dur)}
+                                    </span>
+                                  )}
+                                </div>
+                              );
+                            })()
+                          ) : r.id === nextPending?.id || r.buffer_seconds > 0 ? (
+                            <div className="flex flex-col items-end gap-1">
+                              {r.id === nextPending?.id && (
+                                <span className="chip chip-solid en">Next</span>
+                              )}
+                              {r.buffer_seconds > 0 && (
+                                <span className="inline-flex items-center gap-1 text-[12px] text-muted-foreground">
+                                  <Timer className="h-3.5 w-3.5" aria-hidden />
+                                  buffer {Math.round(r.buffer_seconds / 60)}น.
+                                </span>
+                              )}
+                            </div>
+                          ) : null}
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
               </div>
-            );
-          })
-        )}
+            </div>
+          </div>
+        </div>
       </div>
 
       {/* Off-screen run-time report — captured to a clean JPG by exportReport().
@@ -1370,7 +1506,7 @@ export function EventLiveCaller({
           className="pointer-events-none fixed -left-[9999px] top-0 w-[720px] bg-card p-6 text-foreground"
         >
           <div className="mb-4">
-            <h2 className="text-xl font-bold">{eventName}</h2>
+            <h2 className="poster text-[22px]">{eventName}</h2>
             <p className="text-sm text-muted-foreground">
               {eventDate ? `${eventDate} · ` : ""}รายงานเวลาจริง (Run-time Report)
             </p>
@@ -1414,10 +1550,10 @@ export function EventLiveCaller({
                         {kindMeta(r.kind).label}
                       </div>
                     </td>
-                    <td className="py-1.5 pr-2 tabular-nums text-muted-foreground">
+                    <td className="num py-1.5 pr-2 text-muted-foreground">
                       {planned}
                     </td>
-                    <td className="py-1.5 pr-2 tabular-nums">{actual}</td>
+                    <td className="num py-1.5 pr-2">{actual}</td>
                     <td className="py-1.5 pr-2 text-xs">
                       {late == null ? "—" : driftPhrase(late)}
                     </td>
@@ -1432,6 +1568,90 @@ export function EventLiveCaller({
           <p className="mt-4 text-[11px] text-muted-foreground">
             สร้างจาก CueIQ · {eventName}
           </p>
+        </div>
+      )}
+
+      {/* The dock (approvers only): START / จบ + ต่อไป in the NEXT slot — the same two
+          Buttons, handlers and disabled rules as before, re-dressed — flanked by the
+          ±1 push keys, and ±5 too at stage width. Every Thai word on a dock key
+          carries `.th`: the dock variant sets display caps. */}
+      {canControl && (
+        <div className="dock glass glass-bottom fixed inset-x-0 bottom-0 z-40 px-4 pb-[max(12px,env(safe-area-inset-bottom))] pt-3 stage:px-5">
+          <div className="mx-auto flex max-w-[880px] gap-2">
+            <Button
+              variant="dock"
+              className="hidden stage:inline-flex"
+              aria-label="เลื่อนคิว −5 นาที"
+              disabled={!liveRow || busy}
+              onClick={() => adjust(-5)}
+            >
+              <span className="num text-[22px] leading-none">−5</span>
+              <span className="th text-[11px] font-medium">นาที</span>
+            </Button>
+            <Button
+              variant="dock"
+              aria-label="เลื่อนคิว −1 นาที"
+              disabled={!liveRow || busy}
+              onClick={() => adjust(-1)}
+            >
+              <span className="num text-[22px] leading-none">−1</span>
+              <span className="th text-[11px] font-medium">นาที</span>
+            </Button>
+            {/* min-w-0: the subtitle truncates instead of pushing +1 off a 390 px screen */}
+            {liveRow ? (
+              <Button variant="next" className="min-w-0 flex-1" onClick={next} disabled={busy}>
+                <span className="min-w-0 text-left leading-none">
+                  <span className="block font-display-x text-[32px] font-extrabold uppercase italic leading-[.82] tracking-[.03em] stage:text-[36px]">
+                    {nextPending ? "Next" : "End"}
+                  </span>
+                  <span className="mt-[5px] block max-w-[170px] truncate text-[12.5px] font-medium opacity-90 stage:max-w-[420px]">
+                    {nextPending
+                      ? `จบ + ต่อไป · ${nextPending.title || "(ไม่มีชื่อ)"}`
+                      : "จบงาน"}
+                  </span>
+                </span>
+                {nextPending ? <SkipForward aria-hidden /> : <Flag aria-hidden />}
+              </Button>
+            ) : (
+              <Button
+                variant="next"
+                className="min-w-0 flex-1"
+                onClick={start}
+                disabled={busy || !firstPending}
+              >
+                <span className="min-w-0 text-left leading-none">
+                  <span className="block font-display-x text-[32px] font-extrabold uppercase italic leading-[.82] tracking-[.03em] stage:text-[36px]">
+                    Start
+                  </span>
+                  <span className="mt-[5px] block max-w-[170px] truncate text-[12.5px] font-medium opacity-90 stage:max-w-[420px]">
+                    {`${started ? "เริ่มลำดับถัดไป" : "เริ่มงาน"}${
+                      firstPending ? ` · ${firstPending.title || "(ไม่มีชื่อ)"}` : ""
+                    }`}
+                  </span>
+                </span>
+                <Play aria-hidden />
+              </Button>
+            )}
+            <Button
+              variant="dock"
+              aria-label="เลื่อนคิว +1 นาที"
+              disabled={!liveRow || busy}
+              onClick={() => adjust(1)}
+            >
+              <span className="num text-[22px] leading-none">+1</span>
+              <span className="th text-[11px] font-medium">นาที</span>
+            </Button>
+            <Button
+              variant="dock"
+              className="hidden stage:inline-flex"
+              aria-label="เลื่อนคิว +5 นาที"
+              disabled={!liveRow || busy}
+              onClick={() => adjust(5)}
+            >
+              <span className="num text-[22px] leading-none">+5</span>
+              <span className="th text-[11px] font-medium">นาที</span>
+            </Button>
+          </div>
         </div>
       )}
     </div>

@@ -141,16 +141,35 @@ export type GroupStatus =
   | "rejected"
   | "overdue";
 
+/**
+ * The icon a status or category shows, by name: components/status-icon.tsx turns the
+ * key into the lucide icon of the same (kebab-case) name. A key and not an emoji
+ * because status is icon + word in UI chrome, never an emoji (spec §0.3 rule 5): an
+ * emoji is a third colour system that ignores the theme and the band skin.
+ */
+export type MetaIconKey =
+  | "circle-dashed"
+  | "circle-dot-dashed"
+  | "hourglass"
+  | "circle-check"
+  | "circle-x"
+  | "octagon-alert"
+  | "sticky-note"
+  | "triangle-alert"
+  | "notebook-text"
+  | "book-open";
+
+/** `icon` names the same glyph StatusBadge draws (components/status-badge.tsx STATUS_CHIP). */
 export const STATUS_META: Record<
   GroupStatus,
-  { label: string; emoji: string; variant: "secondary" | "warning" | "success" | "destructive" | "default" }
+  { label: string; icon: MetaIconKey; variant: "secondary" | "warning" | "success" | "destructive" | "default" }
 > = {
-  draft: { label: "Draft", emoji: "⚪", variant: "secondary" },
-  in_progress: { label: "In Progress", emoji: "🟡", variant: "warning" },
-  pending_review: { label: "Pending Review", emoji: "🟠", variant: "warning" },
-  approved: { label: "Approved", emoji: "🟢", variant: "success" },
-  rejected: { label: "Rejected", emoji: "🔴", variant: "destructive" },
-  overdue: { label: "Overdue", emoji: "⛔", variant: "destructive" },
+  draft: { label: "Draft", icon: "circle-dashed", variant: "secondary" },
+  in_progress: { label: "In Progress", icon: "circle-dot-dashed", variant: "warning" },
+  pending_review: { label: "Pending Review", icon: "hourglass", variant: "warning" },
+  approved: { label: "Approved", icon: "circle-check", variant: "success" },
+  rejected: { label: "Rejected", icon: "circle-x", variant: "destructive" },
+  overdue: { label: "Overdue", icon: "octagon-alert", variant: "destructive" },
 };
 
 // ---------------------------------------------------------------------------
@@ -350,13 +369,14 @@ export interface MicAssignment {
 // ---------------------------------------------------------------------------
 export type CopyrightStatus = "cleared" | "pending" | "rejected";
 
+/** Rights read as StatusChips, on the same icon ladder as a show's status. */
 export const COPYRIGHT_META: Record<
   CopyrightStatus,
-  { label: string; emoji: string; variant: "success" | "warning" | "destructive" }
+  { label: string; icon: MetaIconKey; variant: "success" | "warning" | "destructive" }
 > = {
-  cleared: { label: "ถูกต้อง", emoji: "✅", variant: "success" },
-  pending: { label: "รอตรวจ", emoji: "🕒", variant: "warning" },
-  rejected: { label: "ถูกปฏิเสธ", emoji: "⛔", variant: "destructive" },
+  cleared: { label: "ถูกต้อง", icon: "circle-check", variant: "success" },
+  pending: { label: "รอตรวจ", icon: "hourglass", variant: "warning" },
+  rejected: { label: "ถูกปฏิเสธ", icon: "circle-x", variant: "destructive" },
 };
 
 /** Language options for the song library (stored as the `value` code). */
@@ -415,14 +435,15 @@ export const MARKER_PRESETS = [
 export type PracticeVisibility = "shared" | "staff";
 export type PracticeCategory = "note" | "problem" | "summary" | "homework";
 
+/** Icons per spec §G Training: note StickyNote · problem TriangleAlert · summary NotebookText · homework BookOpen. */
 export const PRACTICE_CATEGORY_META: Record<
   PracticeCategory,
-  { label: string; emoji: string }
+  { label: string; icon: MetaIconKey }
 > = {
-  note: { label: "บันทึก", emoji: "📝" },
-  problem: { label: "ปัญหา", emoji: "⚠️" },
-  summary: { label: "สรุป", emoji: "✅" },
-  homework: { label: "การบ้าน", emoji: "📌" },
+  note: { label: "บันทึก", icon: "sticky-note" },
+  problem: { label: "ปัญหา", icon: "triangle-alert" },
+  summary: { label: "สรุป", icon: "notebook-text" },
+  homework: { label: "การบ้าน", icon: "book-open" },
 };
 
 export interface PracticeLog {

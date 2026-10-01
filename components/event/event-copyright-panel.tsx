@@ -8,6 +8,7 @@ import { notify } from "@/lib/notify-client";
 import { wroteNothing, noRowsMessage } from "@/lib/write-guard";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { MetaIcon } from "@/components/status-icon";
 import { COPYRIGHT_META, type CopyrightStatus } from "@/lib/types";
 
 export type CopyrightSong = {
@@ -63,44 +64,39 @@ export function EventCopyrightPanel({
   }
 
   return (
-    <section className="no-print rounded-lg border bg-card p-4">
+    <section className="no-print slab p-4">
       <h2 className="flex flex-wrap items-center gap-x-2 text-sm font-semibold">
-        <ShieldCheck className="h-4 w-4 text-primary" /> ลิขสิทธิ์เพลงในงานนี้
+        <ShieldCheck aria-hidden className="h-4 w-4 text-primary-ink" /> ลิขสิทธิ์เพลงในงานนี้
         <span className="font-normal text-muted-foreground">
           · ตรวจ/อนุมัติได้ที่นี่ (เฉพาะเพลงจากคลังที่ใช้ในงาน)
         </span>
       </h2>
-      <ul className="mt-3 divide-y">
+      <ul className="stack mt-3">
         {songs.map((song) => {
-          const cr = COPYRIGHT_META[song.copyright_status];
+          // A cached or older row may carry no status (or one this build does not
+          // know): show it as pending rather than take the page down.
+          const cr = COPYRIGHT_META[song.copyright_status] ?? COPYRIGHT_META.pending;
           return (
             <li
               key={song.id}
-              className="flex flex-wrap items-center justify-between gap-2 py-2"
+              className="slab flex flex-wrap items-center justify-between gap-2 px-3 py-2"
             >
               <span className="min-w-0 flex-1 truncate font-medium">
                 {song.title}
               </span>
               <div className="flex shrink-0 items-center gap-2">
                 <Badge variant={cr.variant}>
-                  {cr.emoji} {cr.label}
+                  <MetaIcon icon={cr.icon} />
+                  {cr.label}
                 </Badge>
                 {song.copyright_status !== "cleared" && (
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={() => setStatus(song, "cleared")}
-                  >
-                    <Check className="h-4 w-4" /> อนุมัติ
+                  <Button variant="secondary" onClick={() => setStatus(song, "cleared")}>
+                    <Check aria-hidden /> อนุมัติ
                   </Button>
                 )}
                 {song.copyright_status !== "rejected" && (
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={() => setStatus(song, "rejected")}
-                  >
-                    <Ban className="h-4 w-4" /> ปฏิเสธ
+                  <Button variant="destructive-outline" onClick={() => setStatus(song, "rejected")}>
+                    <Ban aria-hidden /> ปฏิเสธ
                   </Button>
                 )}
               </div>

@@ -10,6 +10,8 @@ import {
   Music4,
   CalendarDays,
   Eye,
+  BookOpen,
+  Check,
 } from "lucide-react";
 import { toast } from "sonner";
 import { createClient } from "@/lib/supabase/client";
@@ -24,9 +26,12 @@ import {
   writeFailureMessage,
   type BandMembership,
 } from "@/lib/practice-journal-gate";
+import { Badge, type BadgeProps } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { FIELD } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { useConfirm } from "@/components/ui/confirm-dialog";
+import { MetaIcon } from "@/components/status-icon";
 import { cn } from "@/lib/utils";
 import {
   PRACTICE_CATEGORY_META,
@@ -459,18 +464,17 @@ export function PracticeJournal({
   if (loading) {
     return (
       <div className="flex justify-center py-12 text-muted-foreground">
-        <Loader2 className="h-5 w-5 animate-spin" />
+        <Loader2 className="h-5 w-5 animate-spin" aria-hidden />
       </div>
     );
   }
 
   if (loadError) {
     return (
-      <div className="flex flex-col items-center gap-3 rounded-lg border border-dashed py-10 text-center text-sm text-muted-foreground">
+      <div className="slab flex flex-col items-center gap-3 px-4 py-10 text-center text-sm text-muted-foreground">
         <p>โหลดสมุดซ้อมไม่สำเร็จ — อาจออฟไลน์อยู่หรือเน็ตมีปัญหา</p>
         <Button
-          variant="outline"
-          size="sm"
+          variant="secondary"
           onClick={() => {
             setLoading(true);
             load();
@@ -483,32 +487,38 @@ export function PracticeJournal({
   }
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-4">
       {/* compose — only for accounts migration 0041 will actually let write.
           When it is hidden, SAY SO: a box that silently disappears reads as a
           broken page, and the person it disappears for (a label-wide CEO) is
           exactly the person least able to guess why. */}
       {canWrite ? (
-        <div className="rounded-xl border bg-card p-4 shadow-sm">
-          <div className="mb-2 flex flex-wrap gap-1.5">
+        <section aria-label="New entry" className="slab space-y-3 p-4">
+          <div
+            role="group"
+            aria-label="ประเภทบันทึก"
+            className="-mx-4 flex gap-1.5 overflow-x-auto px-4 [scrollbar-width:none]"
+          >
             {CATEGORIES.map((c) => (
               <button
                 key={c}
+                type="button"
+                aria-pressed={category === c}
                 onClick={() => setCategory(c)}
                 className={cn(
-                  "rounded-md px-2.5 py-1 text-xs font-medium transition-colors",
-                  category === c
-                    ? "bg-primary text-primary-foreground"
-                    : "bg-muted text-muted-foreground hover:bg-muted/70"
+                  "chip chip-lg shrink-0 transition-colors duration-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
+                  category === c ? "chip-solid" : "chip-neutral hover:text-foreground"
                 )}
               >
-                {PRACTICE_CATEGORY_META[c].emoji} {PRACTICE_CATEGORY_META[c].label}
+                <MetaIcon icon={PRACTICE_CATEGORY_META[c].icon} />
+                {PRACTICE_CATEGORY_META[c].label}
               </button>
             ))}
           </div>
           <Textarea
             value={body}
             onChange={(e) => setBody(e.target.value)}
+            aria-label="บันทึกการซ้อม"
             placeholder={
               category === "homework"
                 ? "การบ้าน เช่น ฝึก Verse 2 ที่ 0.75x ให้คล่อง"
@@ -520,12 +530,13 @@ export function PracticeJournal({
             }
             rows={3}
           />
-          <div className="mt-2 flex flex-wrap items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             {/* member tag */}
             <select
+              aria-label="เกี่ยวกับใคร"
               value={targetMember}
               onChange={(e) => setTargetMember(e.target.value)}
-              className="h-9 rounded-md border bg-background px-2 text-sm"
+              className={cn(FIELD, "h-11 min-w-0 max-w-full px-3 text-base sm:text-sm")}
             >
               <option value="">เกี่ยวกับใคร (ไม่ระบุ)</option>
               {members.map((m) => (
@@ -537,49 +548,38 @@ export function PracticeJournal({
 
             {/* visibility — Ar only; members always post shared */}
             {canManage ? (
-              <div className="flex overflow-hidden rounded-md border text-xs">
+              <div role="group" aria-label="ใครเห็นบันทึกนี้" className="seg">
                 <button
+                  type="button"
+                  aria-pressed={visibility === "shared"}
                   onClick={() => setVisibility("shared")}
-                  className={cn(
-                    "px-2.5 py-1.5 transition-colors",
-                    visibility === "shared"
-                      ? "bg-primary text-primary-foreground"
-                      : "text-muted-foreground hover:bg-muted"
-                  )}
+                  className={cn("transition-colors duration-2", visibility === "shared" && "on")}
                 >
-                  <Users className="mr-1 inline h-3.5 w-3.5" /> รวม
+                  <Users className="h-3.5 w-3.5" aria-hidden /> รวม
                 </button>
                 <button
+                  type="button"
+                  aria-pressed={visibility === "staff"}
                   onClick={() => setVisibility("staff")}
-                  className={cn(
-                    "px-2.5 py-1.5 transition-colors",
-                    visibility === "staff"
-                      ? "bg-amber-500 text-white"
-                      : "text-muted-foreground hover:bg-muted"
-                  )}
+                  className={cn("transition-colors duration-2", visibility === "staff" && "on")}
                 >
-                  <Lock className="mr-1 inline h-3.5 w-3.5" /> เฉพาะครู
+                  <Lock className="h-3.5 w-3.5" aria-hidden /> เฉพาะครู
                 </button>
               </div>
             ) : (
-              <span className="text-xs text-muted-foreground">
-                <Users className="mr-1 inline h-3.5 w-3.5" /> เมมเบอร์เห็นได้
+              <span className="flex items-center gap-1 text-[12.5px] text-muted-foreground">
+                <Users className="h-3.5 w-3.5" aria-hidden /> เมมเบอร์เห็นได้
               </span>
             )}
 
-            <Button
-              className="ml-auto"
-              size="sm"
-              disabled={!body.trim() || saving}
-              onClick={addLog}
-            >
+            <Button className="ml-auto" disabled={!body.trim() || saving} onClick={addLog}>
               {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
               บันทึก
             </Button>
           </div>
-        </div>
+        </section>
       ) : (
-        <div className="rounded-xl border border-dashed bg-muted/30 p-4">
+        <div className="well rounded-[2px] p-4">
           {/* Scoped to AUTHORING on purpose. This said "ดูได้อย่างเดียว" until a
               reviewer pointed out it is not true on this screen: a CEO who wrote
               journal entries BEFORE 0041 closed that door still owns those rows,
@@ -590,7 +590,7 @@ export function PracticeJournal({
               page with no undo is the worst direction for this copy to be wrong
               in. canModifyLog is right; it was the headline that was wrong. */}
           <p className="flex items-center gap-1.5 text-sm font-medium">
-            <Eye className="h-4 w-4" /> จดบันทึกใหม่ไม่ได้
+            <Eye className="h-4 w-4" aria-hidden /> จดบันทึกใหม่ไม่ได้
           </p>
           <p className="mt-1 text-xs text-muted-foreground">
             สมุดซ้อมเป็นของคนในวง — Ar หรือเมมเบอร์ของวงนี้เท่านั้นที่จดได้
@@ -604,8 +604,15 @@ export function PracticeJournal({
 
       {/* outstanding homework (carry over) */}
       {outstandingHomework.length > 0 && (
-        <div className="rounded-xl border border-amber-500/40 bg-amber-500/5 p-4">
-          <p className="mb-2 text-sm font-semibold">📌 การบ้านค้าง</p>
+        <section
+          aria-label="Homework"
+          className="slab p-4 shadow-[inset_4px_0_0_hsl(var(--info)),inset_0_0_0_1px_hsl(var(--border))]"
+        >
+          <h3 className="mb-2 flex items-center gap-1.5 text-[15px] font-semibold">
+            <BookOpen className="h-4 w-4 text-info-ink" aria-hidden />
+            การบ้านค้าง
+            <span className="num text-[16px] text-muted-foreground">{outstandingHomework.length}</span>
+          </h3>
           {/* RLS lets only the AUTHOR or a band editor tick a log (mig 0024), and that
               is deliberate — the Ar ticks the band's homework off. So a member who can
               tick nothing here gets the list plus one line saying who does it, rather
@@ -620,15 +627,15 @@ export function PracticeJournal({
                 : "ติ๊กได้เฉพาะเจ้าของบันทึก หรือ Ar ของวงนี้"}
             </p>
           )}
-          <div className="space-y-1.5">
+          <div className="space-y-0.5">
             {outstandingHomework.map((l) => (
-              <label key={l.id} className="flex items-start gap-2 text-sm">
+              <label key={l.id} className="flex min-h-11 items-start gap-2.5 py-1.5 text-[15px]">
                 <input
                   type="checkbox"
                   checked={l.done}
                   disabled={!canModifyLog(canManage, l.author_id === currentUserId)}
                   onChange={() => toggleDone(l)}
-                  className="mt-0.5 h-4 w-4 accent-primary disabled:cursor-not-allowed disabled:opacity-50"
+                  className="mt-0.5 h-5 w-5 shrink-0 accent-primary disabled:cursor-not-allowed disabled:opacity-50"
                 />
                 <span className="flex-1">
                   {l.body}
@@ -644,78 +651,76 @@ export function PracticeJournal({
               </label>
             ))}
           </div>
-        </div>
+        </section>
       )}
 
       {/* today's auto-logged songs */}
       {runSummary.length > 0 && (
-        <div className="rounded-xl border bg-card p-4">
-          <p className="mb-2 flex items-center gap-1.5 text-sm font-semibold">
-            <Music4 className="h-4 w-4" /> ซ้อมวันนี้
-          </p>
+        <section aria-label="Practised today" className="slab p-4">
+          <h3 className="mb-2 flex items-center gap-1.5 text-[15px] font-semibold">
+            <Music4 className="h-4 w-4" aria-hidden /> ซ้อมวันนี้
+          </h3>
           <div className="flex flex-wrap gap-1.5">
             {runSummary.map(([title, secs]) => (
-              <span key={title} className="rounded-full bg-muted px-2.5 py-1 text-xs">
+              <span key={title} className="chip chip-neutral">
                 {title}
-                <span className="ml-1 text-muted-foreground">
-                  {Math.max(1, Math.round(secs / 60))} นาที
+                <span className="text-muted-foreground">
+                  <span className="num text-[13px]">{Math.max(1, Math.round(secs / 60))}</span> นาที
                 </span>
               </span>
             ))}
           </div>
-        </div>
+        </section>
       )}
 
-      {/* attendance (Ar only) */}
+      {/* attendance (Ar only): member chips, each with the member's colour as a
+          ring and a check inside it when they are here */}
       {canManage && members.length > 0 && (
-        <div className="rounded-xl border bg-card p-4">
-          <p className="mb-2 flex items-center gap-1.5 text-sm font-semibold">
-            <Users className="h-4 w-4" /> เช็คชื่อวันนี้
-          </p>
+        <section aria-label="Attendance" className="slab p-4">
+          <h3 className="mb-2 flex items-center gap-1.5 text-[15px] font-semibold">
+            <Users className="h-4 w-4" aria-hidden /> เช็คชื่อวันนี้
+          </h3>
           <div className="flex flex-wrap gap-1.5">
             {members.map((m) => {
               const here = presentOf(m.id);
               return (
                 <button
                   key={m.id}
+                  type="button"
+                  aria-pressed={here}
                   onClick={() => setPresent(m.id, !here)}
                   className={cn(
-                    "rounded-full border px-3 py-1 text-xs font-medium transition-colors",
-                    here
-                      ? "border-green-500 bg-green-500/15 text-green-700 dark:text-green-400"
-                      : "text-muted-foreground hover:bg-muted"
+                    "chip chip-lg transition-colors duration-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
+                    here ? "chip-success" : "chip-neutral hover:text-foreground"
                   )}
                 >
-                  {here ? "✓ " : ""}
+                  <MemberDot color={m.color} checked={here} />
                   {m.nickname || m.name}
                 </button>
               );
             })}
           </div>
-        </div>
+        </section>
       )}
 
       {/* history */}
       {byDate.length === 0 ? (
-        <div className="rounded-lg border border-dashed py-10 text-center text-sm text-muted-foreground">
+        <div className="slab px-4 py-10 text-center text-sm text-muted-foreground">
           {/* "เริ่มจดด้านบนได้เลย" points at a composer that is not there for a
               read-only viewer — don't send them looking for it. */}
           {canWrite ? "ยังไม่มีบันทึกการซ้อม — เริ่มจดด้านบนได้เลย" : "ยังไม่มีบันทึกการซ้อม"}
         </div>
       ) : (
-        <div className="space-y-4">
+        <section aria-label="Journal" className="space-y-4">
+          <h2 className="h2 px-0.5">Journal</h2>
           {byDate.map(([date, entries]) => (
             <div key={date}>
-              <p className="mb-1.5 flex items-center gap-1.5 text-xs font-semibold text-muted-foreground">
-                <CalendarDays className="h-3.5 w-3.5" />
+              <p className="mb-1.5 flex items-center gap-1.5 px-0.5 text-[12.5px] font-semibold text-muted-foreground">
+                <CalendarDays className="h-3.5 w-3.5" aria-hidden />
                 {fmtDate(date)}
-                {date === today && (
-                  <span className="rounded bg-primary/15 px-1.5 py-0.5 text-[10px] text-primary">
-                    วันนี้
-                  </span>
-                )}
+                {date === today && <span className="chip chip-primary h-5 px-1.5 text-[11px]">วันนี้</span>}
               </p>
-              <div className="space-y-2">
+              <div className="stack">
                 {entries.map((l) => {
                   // WHO may write is the same for both controls — author or band
                   // editor (0024's practice_logs_delete, and the USING half of
@@ -724,42 +729,63 @@ export function PracticeJournal({
                   // §P5 added a WITH CHECK to UPDATE only; see canModifyLog's
                   // docblock for why the tick still satisfies it.
                   const canEditThis = canModifyLog(canManage, l.author_id === currentUserId);
+                  // an entry from a newer build, or a cached row missing the
+                  // field, reads as a plain note rather than taking the tab down
+                  const cat = Object.prototype.hasOwnProperty.call(PRACTICE_CATEGORY_META, l.category)
+                    ? l.category
+                    : "note";
+                  const target = l.target_member_id
+                    ? members.find((x) => x.id === l.target_member_id) ?? null
+                    : null;
+                  const done = l.category === "homework" && l.done;
                   return (
                     <div
                       key={l.id}
                       className={cn(
-                        "rounded-lg border p-3",
-                        l.visibility === "staff" && "border-amber-500/40 bg-amber-500/5"
+                        "slab p-3",
+                        l.visibility === "staff" &&
+                          "shadow-[inset_4px_0_0_hsl(var(--warning)),inset_0_0_0_1px_hsl(var(--border))]"
                       )}
                     >
-                      <div className="mb-1 flex items-center gap-1.5 text-xs">
-                        <span className="font-medium">
-                          {PRACTICE_CATEGORY_META[l.category].emoji}{" "}
-                          {PRACTICE_CATEGORY_META[l.category].label}
-                        </span>
+                      <div className="mb-1.5 flex flex-wrap items-center gap-1.5">
+                        <Badge variant={CATEGORY_TONE[cat]}>
+                          <MetaIcon icon={PRACTICE_CATEGORY_META[cat].icon} />
+                          {PRACTICE_CATEGORY_META[cat].label}
+                        </Badge>
                         {l.visibility === "staff" && (
-                          <span className="flex items-center gap-0.5 rounded bg-amber-500/20 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:text-amber-400">
-                            <Lock className="h-3 w-3" /> เฉพาะครู
-                          </span>
+                          <Badge variant="warning">
+                            <Lock aria-hidden /> เฉพาะครู
+                          </Badge>
                         )}
-                        {memberName(l.target_member_id) && (
-                          <span className="rounded bg-muted px-1.5 py-0.5 text-[10px]">
-                            {memberName(l.target_member_id)}
+                        {target && (
+                          <span className="chip chip-neutral">
+                            <MemberDot color={target.color} small />
+                            {target.nickname || target.name}
                           </span>
                         )}
                         {canEditThis && (
-                          <button
+                          <Button
+                            variant="ghost"
+                            size="icon"
                             onClick={() => removeLog(l.id)}
-                            className="ml-auto text-muted-foreground hover:text-destructive"
+                            className="-my-2 -mr-2 ml-auto text-muted-foreground hover:text-destructive"
                             title="ลบ"
+                            aria-label="ลบบันทึกนี้"
                           >
-                            <Trash2 className="h-3.5 w-3.5" />
-                          </button>
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
                         )}
                       </div>
-                      <p className="whitespace-pre-wrap text-sm">{l.body}</p>
+                      <p
+                        className={cn(
+                          "whitespace-pre-wrap text-[15px] leading-relaxed",
+                          done && "text-faint line-through"
+                        )}
+                      >
+                        {l.body}
+                      </p>
                       {l.category === "homework" && (
-                        <label className="mt-1.5 flex items-center gap-1.5 text-xs text-muted-foreground">
+                        <label className="mt-1 flex min-h-11 items-center gap-2 text-[12.5px] text-muted-foreground">
                           {/* The carry-over list at the top of this page has had this
                               gate since 951b4fe ("don't offer a homework tick that RLS
                               will always bounce"); the SAME homework rendered again
@@ -776,7 +802,7 @@ export function PracticeJournal({
                             checked={l.done}
                             disabled={!canEditThis}
                             onChange={() => toggleDone(l)}
-                            className="h-3.5 w-3.5 accent-primary disabled:cursor-not-allowed disabled:opacity-50"
+                            className="h-5 w-5 accent-primary disabled:cursor-not-allowed disabled:opacity-50"
                           />
                           {l.done ? "เสร็จแล้ว" : "ยังไม่เสร็จ"}
                         </label>
@@ -787,8 +813,43 @@ export function PracticeJournal({
               </div>
             </div>
           ))}
-        </div>
+        </section>
       )}
     </div>
+  );
+}
+
+/** Category → chip tone (spec §G.6): status by icon + word, the tone only helps. */
+const CATEGORY_TONE: Record<PracticeCategory, NonNullable<BadgeProps["variant"]>> = {
+  note: "secondary",
+  problem: "warning",
+  summary: "secondary",
+  homework: "info",
+};
+
+/**
+ * A member's colour as a ring (members.color is data, drawn inline), with a check
+ * inside when `checked`. A member with no colour gets a neutral ring.
+ */
+function MemberDot({
+  color,
+  checked = false,
+  small = false,
+}: {
+  color: string | null | undefined;
+  checked?: boolean;
+  small?: boolean;
+}) {
+  return (
+    <span
+      aria-hidden
+      className={cn(
+        "grid shrink-0 place-items-center rounded-full",
+        small ? "h-3.5 w-3.5" : "h-5 w-5"
+      )}
+      style={{ boxShadow: `inset 0 0 0 ${small ? 3 : 2}px ${color || "hsl(var(--foreground) / .35)"}` }}
+    >
+      {checked && <Check className="h-3 w-3" strokeWidth={3} />}
+    </span>
   );
 }

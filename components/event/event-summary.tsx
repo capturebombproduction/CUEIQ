@@ -10,10 +10,12 @@ import {
   ExternalLink,
   Loader2,
   Clock,
-  AlarmClock,
   CheckCircle2,
   AlertTriangle,
   Pencil,
+  StickyNote,
+  Mic,
+  OctagonAlert,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -47,6 +49,7 @@ import {
   type SetlistItem,
 } from "@/lib/types";
 import { captureElementToImage } from "@/lib/export-image";
+import { callTimeOf } from "@/lib/next-show";
 import { type CompletenessResult } from "@/lib/completeness";
 import { EventRunStatusCard } from "@/components/event/event-run-status";
 import { LineupHeadline } from "@/components/event/lineup-headline";
@@ -83,11 +86,11 @@ function Section({
   title: string;
   children: React.ReactNode;
 }) {
+  // Upright display caps in muted ink: this sheet is exported and printed, so no
+  // italic, no slab and no band-coloured type (spec §0.3 rule 7, §D).
   return (
     <section className="space-y-1.5">
-      <h3 className="text-xs font-bold uppercase tracking-wide text-primary">
-        {title}
-      </h3>
+      <h3 className="eyebrow text-muted-foreground">{title}</h3>
       {children}
     </section>
   );
@@ -129,14 +132,15 @@ function TimelineLine({ e }: { e: TimelineEntry }) {
   return (
     <div className="text-sm">
       <div className="flex gap-3">
-        <span className="min-w-[104px] shrink-0 whitespace-nowrap font-medium tabular-nums">
+        <span className="num min-w-[104px] shrink-0 whitespace-nowrap text-[15px]">
           {e.time || "—"}
         </span>
         <span className="min-w-0 font-medium">{what}</span>
       </div>
       {e.note && (
         <p className="ml-[116px] mt-0.5 text-xs font-normal text-muted-foreground">
-          📝 {e.note}
+          <StickyNote aria-hidden className="mr-1 inline h-3 w-3 align-[-1px]" />
+          {e.note}
         </p>
       )}
     </div>
@@ -154,6 +158,7 @@ export function EventSummary({
   completeness,
   editable = false,
   canRunLive = true,
+  showLive = true,
   tenantId,
   runSeq = [],
 }: {
@@ -170,6 +175,9 @@ export function EventSummary({
    *  an admin edits it live; for everyone else it is not the page's first,
    *  primary button — except on the show's own day. */
   canRunLive?: boolean;
+  /** false when the page's hero already offers Live Mode (EventHero) — the action
+   *  bar then holds the run sheet's own actions only: the JPG and print. */
+  showLive?: boolean;
   tenantId: string;
   /** This festival's running order — drives the read-only live status card. */
   runSeq?: RunSeqLive[];
@@ -300,27 +308,37 @@ export function EventSummary({
   // Live Mode leads for an admin, and for everyone on the show's own day.
   const leadLive = canRunLive || event.event_date === bkkTodayKey();
 
+  // The sheet's four numbers: the call (only when it differs from the stage time —
+  // lib/next-show says it once), the stage, the hard out and the set's run time.
+  const callShort = shortClock(callTimeOf(schedule, event.show_start_time));
+  const callShortOrDash =
+    callShort && callShort !== shortClock(event.show_start_time) ? callShort : "—";
+  const sheetTiles: [string, string][] = [
+    ["นัด", callShortOrDash],
+    ["ขึ้นเวที", shortClock(event.show_start_time) || "—"],
+    ["Hard Out", shortClock(event.hard_out_time) || "—"],
+    ["Run time", formatDuration(timing.totalSeconds)],
+  ];
+
   return (
     <div className="space-y-4">
-      {/* Action bar — not included in the exported image / print */}
+      {/* Action bar — not included in the exported image / print. The links and
+          buttons stay direct children of this one div (event-summary.test.tsx reads
+          the bar's first control). Short labels below sm, so they share one line. */}
       <div className="no-print flex flex-wrap items-center gap-2">
-        {/* Short labels below sm, so the three share one line on a phone (they
-            wrapped to two, under a header that already took four). */}
-        {leadLive && (
+        {showLive && leadLive && (
           <Button asChild>
             <Link href={`/events/${event.id}/live`}>
-              <Radio className="h-4 w-4" />
-              <span>
-                <span className="hidden sm:inline">เข้า </span>Live Mode
-              </span>
+              <Radio aria-hidden />
+              <span className="en">Live Mode</span>
             </Link>
           </Button>
         )}
-        <Button variant="outline" onClick={exportJpg} disabled={exporting}>
+        <Button variant="secondary" onClick={exportJpg} disabled={exporting}>
           {exporting ? (
             <Loader2 className="h-4 w-4 animate-spin" />
           ) : (
-            <ImageDown className="h-4 w-4" />
+            <ImageDown aria-hidden />
           )}
           <span className="sm:hidden">รูป JPG</span>
           <span className="hidden sm:inline">บันทึกเป็นรูป (JPG)</span>
@@ -334,13 +352,11 @@ export function EventSummary({
           }
           altHint="หรือกด “บันทึกเป็นรูป (JPG)” ที่อยู่ข้าง ๆ"
         />
-        {!leadLive && (
-          <Button variant="outline" asChild>
+        {showLive && !leadLive && (
+          <Button variant="secondary" asChild>
             <Link href={`/events/${event.id}/live`}>
-              <Radio className="h-4 w-4" />
-              <span>
-                Live Mode
-              </span>
+              <Radio aria-hidden />
+              <span className="en">Live Mode</span>
             </Link>
           </Button>
         )}
@@ -377,26 +393,30 @@ export function EventSummary({
           event.status === "rejected") && (
           <div className="no-print">
             {completeness.complete ? (
-              <div className="flex items-center gap-2 rounded-lg border border-success/40 bg-success/10 p-3 text-sm">
-                <CheckCircle2 className="h-5 w-5 shrink-0 text-success" />
+              <div className="flex items-center gap-2 rounded-[2px] bg-success/10 p-3 text-sm shadow-[inset_3px_0_0_hsl(var(--success))]">
+                <CheckCircle2 aria-hidden className="h-5 w-5 shrink-0 text-success-ink" />
                 <span className="font-medium">
                   ข้อมูลครบแล้ว
                   {event.status === "pending_review"
-                    ? " — ส่งขออนุมัติแล้ว (รออนุมัติ 🟠)"
+                    ? " — ส่งขออนุมัติแล้ว (รออนุมัติ)"
                     : event.status === "rejected"
                     ? " — กด “ส่งขออนุมัติอีกครั้ง” ด้านบน"
                     : ""}
                 </span>
               </div>
             ) : (
-              <div className="rounded-lg border border-warning/40 bg-warning/10 p-3 text-sm">
+              <div className="rounded-[2px] bg-warning/10 p-3 text-sm shadow-[inset_3px_0_0_hsl(var(--warning))]">
                 <div className="flex items-center gap-2 font-semibold text-warning-ink">
-                  <AlertTriangle className="h-5 w-5 shrink-0" />
+                  <AlertTriangle aria-hidden className="h-5 w-5 shrink-0" />
                   ยังขาดข้อมูลก่อนส่งขออนุมัติ ({completeness.missing.length})
                 </div>
-                <ul className="ml-7 mt-1.5 list-disc space-y-0.5 text-muted-foreground">
+                {/* each missing item as a chip: icon + word, never colour alone */}
+                <ul className="mt-2 flex flex-wrap gap-1.5">
                   {completeness.missing.map((m) => (
-                    <li key={m.key}>{m.label}</li>
+                    <li key={m.key} className="chip chip-warning h-auto min-h-6 whitespace-normal py-1 leading-snug">
+                      <AlertTriangle aria-hidden />
+                      {m.label}
+                    </li>
                   ))}
                 </ul>
               </div>
@@ -411,8 +431,8 @@ export function EventSummary({
       <div
         ref={captureRef}
         className={cn(
-          "print-flat space-y-5 rounded-lg border bg-card p-6 text-foreground",
-          event.group?.color && "band-bar border-t-4"
+          "print-flat space-y-5 rounded-[2px] border bg-card p-6 text-foreground",
+          event.group?.color && "band-bar border-t-[8px]"
         )}
         style={
           event.group?.color
@@ -426,10 +446,11 @@ export function EventSummary({
       >
         {/* Heading */}
         <div className="space-y-1 border-b pb-3">
-          <h2 className="text-xl font-bold leading-tight">{event.name}</h2>
+          {/* .poster: upright display type, as typed — the sheet is exported */}
+          <h2 className="poster text-[26px] leading-tight">{event.name}</h2>
           <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-muted-foreground">
             <span className="flex items-center gap-1.5">
-              <CalendarDays className="h-4 w-4" /> {fmtDate(event.event_date)}
+              <CalendarDays aria-hidden className="h-4 w-4" /> {fmtDate(event.event_date)}
             </span>
             {event.group?.name && (
               <span className="font-medium text-foreground">
@@ -439,13 +460,26 @@ export function EventSummary({
           </div>
         </div>
 
+        {/* The four times, flat ink: a 2 px foreground rule over each tile is the
+            sheet's only "attitude", and it prints (spec §D.4). */}
+        {/* 2 × 2 below sm: four across left ~50 px for a value, and a oneman's
+            "1:05:30" run time does not fit that. */}
+        <div className="grid grid-cols-2 gap-[3px] sm:grid-cols-4">
+          {sheetTiles.map(([label, value]) => (
+            <div key={label} className="well min-w-0 px-3 py-2 shadow-[inset_0_2px_0_hsl(var(--foreground))]">
+              <div className="truncate text-[12px] text-muted-foreground">{label}</div>
+              <div className="num truncate text-[20px] leading-tight sm:text-[26px]">{value}</div>
+            </div>
+          ))}
+        </div>
+
         {/* Event note — the free text an Ar types on the event form ("ห้ามใช้ backing
             track เพลง 3"). It used to render on no in-app surface at all: only on a
             public share link that may never have been generated, so the instruction
             reached nobody. First thing on the sheet, and it prints/exports with it. */}
         {event.notes?.trim() && (
           <Section title="Notes">
-            <p className="whitespace-pre-wrap rounded-lg bg-muted/50 p-3 text-sm">
+            <p className="whitespace-pre-wrap rounded-[2px] bg-muted p-3 text-sm">
               {event.notes}
             </p>
           </Section>
@@ -463,14 +497,14 @@ export function EventSummary({
                 href={event.map_url}
                 target="_blank"
                 rel="noreferrer"
-                className="inline-flex items-center gap-1 break-all font-medium text-primary underline"
+                className="inline-flex items-center gap-1 break-all font-medium text-primary-ink underline"
               >
                 View Map <ExternalLink className="h-3 w-3 shrink-0" />
               </a>
             </div>
           )}
           {mapQuery && !isCapturing && (
-            <div className="no-print overflow-hidden rounded-md border">
+            <div className="no-print overflow-hidden rounded-[2px] border">
               <iframe
                 title="map"
                 src={mapsEmbedUrl(mapQuery)}
@@ -506,19 +540,21 @@ export function EventSummary({
           {!isCapturing && (
             <div className="flex flex-wrap items-center gap-x-5 gap-y-1 pb-1 text-sm">
               <span className="flex items-center gap-1.5">
-                <Clock className="h-4 w-4 text-muted-foreground" />
+                <Clock aria-hidden className="h-4 w-4 text-muted-foreground" />
                 Total Duration{" "}
-                <b className="tabular-nums">{formatDuration(timing.totalSeconds)}</b>
+                <b className="num text-[15px]">{formatDuration(timing.totalSeconds)}</b>
               </span>
+              {/* Over the hard out is the band-independent alarm (spec §0.3 rule 4),
+                  never --destructive: lib/skin.ts moves that token off red for a red
+                  band, and "เกิน Hard Out" came out violet on Seishin's sheet. */}
               {hardOutSec != null &&
                 (timing.isOver ? (
-                  <Badge variant="destructive" className="gap-1">
-                    <AlarmClock className="h-3.5 w-3.5" /> เกิน Hard Out{" "}
-                    {formatDuration(timing.overBy)}
+                  <Badge variant="alarm" data-over-hard-out="">
+                    <OctagonAlert aria-hidden /> เกิน Hard Out +{formatDuration(timing.overBy)}
                   </Badge>
                 ) : (
-                  <Badge variant="success" className="gap-1">
-                    <CheckCircle2 className="h-3.5 w-3.5" /> Remaining{" "}
+                  <Badge variant="success">
+                    <CheckCircle2 aria-hidden /> Remaining{" "}
                     {formatDuration(Math.max(0, timing.hardOutSec! - timing.endSec))}
                   </Badge>
                 ))}
@@ -528,7 +564,7 @@ export function EventSummary({
           {setlist.length === 0 ? (
             <p className="text-sm text-muted-foreground">ยังไม่มีรายการ</p>
           ) : (
-            <div className="rounded-md border">
+            <div className="rounded-[2px] border">
               <Table>
                 <TableHeader>
                   <TableRow>
@@ -555,25 +591,41 @@ export function EventSummary({
                     const t = timing.rows[idx];
                     const slots = it.mic_slots ?? [];
                     return (
-                      <TableRow key={it.id} className={t?.overHardOut ? "bg-destructive/5" : ""}>
-                        {/* # */}
-                        <TableCell className="py-1.5 text-right tabular-nums text-xs text-muted-foreground">
+                      <TableRow
+                        key={it.id}
+                        data-over-hard-out={t?.overHardOut ? "" : undefined}
+                        className={t?.overHardOut ? "bg-alarm/[.07]" : ""}
+                      >
+                        {/* # — a row past the hard out carries the alarm rail and the
+                            octagon (icon + the word in the badge above, and for AT) */}
+                        <TableCell
+                          className={cn(
+                            "num py-1.5 text-right text-xs text-muted-foreground",
+                            t?.overHardOut && "shadow-[inset_3px_0_0_hsl(var(--alarm))]"
+                          )}
+                        >
+                          {t?.overHardOut && (
+                            <>
+                              <OctagonAlert aria-hidden className="mr-0.5 inline h-3 w-3 align-[-1px] text-foreground" />
+                              <span className="sr-only">เกิน Hard Out · </span>
+                            </>
+                          )}
                           {idx + 1}
                         </TableCell>
                         {/* Type — hidden on portrait / during export */}
-                        <TableCell className={`py-1.5 text-[10px] font-bold text-muted-foreground ${isCapturing ? "hidden" : "hidden sm:table-cell"}`}>
+                        <TableCell className={`eyebrow py-1.5 text-[10px] text-muted-foreground ${isCapturing ? "hidden" : "hidden sm:table-cell"}`}>
                           {SETLIST_KIND_SHORT[it.kind]}
                         </TableCell>
                         {/* Start–End — hidden on portrait / during export */}
                         {hasClock && (
-                          <TableCell className={`py-1.5 tabular-nums text-xs text-muted-foreground ${isCapturing ? "hidden" : "hidden sm:table-cell"}`}>
+                          <TableCell className={`num py-1.5 text-xs text-muted-foreground ${isCapturing ? "hidden" : "hidden sm:table-cell"}`}>
                             {formatClockOfDay(t.startSec)}–{formatClockOfDay(t.endSec)}
                           </TableCell>
                         )}
                         {/* Title — time shown inline on portrait / during export */}
                         <TableCell className="py-1.5 font-medium">
                           {hasClock && (
-                            <span className={`block tabular-nums text-[10px] text-muted-foreground ${isCapturing ? "" : "sm:hidden"}`}>
+                            <span className={`num block text-[11px] text-muted-foreground ${isCapturing ? "" : "sm:hidden"}`}>
                               {formatClockOfDay(t.startSec)}–{formatClockOfDay(t.endSec)}
                             </span>
                           )}
@@ -583,10 +635,10 @@ export function EventSummary({
                               phone they'd otherwise exist nowhere at all. Suppressed
                               during capture, where the real columns are shown. */}
                           <span
-                            className={`block tabular-nums text-[10px] font-normal text-muted-foreground ${isCapturing ? "hidden" : "sm:hidden"}`}
+                            className={`block text-[10px] font-normal text-muted-foreground ${isCapturing ? "hidden" : "sm:hidden"}`}
                           >
-                            ยาว {formatDuration(it.duration_seconds)} · สะสม{" "}
-                            {formatDuration(t?.accumulatedSec ?? 0)}
+                            ยาว <span className="num text-[11px]">{formatDuration(it.duration_seconds ?? 0)}</span> · สะสม{" "}
+                            <span className="num text-[11px]">{formatDuration(t?.accumulatedSec ?? 0)}</span>
                           </span>
                           {it.notes && (
                             <span className="block text-[10px] font-normal text-muted-foreground">
@@ -601,7 +653,7 @@ export function EventSummary({
                               what the column says. */}
                           {slots.length > 0 && (
                             <span className={`mt-0.5 block text-[10px] font-normal text-muted-foreground ${isCapturing ? "" : "lg:hidden"}`}>
-                              🎤{" "}
+                              <Mic aria-hidden className="mr-1 inline h-3 w-3 align-[-2px]" />
                               {slots
                                 .map((s) => (s.member ? `${s.mic}·${s.member}` : s.mic))
                                 .join("  ")}
@@ -612,10 +664,10 @@ export function EventSummary({
                             keep the table readable (inlined under the title there),
                             but ALWAYS present in an export so the JPG doesn't
                             depend on which device pressed the button. */}
-                        <TableCell className={`py-1.5 text-right tabular-nums text-xs ${isCapturing ? "" : "hidden sm:table-cell"}`}>
-                          {formatDuration(it.duration_seconds)}
+                        <TableCell className={`num py-1.5 text-right text-xs ${isCapturing ? "" : "hidden sm:table-cell"}`}>
+                          {formatDuration(it.duration_seconds ?? 0)}
                         </TableCell>
-                        <TableCell className={`py-1.5 text-right tabular-nums text-xs text-muted-foreground ${isCapturing ? "" : "hidden sm:table-cell"}`}>
+                        <TableCell className={`num py-1.5 text-right text-xs text-muted-foreground ${isCapturing ? "" : "hidden sm:table-cell"}`}>
                           {formatDuration(t?.accumulatedSec ?? 0)}
                         </TableCell>
                         {/* Mic — landscape/tablet only, hidden during export */}
@@ -691,24 +743,20 @@ export function EventSummary({
         <span className="self-center text-sm font-medium text-muted-foreground">
           ไปแก้ไข:
         </span>
-        <Button variant="outline" size="sm" onClick={() => onNavigate("setlist")}>
-          <Pencil className="h-3.5 w-3.5" /> Setlist + Run Time
+        <Button variant="secondary" onClick={() => onNavigate("setlist")}>
+          <Pencil aria-hidden /> <span className="en">Setlist</span>
         </Button>
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={() => onNavigate("schedule")}
-        >
-          <Pencil className="h-3.5 w-3.5" /> นัดหมาย
+        <Button variant="secondary" onClick={() => onNavigate("schedule")}>
+          <Pencil aria-hidden /> <span className="en">Schedule</span>
         </Button>
         {showMic && (
-          <Button variant="outline" size="sm" onClick={() => onNavigate("mic")}>
-            <Pencil className="h-3.5 w-3.5" /> Mic Map
+          <Button variant="secondary" onClick={() => onNavigate("mic")}>
+            <Pencil aria-hidden /> <span className="en">Mics</span>
           </Button>
         )}
-        <Button size="sm" variant={leadLive ? "default" : "outline"} asChild>
+        <Button variant={leadLive ? "default" : "secondary"} asChild>
           <Link href={`/events/${event.id}/live`}>
-            <Radio className="h-3.5 w-3.5" /> Live Mode
+            <Radio aria-hidden /> <span className="en">Live Mode</span>
           </Link>
         </Button>
       </div>

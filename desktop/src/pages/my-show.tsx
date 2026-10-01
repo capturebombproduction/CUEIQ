@@ -49,8 +49,9 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { AudioOutputPicker, AUDIO_SINK_KEY, loadAudioSink } from "@/components/event/audio-output-picker";
+import { KindChip } from "@/components/event/kind";
 import { cn } from "@/lib/utils";
-import { formatCountdown, formatDuration, nowClock } from "@/lib/time";
+import { formatCountdown, formatDuration, isSettled, nowClock } from "@/lib/time";
 import { liveZone, zoneCaption } from "@/lib/live-zone";
 import {
   deleteSoloItem,
@@ -768,16 +769,16 @@ export function MyShow() {
   // Warning ladder (lib/live-zone): warn/urgent scale to the item's own block.
   const zoneBlock = current ? blockSeconds(current) : 0;
   const zone = liveZone({ running: state.running, remaining, blockSec: zoneBlock });
-  // warn/urgent wear the old amber/red until the Live slice lands. The red is the
-  // FIXED one (--notify), never --destructive: a band skin moves --destructive off
-  // a red band's hue (Seishin's turns violet), and the ladder must read the same
-  // on every band's device. lib/skin.test.ts reads this map and holds it to that.
-  const zoneClasses = {
-    over: "bg-notify text-notify-foreground animate-pulse-ring",
-    urgent: "bg-notify text-notify-foreground",
-    warn: "bg-warning text-warning-foreground",
-    ok: "bg-card text-foreground",
-  }[zone];
+  // The same ladder as Live Mode's NOW card (components/live/now-card.tsx): WARN the
+  // frame, URGENT the low-luminance fill, OVER the alarm plate, settling into a framed
+  // card ten seconds past zero. The colours are app/stage.css's, on tokens no band
+  // skin writes — lib/skin.test.ts holds both screens and that file to it.
+  const zoneClasses = cn(
+    zone === "over" ? "alarm-plate" : "lit cut [--cut:18px]",
+    zone === "warn" && "zone-warn",
+    zone === "urgent" && "zone-urgent",
+    zone === "over" && isSettled(remaining) && "settled"
+  );
 
   function start() {
     const ts = Date.now();
@@ -1466,10 +1467,11 @@ export function MyShow() {
 
         {needsAudioResume && (
           <button
+            type="button"
             onClick={resumeAudio}
-            className="flex w-full items-center justify-center gap-2 rounded-xl border border-amber-400 bg-amber-500 px-4 py-3 text-base font-bold text-black shadow-sm animate-pulse hover:bg-amber-400"
+            className="flex h-[52px] w-full items-center justify-center gap-2 rounded-[2px] bg-warning px-4 font-semibold text-warning-foreground"
           >
-            <Volume2 className="h-5 w-5" /> แตะเพื่อเล่นเสียงต่อ (ตำแหน่งปัจจุบัน)
+            <Volume2 aria-hidden className="h-5 w-5" /> แตะเพื่อเล่นเสียงต่อ (ตำแหน่งปัจจุบัน)
           </button>
         )}
 
@@ -1491,36 +1493,45 @@ export function MyShow() {
             <div className="lg:col-span-3">
             {/* main countdown card */}
             <div
-              className={cn(
-                "flex h-full flex-col justify-center rounded-2xl border p-6 text-center shadow-sm transition-colors",
-                zoneClasses
-              )}
+              data-zone={zone}
+              className={cn("now flex h-full flex-col justify-center p-6 text-center", zoneClasses)}
             >
               <div className="mb-1 flex items-center justify-center gap-2">
-                {current && (
-                  <Badge variant="secondary" className="bg-black/10">
-                    {current.kind === "break" ? "MC" : "เพลง"}
-                  </Badge>
-                )}
-                <span className="text-sm opacity-80 tabular-nums">
+                {current && <KindChip kind={current.kind === "break" ? "mc" : "song"} />}
+                <span className="num text-[14px] text-muted-foreground">
                   {state.currentIndex + 1} / {items.length}
                 </span>
               </div>
-              <h2 className="mb-3 break-words px-1 text-xl font-bold leading-tight sm:text-2xl lg:text-3xl">
+              <h2 className="disp mb-3 break-words px-1 text-[26px] leading-tight lg:text-[32px]">
                 {current?.title || "—"}
               </h2>
-              <p className="text-5xl font-bold tabular-nums sm:text-6xl lg:text-8xl">
+              {/* formatCountdown, not the Live "+0:24": this screen's "-0:40" is pinned. */}
+              <p
+                className={cn(
+                  "num text-[64px] font-extrabold leading-none sm:text-[88px] lg:text-[128px]",
+                  (zone === "warn" || zone === "urgent") && "text-warning-ink"
+                )}
+              >
                 {formatCountdown(Math.round(remaining))}
               </p>
-              <p className="mt-2 text-sm opacity-80">{zoneCaption(zone, zoneBlock)}</p>
+              <p
+                className={cn(
+                  "mt-2 text-[13px]",
+                  zone === "warn" || zone === "urgent"
+                    ? "font-semibold text-warning-ink"
+                    : "text-muted-foreground"
+                )}
+              >
+                {zoneCaption(zone, zoneBlock)}
+              </p>
 
               {/* audio scrubber + volume + fade buttons */}
               {current && current.kind === "song" && currentUrl && (
-                <div className="mt-4 w-full space-y-1.5 rounded-lg bg-black/10 px-3 py-2">
+                <div className="mt-4 w-full space-y-1.5 rounded-[2px] bg-foreground/[.06] px-3 py-2">
                   <div className="flex items-center gap-2">
                     <span
                       title={state.running ? "กำลังเล่น (คุมที่ปุ่มรันโชว์)" : "หยุดอยู่ (กดรันโชว์เพื่อเล่น)"}
-                      className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-white/15 text-white/80"
+                      className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[2px] bg-foreground/10 text-foreground/80"
                     >
                       {state.running ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}
                     </span>
@@ -1536,18 +1547,18 @@ export function MyShow() {
                       disabled={state.mode === "auto"}
                       title={state.mode === "auto" ? "Auto: เลื่อนเวลาเพลงไม่ได้" : "เลื่อนเวลาเพลง"}
                       className={cn(
-                        "h-1.5 flex-1 accent-white",
+                        "flex-1",
                         state.mode === "auto" ? "cursor-not-allowed opacity-50" : "cursor-pointer"
                       )}
                     />
-                    <span className="w-16 shrink-0 text-right text-xs tabular-nums opacity-80">
+                    <span className="num w-[5.5rem] shrink-0 text-right text-[13px]">
                       {playingId === current.id
                         ? `${fmtTime(audioCurrent)} / ${fmtTime(audioDuration)}`
                         : fmtTime(audioDuration)}
                     </span>
                   </div>
                   <div className="flex items-center gap-2">
-                    <Volume1 className="h-4 w-4 shrink-0 opacity-80" />
+                    <Volume1 aria-hidden className="h-4 w-4 shrink-0 text-muted-foreground" />
                     <input
                       type="range"
                       min={0}
@@ -1556,34 +1567,42 @@ export function MyShow() {
                       value={volumes[current.id] ?? 100}
                       onChange={(e) => fadeVolumeFor(current.id, Number(e.target.value), 0)}
                       title="ความดังของแทร็คนี้ (จำค่าไว้ให้)"
-                      className="h-1.5 flex-1 cursor-pointer accent-white"
+                      className="flex-1 cursor-pointer"
                     />
-                    <span className="w-9 shrink-0 text-right text-xs tabular-nums opacity-80">
+                    <span className="num w-11 shrink-0 text-right text-[13px]">
                       {volumes[current.id] ?? 100}%
                     </span>
                   </div>
-                  <div className="grid grid-cols-3 gap-2">
-                    <button
+                  {/* Same fade row as Live Mode's NOW card: neutral keys (the old rose /
+                      amber / emerald fills fought the ladder), flipping on the plate. */}
+                  <div className="grid grid-cols-3 gap-[3px]">
+                    <Button
+                      type="button"
+                      variant="secondary"
                       onClick={() => fadeVolumeTo(0, 3000)}
                       title="ค่อย ๆ ปิดเสียงเป็น 0% ใน 3 วินาที"
-                      className="flex items-center justify-center gap-1.5 rounded-lg bg-rose-600/85 py-3 text-sm font-bold text-white shadow-sm ring-1 ring-rose-400/40 hover:bg-rose-600"
+                      className="en h-11 min-w-0 gap-1.5 rounded-[2px] px-1 !text-[14px]"
                     >
-                      <VolumeX className="h-4 w-4" /> Auto Mute
-                    </button>
-                    <button
+                      <VolumeX aria-hidden className="h-4 w-4" /> Auto Mute
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="secondary"
                       onClick={() => fadeVolumeTo(30)}
                       title="ค่อย ๆ ลดเสียงเป็น 30% (ช่วง MC)"
-                      className="flex items-center justify-center gap-1.5 rounded-lg bg-amber-400/90 py-3 text-sm font-bold text-black shadow-sm ring-1 ring-amber-300/50 hover:bg-amber-400"
+                      className="en h-11 min-w-0 gap-1.5 rounded-[2px] px-1 !text-[14px]"
                     >
-                      <Volume1 className="h-4 w-4" /> MC
-                    </button>
-                    <button
+                      <Volume1 aria-hidden className="h-4 w-4" /> MC
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="secondary"
                       onClick={() => fadeVolumeTo(100, 2500)}
                       title="ค่อย ๆ เพิ่มเสียงกลับเป็น 100%"
-                      className="flex items-center justify-center gap-1.5 rounded-lg bg-emerald-600/85 py-3 text-sm font-bold text-white shadow-sm ring-1 ring-emerald-400/40 hover:bg-emerald-600"
+                      className="en h-11 min-w-0 gap-1.5 rounded-[2px] px-1 !text-[14px]"
                     >
-                      <Volume2 className="h-4 w-4" /> Auto Loudness
-                    </button>
+                      <Volume2 aria-hidden className="h-4 w-4" /> Auto Loudness
+                    </Button>
                   </div>
                 </div>
               )}
@@ -1701,16 +1720,16 @@ export function MyShow() {
                   <Play className="h-5 w-5" /> START SHOW
                 </Button>
               ) : (
-                /* ── THE TRANSPORT ROW — identical to Live Mode's, and fixed for the same
-                   measured reason. On a 360px screen this row rendered SkipBack 44 · run 172
-                   · **NEXT 24** · Reset 44, where the 24 was pure padding: NEXT carried
-                   `min-w-0 flex-1` so its basis was zero, and its icon and label painted
-                   ~20px outside the pill, on top of RESET. The row also jumped 31px sideways
-                   the moment the show started, because the run button's label changed length.
-                   Fixed width on the run button · a floor under NEXT · the row may wrap so
-                   that on a very narrow screen RESET drops to a second line instead of NEXT
-                   collapsing. Keep this in step with components/event/live-mode.tsx — the two
-                   transports are the same control on two surfaces.
+                /* ── THE TRANSPORT ROW — measured on a 360px phone, not eyeballed. It once
+                   rendered SkipBack 44 · run 172 · **NEXT 24** · Reset 44, where the 24 was
+                   pure padding: NEXT carried `min-w-0 flex-1` so its basis was zero, and its
+                   icon and label painted ~20px outside the pill, on top of RESET. The row also
+                   jumped 31px sideways the moment the show started, because the run button's
+                   label changed length. Fixed width on the run button · a floor under NEXT ·
+                   the row may wrap so that on a very narrow screen RESET drops to a second
+                   line instead of NEXT collapsing. (Live Mode's transport has since moved
+                   into its fixed dock — components/event/live-mode.tsx — so this row is
+                   Quick Show's own now.)
                    📏 Budgeted against the row's REAL width (302px on a 360px device once the
                    container's 32px and the card's 24px of padding are taken out), not the
                    viewport: 44 + 108 + 92 + 44 + 3 gaps of 4px = 300px. */
@@ -1730,28 +1749,26 @@ export function MyShow() {
                     size="lg"
                     data-testid="run-toggle"
                     onClick={toggleShowRun}
-                    /* 📏 Same measured budget as Live Mode's: worst-case content is
-                       "กำลังรัน" 54px + 28px of dot/icon and gap = 82px, so px-3 + 6.75rem
-                       (108px) clears it by 2px where size="lg"'s own px-6 would have needed
-                       130px and blown the row. Keep this number in step with
-                       components/event/live-mode.tsx — same control, two surfaces. */
-                    /* 🔤 …and the same tooltip, for the same reason: the shortened label no
-                       longer says this button starts the clock. */
+                    /* 📏 Measured: worst-case content is "กำลังรัน" 54px + 28px of dot/icon
+                       and gap = 82px, so px-3 + 6.75rem (108px) clears it by 2px where
+                       size="lg"'s own px-6 would have needed 130px and blown the row. */
+                    /* 🔤 The shortened label no longer says this button starts the clock,
+                       so the tooltip does. */
                     title={
                       state.running
                         ? "กำลังจับเวลาโชว์ — แตะเพื่อพัก"
                         : "เริ่มรันโชว์ (เริ่มจับเวลาสะสม)"
                     }
                     className={cn(
-                      "w-[6.75rem] shrink-0 justify-center px-3 font-semibold text-white",
+                      "w-[6.75rem] shrink-0 justify-center px-3 font-semibold",
                       state.running
-                        ? "bg-green-600 hover:bg-green-700"
-                        : "bg-amber-500 hover:bg-amber-600"
+                        ? "bg-success text-success-foreground hover:bg-success/90"
+                        : "bg-primary text-primary-foreground hover:bg-primary/90"
                     )}
                   >
                     {state.running ? (
                       <>
-                        <span className="h-2 w-2 shrink-0 animate-pulse rounded-full bg-white" />
+                        <span aria-hidden className="h-2 w-2 shrink-0 rounded-full bg-current" />
                         กำลังรัน
                       </>
                     ) : (
@@ -1931,7 +1948,7 @@ export function MyShow() {
                           </button>
                         </div>
                         {isPlayingThis && (
-                          <Volume2 className="h-3.5 w-3.5 animate-pulse text-primary" />
+                          <Volume2 aria-hidden className="h-3.5 w-3.5 text-primary-ink" />
                         )}
                         {it.kind === "song" && (
                           <button

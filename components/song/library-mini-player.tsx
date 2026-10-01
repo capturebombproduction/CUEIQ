@@ -2,6 +2,8 @@
 
 import { AudioLines, Loader2, Pause, Play, X } from "lucide-react";
 import { useHoldBottomSlot } from "@/lib/bottom-slot";
+import { THAI_RE } from "@/lib/thai";
+import { cn } from "@/lib/utils";
 
 /** m:ss, rounded DOWN — an elapsed clock must not read 0:01 half a second in. */
 function clock(sec: number): string {
@@ -72,7 +74,15 @@ export function LibraryMiniPlayer({
           <AudioLines className="h-5 w-5" strokeWidth={2.4} />
         </span>
         <div className="min-w-0 flex-1">
-          <div className="disp truncate text-[18px] leading-tight">{title}</div>
+          {/* Barlow has no Thai: a Thai title is set in Kanit, never at 800 */}
+          <div
+            className={cn(
+              "truncate leading-tight",
+              THAI_RE.test(title) ? "text-[16px] font-semibold" : "disp text-[18px]"
+            )}
+          >
+            {title}
+          </div>
           <div className="truncate text-[12.5px] text-muted-foreground">
             <span className="num text-[13.5px] text-foreground">{clock(position)}</span>
             <span className="num text-[13.5px]"> / {duration > 0 ? clock(duration) : "–:––"}</span>
@@ -83,7 +93,7 @@ export function LibraryMiniPlayer({
         </div>
         <button
           type="button"
-          className="grid h-11 w-11 flex-none place-items-center rounded-[3px] bg-primary text-primary-foreground transition-transform duration-1 active:scale-[.97] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-popover"
+          className="grid h-11 w-11 flex-none place-items-center rounded-[2px] bg-primary text-primary-foreground transition-transform duration-1 active:scale-[.97] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-popover"
           aria-label={loading ? "ยกเลิก" : playing ? "หยุดชั่วคราว" : "เล่นต่อ"}
           onClick={onToggle}
         >
