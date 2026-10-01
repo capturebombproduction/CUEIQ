@@ -25,6 +25,32 @@ describe("WhatsNew", () => {
     expect(card).toHaveTextContent("ซ้อมตามเซ็ตลิสต์");
   });
 
+  it("tells a PHONE where sign-out went — and only a phone on the web, where the ⋯ exists", async () => {
+    const mm = vi.spyOn(window, "matchMedia").mockImplementation(
+      (q: string) => ({ matches: q.includes("max-width: 639px"), media: q }) as MediaQueryList
+    );
+    await mount();
+    expect(screen.getByTestId("whats-new")).toHaveTextContent("ออกจากระบบ");
+    document.body.innerHTML = "";
+    localStorage.clear();
+    (window as unknown as { cueiqNative?: unknown }).cueiqNative = {}; // the desktop app
+    await mount();
+    expect(screen.getByTestId("whats-new")).not.toHaveTextContent("ออกจากระบบ");
+    delete (window as unknown as { cueiqNative?: unknown }).cueiqNative;
+    mm.mockRestore();
+  });
+
+  it("does not mention the ⋯ on a wide screen, where the tools are still inline", async () => {
+    await mount(); // the test DOM's matchMedia matches nothing — a wide screen
+    expect(screen.getByTestId("whats-new")).not.toHaveTextContent("ออกจากระบบ");
+  });
+
+  it("comes back for the 2026-10-01 round on a device that closed the 09-28 one", async () => {
+    localStorage.setItem(KEY, "2026-09-28");
+    await mount(false);
+    expect(screen.getByTestId("whats-new")).toHaveTextContent("ปุ่ม “ซ้อม”");
+  });
+
   it("goes for good on เข้าใจแล้ว — this round is remembered", async () => {
     await mount();
     fireEvent.click(screen.getByRole("button", { name: "เข้าใจแล้ว" }));

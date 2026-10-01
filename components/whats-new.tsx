@@ -27,25 +27,39 @@ import { Button } from "@/components/ui/button";
  * To announce a later round: change ROUND and ITEMS. A new ROUND shows again on
  * every device; the old key is simply never read.
  */
-const ROUND = "2026-09-28";
+// 2026-10-01: a new round, shown once more to every device — it carries a
+// change people would otherwise report as missing (sign-out moved behind "⋯" on
+// a phone). The 09-28 items stay below the new ones for anyone who never saw them.
+const ROUND = "2026-10-01";
 const KEY = "cueiq:whats-new-seen";
 
-type Item = { text: string; editorsOnly?: boolean };
+type Item = { text: string; editorsOnly?: boolean; only?: () => boolean };
+
+/** The web on a phone-width screen — where the header's "⋯" exists. Not the
+ *  desktop app (its own shell) and not a laptop browser (tools stay inline). */
+const phoneWeb = () =>
+  !(window as unknown as { cueiqNative?: unknown }).cueiqNative &&
+  window.matchMedia?.("(max-width: 639px)").matches === true;
 
 const ITEMS: Item[] = [
+  { text: "หน้าแรก: บอก “นัด” กับ “ขึ้นเวที” ของงานถัดไป และปุ่ม “ซ้อม” พาเข้าห้องซ้อมของวงในแตะเดียว" },
   {
-    text: "ก๊อปงาน: ใส่ชื่อ วันที่ และเวลาขึ้นเวทีได้ในหน้าเดียว — คิวทั้งวันเลื่อนตามให้เอง และรายชื่อคนมาติดมาด้วย",
+    text: "บนมือถือ: ธีม เปลี่ยนรหัสผ่าน และออกจากระบบ ย้ายไปอยู่ในปุ่ม “⋯” มุมขวาบน",
+    only: phoneWeb,
+  },
+  {
+    text: "Setlist: ปุ่ม “เปลี่ยน” ข้างชื่อเพลง — สลับเป็นเพลงอื่นจากคลังได้ในที่เดิม ไมค์กับโน้ตคงไว้",
     editorsOnly: true,
   },
   {
-    text: "Setlist: ปุ่ม “เปลี่ยน” ข้างชื่อเพลง — สลับเป็นเพลงอื่นจากคลังได้ในที่เดิม ไมค์กับโน้ตคงไว้ ไม่ต้องลบแล้วเลื่อนขึ้นอีก",
+    text: "ก๊อปงาน: ใส่ชื่อ วันที่ และเวลาขึ้นเวทีได้ในหน้าเดียว — คิวทั้งวันเลื่อนตามให้เอง",
     editorsOnly: true,
   },
   {
     text: "Setlist: ปุ่ม “เติมให้พอดี” ข้างเวลารวม — แถวปิดท้ายพอดีช่วงขึ้นเวทีในแตะเดียว",
     editorsOnly: true,
   },
-  { text: "รูปสรุป: บอกว่ามากี่คน ขาดใคร และมีเวลาที่ส่งออกท้ายรูป (หลายรูปในกลุ่ม ให้ใช้รูปใหม่สุด)" },
+  { text: "รูปสรุป: บอกว่ามากี่คน ขาดใคร และเวลาที่ส่งออก (หลายรูปในกลุ่ม ให้ใช้รูปใหม่สุด)" },
   { text: "ห้องซ้อม: “ซ้อมตามเซ็ตลิสต์” — กดเล่นทั้งเซ็ต จบเพลงแล้วเล่นเพลงถัดไปเอง" },
 ];
 
@@ -66,7 +80,9 @@ export function WhatsNew({ canEdit }: { canEdit: boolean }) {
   // needs the browser.
   useEffect(() => {
     if (seen()) return;
-    setItems(ITEMS.filter((i) => canEdit || !i.editorsOnly).map((i) => i.text));
+    setItems(
+      ITEMS.filter((i) => (canEdit || !i.editorsOnly) && (!i.only || i.only())).map((i) => i.text)
+    );
   }, [canEdit]);
 
   const dismiss = () => {
