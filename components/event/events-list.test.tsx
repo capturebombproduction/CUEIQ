@@ -183,3 +183,41 @@ describe("EventsList — the next-show banner says when to BE there", () => {
     expect(screen.getByRole("link", { name: /ซ้อม/ }).getAttribute("href")).toBe("/practice");
   });
 });
+
+// Between shows (2026-10-01: Seishin had none entered — they enter a show 1–3
+// days before it). Without a next show there was no banner, and with it went the
+// one-tap "ซ้อม" in exactly the days the band practises.
+describe("EventsList — between shows", () => {
+  const past = ev("p", "โชว์ที่ผ่านมา", "2026-09-20");
+  const mountPast = (props: Partial<Parameters<typeof EventsList>[0]> = {}) =>
+    render(
+      <ConfirmProvider>
+        <EventsList events={[past]} editableGroupIds={[]} {...props} />
+      </ConfirmProvider>
+    );
+
+  it("says there is no next show, and keeps ซ้อม one tap away — into the band's room", () => {
+    mountPast({ canRunLive: false, practiceRoomByGroup: { g1: "room-1" } });
+    expect(screen.getByTestId("no-next-show")).toHaveTextContent("ยังไม่มีงานที่จะถึงในระบบ");
+    expect(screen.getByRole("link", { name: /ซ้อม/ }).getAttribute("href")).toBe("/events/room-1/practice");
+  });
+
+  it("with rooms in several bands, ซ้อม opens the Training list", () => {
+    mountPast({ canRunLive: false, practiceRoomByGroup: { g1: "room-1", g2: "room-2" } });
+    expect(screen.getByRole("link", { name: /ซ้อม/ }).getAttribute("href")).toBe("/practice");
+  });
+
+  it("not for an admin, nor for label staff", () => {
+    const { unmount } = mountPast({ canRunLive: true });
+    expect(screen.queryByTestId("no-next-show")).toBeNull();
+    unmount();
+    mountPast({ canRunLive: false, canPractice: false });
+    expect(screen.queryByTestId("no-next-show")).toBeNull();
+  });
+
+  it("not while searching — the list is the answer then", () => {
+    mountPast({ canRunLive: false });
+    fireEvent.change(screen.getByPlaceholderText(/ค้นหา/), { target: { value: "โชว์" } });
+    expect(screen.queryByTestId("no-next-show")).toBeNull();
+  });
+});

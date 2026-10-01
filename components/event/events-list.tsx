@@ -371,6 +371,10 @@ export function EventsList({
     upcoming.length === 0 && undated.length === 0 && past.length === 0 && old.length === 0;
   // soonest dated upcoming event (upcoming is already sorted soonest-first)
   const nextShow = !q.trim() ? upcoming.find((e) => !!e.event_date) : undefined;
+  // With no show to take a band from: the room, when this account's bands have
+  // exactly one between them (a member's case); otherwise the Training list.
+  const roomIds = Object.values(practiceRoomByGroup ?? {});
+  const soleRoom = roomIds.length === 1 ? roomIds[0] : null;
   const nextTimes = nextShow
     ? showTimesLabel(callTimes?.[nextShow.id], nextShow.show_start_time)
     : null;
@@ -590,6 +594,30 @@ export function EventsList({
               </Link>
             )}
           </div>
+        </div>
+      )}
+
+      {/* Between shows. The band enters a show 1–3 days before it (measured), so
+          for most of the week there is no banner — and with it went the one-tap
+          "ซ้อม", in exactly the days the band practises. Said plainly instead of
+          leaving a page of past shows that reads as stale. */}
+      {!q.trim() && !nextShow && !canRunLive && canPractice && (
+        <div
+          data-testid="no-next-show"
+          className="flex flex-wrap items-center gap-x-5 gap-y-3 rounded-xl border border-dashed p-4"
+        >
+          <div className="min-w-[12rem] flex-1">
+            <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+              งานถัดไป
+            </div>
+            <div className="text-sm text-muted-foreground">ยังไม่มีงานที่จะถึงในระบบ</div>
+          </div>
+          <Link
+            href={soleRoom ? `/events/${soleRoom}/practice` : "/practice"}
+            className="ml-auto inline-flex shrink-0 items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-sm font-semibold text-primary-foreground transition hover:opacity-90"
+          >
+            <Dumbbell className="h-4 w-4" /> ซ้อม
+          </Link>
         </div>
       )}
 
