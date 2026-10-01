@@ -1,7 +1,7 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import { HashRouter } from "react-router-dom";
-import { Toaster } from "sonner";
+import { Toaster } from "@/components/ui/sonner";
 import { createClient } from "@/lib/supabase/client";
 import { configureAudioTransport } from "@/lib/audio-remote";
 import {

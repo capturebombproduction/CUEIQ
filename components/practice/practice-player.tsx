@@ -698,7 +698,7 @@ export function PracticePlayer({
               step={0.1}
               value={cur}
               onChange={(e) => seek(Number(e.target.value))}
-              className="w-full accent-[var(--primary)]"
+              className="w-full accent-primary"
             />
             <div className="mb-3 flex justify-between text-xs tabular-nums text-muted-foreground">
               <span>{mmss(cur)}</span>
@@ -751,7 +751,7 @@ export function PracticePlayer({
                 max={100}
                 value={vol}
                 onChange={(e) => setVol(Number(e.target.value))}
-                className="w-full accent-[var(--primary)]"
+                className="w-full accent-primary"
               />
             </div>
 

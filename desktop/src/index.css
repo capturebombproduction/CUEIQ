@@ -49,9 +49,13 @@
   --ring: 243 75% 59%;
 
   --radius: 0.65rem;
+
+  /* Native controls (date/time pickers, range, scrollbars) follow the theme. */
+  color-scheme: light;
 }
 
 .dark {
+  color-scheme: dark;
   --background: 222 47% 8%;
   --foreground: 210 40% 98%;
 

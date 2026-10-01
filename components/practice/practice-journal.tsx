@@ -628,7 +628,7 @@ export function PracticeJournal({
                   checked={l.done}
                   disabled={!canModifyLog(canManage, l.author_id === currentUserId)}
                   onChange={() => toggleDone(l)}
-                  className="mt-0.5 h-4 w-4 accent-[var(--primary)] disabled:cursor-not-allowed disabled:opacity-50"
+                  className="mt-0.5 h-4 w-4 accent-primary disabled:cursor-not-allowed disabled:opacity-50"
                 />
                 <span className="flex-1">
                   {l.body}
@@ -776,7 +776,7 @@ export function PracticeJournal({
                             checked={l.done}
                             disabled={!canEditThis}
                             onChange={() => toggleDone(l)}
-                            className="h-3.5 w-3.5 accent-[var(--primary)] disabled:cursor-not-allowed disabled:opacity-50"
+                            className="h-3.5 w-3.5 accent-primary disabled:cursor-not-allowed disabled:opacity-50"
                           />
                           {l.done ? "เสร็จแล้ว" : "ยังไม่เสร็จ"}
                         </label>

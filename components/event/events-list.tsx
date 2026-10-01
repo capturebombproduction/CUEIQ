@@ -627,8 +627,10 @@ export function EventsList({
           <input
             value={q}
             onChange={(e) => setQ(e.target.value)}
+            type="search"
+            enterKeyHint="search"
             placeholder="ค้นหางาน / สถานที่ / วง…"
-            className="w-full rounded-md border bg-background py-2 pl-9 pr-3 text-sm outline-none ring-primary/40 focus:ring-2"
+            className="w-full rounded-md border bg-background py-2 pl-9 pr-3 text-base outline-none ring-primary/40 focus:ring-2 sm:text-sm"
           />
         </div>
         {(notReadyIds.length > 0 || bulk) && (

@@ -844,7 +844,7 @@ export function Metronome({
         max={MAX_BPM}
         value={bpm}
         onChange={(e) => setBpm(clampBpm(Number(e.target.value)))}
-        className="w-full accent-[var(--primary)]"
+        className="w-full accent-primary"
       />
 
       {/* auto beat detection from the song's audio (+ octave fixups) */}
@@ -929,7 +929,7 @@ export function Metronome({
           max={100}
           value={vol}
           onChange={(e) => setVol(Number(e.target.value))}
-          className="w-full accent-[var(--primary)]"
+          className="w-full accent-primary"
         />
       </div>
 

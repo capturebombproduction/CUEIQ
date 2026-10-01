@@ -59,6 +59,25 @@ export function resetAccent() {
   } catch {}
 }
 
+/**
+ * Re-derive the saved skin from its hex. The stored CSS is a snapshot of what
+ * skinCss() produced on the day the colour was picked, and the pre-paint script
+ * replays that snapshot as-is — so after any change to the theme tokens or to
+ * skinCss(), a device with a saved colour kept painting the OLD overrides until
+ * somebody happened to pick a colour again. Returns true when it rewrote it.
+ */
+export function refreshSavedAccent(): boolean {
+  try {
+    const a = JSON.parse(localStorage.getItem(ACCENT_STORAGE_KEY) || "null");
+    if (!a?.hex) return false;
+    if (a.css === skinCss(a.hex)) return false;
+    saveAccent(a.hex);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** The currently-saved accent hex, or null if using the default. */
 export function loadAccentHex(): string | null {
   try {

@@ -5,7 +5,7 @@ import { usePathname } from "next/navigation";
 import { cn } from "@/lib/utils";
 import { isAdmin, canApprove, canViewOverview, canViewLibrary, type Perms } from "@/lib/permissions";
 
-type NavLink = { href: string; label: string };
+export type NavLink = { href: string; label: string };
 
 const LINKS: NavLink[] = [
   { href: "/dashboard", label: "Events" },
@@ -15,8 +15,8 @@ const LINKS: NavLink[] = [
   { href: "/groups", label: "Artists" },
 ];
 
-export function MainNav({ perms }: { perms?: Perms }) {
-  const pathname = usePathname();
+/** The destinations a role can use, in display order. */
+export function navLinksFor(perms?: Perms): NavLink[] {
   // /overview: label-wide users see all bands, a band member sees only their own
   // (the page scopes it). /admin is admin-only. label_staff is overview-only for
   // events, so they don't get the /dashboard ("Events") link — overview becomes
@@ -38,11 +38,39 @@ export function MainNav({ perms }: { perms?: Perms }) {
   if (perms && isAdmin(perms)) {
     links.push({ href: "/admin", label: "Admin" });
   }
+  return links;
+}
+
+/**
+ * Which of `hrefs` the current page belongs to. A plain prefix match left every
+ * show page dark: a show lives at /events/<id>, which is not under /dashboard, so
+ * "Events" never lit up where people spend their time. A show's practice room
+ * counts as Training; any other show page counts as Events, or as Overview for
+ * label staff, who have no Events link.
+ */
+export function activeNavHref(pathname: string, hrefs: string[]): string | null {
+  const direct = hrefs
+    .filter((h) => pathname === h || pathname.startsWith(h + "/"))
+    .sort((a, b) => b.length - a.length)[0];
+  if (direct) return direct;
+  if (/^\/events\/[^/]+\/practice(\/|$)/.test(pathname) && hrefs.includes("/practice")) {
+    return "/practice";
+  }
+  if (pathname === "/events" || pathname.startsWith("/events/")) {
+    if (hrefs.includes("/dashboard")) return "/dashboard";
+    if (hrefs.includes("/overview")) return "/overview";
+  }
+  return null;
+}
+
+export function MainNav({ perms }: { perms?: Perms }) {
+  const pathname = usePathname();
+  const links = navLinksFor(perms);
+  const activeHref = activeNavHref(pathname, links.map((l) => l.href));
   return (
     <nav className="flex items-center gap-1">
       {links.map((link) => {
-        const active =
-          pathname === link.href || pathname.startsWith(link.href + "/");
+        const active = link.href === activeHref;
         return (
           <Link
             key={link.href}

@@ -16,6 +16,7 @@ import {
   ACCENT_PRESETS,
   DEFAULT_ACCENT_HEX,
   loadAccentHex,
+  refreshSavedAccent,
   resetAccent,
   saveAccent,
 } from "@/lib/accent";
@@ -30,6 +31,9 @@ export function AccentPicker() {
   const [hex, setHex] = useState<string>(DEFAULT_ACCENT_HEX);
 
   useEffect(() => {
+    // The picker is mounted on every page (web header tray, desktop shell), so
+    // this is where a skin saved under older tokens gets brought up to date.
+    refreshSavedAccent();
     setHex(loadAccentHex() ?? DEFAULT_ACCENT_HEX);
   }, []);
 

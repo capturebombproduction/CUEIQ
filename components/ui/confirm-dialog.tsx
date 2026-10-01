@@ -107,7 +107,7 @@ export function ConfirmProvider({ children }: { children: React.ReactNode }) {
                     if (e.key === "Enter" && canConfirm) settle(true);
                   }}
                   placeholder={opts.requireTyped}
-                  className="w-full rounded-md border bg-muted/40 px-3 py-2 text-sm"
+                  className="w-full rounded-md border bg-muted/40 px-3 py-2 text-base sm:text-sm"
                 />
               </div>
             )}

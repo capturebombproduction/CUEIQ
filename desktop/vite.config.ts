@@ -14,6 +14,13 @@ const repoRoot = fileURLToPath(new URL("..", import.meta.url));
 export default defineConfig({
   plugins: [react()],
   resolve: {
+    // ONE copy of sonner. Its toast store is module-scoped, and the reused web
+    // components resolve "sonner" from the repo root while desktop/src resolves
+    // it from desktop/node_modules — two stores, and the one Toaster listened to
+    // only one of them, so every toast fired by a shared component (saved,
+    // failed, copied…) went nowhere in the .exe. plugin-react already does this
+    // for react/react-dom.
+    dedupe: ["sonner"],
     alias: {
       // Override JUST the Supabase client with a localStorage-backed one (the web
       // lib's cookie session doesn't work under Electron's file:// origin). MUST

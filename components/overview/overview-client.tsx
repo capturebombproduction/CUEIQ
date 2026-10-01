@@ -1259,7 +1259,7 @@ export function OverviewClient({
             <select
               value={dateFilter}
               onChange={(e) => setDateFilter(e.target.value)}
-              className="rounded-md border bg-background px-2 py-1.5 text-sm"
+              className="rounded-md border bg-background px-2 py-1.5 text-base sm:text-sm"
               title="กรองเฉพาะวันที่เลือก — ถ่ายรูปเฉพาะวันนั้น"
             >
               <option value="all">ทุกวัน</option>
@@ -1274,7 +1274,7 @@ export function OverviewClient({
             <select
               value={bandFilter}
               onChange={(e) => setBandFilter(e.target.value)}
-              className="rounded-md border bg-background px-2 py-1.5 text-sm"
+              className="rounded-md border bg-background px-2 py-1.5 text-base sm:text-sm"
             >
               <option value="all">ทุกวง</option>
               {bands.map((b) => (
