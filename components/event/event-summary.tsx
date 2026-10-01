@@ -389,8 +389,8 @@ export function EventSummary({
                 </span>
               </div>
             ) : (
-              <div className="rounded-lg border border-amber-400/50 bg-amber-50 p-3 text-sm dark:bg-amber-950/30">
-                <div className="flex items-center gap-2 font-semibold text-amber-700 dark:text-amber-400">
+              <div className="rounded-lg border border-warning/40 bg-warning/10 p-3 text-sm">
+                <div className="flex items-center gap-2 font-semibold text-warning-ink">
                   <AlertTriangle className="h-5 w-5 shrink-0" />
                   ยังขาดข้อมูลก่อนส่งขออนุมัติ ({completeness.missing.length})
                 </div>

@@ -65,3 +65,46 @@ describe("OfflineBanner", () => {
     expect(container).toBeEmptyDOMElement();
   });
 });
+
+// Redesign v2 (FINAL-SPEC-v2 §F.1): the strip used to be a FIXED bar over the top
+// 28px of the screen — on top of the sticky header's back link, bell and install,
+// at exactly the moment (offline, at a venue) someone needed them. It is in flow
+// now: the app header's own second row, or the top of the page where there is no
+// such header. Never both.
+describe("OfflineBanner — where the strip sits", () => {
+  it("is in flow, never a fixed overlay over the header", () => {
+    setOnline(false);
+    render(<OfflineBanner />);
+    const strip = screen.getByTestId("offline-strip");
+    expect(strip.className.split(/\s+/)).not.toContain("fixed");
+  });
+
+  it("inside the app header it is the only strip — the root layout's copy stands down", () => {
+    setOnline(false);
+    render(
+      <>
+        <OfflineBanner />
+        <header>
+          <OfflineBanner placement="header" />
+        </header>
+      </>
+    );
+    expect(screen.getAllByText(TEXT)).toHaveLength(1);
+    expect(screen.getByText(TEXT).closest("header")).not.toBeNull();
+  });
+
+  it("the root copy comes back where there is no header (login, immersive Live)", () => {
+    setOnline(false);
+    const { rerender } = render(
+      <>
+        <OfflineBanner />
+        <header>
+          <OfflineBanner placement="header" />
+        </header>
+      </>
+    );
+    rerender(<OfflineBanner />);
+    expect(screen.getAllByText(TEXT)).toHaveLength(1);
+    expect(screen.getByText(TEXT).closest("header")).toBeNull();
+  });
+});

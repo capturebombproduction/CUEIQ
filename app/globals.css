@@ -1,6 +1,9 @@
 /* Tokens (:root / .dark) and the print sheet live in ./theme.css, shared with the
    desktop app. An @import must precede every other rule, so it sits above @tailwind. */
 @import "./theme.css";
+/* Component classes (.chip, .seg, .cut, .now …) + keyframes, also shared with the
+   desktop. Plain CSS above preflight on purpose — its header says why that is safe. */
+@import "./stage.css";
 
 @tailwind base;
 @tailwind components;

@@ -90,10 +90,14 @@ const VIEW_MODES: { value: ViewMode; label: string }[] = [
   { value: "year", label: "รายปี" },
 ];
 
+// Tokens, not the raw palette: white on orange-500 was 2.8:1, under AA, on the
+// chip that says "ด่วน!". URGENT is the solid amber plate (its own dark ink, 10:1)
+// and SOON the amber tint (chip-warning) — fill vs tint, so the step still reads
+// once both are amber. Same steps in events-list.tsx and overview-client.tsx.
 const DEADLINE_BADGE: Record<string, string> = {
   overdue: "bg-destructive text-destructive-foreground",
-  urgent: "bg-orange-500 text-white",
-  soon: "bg-amber-400 text-black",
+  urgent: "bg-warning text-warning-foreground",
+  soon: "chip-warning",
   ok: "bg-muted text-muted-foreground",
 };
 

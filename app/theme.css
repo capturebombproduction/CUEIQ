@@ -7,15 +7,43 @@
    Only rules whose position does not matter may live here: an @import has to sit
    above @tailwind base, so everything in this file lands BEFORE preflight. That is
    why `* { border-color }` stays in each importer — preflight's own `*` rule sets
-   border-color too, and whichever comes later wins.
+   border-color too, and whichever comes later wins. Component classes live in
+   ./stage.css, not here: this file stays tokens (plus the print sheet).
 
-   Deliberately NOT derived from here: lib/export-image.ts EXPORT_LIGHT_VARS (a light
-   palette forced onto a node while it is saved as a JPG) and lib/skin.ts (a band's
-   accent rewrites these same names at runtime). Retune those when the palette moves. */
+   Tokens are LEAVES: no `--x: var(--y)` in :root / .dark / .export-light / print.
+   The JPG export and the print sheet swap a whole palette by redeclaring these names,
+   and an alias would keep pointing at the screen value. The four font stacks are the
+   one exception (export and print never swap a font). Aliases belong in
+   tailwind.preset.ts, or element-scoped in stage.css (`.zone-over { --spot: … }`).
+
+   Redesign "Black Stage" v2 (review-shots/design/FINAL-SPEC-v2.md §A). The SURFACE
+   values — --background --card --popover --secondary --muted --border --input, and
+   the text colours that sit on them — are still the pre-redesign ones ON PURPOSE:
+   round 3 re-lights them (band-tinted surfaces + a soft spotlight). Everything else
+   (new tokens, the warning / success / destructive retune, radius, knobs, motion) is v2.
+
+   Deliberately NOT derived from here: lib/skin.ts (a band's accent rewrites these
+   same names at runtime, with its own contrast walk). Retune it when the palette
+   moves. The JPG export's light palette is NOT a copy any more: it is .export-light
+   below, which lib/export-image.ts puts on the captured node. */
 
 :root {
   --font-sans: var(--font-kanit), "Inter", "Noto Sans Thai", "Leelawadee UI",
     "Sarabun", system-ui, -apple-system, "Segoe UI", Tahoma, sans-serif;
+  /* Numerals: countdowns, clocks, durations. The var() fallbacks are load-bearing:
+     next/font defines --font-barlow on <html> (web); the desktop names it itself. */
+  --font-num: var(--font-barlow, "Barlow Condensed"), var(--font-kanit, "Kanit"),
+    ui-sans-serif, system-ui, sans-serif;
+  /* English display, upright 800. Barlow has no Thai, so Thai falls through to
+     Kanit glyph by glyph (stage.css sets font-synthesis: none on every display class). */
+  --font-display: var(--font-barlow, "Barlow Condensed"), var(--font-kanit, "Kanit"),
+    "Noto Sans Thai", "Leelawadee UI", system-ui, sans-serif;
+  /* English display, italic 800: a SEPARATE next/font family on web (app/layout.tsx). */
+  --font-display-x: var(--font-barlow-x, "Barlow Condensed"), var(--font-kanit, "Kanit"),
+    "Noto Sans Thai", "Leelawadee UI", system-ui, sans-serif;
+
+  /* Native controls (date/time pickers, range, scrollbars) follow the theme. */
+  color-scheme: light;
 
   --background: 0 0% 100%;
   --foreground: 222 47% 11%;
@@ -38,23 +66,58 @@
   --accent: 243 75% 96%;
   --accent-foreground: 243 75% 30%;
 
-  --destructive: 0 72% 51%;
+  --destructive: 354 72% 46%;          /* white on it 5.6:1 */
   --destructive-foreground: 0 0% 100%;
 
-  --warning: 38 92% 50%;
-  --warning-foreground: 28 80% 16%;
+  --warning: 42 100% 50%;
+  --warning-foreground: 30 100% 7%;
 
-  --success: 142 71% 45%;
+  --success: 152 62% 32%;              /* white on it 4.7:1 (was 2.3 at 142 71% 45%) */
   --success-foreground: 0 0% 100%;
 
   --border: 220 13% 91%;
   --input: 220 13% 91%;
   --ring: 243 75% 59%;
 
-  --radius: 0.65rem;
+  --radius: 0.25rem;
 
-  /* Native controls (date/time pickers, range, scrollbars) follow the theme. */
-  color-scheme: light;
+  --primary-ink: 243 75% 50%;          /* band colour as TEXT; lib/skin.ts rewrites it */
+  --faint-foreground: 240 5% 40%;
+  --info: 205 85% 40%;                 /* white on it 4.9:1 */
+  --info-foreground: 0 0% 100%;
+  --info-ink: 208 85% 32%;
+  --success-ink: 152 72% 24%;
+  --warning-ink: 34 100% 27%;
+  --alarm: 0 0% 4%;                    /* light: near-black plate, white numerals */
+  --alarm-foreground: 0 0% 100%;
+  --notify: 4 86% 48%;                 /* unread dot + bell badge: NEVER skinned, same in both themes */
+  --notify-foreground: 0 0% 100%;
+
+  /* Light / glow knobs. Defined so stage.css classes can reference them; round 3
+     retunes the lighting ones. Export and print zero them all. */
+  --shadow: 240 30% 10%;
+  --shadow-a: 0.1;
+  --spot-a: 0.12;                      /* page cone beam */
+  --cone-core-a: 0.08;                 /* page cone core */
+  --tex-a: 0.14;                       /* halftone dots in the lit hero */
+  --edge-a: 0.9;                       /* lit-hero outline (light: an ink outline) */
+  --urgent-wash-a: 0.24;               /* Live URGENT face wash */
+  --glass-a: 0.86;
+  --scrim: 240 30% 3%;
+  --scrim-a: 0.5;
+
+  /* Shape + motion */
+  --cut: 16px;                         /* default chamfer; components override inline */
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --ease-snap: cubic-bezier(0.2, 0.9, 0.1, 1);
+  --ease-slam: cubic-bezier(0.16, 1, 0.3, 1);
+  --dur-1: 90ms;                       /* press */
+  --dur-2: 160ms;                      /* hover, seg, URGENT plate slam, rails */
+  --dur-3: 240ms;                      /* sheet / dialog enter */
+  --dur-hero: 560ms;                   /* hero numeral slam (static Home only) */
+  --header-h: 52px;
+  --tabbar-h: 58px;
 }
 
 .dark {
@@ -68,8 +131,8 @@
   --popover: 222 47% 11%;
   --popover-foreground: 210 40% 98%;
 
-  --primary: 243 75% 66%;
-  --primary-foreground: 222 47% 11%;
+  --primary: 243 75% 64%;
+  --primary-foreground: 0 0% 100%;     /* white on it 4.8:1 (navy was 4.1); lib/skin.test.ts */
 
   --secondary: 217 33% 17%;
   --secondary-foreground: 210 40% 98%;
@@ -80,18 +143,92 @@
   --accent: 243 40% 24%;
   --accent-foreground: 210 40% 98%;
 
-  --destructive: 0 63% 50%;
+  --destructive: 356 70% 52%;          /* white on it 4.7:1 */
   --destructive-foreground: 0 0% 100%;
 
-  --warning: 38 92% 50%;
-  --warning-foreground: 28 80% 16%;
+  --warning: 44 100% 52%;
+  --warning-foreground: 40 100% 5%;
 
-  --success: 142 64% 42%;
-  --success-foreground: 0 0% 100%;
+  --success: 150 70% 44%;
+  --success-foreground: 150 80% 5%;    /* dark ink on the fill: 7.7:1 */
 
   --border: 217 33% 20%;
   --input: 217 33% 22%;
-  --ring: 243 75% 66%;
+  --ring: 243 75% 64%;
+
+  --primary-ink: 243 90% 76%;
+  --faint-foreground: 240 3% 54%;
+  --info: 205 90% 62%;
+  --info-foreground: 210 60% 8%;
+  --info-ink: 205 92% 74%;
+  --success-ink: 150 62% 60%;
+  --warning-ink: 45 100% 60%;
+  --alarm: 0 0% 88%;                   /* dark: near-white plate, capped at L88 for glare */
+  --alarm-foreground: 0 0% 3%;
+
+  --shadow: 240 40% 1%;
+  --shadow-a: 0.7;
+  --spot-a: 0.42;
+  --cone-core-a: 0.22;
+  --tex-a: 0.26;
+  --edge-a: 0.12;
+  --urgent-wash-a: 0.2;
+  --glass-a: 0.84;
+  --scrim-a: 0.74;
+}
+
+/* JPG export: lib/export-image.ts adds this class to the captured node, so html.dark
+   and a band skin (both on <html>) are out-ranked for that subtree — a declaration on
+   the node itself beats an inherited one. It is the FULL light set: every token that
+   differs between :root and .dark, and every token lib/skin.ts writes, is redeclared,
+   or the dark value would leak into the picture. Knobs zeroed: the JPG is flat.
+   lib/theme-single-source.test.ts holds all of that, and holds the print sheet below
+   to these exact declarations. */
+.export-light {
+  color-scheme: light;
+  --background: 0 0% 100%;
+  --foreground: 240 30% 5%;
+  --card: 0 0% 100%;
+  --card-foreground: 240 30% 5%;
+  --popover: 0 0% 100%;
+  --popover-foreground: 240 30% 5%;
+  --primary: 243 75% 59%;
+  --primary-foreground: 0 0% 100%;
+  --secondary: 240 6% 94%;
+  --secondary-foreground: 240 30% 5%;
+  --muted: 240 6% 94%;
+  --muted-foreground: 240 6% 30%;
+  --accent: 243 75% 96%;
+  --accent-foreground: 243 75% 30%;
+  --destructive: 354 72% 46%;
+  --destructive-foreground: 0 0% 100%;
+  --warning: 42 100% 50%;
+  --warning-foreground: 30 100% 7%;
+  --success: 152 62% 32%;
+  --success-foreground: 0 0% 100%;
+  --border: 240 6% 80%;
+  --input: 240 6% 54%;
+  --ring: 243 75% 59%;
+  --primary-ink: 243 75% 46%;
+  --faint-foreground: 240 5% 38%;
+  --info: 205 85% 40%;
+  --info-foreground: 0 0% 100%;
+  --info-ink: 208 85% 30%;
+  --success-ink: 152 72% 22%;
+  --warning-ink: 34 100% 25%;
+  --alarm: 0 0% 4%;
+  --alarm-foreground: 0 0% 100%;
+  --notify: 4 86% 48%;
+  --notify-foreground: 0 0% 100%;
+  --shadow: 240 30% 10%;
+  --shadow-a: 0;
+  --spot-a: 0;
+  --cone-core-a: 0;
+  --tex-a: 0;
+  --edge-a: 0;
+  --urgent-wash-a: 0;
+  --glass-a: 1;
+  --scrim-a: 0;
 }
 
 /* Print: a paper run sheet for show day. Force light (ink-friendly) regardless of
@@ -100,22 +237,75 @@
    utilities (see the note at the top) changes nothing: each rule is !important, sets
    a token no utility sets, or is an element selector any class out-ranks anyway. */
 @media print {
-  :root,
-  .dark {
+  /* The SAME declarations as .export-light (a test holds them equal). `html:root` /
+     `html.dark`, not `:root` / `.dark`: a band skin is a <style> injected AFTER this
+     sheet with :root{…} .dark{…} at (0,1,0) — at equal specificity it won, and a
+     skinned dark-mode run sheet printed dark-washed cards onto paper. (0,1,1) wins. */
+  html:root,
+  html.dark {
     color-scheme: light;
     --background: 0 0% 100%;
-    --foreground: 222 47% 11%;
+    --foreground: 240 30% 5%;
     --card: 0 0% 100%;
-    --card-foreground: 222 47% 11%;
+    --card-foreground: 240 30% 5%;
     --popover: 0 0% 100%;
-    --popover-foreground: 222 47% 11%;
-    --muted: 220 14% 96%;
-    --muted-foreground: 220 9% 38%;
-    --primary: 243 75% 45%;
-    --border: 220 13% 80%;
+    --popover-foreground: 240 30% 5%;
+    --primary: 243 75% 59%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 240 6% 94%;
+    --secondary-foreground: 240 30% 5%;
+    --muted: 240 6% 94%;
+    --muted-foreground: 240 6% 30%;
+    --accent: 243 75% 96%;
+    --accent-foreground: 243 75% 30%;
+    --destructive: 354 72% 46%;
+    --destructive-foreground: 0 0% 100%;
+    --warning: 42 100% 50%;
+    --warning-foreground: 30 100% 7%;
+    --success: 152 62% 32%;
+    --success-foreground: 0 0% 100%;
+    --border: 240 6% 80%;
+    --input: 240 6% 54%;
+    --ring: 243 75% 59%;
+    --primary-ink: 243 75% 46%;
+    --faint-foreground: 240 5% 38%;
+    --info: 205 85% 40%;
+    --info-foreground: 0 0% 100%;
+    --info-ink: 208 85% 30%;
+    --success-ink: 152 72% 22%;
+    --warning-ink: 34 100% 25%;
+    --alarm: 0 0% 4%;
+    --alarm-foreground: 0 0% 100%;
+    --notify: 4 86% 48%;
+    --notify-foreground: 0 0% 100%;
+    --shadow: 240 30% 10%;
+    --shadow-a: 0;
+    --spot-a: 0;
+    --cone-core-a: 0;
+    --tex-a: 0;
+    --edge-a: 0;
+    --urgent-wash-a: 0;
+    --glass-a: 1;
+    --scrim-a: 0;
   }
   body {
     background: #fff !important;
+  }
+  /* Paper is flat and upright: no frosted bars, no stage light, no chamfer clip.
+     (.cone / .page-title::before / .lit's light layers arrive with round 3; hiding
+     them here already costs nothing.) */
+  .glass {
+    -webkit-backdrop-filter: none !important;
+    backdrop-filter: none !important;
+  }
+  .cone,
+  .page-title::before,
+  .lit::before,
+  .lit::after {
+    display: none !important;
+  }
+  .cut {
+    clip-path: none !important;
   }
   .no-print {
     display: none !important;
@@ -137,4 +327,9 @@
   header {
     break-inside: avoid;
   }
+}
+
+/* Native checkboxes, radios and range fills take the band colour. */
+:root {
+  accent-color: hsl(var(--primary));
 }

@@ -106,8 +106,8 @@ export function bottomTabsFor(perms?: Perms): BottomTabs {
     0,
     BOTTOM_TAB_SLOTS
   );
-  // Feedback is not a nav link — it is reached from the floating แจ้งปัญหา button
-  // and the bell. The More sheet gives it a fixed place on the phone as well.
+  // Feedback is not a nav link — the floating แจ้งปัญหา button is gone (redesign
+  // v2), so the More sheet's Feedback tile is where it lives, plus the bell.
   const more = [
     ...links.filter((l) => !picked.includes(l)),
     { href: "/feedback", label: "Feedback" },
@@ -130,23 +130,33 @@ export function activeTabHref(pathname: string, layout: BottomTabs): string | nu
   return layout.tabs.some((t) => t.href === hit) ? hit : MORE_HREF;
 }
 
+/**
+ * The inline nav: the web header from lg up (below lg the tab bar carries it) and
+ * the desktop shell at every width. English destination names in display caps; the
+ * page you are on is a solid foreground pill, so "where am I" reads by shape, not
+ * by a band colour that differs per device.
+ */
 export function MainNav({ perms }: { perms?: Perms }) {
-  const pathname = usePathname();
+  const pathname = usePathname() ?? "";
   const links = navLinksFor(perms);
   const activeHref = activeNavHref(pathname, links.map((l) => l.href));
   return (
-    <nav className="flex items-center gap-1">
+    <nav aria-label="เมนูหลัก" className="flex items-center gap-1">
       {links.map((link) => {
         const active = link.href === activeHref;
         return (
           <Link
             key={link.href}
             href={link.href}
+            aria-current={active ? "page" : undefined}
             className={cn(
-              "rounded-md px-2 py-1.5 text-sm font-medium transition-colors sm:px-3",
+              // A 36px pill with a 44px hit area (the ::before reaches 4px above and
+              // below): from lg up this nav is also an iPad's, held in landscape.
+              // Its overflow-x scrollers carry py-1 so that reach is not clipped.
+              "caps relative flex h-9 shrink-0 items-center whitespace-nowrap rounded-[2px] px-3 text-[14px] leading-none transition-colors duration-2 before:absolute before:inset-x-0 before:-inset-y-1 before:content-['']",
               active
-                ? "bg-muted text-foreground"
-                : "text-muted-foreground hover:bg-muted/60 hover:text-foreground"
+                ? "bg-foreground text-background"
+                : "text-muted-foreground hover:bg-muted hover:text-foreground"
             )}
           >
             {link.label}

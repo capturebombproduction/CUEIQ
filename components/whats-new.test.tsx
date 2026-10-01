@@ -3,7 +3,7 @@
 // when storage refuses, and editor-only items only for editors.
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, act } from "@testing-library/react";
-import { WhatsNew } from "./whats-new";
+import { WhatsNew, markWhatsNewSeen } from "./whats-new";
 
 const KEY = "cueiq:whats-new-seen";
 
@@ -25,12 +25,16 @@ describe("WhatsNew", () => {
     expect(card).toHaveTextContent("ซ้อมตามเซ็ตลิสต์");
   });
 
-  it("tells a PHONE where sign-out went — and only a phone on the web, where the ⋯ exists", async () => {
+  it("tells a PHONE where sign-out went — and only the web below lg, where the More tab exists", async () => {
+    // 1023, not 639: the tab bar (and More) shows below lg, so a landscape phone or
+    // a portrait iPad has it too. The old "⋯ top right" no longer exists anywhere.
     const mm = vi.spyOn(window, "matchMedia").mockImplementation(
-      (q: string) => ({ matches: q.includes("max-width: 639px"), media: q }) as MediaQueryList
+      (q: string) => ({ matches: q.includes("max-width: 1023px"), media: q }) as MediaQueryList
     );
     await mount();
     expect(screen.getByTestId("whats-new")).toHaveTextContent("ออกจากระบบ");
+    expect(screen.getByTestId("whats-new")).toHaveTextContent("“More”");
+    expect(screen.getByTestId("whats-new")).not.toHaveTextContent("⋯");
     document.body.innerHTML = "";
     localStorage.clear();
     (window as unknown as { cueiqNative?: unknown }).cueiqNative = {}; // the desktop app
@@ -40,7 +44,7 @@ describe("WhatsNew", () => {
     mm.mockRestore();
   });
 
-  it("does not mention the ⋯ on a wide screen, where the tools are still inline", async () => {
+  it("does not mention the More tab on a wide screen, where there is no tab bar", async () => {
     await mount(); // the test DOM's matchMedia matches nothing — a wide screen
     expect(screen.getByTestId("whats-new")).not.toHaveTextContent("ออกจากระบบ");
   });
@@ -89,5 +93,28 @@ describe("WhatsNew", () => {
     expect(card).not.toHaveTextContent("ก๊อปงาน");
     expect(card).not.toHaveTextContent("เติมให้พอดี");
     expect(card).toHaveTextContent("ซ้อมตามเซ็ตลิสต์"); // members practise
+  });
+});
+
+// The same round is also readable from the More sheet's What's New tile, and the
+// More tab carries a dot until it is read. Read in either place, it is read
+// everywhere — a card that stays up after the sheet showed it, or a dot that stays
+// after the card was closed, would teach people to ignore both.
+describe("WhatsNew — one round, read once, wherever it was read", () => {
+  it("goes when the round is read from the More sheet, without a reload", async () => {
+    await mount();
+    expect(screen.getByTestId("whats-new")).toBeInTheDocument();
+    act(() => markWhatsNewSeen());
+    expect(screen.queryByTestId("whats-new")).toBeNull();
+    expect(localStorage.getItem(KEY)).toBe("2026-10-01");
+  });
+
+  it("closing the card tells the rest of the app (the More dot listens for this)", async () => {
+    const heard = vi.fn();
+    window.addEventListener("cueiq:whats-new-seen", heard);
+    await mount();
+    fireEvent.click(screen.getByRole("button", { name: "เข้าใจแล้ว" }));
+    expect(heard).toHaveBeenCalledTimes(1);
+    window.removeEventListener("cueiq:whats-new-seen", heard);
   });
 });

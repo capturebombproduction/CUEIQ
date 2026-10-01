@@ -76,6 +76,29 @@ export function formatCountdown(seconds: number): string {
   return neg ? `-${body}` : body;
 }
 
+/**
+ * Overtime as the Live countdown shows it: "+0:24" — always signed "+", whatever the
+ * sign of `seconds`, because it is only ever called past zero. A "−" read as "time
+ * left" from across a stage; "+" reads as "this much over". formatCountdown keeps its
+ * "-1:05" (pinned by tests and used by the older surfaces).
+ */
+export function formatOvertime(seconds: number): string {
+  return `+${formatDuration(Math.abs(seconds))}`;
+}
+
+/** Seconds past zero after which the overtime plate stops shouting (alarm → outlined). */
+export const SETTLE_AFTER_SEC = 10;
+
+/**
+ * True once an item has run SETTLE_AFTER_SEC or more past its end. The overtime plate's
+ * full-luminance flip is the alarm; ten seconds of it is enough to have been seen, and
+ * a show that deliberately runs long (an encore, an MC that overruns on purpose) should
+ * not glare for minutes — so the plate settles into a framed card, hazard band kept.
+ */
+export function isSettled(remaining: number): boolean {
+  return remaining <= -SETTLE_AFTER_SEC;
+}
+
 /** Current wall-clock time as "HH:MM:SS". */
 export function nowClock(date = new Date()): string {
   return `${pad2(date.getHours())}:${pad2(date.getMinutes())}:${pad2(

@@ -29,7 +29,8 @@ function fsSupported(): boolean {
 }
 
 /**
- * Fullscreen toggle (lives in the header, so it's on EVERY page) + a "kiosk" nudge.
+ * Fullscreen toggle + a "kiosk" nudge. The nudge is mounted on EVERY page (by the
+ * account panel, which replaced the header tools); the toggle is the panel's switch.
  *
  * When CueIQ is launched as an INSTALLED app (standalone display mode) on a browser
  * that supports the Fullscreen API (Android Chrome / desktop), we want it to behave
@@ -42,7 +43,33 @@ function fsSupported(): boolean {
  * nudge never fires there. In a normal browser tab the button is just a plain manual
  * fullscreen toggle (no nudge).
  */
-export function KioskMode() {
+/**
+ * Fullscreen state for a control that lives somewhere other than here (the account
+ * panel's Fullscreen switch). `available` follows the same rule as KioskMode's own
+ * button: never inside an installed app (already chrome-free) and never where the
+ * Fullscreen API is missing (every iPhone), so a switch that cannot work is not shown.
+ */
+export function useFullscreen(): { fs: boolean; available: boolean; toggle: () => void } {
+  const [fs, setFs] = useState(false);
+  const [available, setAvailable] = useState(false);
+  useEffect(() => {
+    setAvailable(!isStandalone() && fsSupported());
+    const onChange = () => setFs(!!document.fullscreenElement);
+    document.addEventListener("fullscreenchange", onChange);
+    onChange();
+    return () => document.removeEventListener("fullscreenchange", onChange);
+  }, []);
+  const toggle = useCallback(() => {
+    if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+    else document.documentElement.requestFullscreen?.().catch(() => {});
+  }, []);
+  return { fs, available, toggle };
+}
+
+/** `button={false}`: only the installed-app nudge. The account panel mounts it that
+ *  way, always (the panel's own contents unmount when it closes, and the nudge has
+ *  to be able to appear on any page); its Fullscreen switch uses useFullscreen. */
+export function KioskMode({ button = true }: { button?: boolean } = {}) {
   const [fs, setFs] = useState(false);
   const [nudge, setNudge] = useState(false);
   // Already running as an installed app → it's chrome-free, so the manual
@@ -96,7 +123,7 @@ export function KioskMode() {
 
   return (
     <>
-      {!standalone && supported && (
+      {button && !standalone && supported && (
         <Button
           type="button"
           variant="ghost"

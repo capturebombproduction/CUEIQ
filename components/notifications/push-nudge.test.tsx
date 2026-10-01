@@ -35,6 +35,7 @@ vi.mock("@/lib/platform", () => ({
 }));
 
 import { PushNudge } from "@/components/notifications/push-nudge";
+import { LibraryMiniPlayer } from "@/components/song/library-mini-player";
 
 const ME = "11111111-1111-4111-8111-111111111111";
 const TENANT = "22222222-2222-4222-8222-222222222222";
@@ -245,5 +246,37 @@ describe("PushNudge", () => {
     await elapse();
     expect(screen.queryByTestId("push-nudge")).toBeNull();
     spy.mockRestore();
+  });
+
+  // The nudge and the Library preview player pin themselves to the same pixels above
+  // the tab bar, and the nudge (z-50, outside <main>) covered the player whole: its
+  // play / pause and close could not be tapped, so the audio could not be stopped.
+  it("waits while the Library preview player holds the bottom slot, then comes back", async () => {
+    const player = (
+      <LibraryMiniPlayer
+        title="Burning Red"
+        position={12}
+        duration={240}
+        playing
+        loading={false}
+        onToggle={() => {}}
+        onClose={() => {}}
+      />
+    );
+    const { rerender } = render(
+      <>
+        <PushNudge userId={ME} tenantId={TENANT} />
+        {player}
+      </>
+    );
+    await elapse();
+    expect(screen.queryByTestId("push-nudge")).toBeNull();
+    // the player's controls are the ones on screen
+    expect(screen.getByRole("button", { name: "ปิดตัวเล่น" })).toBeInTheDocument();
+
+    rerender(<PushNudge userId={ME} tenantId={TENANT} />);
+    // hidden, not answered: nothing was remembered, so it is asked now
+    expect(screen.getByTestId("push-nudge")).toBeInTheDocument();
+    expect(localStorage.getItem(DISMISS_KEY)).toBeNull();
   });
 });

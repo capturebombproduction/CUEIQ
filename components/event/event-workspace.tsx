@@ -59,10 +59,12 @@ import {
 } from "@/lib/types";
 
 /** A workspace tab that still reads as a control when nothing is selected — see
- *  the note at the TabsList. Border + foreground text carry it; the active state
- *  keeps Radix's own solid treatment on top. */
-const TAB_CLS =
-  "border border-border bg-background/60 text-foreground data-[state=active]:border-primary data-[state=active]:bg-primary data-[state=active]:text-primary-foreground";
+ *  the note at the TabsList. Only the UNSELECTED ink is set here: everything else —
+ *  the track, equal columns, the foreground block on the chosen tab — is the seg
+ *  primitive's (components/ui/tabs.tsx). Per-trigger borders and a band-colour fill
+ *  on top of it made a hybrid: four small boxes crammed left in a full-width empty
+ *  track, the chosen one band-red instead of the foreground block. */
+const TAB_CLS = "data-[state=inactive]:text-foreground";
 
 export function EventWorkspace({
   event,
@@ -439,10 +441,13 @@ export function EventWorkspace({
             Measured in a browser at 375px, it reads as a row of headings. The big
             white "สรุปงาน" button directly above makes it worse by being the only
             thing on screen that looks pressable.
-            So each trigger carries its own border and readable colour, and turns
-            solid when chosen. `data-[state=active]` still does the selected look;
-            this only fixes the UNSELECTED one, which was the invisible half. */}
-        <TabsList className="no-print flex h-auto w-full flex-wrap justify-start gap-1.5">
+            The redesign's segmented track now gives the row a control's shape
+            (one bordered bar, equal segments), and each trigger keeps foreground
+            ink rather than the seg's muted default, so the labels never go grey
+            on grey. The chosen one is the seg's solid foreground block. When
+            Summary becomes the first tab (spec G.3), something is always
+            selected and TAB_CLS can go. */}
+        <TabsList className="no-print">
           <TabsTrigger value="setlist" className={TAB_CLS}>
             Setlist<span className="hidden sm:inline">&nbsp;+ Run Time</span>
           </TabsTrigger>

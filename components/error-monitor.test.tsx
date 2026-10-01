@@ -97,6 +97,26 @@ describe("AppErrorBoundary", () => {
     expect(note).toContain("แจ้งปัญหา");
   });
 
+  // …and the button it points at is ON THE CARD. Live Mode and the live show-caller
+  // have no header and no tab bar, so the More sheet's Feedback tile — the only other
+  // way in — cannot be reached from the very screens a member is mid-show on.
+  it("when the report did not land, the card itself opens the แจ้งปัญหา form", async () => {
+    h.log.mockResolvedValue(false);
+    crash();
+    await flush();
+    const tile = screen.getByRole("button", { name: /แจ้งปัญหา/ });
+    expect(screen.getByTestId("crash-feedback")).toContainElement(tile);
+    fireEvent.click(tile);
+    expect(await screen.findByRole("dialog", { name: "Feedback" })).toBeInTheDocument();
+  });
+
+  it("offers no report form when the capture DID land", async () => {
+    crash();
+    await flush();
+    expect(screen.queryByTestId("crash-feedback")).toBeNull();
+    expect(screen.queryByRole("button", { name: /แจ้งปัญหา/ })).toBeNull();
+  });
+
   it("still renders the crash screen when the logger itself rejects", async () => {
     h.log.mockRejectedValue(new Error("logger down"));
     crash();

@@ -7,18 +7,17 @@ import { cn } from "@/lib/utils";
 
 const Tabs = TabsPrimitive.Root;
 
+// Spec §E.5: tabs are a segmented control (app/stage.css `.seg`). The active item is
+// an inverted (foreground) block via `.seg > [data-state=active]`, so the trigger
+// carries no colour of its own. Labels are Kanit; add `en` to the TabsList when every
+// trigger is English (the Event tabs), or to one trigger.
+// The Event page's sticky row wraps the list in an OPAQUE bar, not glass:
+//   sticky top-[calc(var(--header-h)+env(safe-area-inset-top))] z-30 bg-background/95 py-2
 const TabsList = React.forwardRef<
   React.ElementRef<typeof TabsPrimitive.List>,
   React.ComponentPropsWithoutRef<typeof TabsPrimitive.List>
 >(({ className, ...props }, ref) => (
-  <TabsPrimitive.List
-    ref={ref}
-    className={cn(
-      "inline-flex h-10 items-center justify-center rounded-md bg-muted p-1 text-muted-foreground",
-      className
-    )}
-    {...props}
-  />
+  <TabsPrimitive.List ref={ref} className={cn("seg w-full", className)} {...props} />
 ));
 TabsList.displayName = TabsPrimitive.List.displayName;
 
@@ -29,7 +28,9 @@ const TabsTrigger = React.forwardRef<
   <TabsPrimitive.Trigger
     ref={ref}
     className={cn(
-      "inline-flex items-center justify-center whitespace-nowrap rounded-sm px-3 py-1.5 text-sm font-medium ring-offset-background transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 data-[state=active]:bg-background data-[state=active]:text-foreground data-[state=active]:shadow-sm",
+      // hover only on the INACTIVE item: on the active one it would paint foreground
+      // text on its foreground block.
+      "transition-colors duration-2 ease-out data-[state=inactive]:hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50",
       className
     )}
     {...props}

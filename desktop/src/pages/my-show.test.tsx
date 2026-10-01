@@ -766,7 +766,7 @@ describe("Quick Show — the warning ladder", () => {
 
     await tick(2_000); // 23 s left — a quarter
     expect(zoneCaptionText()).toBe("เหลือไม่ถึง 23 วินาที");
-    expect(countdownCard()).toHaveClass("bg-destructive");
+    expect(countdownCard()).toHaveClass("bg-notify"); // the fixed red: a band skin never moves it
     expect(countdownCard()).not.toHaveClass("animate-pulse-ring");
 
     await tick(23_000);

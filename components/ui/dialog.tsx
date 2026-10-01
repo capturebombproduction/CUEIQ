@@ -5,12 +5,15 @@ import * as DialogPrimitive from "@radix-ui/react-dialog";
 import { X } from "lucide-react";
 
 import { cn } from "@/lib/utils";
+import { hasThai } from "@/lib/thai";
 
 const Dialog = DialogPrimitive.Root;
 const DialogTrigger = DialogPrimitive.Trigger;
 const DialogPortal = DialogPrimitive.Portal;
 const DialogClose = DialogPrimitive.Close;
 
+// A flat scrim, no backdrop-blur: glass belongs to the two sticky bars only, and a
+// blur under a sheet costs a full-screen repaint every frame on a mid-range phone.
 const DialogOverlay = React.forwardRef<
   React.ElementRef<typeof DialogPrimitive.Overlay>,
   React.ComponentPropsWithoutRef<typeof DialogPrimitive.Overlay>
@@ -18,7 +21,7 @@ const DialogOverlay = React.forwardRef<
   <DialogPrimitive.Overlay
     ref={ref}
     className={cn(
-      "fixed inset-0 z-50 bg-black/60 backdrop-blur-sm data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0",
+      "fixed inset-0 z-50 bg-[hsl(var(--scrim)/var(--scrim-a))] data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0",
       className
     )}
     {...props}
@@ -35,23 +38,43 @@ const DialogContent = React.forwardRef<
     <DialogPrimitive.Content
       ref={ref}
       className={cn(
+        // Below sm a BOTTOM SHEET (thumb reach, the iOS idiom); from sm a centred panel.
+        //
         // max-h + internal scroll are load-bearing, not polish: the panel is
-        // position:fixed and centered, so anything taller than the viewport hangs
-        // off BOTH ends with no way to scroll to it — the page behind cannot move
-        // it. On a phone that put the footer's Save button off-screen for every
-        // dialog whose height depends on data (mic slots, member lists, the
-        // type-to-confirm delete), i.e. the work was un-saveable rather than ugly.
-        // 85vh, not 100dvh: vh is the LARGE viewport on iOS, so a full-height panel
-        // still sits under the browser toolbars, and 85 keeps it clear on every
-        // engine including ones with no dvh support.
-        "fixed left-[50%] top-[50%] z-50 grid max-h-[85vh] w-full max-w-lg translate-x-[-50%] translate-y-[-50%] gap-4 overflow-y-auto overscroll-contain border bg-background p-6 shadow-lg duration-200 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 sm:rounded-lg",
+        // position:fixed, so anything taller than the viewport hangs off the screen
+        // with no way to scroll to it — the page behind cannot move it. On a phone that
+        // put the footer's Save button off-screen for every dialog whose height depends
+        // on data (mic slots, member lists, the type-to-confirm delete), i.e. the work
+        // was un-saveable rather than ugly. The sheet uses 88dvh (the SMALL viewport,
+        // clear of iOS's toolbars) where the engine knows dvh, and 85vh where it does
+        // not — an unknown unit would drop the cap entirely.
+        "fixed inset-x-0 bottom-0 z-50 mx-auto grid w-full max-w-lg gap-4",
+        "max-h-[85vh] supports-[height:1dvh]:max-h-[88dvh] overflow-y-auto overscroll-contain",
+        "rounded-t-[12px] bg-popover text-popover-foreground shadow-elev-2",
+        "px-5 pb-[calc(env(safe-area-inset-bottom)+20px)] pt-2",
+        "data-[state=open]:animate-sheet-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:slide-out-to-bottom-full data-[state=closed]:duration-2",
+        // sm and up: the centred panel. sm:max-h restates 85vh because the sheet's
+        // supports-[] rule would otherwise still apply here.
+        "sm:bottom-auto sm:left-[50%] sm:right-auto sm:top-[50%] sm:translate-x-[-50%] sm:translate-y-[-50%]",
+        "sm:max-h-[85vh] sm:rounded-[4px] sm:p-6 sm:shadow-edge",
+        "sm:data-[state=open]:animate-in sm:data-[state=open]:fade-in-0 sm:data-[state=open]:zoom-in-95 sm:data-[state=open]:duration-2 sm:data-[state=closed]:slide-out-to-bottom-0 sm:data-[state=closed]:zoom-out-95",
         className
       )}
       {...props}
     >
+      {/* Decorative: says "this is a sheet". Dragging is not wired; the scrim, Esc and
+          the close button dismiss it. */}
+      <div
+        aria-hidden
+        data-sheet-grabber=""
+        className="mx-auto -mb-1 mt-1 h-1 w-9 rounded-[2px] bg-foreground/25 sm:hidden"
+      />
       {children}
-      <DialogPrimitive.Close className="absolute right-4 top-4 rounded-sm opacity-70 ring-offset-background transition-opacity hover:opacity-100 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:pointer-events-none">
-        <X className="h-4 w-4" />
+      {/* A 44 px target holding a 32 px well — the visible square stays small. */}
+      <DialogPrimitive.Close className="absolute right-2 top-2 grid h-11 w-11 place-items-center rounded-[3px] text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring disabled:pointer-events-none sm:right-3 sm:top-3">
+        <span className="grid h-8 w-8 place-items-center rounded-[2px] bg-muted">
+          <X className="h-4 w-4" aria-hidden />
+        </span>
         <span className="sr-only">Close</span>
       </DialogPrimitive.Close>
     </DialogPrimitive.Content>
@@ -63,8 +86,9 @@ const DialogHeader = ({
   className,
   ...props
 }: React.HTMLAttributes<HTMLDivElement>) => (
+  // pr-10 keeps a long title clear of the 44 px close button.
   <div
-    className={cn("flex flex-col space-y-1.5 text-left", className)}
+    className={cn("flex flex-col space-y-1.5 pr-10 text-left", className)}
     {...props}
   />
 );
@@ -76,7 +100,11 @@ const DialogFooter = ({
 }: React.HTMLAttributes<HTMLDivElement>) => (
   <div
     className={cn(
-      "flex flex-col-reverse gap-2 sm:flex-row sm:justify-end",
+      // Phone: two thumb-sized 50 px buttons side by side, cancel left, action right
+      // (call sites already put cancel first). An odd last button — a lone action, or
+      // the third of three — takes the full row. sm+: the usual right-aligned row.
+      "grid grid-cols-2 gap-2 [&>*:last-child:nth-child(odd)]:col-span-2 [&>a]:h-[50px] [&>button]:h-[50px]",
+      "sm:flex sm:flex-row sm:justify-end sm:[&>a]:h-11 sm:[&>button]:h-11",
       className
     )}
     {...props}
@@ -84,18 +112,25 @@ const DialogFooter = ({
 );
 DialogFooter.displayName = "DialogFooter";
 
+/**
+ * English titles are the display H2 (italic caps, 26 px); a Thai title — most of the
+ * confirm copy today — stays upright Kanit at a size its tone marks fit, detected
+ * from the text so no caller has to remember.
+ */
 const DialogTitle = React.forwardRef<
   React.ElementRef<typeof DialogPrimitive.Title>,
   React.ComponentPropsWithoutRef<typeof DialogPrimitive.Title>
->(({ className, ...props }, ref) => (
+>(({ className, children, ...props }, ref) => (
   <DialogPrimitive.Title
     ref={ref}
     className={cn(
-      "text-lg font-semibold leading-none tracking-tight",
+      hasThai(children) ? "text-xl font-semibold leading-snug" : "h2 text-[26px]",
       className
     )}
     {...props}
-  />
+  >
+    {children}
+  </DialogPrimitive.Title>
 ));
 DialogTitle.displayName = DialogPrimitive.Title.displayName;
 
@@ -105,7 +140,7 @@ const DialogDescription = React.forwardRef<
 >(({ className, ...props }, ref) => (
   <DialogPrimitive.Description
     ref={ref}
-    className={cn("text-sm text-muted-foreground", className)}
+    className={cn("text-[14px] leading-relaxed text-muted-foreground", className)}
     {...props}
   />
 ));

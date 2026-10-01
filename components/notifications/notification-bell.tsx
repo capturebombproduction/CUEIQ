@@ -494,14 +494,12 @@ export function NotificationBell({
         size="icon"
         title="การแจ้งเตือน"
         onClick={() => setOpen((o) => !o)}
-        className="relative"
+        className="relative h-11 w-11"
       >
-        <Bell className="h-4 w-4" />
-        {unread > 0 && (
-          <span className="absolute -right-0.5 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-destructive px-1 text-[10px] font-bold leading-none text-destructive-foreground">
-            {unread > 9 ? "9+" : unread}
-          </span>
-        )}
+        <Bell className="h-[21px] w-[21px]" aria-hidden />
+        {/* .badge (app/stage.css): the fixed --notify red, never the band colour,
+            so "something new" reads the same on every band's skin. */}
+        {unread > 0 && <span className="badge">{unread > 9 ? "9+" : unread}</span>}
         <span className="sr-only">การแจ้งเตือน</span>
       </Button>
 
@@ -514,10 +512,13 @@ export function NotificationBell({
           <div className="flex items-center justify-between border-b px-3 py-2">
             <span className="text-sm font-semibold">การแจ้งเตือน</span>
             {unread > 0 && (
+              // A 44 px-tall target (it measured 72×16 on a phone). -my-2 hands the
+              // header's own padding to the hit area, so the row grows only to 44,
+              // and -mr-2 keeps the words where they were against the edge.
               <button
                 type="button"
                 onClick={markAllRead}
-                className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
+                className="-my-2 -mr-2 flex h-11 items-center gap-1 rounded-[3px] px-2 text-xs text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
               >
                 <Check className="h-3 w-3" /> อ่านทั้งหมด
               </button>

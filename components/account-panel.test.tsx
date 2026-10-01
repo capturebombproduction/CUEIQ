@@ -1,0 +1,289 @@
+// The More sheet / account panel (redesign v2, FINAL-SPEC-v2 §F.3). It replaced
+// two things at once: the header's "⋯" tray (theme, band colour, fullscreen,
+// password, sign-out) and the floating แจ้งปัญหา button. What is pinned here:
+//  · the invariant the tray carried — the bell and install are NEVER in here,
+//    and every account tool IS (site-header.test.tsx pins the header's half);
+//  · each tool is the real, working control, not a picture of one;
+//  · Feedback and What's New are reachable, and their dots are explained inside;
+//  · it opens from the More tab, closes on its own when the page changes, and is
+//    mounted once.
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { render, screen, fireEvent, within, act, waitFor } from "@testing-library/react";
+import { makePerms } from "@/lib/permissions";
+import { makeSupabaseFake, ok, type SupabaseFake } from "@/test/fakes/supabase";
+
+const nav = vi.hoisted(() => ({ path: "/dashboard", replace: vi.fn(), refresh: vi.fn() }));
+vi.mock("next/navigation", () => ({
+  usePathname: () => nav.path,
+  useRouter: () => ({ replace: nav.replace, refresh: nav.refresh, push: vi.fn() }),
+}));
+const h = vi.hoisted(() => ({ supa: null as unknown }));
+vi.mock("@/lib/supabase/client", () => ({ createClient: () => h.supa }));
+vi.mock("@/components/notifications/notification-bell", () => ({
+  NotificationBell: () => <button type="button" aria-label="การแจ้งเตือน" />,
+}));
+vi.mock("@/components/install-button", () => ({
+  InstallButton: () => <button type="button" aria-label="ติดตั้งแอป" />,
+}));
+vi.mock("@/components/notifications/push-cleanup", () => ({
+  cleanupPushOnSignOut: async () => {},
+}));
+
+import { FeedbackUnreadProvider } from "@/components/feedback-button";
+import { AccountPanel, AccountPanelProvider } from "@/components/account-panel";
+import { SiteHeader } from "@/components/site-header";
+import { TabBar } from "@/components/tab-bar";
+import { ACCENT_PRESETS, ACCENT_STORAGE_KEY, SKIN_STYLE_ID } from "@/lib/accent";
+
+const MEMBER = makePerms("member", [{ group_id: "g1", role: "member" } as never]);
+const ADMIN = makePerms("admin");
+const SEEN_KEY = "cueiq:whats-new-seen";
+
+let supa: SupabaseFake;
+
+function shell(perms = MEMBER) {
+  return (
+    <FeedbackUnreadProvider userId="u1">
+      <AccountPanelProvider>
+        <SiteHeader name="มายด์" perms={perms} userId="u1" tenantId="t1" />
+        <TabBar perms={perms} />
+        <AccountPanel
+          name="มายด์"
+          line="สมาชิก · Seishin Kakumei"
+          perms={perms}
+          userId="u1"
+          tenantId="t1"
+          canEdit={false}
+        />
+      </AccountPanelProvider>
+    </FeedbackUnreadProvider>
+  );
+}
+
+async function mount(perms = MEMBER) {
+  let r!: ReturnType<typeof render>;
+  await act(async () => {
+    r = render(shell(perms));
+  });
+  return r;
+}
+
+const openMore = () => fireEvent.click(screen.getByRole("button", { name: "เมนูเพิ่มเติม" }));
+const panel = () => screen.getByTestId("account-panel");
+
+beforeEach(() => {
+  nav.path = "/dashboard";
+  nav.replace.mockClear();
+  supa = makeSupabaseFake({ script: { feedback: ok([]) } });
+  h.supa = supa;
+  // This round already read on this device, unless a test says otherwise — so a
+  // dot in a test means what that test set up.
+  localStorage.setItem(SEEN_KEY, "2026-10-01");
+  document.documentElement.classList.add("dark");
+  // The panel only offers Fullscreen where the API exists (never on an iPhone).
+  (document.documentElement as unknown as { requestFullscreen: unknown }).requestFullscreen =
+    vi.fn(async () => {});
+});
+afterEach(() => {
+  delete (document.documentElement as unknown as { requestFullscreen?: unknown }).requestFullscreen;
+  document.getElementById(SKIN_STYLE_ID)?.remove();
+  document.head.querySelector('meta[name="theme-color"]')?.remove();
+});
+
+describe("AccountPanel — what lives in it", () => {
+  it("holds every account tool, and never the bell or install", async () => {
+    await mount();
+    openMore();
+    const p = panel();
+    expect(within(p).getByRole("radio", { name: /Dark/ })).toBeTruthy();
+    expect(within(p).getByRole("radio", { name: /Light/ })).toBeTruthy();
+    expect(within(p).getByRole("radiogroup", { name: "สีประจำวง" })).toBeTruthy();
+    expect(within(p).getByRole("switch", { name: /Fullscreen/ })).toBeTruthy();
+    expect(within(p).getByRole("button", { name: /Change password/ })).toBeTruthy();
+    expect(within(p).getByTitle(/แจ้งปัญหา|มีคำตอบ/)).toBeTruthy(); // the Feedback tile
+    expect(within(p).getByRole("button", { name: "ออกจากระบบ" })).toBeTruthy();
+
+    for (const kept of ["การแจ้งเตือน", "ติดตั้งแอป"]) {
+      expect(within(p).queryByRole("button", { name: kept })).toBeNull();
+      // …they are still on screen, in the header.
+      expect(screen.getByRole("button", { name: kept, hidden: true })).toBeTruthy();
+    }
+  });
+
+  it("lists the destinations that did not earn a tab — Feedback as its tile, not a second link", async () => {
+    await mount(MEMBER);
+    openMore();
+    const tiles = within(panel())
+      .getAllByRole("link")
+      .map((a) => [a.textContent?.match(/^[A-Za-z' ]+/)?.[0].trim(), a.getAttribute("href")]);
+    expect(tiles).toEqual([
+      ["Overview", "/overview"],
+      ["Artists", "/groups"],
+    ]);
+    expect(within(panel()).getAllByTitle(/แจ้งปัญหา|มีคำตอบ/)).toHaveLength(1);
+  });
+
+  it("gives an admin the rest of the label's destinations", async () => {
+    await mount(ADMIN);
+    openMore();
+    const hrefs = within(panel())
+      .getAllByRole("link")
+      .map((a) => a.getAttribute("href"));
+    expect(hrefs).toEqual(["/practice", "/groups", "/crew", "/admin"]);
+  });
+
+  it("says who is signed in, and carries the credit line", async () => {
+    await mount();
+    openMore();
+    expect(panel()).toHaveTextContent("มายด์");
+    expect(panel()).toHaveTextContent("สมาชิก · Seishin Kakumei");
+    expect(panel()).toHaveTextContent("Designed by PatzNutthapat");
+  });
+
+  it("holds each tool once — one panel, one sign-out", async () => {
+    await mount();
+    openMore();
+    expect(screen.getAllByRole("button", { name: "ออกจากระบบ", hidden: true })).toHaveLength(1);
+    expect(screen.getAllByTestId("account-panel")).toHaveLength(1);
+  });
+});
+
+describe("AccountPanel — opening and closing", () => {
+  it("opens from More; its close button shuts it", async () => {
+    await mount();
+    expect(screen.queryByTestId("account-panel")).toBeNull();
+    openMore();
+    expect(panel()).toBeTruthy();
+    fireEvent.click(within(panel()).getByRole("button", { name: "ปิดเมนู" }));
+    await waitFor(() => expect(screen.queryByTestId("account-panel")).toBeNull());
+  });
+
+  it("closes itself when the page changes (a destination tile was tapped)", async () => {
+    const { rerender } = await mount();
+    openMore();
+    nav.path = "/groups";
+    await act(async () => {
+      rerender(shell());
+    });
+    expect(screen.queryByTestId("account-panel")).toBeNull();
+  });
+});
+
+describe("AccountPanel — the tools are the real controls", () => {
+  it("Dark | Light flips the theme, remembers it, and recolours the status bar", async () => {
+    const meta = document.createElement("meta");
+    meta.name = "theme-color";
+    meta.content = "#070708";
+    document.head.appendChild(meta);
+    await mount();
+    openMore();
+    fireEvent.click(within(panel()).getByRole("radio", { name: /Light/ }));
+    expect(document.documentElement.classList.contains("dark")).toBe(false);
+    expect(localStorage.getItem("cueiq:theme")).toBe("light");
+    expect(meta.content).toBe("#f1f1f3");
+    expect(within(panel()).getByRole("radio", { name: /Light/ })).toHaveAttribute(
+      "aria-checked",
+      "true"
+    );
+    fireEvent.click(within(panel()).getByRole("radio", { name: /Dark/ }));
+    expect(document.documentElement.classList.contains("dark")).toBe(true);
+    expect(meta.content).toBe("#070708");
+  });
+
+  it("a band-colour swatch reskins the app; the reset takes it back", async () => {
+    await mount();
+    openMore();
+    fireEvent.click(within(panel()).getByRole("radio", { name: "Seishin Kakumei" }));
+    expect(JSON.parse(localStorage.getItem(ACCENT_STORAGE_KEY)!).hex).toBe("#a62a1c");
+    expect(document.getElementById(SKIN_STYLE_ID)?.textContent).toContain("--primary");
+    fireEvent.click(within(panel()).getByRole("button", { name: "ค่าเริ่มต้น" }));
+    expect(localStorage.getItem(ACCENT_STORAGE_KEY)).toBeNull();
+  });
+
+  // As a sideways-scrolling row it showed 6 of 11 at 390 px AND in the 380 px panel:
+  // five colours and the custom picker sat off the edge with nothing saying so.
+  // Wrapped, every one is on screen (measured in Chrome: two rows of 44 px at both
+  // widths). jsdom cannot lay out, so this pins the layout that was measured.
+  it("every band colour is on screen: the swatches wrap, never scroll sideways", async () => {
+    await mount();
+    openMore();
+    const group = within(panel()).getByRole("radiogroup", { name: "สีประจำวง" });
+    expect(within(group).getAllByRole("radio")).toHaveLength(ACCENT_PRESETS.length);
+    expect(within(group).getByLabelText("เลือกสีแบบกำหนดเอง")).toBeInTheDocument();
+    const cls = (group.getAttribute("class") ?? "").split(/\s+/);
+    expect(cls).toContain("flex-wrap");
+    expect(cls.filter((k) => /^overflow-(x-)?(auto|scroll)$/.test(k))).toEqual([]);
+  });
+
+  it("Change password hands over to the password dialog (which outlives the panel)", async () => {
+    await mount();
+    openMore();
+    fireEvent.click(within(panel()).getByRole("button", { name: /Change password/ }));
+    await waitFor(() => expect(screen.queryByTestId("account-panel")).toBeNull());
+    expect(await screen.findByLabelText("รหัสผ่านปัจจุบัน")).toBeTruthy();
+  });
+
+  it("every open of the password dialog starts from empty fields", async () => {
+    await mount();
+    openMore();
+    fireEvent.click(within(panel()).getByRole("button", { name: /Change password/ }));
+    fireEvent.change(await screen.findByLabelText("รหัสผ่านปัจจุบัน"), {
+      target: { value: "old-secret" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "ยกเลิก" }));
+    await waitFor(() => expect(screen.queryByLabelText("รหัสผ่านปัจจุบัน")).toBeNull());
+    openMore();
+    fireEvent.click(within(panel()).getByRole("button", { name: /Change password/ }));
+    expect(await screen.findByLabelText("รหัสผ่านปัจจุบัน")).toHaveValue("");
+  });
+
+  it("Fullscreen asks the browser for fullscreen", async () => {
+    await mount();
+    openMore();
+    fireEvent.click(within(panel()).getByRole("switch", { name: /Fullscreen/ }));
+    expect(document.documentElement.requestFullscreen).toHaveBeenCalled();
+  });
+
+  it("Sign out runs the real sign-out (neutral row, same guards as the button)", async () => {
+    await mount();
+    openMore();
+    fireEvent.click(within(panel()).getByRole("button", { name: "ออกจากระบบ" }));
+    await waitFor(() => expect(supa.auth.signOut).toHaveBeenCalled());
+    await waitFor(() => expect(nav.replace).toHaveBeenCalledWith("/login"));
+  });
+});
+
+describe("AccountPanel — Feedback and What's New, and the dots that point at them", () => {
+  it("an answered report: dot on More, dot + words on the Feedback tile — and the testid once", async () => {
+    supa.setTable("feedback", ok([{ id: "f1" }]));
+    await mount();
+    await waitFor(() => expect(screen.getByTestId("more-unread-dot")).toBeTruthy());
+    openMore();
+    const tile = within(panel()).getByTitle("มีคำตอบจากทีมงาน");
+    expect(within(tile).getByTestId("feedback-unread-dot")).toBeTruthy();
+    expect(tile).toHaveTextContent("มีคำตอบใหม่ 1");
+    expect(screen.getAllByTestId("feedback-unread-dot")).toHaveLength(1);
+  });
+
+  it("an unread round of มีอะไรใหม่: dot on More and on its tile; opening it reads it", async () => {
+    localStorage.removeItem(SEEN_KEY);
+    await mount();
+    expect(screen.getByTestId("more-unread-dot")).toBeTruthy();
+    openMore();
+    expect(within(panel()).getByTestId("whats-new-unseen-dot")).toBeTruthy();
+    fireEvent.click(within(panel()).getByRole("button", { name: /What's New/ }));
+    expect(within(panel()).getByTestId("whats-new-list")).toHaveTextContent("ซ้อมตามเซ็ตลิสต์");
+    expect(localStorage.getItem(SEEN_KEY)).toBe("2026-10-01");
+    fireEvent.click(within(panel()).getByRole("button", { name: "เข้าใจแล้ว" }));
+    expect(within(panel()).queryByTestId("whats-new-unseen-dot")).toBeNull();
+    expect(screen.queryByTestId("more-unread-dot")).toBeNull();
+  });
+
+  it("nothing waiting: no dot anywhere", async () => {
+    await mount();
+    expect(screen.queryByTestId("more-unread-dot")).toBeNull();
+    openMore();
+    expect(screen.queryByTestId("feedback-unread-dot")).toBeNull();
+    expect(screen.queryByTestId("whats-new-unseen-dot")).toBeNull();
+  });
+});

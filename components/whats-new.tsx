@@ -28,23 +28,30 @@ import { Button } from "@/components/ui/button";
  * every device; the old key is simply never read.
  */
 // 2026-10-01: a new round, shown once more to every device — it carries a
-// change people would otherwise report as missing (sign-out moved behind "⋯" on
-// a phone). The 09-28 items stay below the new ones for anyone who never saw them.
+// change people would otherwise report as missing (sign-out moved off the phone
+// header; since the redesign it lives in the More tab). The 09-28 items stay below
+// the new ones for anyone who never saw them.
 const ROUND = "2026-10-01";
 const KEY = "cueiq:whats-new-seen";
+/** Fired when this round is marked read, so every surface that shows it (the card
+ *  here, the More sheet's tile, the tab bar's dot) agrees without a reload. */
+const SEEN_EVENT = "cueiq:whats-new-seen";
 
 type Item = { text: string; editorsOnly?: boolean; only?: () => boolean };
 
-/** The web on a phone-width screen — where the header's "⋯" exists. Not the
- *  desktop app (its own shell) and not a laptop browser (tools stay inline). */
+/** The web below lg — where the bottom tab bar (and its More tab) exists. Not the
+ *  desktop app (its own shell) and not a wide browser (the tools sit behind the
+ *  header's avatar there). */
 const phoneWeb = () =>
   !(window as unknown as { cueiqNative?: unknown }).cueiqNative &&
-  window.matchMedia?.("(max-width: 639px)").matches === true;
+  window.matchMedia?.("(max-width: 1023px)").matches === true;
 
 const ITEMS: Item[] = [
   { text: "หน้าแรก: บอก “นัด” กับ “ขึ้นเวที” ของงานถัดไป และปุ่ม “ซ้อม” พาเข้าห้องซ้อมของวงในแตะเดียว" },
   {
-    text: "บนมือถือ: ธีม เปลี่ยนรหัสผ่าน และออกจากระบบ ย้ายไปอยู่ในปุ่ม “⋯” มุมขวาบน",
+    // 2026-10-01 said "⋯ มุมขวาบน"; the redesign moved these to the More tab, and a
+    // card that points at a button that no longer exists is worse than no card.
+    text: "บนมือถือ: ธีม สีวง เปลี่ยนรหัสผ่าน และออกจากระบบ อยู่ในแท็บ “More” มุมขวาล่าง",
     only: phoneWeb,
   },
   {
@@ -71,6 +78,40 @@ function seen(): boolean {
   }
 }
 
+/** This round's items for this account — browser only (`only` reads the screen). */
+export function whatsNewItems(canEdit: boolean): string[] {
+  return ITEMS.filter((i) => (canEdit || !i.editorsOnly) && (!i.only || i.only())).map(
+    (i) => i.text
+  );
+}
+
+/** Mark this round read on this device, and tell every open surface. */
+export function markWhatsNewSeen(): void {
+  try {
+    localStorage.setItem(KEY, ROUND);
+  } catch {
+    /* closing anyway */
+  }
+  window.dispatchEvent(new Event(SEEN_EVENT));
+}
+
+/**
+ * True while this device has not read this round — the More tab's dot. Read after
+ * mount (storage is browser-only) and kept current by markWhatsNewSeen, so reading
+ * the card on the dashboard clears the dot without a reload. A device whose storage
+ * refuses reads as "seen": a dot that can never be cleared is worse than none.
+ */
+export function useWhatsNewUnseen(): boolean {
+  const [unseen, setUnseen] = useState(false);
+  useEffect(() => {
+    const update = () => setUnseen(!seen());
+    update();
+    window.addEventListener(SEEN_EVENT, update);
+    return () => window.removeEventListener(SEEN_EVENT, update);
+  }, []);
+  return unseen;
+}
+
 /** `canEdit`: this account can edit at least one band's shows — the editor-only
  *  items are about buttons that exist only for them. */
 export function WhatsNew({ canEdit }: { canEdit: boolean }) {
@@ -80,17 +121,15 @@ export function WhatsNew({ canEdit }: { canEdit: boolean }) {
   // needs the browser.
   useEffect(() => {
     if (seen()) return;
-    setItems(
-      ITEMS.filter((i) => (canEdit || !i.editorsOnly) && (!i.only || i.only())).map((i) => i.text)
-    );
+    setItems(whatsNewItems(canEdit));
+    // Read from the More sheet while this card is on screen → it goes too.
+    const hide = () => setItems(null);
+    window.addEventListener(SEEN_EVENT, hide);
+    return () => window.removeEventListener(SEEN_EVENT, hide);
   }, [canEdit]);
 
   const dismiss = () => {
-    try {
-      localStorage.setItem(KEY, ROUND);
-    } catch {
-      /* closing anyway */
-    }
+    markWhatsNewSeen();
     setItems(null);
   };
 

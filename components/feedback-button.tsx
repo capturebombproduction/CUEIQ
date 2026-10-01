@@ -1,6 +1,14 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import {
+  createContext,
+  useContext,
+  useEffect,
+  useRef,
+  useState,
+  type Dispatch,
+  type SetStateAction,
+} from "react";
 import {
   MessageSquarePlus,
   Loader2,
@@ -22,7 +30,6 @@ import {
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
-import { Badge } from "@/components/ui/badge";
 import { MyFeedbackList } from "@/components/my-feedback-list";
 import {
   Dialog,
@@ -50,6 +57,58 @@ const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
  *  the modal, which covers the whole app) hostage to it. */
 const UPLOAD_TIMEOUT_MS = 60_000;
 
+type UnreadState = { unread: number; setUnread: Dispatch<SetStateAction<number>> };
+const FeedbackUnreadContext = createContext<UnreadState | null>(null);
+
+/**
+ * "An answer is waiting" — one count for the whole app shell.
+ *
+ * This lived inside the floating แจ้งปัญหา button, which was mounted on every page
+ * and so could own it. The redesign removed that button: the report form now opens
+ * from the More sheet's Feedback tile, which only exists while the sheet is open.
+ * Left inside it, the dot would have been fetched only after somebody opened the
+ * sheet — i.e. never shown to the person who needed telling. So the count lives
+ * here, mounted once by the (app) layout and the desktop shell, and three places
+ * read it: the More tab's dot, the header avatar's dot and the Feedback tile.
+ *
+ * Cheap, once per mount (the layouts persist across navigations), exactly as before.
+ */
+export function FeedbackUnreadProvider({
+  userId,
+  children,
+}: {
+  userId?: string | null;
+  children: React.ReactNode;
+}) {
+  const [unread, setUnread] = useState(0);
+  useEffect(() => {
+    if (!userId) return;
+    let alive = true;
+    createClient()
+      .from("feedback")
+      .select("id")
+      .eq("user_id", userId)
+      .not("reply", "is", null)
+      .is("reply_seen_at", null)
+      .then(({ data }) => {
+        if (alive && data) setUnread(data.length);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [userId]);
+  return (
+    <FeedbackUnreadContext.Provider value={{ unread, setUnread }}>
+      {children}
+    </FeedbackUnreadContext.Provider>
+  );
+}
+
+/** Unread answers waiting for this account (0 outside a FeedbackUnreadProvider). */
+export function useFeedbackUnread(): number {
+  return useContext(FeedbackUnreadContext)?.unread ?? 0;
+}
+
 /**
  * In-app feedback / bug-report channel — open to EVERY logged-in user (the point
  * is to gather real-use feedback from band members during live shows). Stores into
@@ -67,18 +126,17 @@ const UPLOAD_TIMEOUT_MS = 60_000;
  * which is how a feedback channel dies. "ที่ส่งไปแล้ว" shows the author their own
  * reports and the admin's answer, and the button carries a dot when an answer is
  * waiting. Attachments were asked for by name on 2026-08-13.
+ *
+ * SINCE THE REDESIGN (v2) IT IS A TILE, never a floating button: it renders as the
+ * Feedback tile of the account panel's destinations grid, and its unread count
+ * comes from FeedbackUnreadProvider above.
  */
 export function FeedbackButton({
   userId,
   tenantId,
-  floating = false,
 }: {
   userId?: string | null;
   tenantId?: string | null;
-  /** Render as a prominent floating button (bottom-right) instead of a header
-   *  icon — so band members actually notice it and report in-app (with the page
-   *  + build auto-attached) rather than messaging the team with no context. */
-  floating?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [tab, setTab] = useState<"new" | "mine">("new");
@@ -86,7 +144,11 @@ export function FeedbackButton({
   const [message, setMessage] = useState("");
   const [files, setFiles] = useState<File[]>([]);
   const [busy, setBusy] = useState(false);
-  const [unread, setUnread] = useState(0);
+  // No provider → no count and no fetch: the shells always mount one, and a
+  // second, private fetch here would be a second source of truth for one dot.
+  const shared = useContext(FeedbackUnreadContext);
+  const unread = shared?.unread ?? 0;
+  const setUnread: Dispatch<SetStateAction<number>> = shared?.setUnread ?? (() => {});
   // Remount the list on each submit so a brand-new report shows without reopening.
   const [listRev, setListRev] = useState(0);
   const fileInput = useRef<HTMLInputElement | null>(null);
@@ -108,25 +170,6 @@ export function FeedbackButton({
       held.clear();
     };
   }, []);
-
-  // The unread-answer dot. Cheap, once per mount: this is the only thing that
-  // tells someone their two-month-old bug report was finally answered.
-  useEffect(() => {
-    if (!userId) return;
-    let alive = true;
-    createClient()
-      .from("feedback")
-      .select("id")
-      .eq("user_id", userId)
-      .not("reply", "is", null)
-      .is("reply_seen_at", null)
-      .then(({ data }) => {
-        if (alive && data) setUnread(data.length);
-      });
-    return () => {
-      alive = false;
-    };
-  }, [userId]);
 
   function addFiles(picked: FileList | null) {
     if (!picked?.length) return;
@@ -256,40 +299,36 @@ export function FeedbackButton({
 
   return (
     <>
-      {floating ? (
-        <button
-          type="button"
-          title={unread > 0 ? "มีคำตอบจากทีมงาน" : "ส่งฟีดแบค / แจ้งปัญหา"}
-          onClick={() => setOpen(true)}
-          className="no-print fixed bottom-4 right-4 z-40 inline-flex items-center gap-1.5 rounded-full bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground shadow-lg transition hover:opacity-90 active:scale-95"
-        >
-          <Bug className="h-4 w-4" />
-          แจ้งปัญหา
-          {unread > 0 && (
-            <span
-              data-testid="feedback-unread-dot"
-              className="absolute -right-0.5 -top-0.5 flex h-3 w-3 rounded-full bg-destructive ring-2 ring-background"
-            />
+      {/* The More sheet's Feedback tile. `title` doubles as the tests' handle
+          (/แจ้งปัญหา|มีคำตอบ/). With an answer waiting the tile says so in words and
+          carries a red rail + dot — never colour alone. */}
+      <button
+        type="button"
+        title={unread > 0 ? "มีคำตอบจากทีมงาน" : "ส่งฟีดแบค / แจ้งปัญหา"}
+        onClick={() => setOpen(true)}
+        className={cn(
+          "well relative flex min-h-[94px] w-full flex-col items-start rounded-[2px] p-3 text-left transition-colors duration-2 hover:bg-muted/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
+          unread > 0 && "shadow-[inset_3px_0_0_hsl(var(--notify))]"
+        )}
+      >
+        <MessageCircle className="h-[22px] w-[22px] text-primary-ink" aria-hidden />
+        {unread > 0 && (
+          <i
+            data-testid="feedback-unread-dot"
+            aria-hidden
+            className="dot right-3 top-3 h-2.5 w-2.5 shadow-[0_0_0_2px_hsl(var(--muted))]"
+          />
+        )}
+        <span className="caps mt-2 text-[19px] leading-none tracking-[.03em]">Feedback</span>
+        <span
+          className={cn(
+            "mt-1 text-[11.5px] leading-snug",
+            unread > 0 ? "font-semibold text-foreground" : "text-faint"
           )}
-        </button>
-      ) : (
-        <Button
-          variant="ghost"
-          size="icon"
-          title="ส่งฟีดแบค / แจ้งปัญหา"
-          onClick={() => setOpen(true)}
-          className="relative"
         >
-          <MessageSquarePlus className="h-4 w-4" />
-          {unread > 0 && (
-            <span
-              data-testid="feedback-unread-dot"
-              className="absolute right-1 top-1 h-2 w-2 rounded-full bg-destructive"
-            />
-          )}
-          <span className="sr-only">ส่งฟีดแบค</span>
-        </Button>
-      )}
+          {unread > 0 ? `แจ้งปัญหา · มีคำตอบใหม่ ${unread}` : "แจ้งปัญหา"}
+        </span>
+      </button>
 
       {/* NOT gated on `busy`. While an attachment was uploading, this modal sealed
           itself shut — Escape, the overlay and the X all inert, both footer buttons
@@ -299,23 +338,19 @@ export function FeedbackButton({
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent className="max-h-[85vh] overflow-y-auto">
           <DialogHeader>
-            <DialogTitle>ส่งฟีดแบค / แจ้งปัญหา</DialogTitle>
+            <DialogTitle>Feedback</DialogTitle>
             <DialogDescription>
               เจอบั๊ก อยากได้อะไรเพิ่ม หรือใช้แล้วติดตรงไหน บอกได้เลย — ทีมจะเอาไปพัฒนาต่อ
             </DialogDescription>
           </DialogHeader>
 
-          {/* Plain buttons rather than Radix Tabs: this dialog is mounted OUTSIDE
-              the app's providers in both shells, and the fewer contexts it needs
-              the fewer ways it can white-screen the desktop app. */}
-          <div className="flex gap-1 rounded-lg bg-muted p-1 text-sm">
+          {/* Plain buttons rather than Radix Tabs: the fewer contexts this dialog
+              needs, the fewer ways it can white-screen the desktop app. */}
+          <div className="seg">
             <button
               type="button"
               onClick={() => setTab("new")}
-              className={cn(
-                "flex-1 rounded-md px-3 py-1.5 transition-colors",
-                tab === "new" ? "bg-background font-medium shadow-sm" : "text-muted-foreground"
-              )}
+              className={cn("transition-colors duration-2", tab === "new" && "on")}
             >
               ส่งใหม่
             </button>
@@ -323,16 +358,13 @@ export function FeedbackButton({
               type="button"
               data-testid="feedback-tab-mine"
               onClick={() => setTab("mine")}
-              className={cn(
-                "flex-1 rounded-md px-3 py-1.5 transition-colors",
-                tab === "mine" ? "bg-background font-medium shadow-sm" : "text-muted-foreground"
-              )}
+              className={cn("transition-colors duration-2", tab === "mine" && "on")}
             >
               ที่ส่งไปแล้ว
               {unread > 0 && (
-                <Badge variant="destructive" className="ml-1.5">
+                <span className="num inline-grid h-[18px] min-w-[18px] place-items-center rounded-full bg-notify px-1 text-[13px] leading-none text-notify-foreground">
                   {unread}
-                </Badge>
+                </span>
               )}
             </button>
           </div>
@@ -349,14 +381,13 @@ export function FeedbackButton({
                         key={c.value}
                         type="button"
                         onClick={() => setCategory(c.value)}
+                        aria-pressed={category === c.value}
                         className={cn(
-                          "flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm transition-colors",
-                          category === c.value
-                            ? "border-primary bg-primary/10 font-medium"
-                            : "text-muted-foreground hover:bg-muted"
+                          "chip chip-lg transition-colors duration-2",
+                          category === c.value ? "chip-solid" : "chip-neutral"
                         )}
                       >
-                        <Icon className="h-4 w-4" /> {c.label}
+                        <Icon aria-hidden /> {c.label}
                       </button>
                     );
                   })}
@@ -373,7 +404,7 @@ export function FeedbackButton({
                   // the one raw textarea in the app, so it needs the 16px-on-phones
                   // rule components/ui/textarea.tsx carries — and this is the field
                   // people type into FROM a phone, to report the bug they just hit
-                  className="w-full rounded-md border bg-background p-2 text-base focus:outline-none focus:ring-2 focus:ring-ring sm:text-sm"
+                  className="min-h-[96px] w-full rounded-[3px] bg-card px-3.5 py-2.5 text-base leading-relaxed shadow-[inset_0_0_0_1.5px_hsl(var(--input))] placeholder:text-faint focus-visible:outline-none focus-visible:shadow-[inset_0_0_0_2px_hsl(var(--ring))] sm:text-sm"
                 />
               </div>
 

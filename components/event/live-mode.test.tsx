@@ -931,7 +931,7 @@ describe("LiveMode · the warning ladder", () => {
       vi.advanceTimersByTime(2_000); // 23 s left — a quarter
     });
     expect(caption()).toBe("เหลือไม่ถึง 23 วินาที");
-    expect(card()).toHaveClass("bg-destructive");
+    expect(card()).toHaveClass("bg-notify"); // the fixed red: a band skin never moves it
     expect(card()).not.toHaveClass("animate-pulse-ring");
 
     await act(async () => {

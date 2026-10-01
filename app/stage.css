@@ -1,0 +1,296 @@
+/* Shared component classes + keyframes — redesign "Black Stage" v2
+   (review-shots/design/FINAL-SPEC-v2.md §E.1). Imported right after ./theme.css by
+   app/globals.css (web) and desktop/src/index.css (the .exe): one file, both apps.
+
+   PLAIN CSS, NOT `@layer components` — and that is the whole delivery design:
+   • An @import has to sit above @tailwind, and Next runs Tailwind on every imported
+     file ON ITS OWN, where an `@layer components` finds no `@tailwind components` to
+     hoist into and fails the build. (Vite inlines @imports first, so only the desktop
+     would have accepted it — the two apps would not even fail the same way.)
+   • So these rules land ABOVE preflight and ABOVE the utilities, in both apps:
+     – a utility on the same element WINS: same (0,1,0) specificity, later in the
+       sheet. `chip h-11` is 44 px tall, exactly as a Tailwind components layer gives.
+     – preflight LOSES: it is element selectors (0,0,1), and every rule here carries a
+       class, an attribute or a pseudo-class — or two type selectors (`html kbd`).
+       Only preflight's own (0,1,0) rules win a tie: [hidden] (good — hidden stays
+       hidden), :disabled / [role=button] (cursor), [type=search], :-moz-focusring,
+       :-moz-ui-invalid. Nothing here sets those properties at (0,1,0).
+   • Every rule ships whether or not a class scan finds it, so a class added at
+     runtime (.export-light, .settled, html.reduce-motion) or built from a string
+     (`chip-${tone}`) is always there. A few KB, once.
+   House rules for this file, enforced by lib/theme-single-source.test.ts (which also
+   proves the cascade on both apps' compiled CSS): no @layer / @apply / @tailwind /
+   theme() / screen() (web compiles this file alone), and no selector that preflight
+   could out-rank (a bare `kbd`, `input`, `::placeholder`).
+
+   NOT here yet, on purpose: round 3 (band-tinted surfaces + a soft spotlight) sets
+   the LIGHTING — the .cone page beam, the conic wedges + halftone inside .lit, and
+   the ghost word behind .page-title. Everything structural is final. */
+
+/* ================= keyframes (referenced by name from classes + tailwind.preset.ts) ================= */
+@keyframes onair { 0%, 49% { opacity: 1; } 50%, 100% { opacity: .25; } }
+@keyframes ring-pulse { 0% { opacity: 0; transform: scaleY(.96); } 35% { opacity: 1; } 100% { opacity: 0; transform: scaleY(1.06); } }
+@keyframes next-invite { 0%, 100% { opacity: .2; } 50% { opacity: 1; } }
+@keyframes slam { 0% { opacity: 0; transform: translateX(-28px) skewX(-14deg) scale(1.12); } 60% { opacity: 1; } 100% { opacity: 1; transform: none; } }
+@keyframes sweep { 0% { transform: translateX(-140%) skewX(-20deg); } 100% { transform: translateX(380%) skewX(-20deg); } }
+@keyframes slam-y { from { transform: scaleY(0); } to { transform: scaleY(1); } }
+@keyframes rail-in { from { transform: scaleX(0); } to { transform: scaleX(1); } }
+@keyframes sheet-in { from { transform: translateY(100%); } to { transform: translateY(0); } }
+
+/* Reduced motion: everything stops, app-wide. `html.reduce-motion` is the same switch
+   for QA (and the mockup's "Motion: Reduced"). !important so no utility outlives it. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition-duration: 0ms !important; scroll-behavior: auto !important; }
+}
+html.reduce-motion *, html.reduce-motion *::before, html.reduce-motion *::after { animation: none !important; transition-duration: 0ms !important; }
+
+/* ---------------- type ---------------- */
+/* Display classes set font-synthesis: none so Thai inside them (Kanit, glyph by glyph)
+   renders upright Kanit 700 — never a fake oblique, never a faux 800. */
+.font-num { font-family: var(--font-num); font-variant-numeric: tabular-nums lining-nums; }
+.num  { font-family: var(--font-num); font-variant-numeric: tabular-nums lining-nums; font-weight: 700; letter-spacing: 0; }
+.disp { font-family: var(--font-display); font-weight: 800; letter-spacing: -.004em; font-synthesis: none; }          /* song / member names */
+.h1   { font-family: var(--font-display-x); font-style: italic; font-weight: 800; font-size: 56px; line-height: .84; letter-spacing: -.012em;
+        text-transform: uppercase; margin-left: -2px; padding-right: .08em; font-synthesis: none; }
+.h2   { font-family: var(--font-display-x); font-style: italic; font-weight: 800; font-size: 26px; line-height: 1; letter-spacing: .005em; text-transform: uppercase; font-synthesis: none; }
+.eyebrow { font-family: var(--font-display); font-size: 13px; line-height: 16px; font-weight: 700; letter-spacing: .16em; text-transform: uppercase; font-synthesis: none; }
+.key { display: inline-flex; align-items: center; }
+.key::before { content: ""; width: 4px; height: 13px; margin-right: 8px; background: hsl(var(--primary)); transform: skewX(-16deg); flex: none; }
+.caps { font-family: var(--font-display); font-weight: 800; letter-spacing: .05em; text-transform: uppercase; font-synthesis: none; }
+/* .en = "this label is English": opt-in display caps. Chips and seg items refine it below (more specific). */
+.en   { font-family: var(--font-display); font-weight: 800; letter-spacing: .05em; text-transform: uppercase; font-synthesis: none; }
+button.en, a.en, button .en, a .en { font-size: 16px; }
+.th   { font-family: var(--font-sans); font-style: normal; text-transform: none; letter-spacing: 0; }
+.poster { font-family: var(--font-display); font-weight: 800; line-height: 1.1; letter-spacing: -.004em; font-synthesis: none; }   /* kicker, as typed */
+.clamp-2 { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+/* Show name on a band parallelogram, one per line: --primary-foreground on --primary,
+   the pair lib/skin.ts holds at AA for every band (so no beam ever sits under text). */
+.title-slab { font-family: var(--font-display-x); font-style: italic; font-weight: 800; font-synthesis: none; letter-spacing: .004em;
+  color: hsl(var(--primary-foreground)); padding: 0 .3em 0 .2em; margin-left: -.04em;
+  background: linear-gradient(104deg, transparent .2em, hsl(var(--primary)) .2em calc(100% - .2em), transparent calc(100% - .2em));
+  -webkit-box-decoration-break: clone; box-decoration-break: clone; }
+.slab-line { line-height: 1.14; }
+.slab-line.thai { line-height: 1.28; }   /* Kanit's taller content box: at 1.14 the per-line slabs touch */
+.hero-num { font-family: var(--font-display-x); font-style: italic; font-weight: 800; font-size: 144px; line-height: .72; letter-spacing: -.02em;
+  font-variant-numeric: tabular-nums lining-nums; font-synthesis: none; }
+.hard-drop { text-shadow: .045em .04em 0 hsl(var(--primary) / .8); }   /* STATIC Home numeral only — never Live */
+.slam { display: inline-block; animation: slam var(--dur-hero) var(--ease-slam) 60ms 1 both; }
+
+/* Page title row. Its decorative ghost word (::before from data-ghost) and the clip
+   that crops it to the row arrive with round 3's lighting. */
+.page-title { position: relative; display: flex; align-items: flex-end; gap: 12px; padding-top: 6px; }
+
+/* ---------------- surfaces ---------------- */
+.slab  { background-color: hsl(var(--card)); border-radius: 2px; box-shadow: inset 0 0 0 1px hsl(var(--border)); }   /* = Card */
+.well  { background-color: hsl(var(--muted)); }
+.stack { display: flex; flex-direction: column; gap: 2px; }                                                    /* lists: slabs with 2px gaps, no divide-y */
+.cut   { clip-path: polygon(0 0, calc(100% - var(--cut)) 0, 100% var(--cut), 100% 100%, var(--cut) 100%, 0 calc(100% - var(--cut))); }
+/* A clip-path cuts any OUTER ring off, and ring = primary vanishes on a primary fill:
+   every chamfered control gets this inset two-tone ring instead. */
+.cut:focus-visible { outline: none; box-shadow: inset 0 0 0 2px hsl(var(--background)), inset 0 0 0 4px hsl(var(--foreground)); }
+
+/* ---------------- the one lit hero per screen ----------------
+   For now a plain card with the band key-line on top and the chamfer outline drawn
+   across the diagonals (two background layers — a clip-path would cut a border).
+   Round 3 sets its LIGHTING (the conic wedges + the halftone corner); the zone
+   variables below (--lit --key-w --rail --rail-b --wash-a --beam-k) are already the
+   ones it reads. */
+.lit { --lit-c: var(--lit, var(--primary)); position: relative; isolation: isolate; overflow: hidden;
+  background:
+    linear-gradient(45deg, transparent calc(50% - 1.5px), hsl(var(--foreground) / var(--edge-a)) calc(50% - 1.5px) 50%, transparent 50%) right top / var(--cut) var(--cut) no-repeat,
+    linear-gradient(45deg, transparent 50%, hsl(var(--foreground) / var(--edge-a)) 50% calc(50% + 1.5px), transparent calc(50% + 1.5px)) left bottom / var(--cut) var(--cut) no-repeat,
+    linear-gradient(hsl(var(--lit-c) / var(--wash-a, 0)), hsl(var(--lit-c) / var(--wash-a, 0))),
+    hsl(var(--card));
+  box-shadow:
+    inset 0 var(--key-w, 3px) 0 hsl(var(--lit-c)),
+    inset var(--rail, 0px) 0 0 hsl(var(--lit-c)),
+    inset calc(-1 * var(--rail, 0px)) 0 0 hsl(var(--lit-c)),
+    inset 0 calc(-1 * var(--rail-b, 0px)) 0 hsl(var(--lit-c)),
+    inset 0 0 0 1.5px hsl(var(--foreground) / var(--edge-a)); }
+.lit.sweep::after { content: ""; position: absolute; top: 0; bottom: 0; left: 0; width: 34%; z-index: -1; pointer-events: none;
+  background: hsl(var(--foreground) / .07); transform: translateX(-140%) skewX(-20deg); animation: sweep 1100ms var(--ease-out) 150ms 1 both; }
+.lit .eyebrow { color: hsl(var(--foreground)); }      /* band ink on a band beam is ~3:1 — band colour stays on the key bar */
+
+/* ---------------- Live NOW card: one shape, four zones, constant height (§G.10) ----------------
+   Zones restyle through element-scoped variables, never !important descendant overrides. */
+.now { --pad: 18px; padding-inline: var(--pad); }           /* stage: className "stage:[--pad:24px]" */
+.now.alarm-plate { --pad: 34px; }                             /* phone: plate is full-bleed (-mx-4), content stays on 16 + 18 */
+.zhead { height: 40px; margin: 0 calc(-1 * var(--pad, 18px)); padding: 0 var(--pad, 18px); display: flex; align-items: center; gap: 9px; position: relative; }
+.zhead.hazard-band { padding: 0; }
+.ztag { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 14px 0 11px; flex: none;
+  font-family: var(--font-display-x); font-style: italic; font-weight: 800; font-size: 21px; line-height: 1; letter-spacing: .04em; text-transform: uppercase; font-synthesis: none;
+  background: hsl(var(--primary)); color: hsl(var(--primary-foreground)); clip-path: polygon(7px 0, 100% 0, calc(100% - 7px) 100%, 0 100%); }
+.ztag svg { width: 17px; height: 17px; flex: none; }
+.zidx { color: hsl(var(--muted-foreground)); }
+.zthr { font-family: var(--font-num); font-variant-numeric: tabular-nums; font-weight: 800; }
+.zend { margin-left: auto; font-size: 12px; color: hsl(var(--muted-foreground)); white-space: nowrap; }
+.zend b { font: 700 16px/1 var(--font-num); font-variant-numeric: tabular-nums; color: hsl(var(--foreground)); margin-left: 3px; }
+/* WARN = frame step: tinted strip, solid tag, 4px amber key + rails; the card stays dark. */
+.now.zone-warn   { --lit: var(--warning); --key-w: 4px; --rail: 4px; --beam-k: .45; }
+.zone-warn .zhead { background: hsl(var(--warning) / .17); box-shadow: inset 0 -2px 0 hsl(var(--warning)); }
+.zone-warn .ztag  { background: hsl(var(--warning)); color: hsl(var(--warning-foreground)); }
+.zone-warn .zthr, .zone-warn .zidx { color: hsl(var(--warning-ink)); }
+/* URGENT = fill step: a striped amber plate slammed in ONCE (no blink — WCAG 2.2.2),
+   and a LOW-luminance amber wash, so dark URGENT is still a dark card. */
+.now.zone-urgent { --lit: var(--warning); --key-w: 0px; --rail: 8px; --rail-b: 4px; --beam-k: 0; --wash-a: var(--urgent-wash-a); }
+.zone-urgent .zhead { color: hsl(var(--warning-foreground)); transform-origin: top; animation: slam-y var(--dur-2) var(--ease-snap) 1;
+  background: repeating-linear-gradient(-55deg, transparent 0 9px, hsl(var(--warning-foreground) / .14) 9px 18px), hsl(var(--warning)); }
+.zone-urgent .ztag { background: hsl(var(--warning-foreground)); color: hsl(var(--warning)); font-size: 23px; }
+.zone-urgent .zidx, .zone-urgent .zend, .zone-urgent .zend b, .zone-urgent .zthr { color: hsl(var(--warning-foreground)); }
+.zone-warn .cd, .zone-urgent .cd { color: hsl(var(--warning-ink)); }
+
+/* ---------------- glass: the app header + tab bar, or Live's top bar + dock. Nothing else. ---------------- */
+.glass { background-color: hsl(var(--background) / var(--glass-a)); -webkit-backdrop-filter: saturate(1.4) blur(18px); backdrop-filter: saturate(1.4) blur(18px); }
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) { .glass { background-color: hsl(var(--background) / .97); } }
+.glass-top    { box-shadow: inset 0 -1px 0 hsl(var(--foreground) / .08); }
+.glass-bottom { box-shadow: inset 0 1px 0 hsl(var(--foreground) / .08); }
+
+/* ---------------- segmented ---------------- */
+.seg { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; padding: 3px; border-radius: 3px; background-color: hsl(var(--muted)); box-shadow: inset 0 0 0 1px hsl(var(--border)); }
+.seg > * { height: 38px; display: flex; align-items: center; justify-content: center; gap: 5px; border-radius: 2px; white-space: nowrap; padding: 0 6px;
+  font-family: var(--font-sans); font-size: 14px; font-weight: 600; color: hsl(var(--muted-foreground)); }
+.seg.en > *, .seg > .en { font-family: var(--font-display); font-size: 15px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; font-synthesis: none; }
+.seg > .th { font-family: var(--font-sans); font-size: 14px; font-weight: 600; letter-spacing: 0; text-transform: none; }
+.seg > [data-state=active], .seg > .on { background-color: hsl(var(--foreground)); color: hsl(var(--background)); }
+.seg.sm > * { height: 30px; }
+.seg.sm.en > *, .seg.sm > .en { font-size: 13.5px; }
+.seg.quiet > [data-state=active], .seg.quiet > .on { background-color: hsl(var(--foreground) / .14); color: hsl(var(--foreground)); box-shadow: inset 0 -2px 0 hsl(var(--foreground) / .55); }
+
+/* ---------------- chips (ALWAYS icon + word) ---------------- */
+.chip { display: inline-flex; align-items: center; gap: 5px; height: 24px; padding: 0 8px 0 6px; border-radius: 2px; white-space: nowrap; line-height: 1;
+  font-family: var(--font-sans); font-size: 12.5px; font-weight: 600; }
+.chip.en { font-family: var(--font-display); font-size: 13px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; font-synthesis: none; }
+.chip svg { width: 13px; height: 13px; flex: none; }
+.chip-success { background-color: hsl(var(--success) / .16); color: hsl(var(--success-ink)); }
+.chip-warning { background-color: hsl(var(--warning) / .16); color: hsl(var(--warning-ink)); }
+.chip-info    { background-color: hsl(var(--info) / .15); color: hsl(var(--info-ink)); }
+.chip-neutral { background-color: hsl(var(--muted)); color: hsl(var(--muted-foreground)); box-shadow: inset 0 0 0 1px hsl(var(--border)); }
+.chip-primary { background-color: hsl(var(--primary)); color: hsl(var(--primary-foreground)); }      /* solid band: AA for every preset */
+.chip-danger  { background-color: hsl(var(--destructive) / .14); color: hsl(var(--foreground)); }
+.chip-danger svg { color: hsl(var(--destructive)); }
+.chip-alarm   { background-color: hsl(var(--alarm)); color: hsl(var(--alarm-foreground)); }
+.chip-solid   { background-color: hsl(var(--foreground)); color: hsl(var(--background)); }          /* selected filter */
+.chip-lg { height: 44px; padding: 0 11px 0 9px; font-size: 13.5px; gap: 6px; }                       /* every TAPPABLE chip */
+.chip-lg svg { width: 16px; height: 16px; }
+
+/* ---------------- setlist kinds: lightness + icon + word ---------------- */
+.kind { width: 36px; height: 36px; border-radius: 2px; display: grid; place-items: center; flex: none; }
+.kind svg { width: 17px; height: 17px; }
+.kind-song { background-color: hsl(var(--primary) / .2); color: hsl(var(--primary-ink)); box-shadow: inset 2px 0 0 hsl(var(--primary)); }
+.kind-se   { color: hsl(var(--muted-foreground)); box-shadow: inset 0 0 0 1.5px hsl(var(--foreground) / .22); }     /* SE, INST */
+.kind-mc   { background-color: hsl(var(--foreground) / .1); color: hsl(var(--foreground)); }                        /* MC, GUEST */
+.kind-int  { color: hsl(var(--muted-foreground)); border: 1.5px dashed hsl(var(--foreground) / .25); }              /* INT / VTR */
+
+/* ---------------- meters ---------------- */
+.track { position: relative; height: 8px; background: hsl(var(--foreground) / .12); }
+.track > span { position: absolute; inset: 0 auto 0 0; background-color: hsl(var(--primary)); }
+/* Pre-painted: tint over the last `warn` seconds, hatch over the last `urgent`, amber ticks at both. */
+.track.zoned { background:
+    repeating-linear-gradient(90deg, hsl(var(--warning) / .9) 0 2px, transparent 2px 5px) right / calc(100% - var(--uz)) 100% no-repeat,
+    linear-gradient(hsl(var(--warning) / .3), hsl(var(--warning) / .3)) right / calc(100% - var(--wz)) 100% no-repeat,
+    hsl(var(--foreground) / .12); }
+.track.zoned::before, .track.zoned::after { content: ""; position: absolute; top: -5px; bottom: -5px; z-index: 1; background: hsl(var(--warning-ink)); }
+.track.zoned::before { left: var(--wz); width: 2px; }
+.track.zoned::after  { left: var(--uz); width: 3px; }
+.track.warn > span   { background-color: hsl(var(--warning)); }
+.track.urgent > span { background: repeating-linear-gradient(90deg, hsl(var(--warning)) 0 10px, transparent 10px 13px); }
+.dna { display: flex; gap: 2px; height: 10px; overflow: hidden; background-color: hsl(var(--foreground) / .1); position: relative; }
+.hatch { background-image: repeating-linear-gradient(-45deg, hsl(var(--alarm-foreground)) 0 3px, hsl(var(--alarm)) 3px 6px); }
+
+/* ---------------- countdown: fitted to its column, never italic / glowing / ghost-digited ---------------- */
+.cd-wrap { container-type: inline-size; }
+.cd { font-family: var(--font-num); font-variant-numeric: tabular-nums lining-nums; font-weight: 800; line-height: .8; letter-spacing: -.01em; text-align: center; white-space: nowrap;
+  font-size: min(var(--cd-max, 164px), calc(100cqi / var(--cd-em, 1.84))); }
+.cd[data-len="5"] { --cd-em: 2.38; }
+.cd[data-len="6"] { --cd-em: 2.78; }
+.cd[data-len="7"] { --cd-em: 3.18; }
+.cd .plus { font-size: .8em; vertical-align: .06em; margin-right: .02em; }
+
+/* ---------------- overtime: the luminance flip, identical for every band ---------------- */
+.alarm-plate { position: relative; background-color: hsl(var(--alarm)); color: hsl(var(--alarm-foreground)); }
+/* Element-scoped: children (fade buttons, chips) flip with the plate. */
+.alarm-plate:not(.settled) { --foreground: var(--alarm-foreground); --muted-foreground: var(--alarm-foreground); --faint-foreground: var(--alarm-foreground);
+  --muted: var(--alarm); --border: var(--alarm-foreground); --card: var(--alarm); }
+.alarm-plate::after { content: ""; position: absolute; inset: -8px 0; border-top: 4px solid hsl(var(--alarm)); border-bottom: 4px solid hsl(var(--alarm));
+  opacity: 0; pointer-events: none; animation: ring-pulse 900ms var(--ease-out) 3; }
+.alarm-plate.settled::after, .alarm-plate.static::after { animation: none; opacity: 0; }
+.alarm-plate.settled { background-color: hsl(var(--card)); color: hsl(var(--foreground)); box-shadow: inset 0 0 0 5px hsl(var(--alarm)); }
+.hazard-band { height: 40px; display: flex; align-items: center; justify-content: center;
+  background: repeating-linear-gradient(-45deg, hsl(var(--alarm-foreground)) 0 10px, hsl(var(--alarm)) 10px 20px); }
+.hazard-band > span { display: inline-flex; align-items: center; gap: 7px; height: 28px; padding: 0 18px; background: hsl(var(--alarm)); color: hsl(var(--alarm-foreground));
+  font-family: var(--font-display-x); font-style: italic; font-weight: 800; font-size: 17px; letter-spacing: .12em; text-transform: uppercase; font-synthesis: none;
+  clip-path: polygon(8px 0, 100% 0, calc(100% - 8px) 100%, 0 100%); }
+/* Hazard rails under the Live top bar and above the dock, plus a 3px alarm edge round
+   the screen. Each can be dropped by removing its selector if it proves too much. */
+.zone-over .live-top::after, .zone-over .dock::before { content: ""; position: absolute; left: 0; right: 0; height: 6px; transform-origin: left; pointer-events: none;
+  background: repeating-linear-gradient(-45deg, hsl(var(--alarm)) 0 8px, hsl(var(--alarm-foreground)) 8px 16px); animation: rail-in var(--dur-2) var(--ease-snap) 1; }
+.zone-over .live-top::after { bottom: -6px; }
+.zone-over .dock::before    { top: -6px; }
+.zone-over.live-root::after { content: ""; position: fixed; inset: 0; z-index: 60; pointer-events: none; box-shadow: inset 0 0 0 3px hsl(var(--alarm)); }  /* screen edge */
+.next-invite { position: relative; }
+/* The invite ring sits INSIDE the chamfer (inset 5px, clipped by the same polygon). */
+.next-invite::after { content: ""; position: absolute; inset: 5px; border: 2.5px solid hsl(var(--primary-foreground)); opacity: .2; pointer-events: none;
+  clip-path: polygon(0 0, calc(100% - 9px) 0, 100% 9px, 100% 100%, 9px 100%, 0 calc(100% - 9px)); animation: next-invite 1.2s var(--ease-in-out) infinite; }
+html.reduce-motion .next-invite::after { opacity: .9; }
+@media (prefers-reduced-motion: reduce) { .next-invite::after { opacity: .9; } }   /* ring still there, static */
+
+.onair-tag { display: inline-flex; align-items: center; gap: 6px; height: 20px; padding: 0 11px 0 9px; flex: none; background: hsl(var(--primary)); color: hsl(var(--primary-foreground));
+  font-family: var(--font-display-x); font-style: italic; font-weight: 800; font-size: 13.5px; letter-spacing: .1em; text-transform: uppercase; font-synthesis: none;
+  clip-path: polygon(5px 0, 100% 0, calc(100% - 5px) 100%, 0 100%); }
+.onair-tag i { width: 6px; height: 6px; background: currentColor; animation: onair 1.2s steps(1) infinite; }   /* static <i> when not running */
+.onair-dot { width: 8px; height: 8px; background-color: hsl(var(--primary)); animation: onair 1.2s steps(1) infinite; flex: none; }
+.nlabel { font-family: var(--font-display-x); font-style: italic; font-weight: 800; font-size: 22px; line-height: 1; letter-spacing: .03em; text-transform: uppercase; font-synthesis: none; color: hsl(var(--muted-foreground)); }
+
+/* ---------------- ticket ---------------- */
+.ticket { --stub-h: 126px;
+  -webkit-mask: radial-gradient(circle 11px at 0 calc(100% - var(--stub-h)), #0000 97%, #000) left / 51% 100% no-repeat,
+                radial-gradient(circle 11px at 100% calc(100% - var(--stub-h)), #0000 97%, #000) right / 51% 100% no-repeat;
+          mask: radial-gradient(circle 11px at 0 calc(100% - var(--stub-h)), #0000 97%, #000) left / 51% 100% no-repeat,
+                radial-gradient(circle 11px at 100% calc(100% - var(--stub-h)), #0000 97%, #000) right / 51% 100% no-repeat; }
+.perf { height: 0; border-top: 2px dashed hsl(var(--foreground) / .2); margin: 0 18px; }
+.stub { --notch-x: 72px;
+  -webkit-mask: radial-gradient(circle 7px at var(--notch-x) 0, #0000 96%, #000) top / 100% 51% no-repeat,
+                radial-gradient(circle 7px at var(--notch-x) 100%, #0000 96%, #000) bottom / 100% 51% no-repeat;
+          mask: radial-gradient(circle 7px at var(--notch-x) 0, #0000 96%, #000) top / 100% 51% no-repeat,
+                radial-gradient(circle 7px at var(--notch-x) 100%, #0000 96%, #000) bottom / 100% 51% no-repeat; }
+.date-tile { width: 72px; flex: none; display: flex; flex-direction: column; align-items: center; justify-content: center; color: #fff;
+  background: linear-gradient(hsl(0 0% 0% / .3), hsl(0 0% 0% / .3)), hsl(var(--band)); }      /* solid band block, darkened 30%: white holds on any group colour */
+.date-tile .eyebrow { color: hsl(0 0% 100% / .9); letter-spacing: .12em; }
+
+/* ---------------- tab bar ---------------- */
+.tab { position: relative; display: flex; flex-direction: column; align-items: center; justify-content: flex-start; gap: 4px; padding-top: 9px; color: hsl(var(--faint-foreground)); }
+.tab .ico { position: relative; display: grid; place-items: center; height: 26px; }
+.tab[aria-current=page] { color: hsl(var(--foreground)); }
+.tab[aria-current=page] .ico { color: hsl(var(--primary-ink)); }
+.tab[aria-current=page]::before { content: ""; position: absolute; top: 0; left: 20%; right: 20%; height: 3px; background: hsl(var(--primary)); }
+.tab .lbl { font: 800 12.5px/1 var(--font-display); letter-spacing: .13em; text-transform: uppercase; }
+/* --notify is one fixed red for every band; the 2px background ring parts it from a red band. */
+.dot { position: absolute; width: 9px; height: 9px; border-radius: 99px; background: hsl(var(--notify)); box-shadow: 0 0 0 2px hsl(var(--background)); }
+.badge { position: absolute; top: 6px; right: 5px; min-width: 18px; height: 18px; padding: 0 4px; border-radius: 99px; font: 700 13px/18px var(--font-num); text-align: center;
+  background-color: hsl(var(--notify)); color: hsl(var(--notify-foreground)); box-shadow: 0 0 0 2px hsl(var(--background)); }
+
+/* ---------------- misc ---------------- */
+.mic { position: relative; overflow: hidden; border-radius: 2px; text-align: center; padding: 6px 2px 5px; background-color: hsl(var(--muted)); }
+.mic > i { position: absolute; inset: 0 0 auto 0; height: 4px; }      /* style="background: member.color" */
+.mic.off { opacity: .35; }
+.brand-mark { width: 30px; height: 30px; border-radius: 2px; display: grid; place-items: center; color: hsl(var(--primary-foreground)); background: hsl(var(--primary)); flex: none; }
+.mini { background: linear-gradient(90deg, hsl(var(--primary) / .32), hsl(var(--primary) / .06) 70%), hsl(var(--popover)); border-radius: 3px; overflow: hidden;
+  box-shadow: inset 0 0 0 1px hsl(var(--border)), 0 18px 40px -16px hsl(var(--shadow) / var(--shadow-a)); }
+/* `html kbd`, not `kbd`: this file sits above preflight, whose own `kbd` rule (font
+   family + size) would win a tie. (0,0,2) beats it and still loses to any utility. */
+html kbd { font: 700 12px/1 var(--font-display); letter-spacing: .06em; padding: 4px 6px; border-radius: 2px; background: hsl(var(--foreground) / .1); }
+
+/* Native range (Live scrubber/volume, practice scrubber, metronome, desktop my-show):
+   square, NEVER skewed — a transform would skew its hit-testing too. */
+input[type=range] { -webkit-appearance: none; appearance: none; height: 24px; background: transparent; accent-color: hsl(var(--primary)); }
+input[type=range]::-webkit-slider-runnable-track { height: 6px; background: hsl(var(--foreground) / .12); }
+input[type=range]::-moz-range-track { height: 6px; background: hsl(var(--foreground) / .12); }
+input[type=range]::-moz-range-progress { height: 6px; background: hsl(var(--primary)); }
+input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 8px; height: 24px; margin-top: -9px; border-radius: 1px; background: hsl(var(--foreground)); box-shadow: 0 0 0 2px hsl(var(--card)); }
+input[type=range]::-moz-range-thumb { width: 8px; height: 24px; border: 0; border-radius: 1px; background: hsl(var(--foreground)); box-shadow: 0 0 0 2px hsl(var(--card)); }
+input[type=range]:focus-visible { outline: 2px solid hsl(var(--ring)); outline-offset: 4px; }
+
+/* Export guard (§D): a captured node is flat and upright even if a display class slips
+   into it. Titles in a capture use .poster, numerals .num. */
+.export-light :is(.h1, .h2, .title-slab, .hero-num, .ztag, .nlabel) { font-style: normal; }
+.export-light .title-slab { background: none; color: inherit; padding: 0; }

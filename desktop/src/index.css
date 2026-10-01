@@ -3,18 +3,29 @@
 @import "@fontsource/kanit/500.css";
 @import "@fontsource/kanit/600.css";
 @import "@fontsource/kanit/700.css";
+/* Barlow Condensed: numerals + English display. Exactly the three faces the web's two
+   next/font loaders ship (app/layout.tsx) — 700 + 800 upright, 800 italic. */
+@import "@fontsource/barlow-condensed/700.css";
+@import "@fontsource/barlow-condensed/800.css";
+@import "@fontsource/barlow-condensed/800-italic.css";
 
 /* Tokens + print sheet: the web app's own file, not a copy (the copy drifted). */
 @import "../../app/theme.css";
+/* Component classes + keyframes, shared with the web the same way (see its header). */
+@import "../../app/stage.css";
 
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
-/* next/font sets this on web; here it names the bundled @fontsource family above.
-   theme.css builds --font-sans on top of it. */
+/* next/font sets these on web; here they name the bundled @fontsource families above.
+   theme.css builds --font-sans / --font-num / --font-display(-x) on top of them. On
+   web the italic is a SEPARATE next/font family, so it gets its own variable; here
+   one family carries all three faces and both variables name it. */
 :root {
   --font-kanit: "Kanit";
+  --font-barlow: "Barlow Condensed";
+  --font-barlow-x: "Barlow Condensed";
 }
 
 /* Must follow @tailwind base, so it cannot move into theme.css — see app/globals.css. */

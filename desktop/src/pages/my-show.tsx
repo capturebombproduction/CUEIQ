@@ -768,10 +768,13 @@ export function MyShow() {
   // Warning ladder (lib/live-zone): warn/urgent scale to the item's own block.
   const zoneBlock = current ? blockSeconds(current) : 0;
   const zone = liveZone({ running: state.running, remaining, blockSec: zoneBlock });
-  // warn/urgent wear the old amber/red until the visual redesign lands.
+  // warn/urgent wear the old amber/red until the Live slice lands. The red is the
+  // FIXED one (--notify), never --destructive: a band skin moves --destructive off
+  // a red band's hue (Seishin's turns violet), and the ladder must read the same
+  // on every band's device. lib/skin.test.ts reads this map and holds it to that.
   const zoneClasses = {
-    over: "bg-destructive text-destructive-foreground animate-pulse-ring",
-    urgent: "bg-destructive text-destructive-foreground",
+    over: "bg-notify text-notify-foreground animate-pulse-ring",
+    urgent: "bg-notify text-notify-foreground",
     warn: "bg-warning text-warning-foreground",
     ok: "bg-card text-foreground",
   }[zone];

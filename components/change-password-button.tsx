@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { KeyRound, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { createClient } from "@/lib/supabase/client";
@@ -25,6 +25,36 @@ import {
  */
 export function ChangePasswordButton() {
   const [open, setOpen] = useState(false);
+  return (
+    <>
+      <Button
+        variant="ghost"
+        size="icon"
+        title="เปลี่ยนรหัสผ่าน"
+        onClick={() => setOpen(true)}
+      >
+        <KeyRound className="h-4 w-4" />
+        <span className="sr-only">เปลี่ยนรหัสผ่าน</span>
+      </Button>
+      <ChangePasswordDialog open={open} onOpenChange={setOpen} />
+    </>
+  );
+}
+
+/**
+ * The dialog on its own, opened by whoever owns `open`. The account panel needs
+ * this split: its "Change password" row closes the panel and opens this, so the
+ * dialog must live OUTSIDE the panel's contents, which unmount when it closes.
+ * Every open starts from empty fields, as the button always did.
+ */
+export function ChangePasswordDialog({
+  open,
+  onOpenChange,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}) {
+  const setOpen = onOpenChange;
   const [cur, setCur] = useState("");
   const [next, setNext] = useState("");
   const [confirm, setConfirm] = useState("");
@@ -78,21 +108,16 @@ export function ChangePasswordButton() {
     }
   }
 
+  // Opening is the "clear" moment now that the opener is not this component.
+  useEffect(() => {
+    if (!open) return;
+    setCur("");
+    setNext("");
+    setConfirm("");
+  }, [open]);
+
   return (
     <>
-      <Button
-        variant="ghost"
-        size="icon"
-        title="เปลี่ยนรหัสผ่าน"
-        onClick={() => {
-          clear();
-          setOpen(true);
-        }}
-      >
-        <KeyRound className="h-4 w-4" />
-        <span className="sr-only">เปลี่ยนรหัสผ่าน</span>
-      </Button>
-
       <Dialog open={open} onOpenChange={(o) => !busy && setOpen(o)}>
         <DialogContent>
           <DialogHeader>

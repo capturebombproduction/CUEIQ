@@ -94,97 +94,104 @@ function dropAuthCookies(): void {
   }
 }
 
-export function SignOutButton() {
+/**
+ * The whole sign-out, every guard included, as one handler — so the account panel's
+ * "Sign out" row and the plain button below run the same code. The row is not a
+ * restyled SignOutButton because its markup (icon tile, title, helper) is not a
+ * button variant; a second copy of these guards would be the thing that drifts.
+ */
+export function useSignOut(): () => Promise<void> {
   const router = useRouter();
+  return async () => {
+    // Sign-out navigates programmatically, so Live Mode's <a>/beforeunload exit
+    // guard can't intercept it — confirm here too so a mid-show tap can't drop
+    // the operator to /login and cut a running show without warning.
+    if (
+      isLiveShowActive() &&
+      !window.confirm(
+        "กำลังรันโชว์อยู่ — ออกจากระบบตอนนี้จะหยุดเสียงและออกจากโชว์ ยืนยันไหม?"
+      )
+    ) {
+      return;
+    }
+    // Same blind spot, different loss: an event edit that has not landed. The
+    // workspace's anchor guard cannot see a router.replace either, so ask here
+    // — after committing whatever field still holds focus, so the ordinary
+    // "typed, then hit sign out" saves instead of warning.
+    // Snapshot first: pressing this button blurs the field you were in, which
+    // STARTS a save. Asking about that write would put a dialog in front of
+    // every sign-out (see lib/dirty-guard.ts unsavedWorkMessageFor).
+    const beforeUnsaved = unsavedWork();
+    commitFocusedField();
+    const unsaved = unsavedWorkMessageFor(beforeUnsaved, "signout");
+    if (unsaved && !window.confirm(unsaved)) return;
+    // NOT acknowledged yet — two branches below still abort the sign-out (the
+    // queued-outbox prompt, and a signOut that leaves the session alive). If
+    // the flag were cleared here, a person who backed out would still be in the
+    // app with a stage time that never saved and NOTHING would warn them again.
+    // Shared band machine: a desktop sign-out wipes the offline management
+    // outbox, so writes made at a no-internet venue would vanish before they
+    // ever reached the server. Nothing here is recoverable — ask first, and
+    // default to staying signed in. (Web: no outbox → count is 0 → no prompt.)
+    const queued = await countQueuedMgmtWork();
+    if (
+      queued > 0 &&
+      !window.confirm(
+        `มีงานค้างซิงค์ ${queued} รายการที่ยังไม่ขึ้นออนไลน์ — ออกจากระบบตอนนี้จะทิ้งทั้งหมดและกู้คืนไม่ได้ (ต่อเน็ตแล้วกดชิป "ค้างซิงค์" ให้ซิงค์ก่อนดีกว่า) ยืนยันไหม?`
+      )
+    ) {
+      return;
+    }
+    // Release this device's push subscription while the session (RLS) is
+    // still alive — best-effort, never throws (see push-cleanup.ts).
+    await cleanupPushOnSignOut();
+    const supabase = createClient();
+    const { error } = await supabase.auth.signOut();
+    if (error) {
+      // Dead network (offline venue): auth-js keeps the local session when
+      // the server /logout call fails, so the tap would silently do nothing
+      // — and the desktop's SIGNED_OUT cache/outbox wipe (shared band
+      // machines, see desktop/src/App.tsx) would never run. Drop the
+      // persisted session ourselves — the desktop client keeps it in
+      // localStorage under sb-<ref>-auth-token, the WEB client keeps it in
+      // cookies of the same name — a local-scope signOut then finds no access
+      // token, skips the server, and DOES emit SIGNED_OUT — same end state as
+      // an online sign-out, minus the server-side revoke.
+      try {
+        for (let i = window.localStorage.length - 1; i >= 0; i--) {
+          const k = window.localStorage.key(i);
+          if (k && /^sb-.+-auth-token/.test(k)) window.localStorage.removeItem(k);
+        }
+      } catch {
+        /* unreadable storage — the local signOut below still tries */
+      }
+      dropAuthCookies();
+      await supabase.auth.signOut({ scope: "local" }).catch(() => {});
+      // If the session somehow survived all of that, going to /login would
+      // just bounce off the middleware back to /dashboard (still signed in) —
+      // which looks like the tap did nothing, on a device that is about to
+      // change hands. Say so instead of pretending it worked.
+      const stillOn = await supabase.auth
+        .getSession()
+        .then(({ data }) => !!data.session)
+        .catch(() => false);
+      if (stillOn) {
+        toast.error("ออกจากระบบไม่สำเร็จ — ยังเข้าใช้งานด้วยบัญชีเดิมอยู่ ลองใหม่อีกครั้ง");
+        return;
+      }
+    }
+    // Past every bail-out: the sign-out is happening. Only NOW forget the
+    // failed write — the person has been told and has chosen to go.
+    if (unsaved) acknowledgeUnsavedWork();
+    router.replace("/login");
+    router.refresh();
+  };
+}
+
+export function SignOutButton() {
+  const signOut = useSignOut();
   return (
-    <Button
-      variant="ghost"
-      size="sm"
-      onClick={async () => {
-        // Sign-out navigates programmatically, so Live Mode's <a>/beforeunload exit
-        // guard can't intercept it — confirm here too so a mid-show tap can't drop
-        // the operator to /login and cut a running show without warning.
-        if (
-          isLiveShowActive() &&
-          !window.confirm(
-            "กำลังรันโชว์อยู่ — ออกจากระบบตอนนี้จะหยุดเสียงและออกจากโชว์ ยืนยันไหม?"
-          )
-        ) {
-          return;
-        }
-        // Same blind spot, different loss: an event edit that has not landed. The
-        // workspace's anchor guard cannot see a router.replace either, so ask here
-        // — after committing whatever field still holds focus, so the ordinary
-        // "typed, then hit sign out" saves instead of warning.
-        // Snapshot first: pressing this button blurs the field you were in, which
-        // STARTS a save. Asking about that write would put a dialog in front of
-        // every sign-out (see lib/dirty-guard.ts unsavedWorkMessageFor).
-        const beforeUnsaved = unsavedWork();
-        commitFocusedField();
-        const unsaved = unsavedWorkMessageFor(beforeUnsaved, "signout");
-        if (unsaved && !window.confirm(unsaved)) return;
-        // NOT acknowledged yet — two branches below still abort the sign-out (the
-        // queued-outbox prompt, and a signOut that leaves the session alive). If
-        // the flag were cleared here, a person who backed out would still be in the
-        // app with a stage time that never saved and NOTHING would warn them again.
-        // Shared band machine: a desktop sign-out wipes the offline management
-        // outbox, so writes made at a no-internet venue would vanish before they
-        // ever reached the server. Nothing here is recoverable — ask first, and
-        // default to staying signed in. (Web: no outbox → count is 0 → no prompt.)
-        const queued = await countQueuedMgmtWork();
-        if (
-          queued > 0 &&
-          !window.confirm(
-            `มีงานค้างซิงค์ ${queued} รายการที่ยังไม่ขึ้นออนไลน์ — ออกจากระบบตอนนี้จะทิ้งทั้งหมดและกู้คืนไม่ได้ (ต่อเน็ตแล้วกดชิป "ค้างซิงค์" ให้ซิงค์ก่อนดีกว่า) ยืนยันไหม?`
-          )
-        ) {
-          return;
-        }
-        // Release this device's push subscription while the session (RLS) is
-        // still alive — best-effort, never throws (see push-cleanup.ts).
-        await cleanupPushOnSignOut();
-        const supabase = createClient();
-        const { error } = await supabase.auth.signOut();
-        if (error) {
-          // Dead network (offline venue): auth-js keeps the local session when
-          // the server /logout call fails, so the tap would silently do nothing
-          // — and the desktop's SIGNED_OUT cache/outbox wipe (shared band
-          // machines, see desktop/src/App.tsx) would never run. Drop the
-          // persisted session ourselves — the desktop client keeps it in
-          // localStorage under sb-<ref>-auth-token, the WEB client keeps it in
-          // cookies of the same name — a local-scope signOut then finds no access
-          // token, skips the server, and DOES emit SIGNED_OUT — same end state as
-          // an online sign-out, minus the server-side revoke.
-          try {
-            for (let i = window.localStorage.length - 1; i >= 0; i--) {
-              const k = window.localStorage.key(i);
-              if (k && /^sb-.+-auth-token/.test(k)) window.localStorage.removeItem(k);
-            }
-          } catch {
-            /* unreadable storage — the local signOut below still tries */
-          }
-          dropAuthCookies();
-          await supabase.auth.signOut({ scope: "local" }).catch(() => {});
-          // If the session somehow survived all of that, going to /login would
-          // just bounce off the middleware back to /dashboard (still signed in) —
-          // which looks like the tap did nothing, on a device that is about to
-          // change hands. Say so instead of pretending it worked.
-          const stillOn = await supabase.auth
-            .getSession()
-            .then(({ data }) => !!data.session)
-            .catch(() => false);
-          if (stillOn) {
-            toast.error("ออกจากระบบไม่สำเร็จ — ยังเข้าใช้งานด้วยบัญชีเดิมอยู่ ลองใหม่อีกครั้ง");
-            return;
-          }
-        }
-        // Past every bail-out: the sign-out is happening. Only NOW forget the
-        // failed write — the person has been told and has chosen to go.
-        if (unsaved) acknowledgeUnsavedWork();
-        router.replace("/login");
-        router.refresh();
-      }}
-    >
+    <Button variant="ghost" size="sm" onClick={signOut}>
       <LogOut className="h-4 w-4" />
       <span className="hidden sm:inline">ออกจากระบบ</span>
     </Button>

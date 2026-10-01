@@ -5,7 +5,7 @@
 //  · "อยากให้สามารถเพิ่มรูปในที่ส่งฟีดแบคได้"
 //  · seeing that someone read it — five reports sat unanswered for two months.
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, fireEvent, waitFor, cleanup } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, cleanup, act } from "@testing-library/react";
 import { makeSupabaseFake, ok, fail, type SupabaseFake } from "@/test/fakes/supabase";
 
 const h = vi.hoisted(() => ({
@@ -23,17 +23,29 @@ vi.mock("@/lib/audio-remote", async (orig) => {
   return { ...real, uploadEventAudio: h.upload, fetchImageBlob: h.fetchImage };
 });
 
-import { FeedbackButton } from "@/components/feedback-button";
+import {
+  FeedbackButton,
+  FeedbackUnreadProvider,
+  useFeedbackUnread,
+} from "@/components/feedback-button";
 
 const TENANT = "22222222-2222-4222-8222-222222222222";
 const ME = "33333333-3333-4333-8333-333333333333";
 
 let supa: SupabaseFake;
 
+/** The tile as the shells mount it: inside the one FeedbackUnreadProvider, whose
+ *  read is the FIRST scripted feedback call (the unread probe). */
+const tile = () => (
+  <FeedbackUnreadProvider userId={ME}>
+    <FeedbackButton userId={ME} tenantId={TENANT} />
+  </FeedbackUnreadProvider>
+);
+
 function mountWith(feedbackScript: unknown) {
   supa = makeSupabaseFake({ script: { feedback: feedbackScript as never } });
   h.supa = supa;
-  return render(<FeedbackButton userId={ME} tenantId={TENANT} floating />);
+  return render(tile());
 }
 
 const png = (name = "shot.png", bytes = 10) =>
@@ -92,7 +104,7 @@ describe("attaching a screenshot", () => {
       },
     });
     h.supa = supa;
-    render(<FeedbackButton userId={ME} tenantId={TENANT} floating />);
+    render(tile());
     openDialog();
     fireEvent.change(screen.getByLabelText("รายละเอียด"), { target: { value: "ทดสอบ" } });
     fireEvent.change(document.querySelector('input[type="file"]') as HTMLInputElement, {
@@ -214,5 +226,61 @@ describe("hearing back", () => {
     fireEvent.click(screen.getByTestId("feedback-tab-mine"));
     expect(await screen.findByText("ยังไม่มีคำตอบ")).toBeTruthy();
     expect(screen.queryByTestId("feedback-reply")).toBeNull();
+  });
+});
+
+// Since the redesign the count is not the tile's own: the floating button that
+// used to fetch it is gone, and the tile only exists while the More sheet is open.
+// FeedbackUnreadProvider holds it once for the shell; the More tab, the header
+// avatar and this tile all read it.
+describe("one unread count for the whole shell", () => {
+  const replied = {
+    id: "f1",
+    category: "bug",
+    message: "งานมี 2 ชุด",
+    status: "open",
+    created_at: "2026-08-15T10:00:00Z",
+    reply: "แก้ให้แล้วครับ",
+    replied_at: "2026-08-31T09:00:00Z",
+    reply_seen_at: null,
+    images: null,
+  };
+  /** Stands in for the More tab's dot: a second reader of the same count. */
+  function MoreDot() {
+    const n = useFeedbackUnread();
+    return <span data-testid="more-dot-probe">{n}</span>;
+  }
+
+  it("says it in words on the tile, not only with a dot", async () => {
+    mountWith(ok([{ id: "f1" }, { id: "f2" }]));
+    const t = await screen.findByTitle("มีคำตอบจากทีมงาน");
+    expect(t).toHaveTextContent("มีคำตอบใหม่ 2");
+  });
+
+  it("clears the shell's count — not just the tile's — once the answer is read", async () => {
+    supa = makeSupabaseFake({
+      script: { feedback: [ok([{ id: "f1" }]), ok([replied]), ok([{ id: "f1" }])] as never },
+    });
+    h.supa = supa;
+    render(
+      <FeedbackUnreadProvider userId={ME}>
+        <MoreDot />
+        <FeedbackButton userId={ME} tenantId={TENANT} />
+      </FeedbackUnreadProvider>
+    );
+    await waitFor(() => expect(screen.getByTestId("more-dot-probe")).toHaveTextContent("1"));
+    openDialog();
+    fireEvent.click(screen.getByTestId("feedback-tab-mine"));
+    await screen.findByTestId("feedback-reply");
+    await waitFor(() => expect(screen.getByTestId("more-dot-probe")).toHaveTextContent("0"));
+    expect(screen.queryByTestId("feedback-unread-dot")).toBeNull();
+  });
+
+  it("asks the server once, from the provider — the tile does not fetch on its own", async () => {
+    supa = makeSupabaseFake({ script: { feedback: ok([]) as never } });
+    h.supa = supa;
+    render(<FeedbackButton userId={ME} tenantId={TENANT} />);
+    await act(async () => {});
+    expect(supa.query.calls.filter((c) => c.table === "feedback")).toHaveLength(0);
   });
 });

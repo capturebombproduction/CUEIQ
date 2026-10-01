@@ -1,7 +1,10 @@
 "use client";
 
 import * as React from "react";
+import { Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { hasThai } from "@/lib/thai";
 import {
   Dialog,
   DialogContent,
@@ -77,6 +80,7 @@ export function ConfirmProvider({ children }: { children: React.ReactNode }) {
   // text matches exactly (trimmed) — a stray tap can't fire a cascading delete.
   const needsTyping = !!opts?.requireTyped;
   const canConfirm = !needsTyping || typed.trim() === opts!.requireTyped!.trim();
+  const destructive = opts?.destructive !== false;
 
   return (
     <ConfirmContext.Provider value={confirm}>
@@ -84,22 +88,48 @@ export function ConfirmProvider({ children }: { children: React.ReactNode }) {
       <Dialog open={!!opts} onOpenChange={(o) => !o && settle(false)}>
         {opts && (
           <DialogContent>
-            <DialogHeader>
-              <DialogTitle>{opts.title}</DialogTitle>
-              {opts.description && (
-                <DialogDescription className="whitespace-pre-line">
-                  {opts.description}
-                </DialogDescription>
+            {/* A delete reads as one at a glance: a red-tinted trash tile beside the
+                title. The solid red button below is where a solid destructive fill
+                belongs — the button that opened this sheet is the dashed
+                destructive-outline (lib/destructive-fill.test.ts holds the line). */}
+            <DialogHeader
+              className={destructive ? "flex-row items-start gap-3 space-y-0" : undefined}
+            >
+              {destructive && (
+                <span
+                  aria-hidden
+                  data-confirm-tile=""
+                  className="grid h-11 w-11 shrink-0 place-items-center rounded-[2px] bg-destructive/[.16] text-destructive"
+                >
+                  <Trash2 className="h-[21px] w-[21px]" />
+                </span>
               )}
+              <div className="min-w-0 space-y-1.5">
+                <DialogTitle
+                  className={
+                    destructive && !hasThai(opts.title) ? "text-[30px] leading-[.95]" : undefined
+                  }
+                >
+                  {opts.title}
+                </DialogTitle>
+                {opts.description && (
+                  <DialogDescription className="whitespace-pre-line">
+                    {opts.description}
+                  </DialogDescription>
+                )}
+              </div>
             </DialogHeader>
             {needsTyping && (
               <div className="space-y-1.5">
-                <p className="text-sm text-muted-foreground">
+                <p className="text-[13px] text-muted-foreground">
                   พิมพ์{" "}
                   <span className="font-semibold text-foreground">“{opts.requireTyped}”</span>{" "}
                   เพื่อยืนยัน
                 </p>
-                <input
+                {/* 16 px at every width (the Input primitive drops to 14 from sm). The
+                    match is exact, so nothing may rewrite what is typed: no iOS
+                    auto-capital, no autofill, no spell-fix. */}
+                <Input
                   autoFocus
                   value={typed}
                   onChange={(e) => setTyped(e.target.value)}
@@ -107,19 +137,24 @@ export function ConfirmProvider({ children }: { children: React.ReactNode }) {
                     if (e.key === "Enter" && canConfirm) settle(true);
                   }}
                   placeholder={opts.requireTyped}
-                  className="w-full rounded-md border bg-muted/40 px-3 py-2 text-base sm:text-sm"
+                  aria-label={`พิมพ์ ${opts.requireTyped} เพื่อยืนยัน`}
+                  autoCapitalize="none"
+                  autoComplete="off"
+                  spellCheck={false}
+                  className="h-12 text-base sm:text-base"
                 />
               </div>
             )}
             <DialogFooter>
-              <Button variant="outline" onClick={() => settle(false)}>
+              <Button variant="secondary" onClick={() => settle(false)}>
                 {opts.cancelText ?? "ยกเลิก"}
               </Button>
               <Button
-                variant={opts.destructive === false ? "default" : "destructive"}
+                variant={destructive ? "destructive" : "default"}
                 disabled={!canConfirm}
                 onClick={() => settle(true)}
               >
+                {destructive && <Trash2 aria-hidden />}
                 {opts.confirmText ?? "ลบ"}
               </Button>
             </DialogFooter>

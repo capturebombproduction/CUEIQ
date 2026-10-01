@@ -115,3 +115,31 @@ describe("EventWorkspace · why the page is read-only", () => {
     expect(screen.queryByTestId("read-only-notice")).not.toBeInTheDocument();
   });
 });
+
+// Not about read-only, but this file already mounts the workspace. The tab row was
+// a hybrid after the redesign: the seg primitive's full-width grid track with the
+// page's old flex/wrap layout and bordered, band-filled triggers laid over it —
+// four small boxes crammed left in an empty bar. The seg owns the look now; the
+// page only keeps unselected labels in foreground ink (2026-09-06: on arrival
+// nothing is selected, and grey-on-grey labels read as headings, not buttons).
+describe("EventWorkspace · the tab row", () => {
+  const cls = (el: Element) => (el.getAttribute("class") ?? "").split(/\s+/);
+
+  it("is the seg primitive, not a layout fought over by the page", () => {
+    mount(true);
+    const list = screen.getByRole("tablist");
+    expect(cls(list)).toContain("seg");
+    expect(cls(list).filter((k) => /^(flex|flex-wrap|justify-start|h-auto|gap-[\d.]+)$/.test(k))).toEqual([]);
+    for (const tab of screen.getAllByRole("tab")) {
+      expect(cls(tab).filter((k) => /(^|:)(border|bg-)/.test(k)), tab.textContent ?? "").toEqual([]);
+    }
+  });
+
+  it("on arrival nothing is selected, and every label is still in foreground ink", () => {
+    mount(true);
+    for (const tab of screen.getAllByRole("tab")) {
+      expect(tab.getAttribute("data-state")).toBe("inactive");
+      expect(cls(tab)).toContain("data-[state=inactive]:text-foreground");
+    }
+  });
+});

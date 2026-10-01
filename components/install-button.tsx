@@ -14,8 +14,10 @@ interface InstallPromptEvent extends Event {
   prompt: () => Promise<void>;
 }
 
+// A 44px icon in the one-row header, beside the bell (FINAL-SPEC-v2 §F.1). The
+// word stays for screen readers and in the title tooltip.
 const BTN_CLASS =
-  "inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-sm font-medium text-muted-foreground transition hover:bg-muted hover:text-foreground";
+  "relative grid h-11 w-11 shrink-0 place-items-center rounded-[3px] text-foreground transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
 
 function isStandalone(): boolean {
   return (
@@ -86,8 +88,8 @@ export function InstallButton() {
           title="ติดตั้ง CueIQ ลงเครื่อง — เปิดเร็วขึ้น ใช้งานเหมือนแอป (ยังต้องต่อเน็ต)"
           className={BTN_CLASS}
         >
-          <Download className="h-4 w-4" />
-          <span className="hidden sm:inline">ติดตั้งแอป</span>
+          <Download className="h-[21px] w-[21px]" aria-hidden />
+          <span className="sr-only">ติดตั้งแอป</span>
         </button>
         <Dialog open={showHelp} onOpenChange={setShowHelp}>
           <DialogContent className="max-w-sm">
@@ -141,8 +143,8 @@ export function InstallButton() {
       title="ติดตั้ง CueIQ ลงเครื่อง — เปิดเร็วขึ้น ใช้งานเหมือนแอป (ยังต้องต่อเน็ต)"
       className={BTN_CLASS}
     >
-      <Download className="h-4 w-4" />
-      <span className="hidden sm:inline">ติดตั้งแอป</span>
+      <Download className="h-[21px] w-[21px]" aria-hidden />
+      <span className="sr-only">ติดตั้งแอป</span>
     </button>
   );
 }

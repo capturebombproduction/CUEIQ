@@ -7,6 +7,7 @@ import { createClient } from "@/lib/supabase/client";
 import { isLiveShowActive } from "@/lib/live-guard";
 import { isInAppBrowser, isIOS, isStandalone } from "@/lib/platform";
 import { enablePush, pushAvailability } from "@/lib/push-subscribe";
+import { useBottomSlotTaken } from "@/lib/bottom-slot";
 import { Button } from "@/components/ui/button";
 
 /**
@@ -84,6 +85,12 @@ function rememberDismissed(key = DISMISS_KEY): void {
   }
 }
 
+/** Floats 8px above the tab bar (and the home indicator) below lg, where the bar
+ *  is; 16px off the bottom from lg up. A solid popover slab — glass is reserved for
+ *  the header and the tab bar. */
+const NUDGE_CLASS =
+  "no-print fixed inset-x-2 bottom-[calc(var(--tabbar-h)+env(safe-area-inset-bottom)+8px)] z-50 mx-auto max-w-md rounded-[3px] bg-popover p-3 text-popover-foreground shadow-float sm:inset-x-auto sm:right-4 sm:mx-0 lg:bottom-4";
+
 export function PushNudge({
   userId,
   tenantId,
@@ -97,6 +104,10 @@ export function PushNudge({
   const [busy, setBusy] = useState(false);
   // Read with the rest of the platform probes, after mount (never during render).
   const [inApp, setInApp] = useState(false);
+  // The Library preview player pins itself to the SAME slot (lib/bottom-slot.ts).
+  // While it is up, the question waits — hidden, not answered: nothing is
+  // remembered, and it comes back the moment the player closes.
+  const slotTaken = useBottomSlotTaken();
 
   useEffect(() => {
     if (!userId) return;
@@ -156,7 +167,7 @@ export function PushNudge({
     }
   }
 
-  if (!mode) return null;
+  if (!mode || slotTaken) return null;
 
   if (mode === "install") {
     return (
@@ -164,7 +175,7 @@ export function PushNudge({
         data-testid="push-install-nudge"
         role="region"
         aria-label="วิธีเปิดแจ้งเตือนบน iPhone/iPad"
-        className="no-print fixed inset-x-2 bottom-2 z-50 mx-auto max-w-md rounded-lg border bg-card p-3 shadow-lg sm:inset-x-auto sm:right-4 sm:mx-0"
+        className={NUDGE_CLASS}
       >
         <div className="flex items-start gap-3">
           <BellRing className="mt-0.5 h-5 w-5 shrink-0 text-primary" />
@@ -212,7 +223,7 @@ export function PushNudge({
       data-testid="push-nudge"
       role="region"
       aria-label="เปิดแจ้งเตือน"
-      className="no-print fixed inset-x-2 bottom-2 z-50 mx-auto max-w-md rounded-lg border bg-card p-3 shadow-lg sm:inset-x-auto sm:right-4 sm:mx-0"
+      className={NUDGE_CLASS}
     >
       <div className="flex items-start gap-3">
         <BellRing className="mt-0.5 h-5 w-5 shrink-0 text-primary" />

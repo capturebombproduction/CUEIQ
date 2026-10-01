@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { Moon, Sun } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { setThemeMode } from "@/lib/theme-mode";
 
 /**
  * Light/dark toggle. The app defaults to dark (venues are dark); the layout's inline
@@ -21,10 +22,9 @@ export function ThemeToggle() {
   function toggle() {
     const next = !dark;
     setDark(next);
-    document.documentElement.classList.toggle("dark", next);
-    try {
-      localStorage.setItem("cueiq:theme", next ? "dark" : "light");
-    } catch {}
+    // Class + remembered choice + status-bar colour, in one place (lib/theme-mode.ts),
+    // shared with the account panel's Dark | Light switch.
+    setThemeMode(next);
   }
 
   return (

@@ -5,10 +5,13 @@ import {
   formatClockOfDay,
   formatCountdown,
   formatDuration,
+  formatOvertime,
+  isSettled,
   monthBeforeKey,
   pad2,
   parseClockToSeconds,
   parseDurationToSeconds,
+  SETTLE_AFTER_SEC,
   shortClock,
 } from "./time";
 
@@ -38,6 +41,31 @@ describe("formatCountdown", () => {
     expect(formatCountdown(65)).toBe("1:05");
     expect(formatCountdown(-65)).toBe("-1:05");
     expect(formatCountdown(0)).toBe("0:00");
+  });
+});
+
+describe("formatOvertime", () => {
+  it("signs overtime with + (never the countdown's -), at every length", () => {
+    expect(formatOvertime(-24)).toBe("+0:24");
+    expect(formatOvertime(-600)).toBe("+10:00");
+    expect(formatOvertime(-3600)).toBe("+1:00:00");
+  });
+
+  it("is + whatever sign it is handed, and rounds like the countdown", () => {
+    expect(formatOvertime(24)).toBe("+0:24");
+    expect(formatOvertime(-0.4)).toBe("+0:00");
+    expect(formatOvertime(-24.6)).toBe("+0:25");
+  });
+});
+
+describe("isSettled", () => {
+  it("settles the overtime plate from 10 s past zero, not before", () => {
+    expect(SETTLE_AFTER_SEC).toBe(10);
+    expect(isSettled(5)).toBe(false);
+    expect(isSettled(0)).toBe(false);
+    expect(isSettled(-9.9)).toBe(false);
+    expect(isSettled(-10)).toBe(true);
+    expect(isSettled(-600)).toBe(true);
   });
 });
 

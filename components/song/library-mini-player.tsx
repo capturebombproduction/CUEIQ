@@ -1,7 +1,7 @@
 "use client";
 
-import { Loader2, Pause, Play, X } from "lucide-react";
-import { Button } from "@/components/ui/button";
+import { AudioLines, Loader2, Pause, Play, X } from "lucide-react";
+import { useHoldBottomSlot } from "@/lib/bottom-slot";
 
 /** m:ss, rounded DOWN — an elapsed clock must not read 0:01 half a second in. */
 function clock(sec: number): string {
@@ -15,10 +15,14 @@ function clock(sec: number): string {
  * The Library's preview player: what is playing, how far in, play/pause, close.
  * Driven entirely by useLibraryPreview — it holds no audio of its own.
  *
- * Fixed to the bottom, ABOVE a bottom tab bar when one exists: `--tabbar-h` is
- * the bar's height (0 while there is none) and the safe-area inset keeps it off
- * an iPhone's home indicator. z-50 sits it over the floating แจ้งปัญหา button
- * (z-40) rather than under it while a preview is open.
+ * Fixed to the bottom, 8px ABOVE the tab bar: `--tabbar-h` is the space the bar
+ * takes (0 from lg up, where there is none — see components/tab-bar.tsx) and the
+ * safe-area inset keeps it off an iPhone's home indicator. Spotify-style: band
+ * cover, title, time, then the two 44px controls under the right thumb.
+ *
+ * That slot is shared with the push nudge, which used to cover this player whole
+ * (its z-50 outside <main> beats this z-40 inside it). The player holds the slot
+ * while mounted and the nudge waits — lib/bottom-slot.ts.
  */
 export function LibraryMiniPlayer({
   title,
@@ -37,61 +41,68 @@ export function LibraryMiniPlayer({
   onToggle: () => void;
   onClose: () => void;
 }) {
+  useHoldBottomSlot();
   const pct = duration > 0 ? Math.min(100, Math.max(0, (position / duration) * 100)) : 0;
   return (
     <div
       role="region"
       aria-label="ตัวอย่างเพลง"
-      className="no-print fixed inset-x-0 z-50 mx-auto w-[calc(100%-2rem)] max-w-xl overflow-hidden rounded-xl border bg-popover text-popover-foreground shadow-lg"
+      className="mini no-print fixed inset-x-2 z-40 mx-auto max-w-xl text-popover-foreground"
       style={{ bottom: "calc(var(--tabbar-h, 0px) + env(safe-area-inset-bottom, 0px) + 8px)" }}
     >
-      <div className="flex items-center gap-3 px-3 py-2">
-        <Button
-          type="button"
-          size="icon"
-          className="h-10 w-10 shrink-0 rounded-full"
-          aria-label={loading ? "ยกเลิก" : playing ? "หยุดชั่วคราว" : "เล่นต่อ"}
-          onClick={onToggle}
-        >
-          {loading ? (
-            <Loader2 className="animate-spin" />
-          ) : playing ? (
-            <Pause />
-          ) : (
-            <Play />
-          )}
-        </Button>
-        <div className="min-w-0 flex-1">
-          <div className="truncate text-sm font-medium">{title}</div>
-          <div className="text-xs tabular-nums text-muted-foreground">
-            {clock(position)} / {duration > 0 ? clock(duration) : "–:––"}
-            {/* a master can be 88 MB over venue Wi-Fi — say why nothing is heard yet */}
-            {loading && " · กำลังโหลด…"}
-          </div>
-        </div>
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon"
-          className="h-10 w-10 shrink-0"
-          aria-label="ปิดตัวเล่น"
-          onClick={onClose}
-        >
-          <X />
-        </Button>
-      </div>
+      {/* Progress on the TOP edge, where the eye already is when reading the title. */}
       <div
         role="progressbar"
         aria-label="ความคืบหน้า"
         aria-valuemin={0}
         aria-valuemax={Math.round(duration)}
         aria-valuenow={Math.round(Math.min(position, duration || position))}
-        className="h-1 w-full bg-muted"
+        className="h-[3px] w-full bg-foreground/15"
       >
         <div
           className="h-full bg-primary transition-[width] duration-200 ease-linear motion-reduce:transition-none"
           style={{ width: `${pct}%` }}
         />
+      </div>
+      <div className="flex h-[60px] items-center gap-3 pl-2 pr-1">
+        <span
+          aria-hidden
+          className="grid h-11 w-11 flex-none place-items-center rounded-[2px] bg-primary text-primary-foreground"
+        >
+          <AudioLines className="h-5 w-5" strokeWidth={2.4} />
+        </span>
+        <div className="min-w-0 flex-1">
+          <div className="disp truncate text-[18px] leading-tight">{title}</div>
+          <div className="truncate text-[12.5px] text-muted-foreground">
+            <span className="num text-[13.5px] text-foreground">{clock(position)}</span>
+            <span className="num text-[13.5px]"> / {duration > 0 ? clock(duration) : "–:––"}</span>
+            {" · ตัวอย่างในคลังเพลง"}
+            {/* a master can be 88 MB over venue Wi-Fi — say why nothing is heard yet */}
+            {loading && " · กำลังโหลด…"}
+          </div>
+        </div>
+        <button
+          type="button"
+          className="grid h-11 w-11 flex-none place-items-center rounded-[3px] bg-primary text-primary-foreground transition-transform duration-1 active:scale-[.97] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-popover"
+          aria-label={loading ? "ยกเลิก" : playing ? "หยุดชั่วคราว" : "เล่นต่อ"}
+          onClick={onToggle}
+        >
+          {loading ? (
+            <Loader2 className="h-5 w-5 animate-spin" aria-hidden />
+          ) : playing ? (
+            <Pause className="h-5 w-5" aria-hidden />
+          ) : (
+            <Play className="h-5 w-5" aria-hidden />
+          )}
+        </button>
+        <button
+          type="button"
+          className="grid h-11 w-11 flex-none place-items-center rounded-[3px] text-muted-foreground transition-colors duration-2 hover:bg-foreground/10 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          aria-label="ปิดตัวเล่น"
+          onClick={onClose}
+        >
+          <X className="h-[18px] w-[18px]" strokeWidth={2.4} aria-hidden />
+        </button>
       </div>
     </div>
   );

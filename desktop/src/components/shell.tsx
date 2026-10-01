@@ -1,34 +1,25 @@
 // Desktop app shell — the authenticated frame around every routed page. Mirrors
-// the web SiteHeader (Brand + MainNav + identity + theme/sign-out), reusing the
-// same components so it looks identical, and wraps the routed Outlet in the same
-// ConfirmProvider the web (app)/layout provides (delete buttons call useConfirm).
-import { Link, Outlet } from "react-router-dom";
+// the web header (wordmark + MainNav + the account panel behind an avatar), reusing
+// the same components so it looks identical, and wraps the routed Outlet in the
+// same ConfirmProvider the web (app)/layout provides (delete buttons call useConfirm).
+import { Link, Outlet, useLocation } from "react-router-dom";
 import { Play } from "lucide-react";
-import { Brand } from "@/components/brand";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { MainNav } from "@/components/main-nav";
-import { AccentPicker } from "@/components/accent-picker";
-import { ThemeToggle } from "@/components/theme-toggle";
+import { HeaderBrand } from "@/components/header-brand";
 import { SignOutButton } from "@/components/sign-out-button";
 import { OfflineBanner } from "@/components/offline-banner";
 import { OutboxFlusher } from "@/components/outbox-flusher";
+import { SkinRefresher } from "@/components/skin-refresher";
 import { ConfirmProvider } from "@/components/ui/confirm-dialog";
 import { ErrorMonitor, AppErrorBoundary } from "@/components/error-monitor";
-import { FeedbackButton } from "@/components/feedback-button";
-import { ROLE_SHORT, type Role } from "@/lib/types";
-import { isLabelWideUser, type Perms } from "@/lib/permissions";
+import { FeedbackUnreadProvider } from "@/components/feedback-button";
+import { AccountButton, AccountPanel, AccountPanelProvider } from "@/components/account-panel";
+import { isImmersivePath } from "@/components/chrome-gate";
+import { accountLine } from "@/lib/role-label";
+import { canEditAnyGroup } from "@/lib/permissions";
 import { MgmtSyncStatus } from "~/components/mgmt-sync-status";
 import { useWorkspace } from "~/data/workspace-context";
-
-/** Same rule as the web header: band-scoped accounts show their REAL per-band role
- *  (Ar / สมาชิก) rather than the inert tenant `member` label. */
-function roleLabel(role: Role | null | undefined, perms?: Perms): string | null {
-  if (perms && !isLabelWideUser(perms) && perms.groupRoles.length > 0) {
-    return perms.groupRoles.some((g) => g.role === "artist_manager") ? "Ar" : "สมาชิก";
-  }
-  return role ? ROLE_SHORT[role] : null;
-}
 
 /** Escape hatch shown while the workspace is loading and when it failed to load.
  *  Same reasoning as App.tsx's BootScreen: a venue network that is joined but
@@ -44,8 +35,9 @@ function ShellFallback({ failed, onRetry }: { failed: boolean; onRetry: () => vo
     <div
       data-cueiq-screen="shell-fallback"
       data-cueiq-failed={failed ? "1" : "0"}
-      className="grid min-h-screen place-items-center bg-muted/30 p-4"
+      className="grid min-h-screen place-items-center bg-background p-4"
     >
+      <SkinRefresher />
       <div className="w-full max-w-sm space-y-6">
         <div className="text-center">
           <h1 className="text-3xl font-bold tracking-tight text-primary">CueIQ</h1>
@@ -81,16 +73,17 @@ function ShellFallback({ failed, onRetry }: { failed: boolean; onRetry: () => vo
 
 export function Shell() {
   const { loading, ws, reload } = useWorkspace();
+  const { pathname } = useLocation();
 
   if (loading || !ws) {
     return <ShellFallback failed={!loading} onRetry={reload} />;
   }
 
   const name = ws.user?.name ?? null;
-  const role = ws.membership?.role ?? null;
-  const shownRole = roleLabel(role, ws.perms);
   const userId = ws.user?.id ?? null;
   const tenantId = ws.membership?.tenant_id ?? null;
+  // Live Mode and the live show-caller are immersive here too: no header.
+  const immersive = isImmersivePath(pathname);
 
   return (
     // data-cueiq-tenant is the offline self-test's proof that the workspace came
@@ -98,81 +91,86 @@ export function Shell() {
     // Shell renders either way and "we reached the shell" alone says nothing about
     // whether the band's data survived the drive to the venue. A name here means it
     // did.
-    <div
-      data-cueiq-screen="shell"
-      data-cueiq-tenant={ws.tenant?.name ?? ""}
-      className="min-h-screen bg-muted/30"
-    >
-      {/* The web app has captured its own client errors and carried a แจ้งปัญหา
-          button since round 2; the desktop shipped with NEITHER — and the desktop
-          is the copy that goes to the venue, so the one place a real bug happens
-          was the one place nothing recorded it and nobody could report it without
-          leaving the room. Same three shared components, same tables. */}
-      {userId && <ErrorMonitor userId={userId} tenantId={tenantId} />}
-      <OfflineBanner />
-      <OutboxFlusher />
-      <header className="no-print sticky top-0 z-40 border-b bg-background/80 backdrop-blur supports-[backdrop-filter]:bg-background/60">
-        <div className="container flex flex-wrap items-center justify-between gap-x-3 gap-y-1.5 py-2">
-          <Link to="/dashboard" className="shrink-0">
-            <Brand subtitle="Desktop · Designed by PatzNutthapat" />
-          </Link>
-          <div className="flex w-full flex-wrap items-center justify-end gap-x-2 gap-y-1.5 sm:w-auto sm:gap-x-3">
-            {shownRole && (
-              <Badge variant="secondary" className="hidden sm:inline-flex">
-                {shownRole}
-              </Badge>
-            )}
-            {name && (
-              <span className="hidden max-w-[16ch] truncate text-sm font-medium sm:inline">
-                {name}
-              </span>
-            )}
-            <MgmtSyncStatus />
-            <AccentPicker />
-            <ThemeToggle />
-            <SignOutButton />
-          </div>
-        </div>
-        <div className="container -mt-1 space-y-1.5 pb-2">
-          {(shownRole || name) && (
-            <div className="flex items-center gap-2 text-xs sm:hidden">
-              {shownRole && (
-                <Badge variant="secondary" className="text-[10px]">
-                  {shownRole}
-                </Badge>
-              )}
-              {name && <span className="min-w-0 truncate font-medium">{name}</span>}
-            </div>
+    // [--tabbar-h:0px]: the desktop has no bottom tab bar, so nothing that floats
+    // "above the tab bar" (the Library mini-player) may leave room for one.
+    <FeedbackUnreadProvider userId={userId}>
+      <AccountPanelProvider>
+        <div
+          data-cueiq-screen="shell"
+          data-cueiq-tenant={ws.tenant?.name ?? ""}
+          className="relative isolate min-h-screen bg-background [--tabbar-h:0px]"
+        >
+          {/* The web app has captured its own client errors since round 2; the
+              desktop shipped with NEITHER that nor a way to report — and the desktop
+              is the copy that goes to the venue, so the one place a real bug happens
+              was the one place nothing recorded it and nobody could report it without
+              leaving the room. Same shared components, same tables. Reporting is the
+              Feedback tile in the account panel (no floating button — shell.test.tsx). */}
+          {userId && <ErrorMonitor userId={userId} tenantId={tenantId} />}
+          <SkinRefresher />
+          <OutboxFlusher />
+          {immersive ? (
+            // No header to host the offline strip on the immersive screens.
+            <OfflineBanner />
+          ) : (
+            <header className="no-print glass glass-top sticky top-0 z-40">
+              <div className="container flex h-14 items-center gap-4">
+                <Link to="/dashboard" className="flex h-11 shrink-0 items-center rounded-[3px]">
+                  <HeaderBrand />
+                </Link>
+                {/* The desktop has no tab bar, so the nav is inline at every width
+                    and scrolls sideways in a narrow window. */}
+                <div className="flex min-w-0 flex-1 items-center gap-2 overflow-x-auto py-1">
+                  <MainNav perms={ws.perms} />
+                  {/* QUICK SHOW — the local standalone runner; also reachable when logged in */}
+                  <Link
+                    to="/my-show"
+                    className="caps flex h-9 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-[2px] px-3 text-[14px] leading-none text-primary-ink shadow-[inset_0_0_0_1.5px_hsl(var(--primary)/.5)] transition-colors duration-2 hover:bg-primary/10"
+                    title="Quick Show — โหมดโชว์เดี่ยว เปิดเพลง+จับเวลาจากไฟล์ในเครื่องนี้ (ออฟไลน์ 100%)"
+                  >
+                    <Play className="h-3.5 w-3.5" aria-hidden /> Quick Show
+                  </Link>
+                </div>
+                <MgmtSyncStatus />
+                <AccountButton name={name} />
+              </div>
+              <OfflineBanner placement="header" />
+            </header>
           )}
-          <div className="flex items-center gap-2 overflow-x-auto">
-            <MainNav perms={ws.perms} />
-            {/* QUICK SHOW — the local standalone runner; also reachable when logged in */}
-            <Link
-              to="/my-show"
-              className="flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full border border-primary/40 bg-primary/10 px-2.5 py-1 text-sm font-semibold text-primary transition-colors hover:bg-primary/20"
-              title="Quick Show — โหมดโชว์เดี่ยว เปิดเพลง+จับเวลาจากไฟล์ในเครื่องนี้ (ออฟไลน์ 100%)"
-            >
-              <Play className="h-3.5 w-3.5" /> Quick Show
-            </Link>
-          </div>
+          <main className="container relative z-[1] overflow-x-clip py-6">
+            {userId ? (
+              // A render crash used to leave the desktop on a blank window with no
+              // reload and nothing logged — mid-show, on the machine wired to the PA.
+              <AppErrorBoundary userId={userId} tenantId={tenantId}>
+                <ConfirmProvider>
+                  <Outlet />
+                </ConfirmProvider>
+              </AppErrorBoundary>
+            ) : (
+              <ConfirmProvider>
+                <Outlet />
+              </ConfirmProvider>
+            )}
+          </main>
+          {/* Same panel as the web's More sheet: theme, band colour, fullscreen,
+              password, sign-out, What's New, Feedback. Destinations stay in the
+              inline nav above, so the panel does not repeat them. */}
+          <AccountPanel
+            name={name}
+            line={accountLine({
+              role: ws.membership?.role ?? null,
+              perms: ws.perms,
+              groups: ws.groups,
+              tenantName: ws.tenant?.name,
+            })}
+            perms={ws.perms}
+            userId={userId}
+            tenantId={tenantId}
+            canEdit={canEditAnyGroup(ws.perms)}
+            destinations="never"
+          />
         </div>
-      </header>
-      <main className="container py-6">
-        {userId ? (
-          // A render crash used to leave the desktop on a blank window with no
-          // reload and nothing logged — mid-show, on the machine wired to the PA.
-          <AppErrorBoundary userId={userId} tenantId={tenantId}>
-            <ConfirmProvider>
-              <Outlet />
-            </ConfirmProvider>
-          </AppErrorBoundary>
-        ) : (
-          <ConfirmProvider>
-            <Outlet />
-          </ConfirmProvider>
-        )}
-      </main>
-      {userId && <FeedbackButton userId={userId} tenantId={tenantId} floating />}
-    </div>
+      </AccountPanelProvider>
+    </FeedbackUnreadProvider>
   );
 }

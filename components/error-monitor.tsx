@@ -3,6 +3,7 @@
 import { Component, useEffect, type ReactNode } from "react";
 import { logClientError } from "@/lib/client-log";
 import { Button } from "@/components/ui/button";
+import { FeedbackButton } from "@/components/feedback-button";
 
 /**
  * Global client-error capture. Mounted once in the (app) layout. Installs window
@@ -101,6 +102,13 @@ export class AppErrorBoundary extends Component<
       // silence from a blind one. Now it says only what is known, and when the
       // capture did NOT land it says so and points at the channel a human reads —
       // which is the whole reason แจ้งปัญหา was made two-way.
+      //
+      // …and that channel is HERE, on the card. Since the redesign the only other way
+      // in is the Feedback tile inside the More sheet / account panel, and Live Mode
+      // and the live show-caller have no header and no tab bar to open it from — so on
+      // exactly the screens a member is mid-show, the note pointed at a button that
+      // did not exist. The tile carries "แจ้งปัญหา" as its own subtitle.
+      const failed = this.state.saved === false;
       return (
         <div className="grid min-h-[60vh] place-items-center p-6 text-center">
           <div className="space-y-3">
@@ -108,11 +116,16 @@ export class AppErrorBoundary extends Component<
             <p className="text-sm text-muted-foreground" data-testid="crash-note">
               {this.state.saved === true
                 ? "ระบบบันทึกปัญหานี้ไว้ให้แล้ว — ลองโหลดหน้าใหม่อีกครั้ง"
-                : this.state.saved === false
-                  ? "บันทึกปัญหาอัตโนมัติไม่สำเร็จ — ถ้าเจอซ้ำ รบกวนกดปุ่ม “แจ้งปัญหา” บอกเราหน่อยครับ"
+                : failed
+                  ? "บันทึกปัญหาอัตโนมัติไม่สำเร็จ — ถ้าเจอซ้ำ รบกวนกดปุ่ม “แจ้งปัญหา” ด้านล่าง บอกเราหน่อยครับ"
                   : "ลองโหลดหน้าใหม่อีกครั้ง"}
             </p>
             <Button onClick={() => window.location.reload()}>โหลดหน้าใหม่</Button>
+            {failed && (
+              <div className="mx-auto w-full max-w-[240px] text-left" data-testid="crash-feedback">
+                <FeedbackButton userId={this.props.userId} tenantId={this.props.tenantId} />
+              </div>
+            )}
           </div>
         </div>
       );
