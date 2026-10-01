@@ -151,6 +151,26 @@ describe("SongLibrary — Black Stage layout", () => {
     expect(screen.getByRole("button", { name: "ทั้งหมด" }).getAttribute("aria-pressed")).toBe("true");
   });
 
+  // The rights dropdown these chips replaced offered ✅ ถูกต้อง too: an approver
+  // re-checking a clearance made by mistake narrows the library to the cleared songs.
+  it("filter chips: ถูกต้อง n shows only the cleared songs, and pressing it again clears it", () => {
+    mount([
+      song("s1", "Cleared One"),
+      song("s2", "Pending One", { copyright_status: "pending" }),
+      song("s3", "Rejected One", { copyright_status: "rejected" }),
+      song("s4", "Cleared Two"),
+    ]);
+    const cleared = screen.getByRole("button", { name: /^ถูกต้อง\s*2$/ });
+    expect(cleared.getAttribute("aria-pressed")).toBe("false");
+    fireEvent.click(cleared);
+    expect(cleared.getAttribute("aria-pressed")).toBe("true");
+    expect(phoneTitles()).toEqual(["Cleared One", "Cleared Two"]);
+
+    fireEvent.click(cleared);
+    expect(cleared.getAttribute("aria-pressed")).toBe("false");
+    expect(phoneTitles()).toHaveLength(4);
+  });
+
   it("table headings are English chrome", () => {
     mount([song("s1", "Akai Hana")]);
     const heads = screen.getAllByRole("columnheader").map((h) => h.textContent);

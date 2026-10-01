@@ -59,4 +59,13 @@ describe("NotificationBell panel", () => {
     // nothing unread is left, so the control goes with it
     expect(screen.queryByRole("button", { name: /อ่านทั้งหมด/ })).toBeNull();
   });
+
+  it("the list stops above the phone's tab bar instead of running under it", async () => {
+    await openPanel();
+    const cls = screen.getByTestId("notification-list").getAttribute("class") ?? "";
+    // a sideways phone: 60vh from below the header ran past the bar's top edge
+    expect(cls).toContain("var(--tabbar-h");
+    expect(cls).toContain("var(--bell-top");
+    expect(cls).toContain("safe-area-inset-bottom");
+  });
 });

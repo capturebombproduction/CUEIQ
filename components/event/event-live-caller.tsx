@@ -29,6 +29,7 @@ import {
   Hourglass,
   FastForward,
   CircleDashed,
+  MoreHorizontal,
   type LucideIcon,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -41,6 +42,7 @@ import { useConfirm } from "@/components/ui/confirm-dialog";
 import { Countdown } from "@/components/live/countdown";
 import { OfflineBanner } from "@/components/offline-banner";
 import { StageLight } from "@/components/stage-light";
+import { useAccountPanel } from "@/components/account-panel";
 import { cn } from "@/lib/utils";
 import { bandLitVars, bandTriplet } from "@/lib/band-triplet";
 import { privateChannel, runOrderTopic } from "@/lib/realtime";
@@ -149,6 +151,30 @@ function normSec(s: number): number {
 function driftPhrase(min: number): string {
   if (min === 0) return "ตรงเวลา";
   return min > 0 ? `ช้า +${min} น.` : `เร็ว ${-min} น.`;
+}
+
+/** The caller's way into the account panel (Feedback, Dark/Light, Fullscreen). This
+ *  route has no app header and no tab bar — the two things that open that panel
+ *  everywhere else — so before this the board had no แจ้งปัญหา, no theme switch for
+ *  a sunlit stage and no fullscreen, all of which the header carried before the
+ *  redesign. The panel is the shell's own (web layout and desktop shell both mount
+ *  it here), so a report records THIS page. No leave guard here, so its links and
+ *  sign-out are as safe as anywhere. */
+function CallerMenuButton() {
+  const { open, setOpen } = useAccountPanel();
+  return (
+    <button
+      type="button"
+      onClick={() => setOpen(!open)}
+      aria-haspopup="dialog"
+      aria-expanded={open}
+      aria-label="เมนู: แจ้งปัญหา · ธีม · เต็มจอ"
+      title="แจ้งปัญหา · ธีม · เต็มจอ"
+      className="grid h-11 w-11 flex-none place-items-center rounded-[3px] text-muted-foreground hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+    >
+      <MoreHorizontal className="h-6 w-6" aria-hidden />
+    </button>
+  );
 }
 
 /** A play-length delta (minutes, over + / under −) vs the planned window. */
@@ -1098,6 +1124,7 @@ export function EventLiveCaller({
             </div>
             <div className="mt-[2px] text-[10.5px] text-faint">เวลาจริง</div>
           </div>
+          <CallerMenuButton />
         </div>
         {/* hosted here, the root layout's in-flow copy stands down */}
         <OfflineBanner placement="header" />
@@ -1261,8 +1288,10 @@ export function EventLiveCaller({
               {liveRow ? (
                 <>
                   <div className="mt-1.5 flex items-center gap-2">
-                    {/* the act's name as typed — display face, never caps */}
-                    <h2 className="disp min-w-0 flex-1 truncate text-[26px] leading-[1.04] stage:text-[40px]">
+                    {/* the act's name as typed — display face, never caps. py + -my:
+                        room inside the clip for Kanit's tone marks and ุ / ู
+                        (components/live/now-card.tsx), at the same row height */}
+                    <h2 className="disp min-w-0 flex-1 truncate py-[.25em] -my-[.25em] text-[26px] leading-[1.04] stage:text-[40px]">
                       {liveRow.title || "(ไม่มีชื่อ)"}
                     </h2>
                     <RunKindChip kind={liveRow.kind} />
@@ -1645,7 +1674,7 @@ export function EventLiveCaller({
           ±1 push keys, and ±5 too at stage width. Every Thai word on a dock key
           carries `.th`: the dock variant sets display caps. */}
       {canControl && (
-        <div className="dock glass glass-bottom fixed inset-x-0 bottom-0 z-40 px-4 pb-[max(12px,env(safe-area-inset-bottom))] pt-3 stage:px-5">
+        <div className="dock glass glass-bottom fixed inset-x-0 bottom-0 z-40 pb-[max(12px,env(safe-area-inset-bottom))] pl-[max(1rem,env(safe-area-inset-left))] pr-[max(1rem,env(safe-area-inset-right))] pt-3 stage:px-5">
           <div className="mx-auto flex max-w-[880px] gap-2">
             <Button
               variant="dock"
@@ -1673,7 +1702,9 @@ export function EventLiveCaller({
                   <span className="block font-display-x text-[32px] font-extrabold uppercase italic leading-[.82] tracking-[.03em] stage:text-[36px]">
                     {nextPending ? "Next" : "End"}
                   </span>
-                  <span className="mt-[5px] block max-w-[170px] truncate text-[12.5px] font-medium opacity-90 stage:max-w-[420px]">
+                  {/* py + margins that give it back (the 5 px gap included): at the
+                      key's leading-none the clip cut Kanit's tone marks off "เริ่ม" */}
+                  <span className="-mb-[.25em] mt-[calc(5px_-_.25em)] block max-w-[170px] truncate py-[.25em] text-[12.5px] font-medium opacity-90 stage:max-w-[420px]">
                     {nextPending
                       ? `จบ + ต่อไป · ${nextPending.title || "(ไม่มีชื่อ)"}`
                       : "จบงาน"}
@@ -1692,7 +1723,7 @@ export function EventLiveCaller({
                   <span className="block font-display-x text-[32px] font-extrabold uppercase italic leading-[.82] tracking-[.03em] stage:text-[36px]">
                     Start
                   </span>
-                  <span className="mt-[5px] block max-w-[170px] truncate text-[12.5px] font-medium opacity-90 stage:max-w-[420px]">
+                  <span className="-mb-[.25em] mt-[calc(5px_-_.25em)] block max-w-[170px] truncate py-[.25em] text-[12.5px] font-medium opacity-90 stage:max-w-[420px]">
                     {`${started ? "เริ่มลำดับถัดไป" : "เริ่มงาน"}${
                       firstPending ? ` · ${firstPending.title || "(ไม่มีชื่อ)"}` : ""
                     }`}

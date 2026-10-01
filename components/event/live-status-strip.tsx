@@ -124,13 +124,18 @@ export function LiveStatusStrip({
   // recorded MAIN gone dark. It stays MOUNTED either way — its effects keep counting.
   const attention =
     !online || pending === null || (pending ?? 0) > 0 || saveLost || (!!otherMain?.ghost && !isController);
+  // …except WHERE control lives. The status row says this device only views; it
+  // never names the device that drives, and a viewer needs that before it presses
+  // ขอควบคุม (or asks the wrong person). So a healthy viewer keeps the one
+  // "MAIN · <device>" chip — the badge crew read (lib/show-authority.ts).
+  const mainOnly = !attention && !!otherMain && !isController;
 
   return (
-    <div className={cn("flex flex-wrap items-center gap-1.5", !attention && "hidden", className)}>
+    <div className={cn("flex flex-wrap items-center gap-1.5", !attention && !mainOnly && "hidden", className)}>
       {/* Show Main — loud when this device is the controller, so you don't drive
           the show from the wrong device. */}
       <span
-        className={cn("chip", isController ? "chip-primary" : "chip-neutral")}
+        className={cn("chip", isController ? "chip-primary" : "chip-neutral", mainOnly && "hidden")}
         title={isController ? "เครื่องนี้กำลังคุมโชว์ (Show Main)" : "เครื่องนี้ดูอย่างเดียว"}
       >
         {isController ? (
@@ -163,7 +168,7 @@ export function LiveStatusStrip({
 
       {/* Audio Host — is this the device the sound comes out of? */}
       <span
-        className={cn("chip", soundOutput ? "chip-success" : "chip-neutral")}
+        className={cn("chip", soundOutput ? "chip-success" : "chip-neutral", mainOnly && "hidden")}
         title={soundOutput ? "เสียงออกเครื่องนี้ (Audio Host)" : "เครื่องนี้ปิดเสียง"}
       >
         {soundOutput ? <Volume2 aria-hidden /> : <VolumeX aria-hidden />}
@@ -172,7 +177,7 @@ export function LiveStatusStrip({
 
       {/* Network */}
       <span
-        className={cn("chip", online ? "chip-neutral" : "chip-warning")}
+        className={cn("chip", online ? "chip-neutral" : "chip-warning", mainOnly && "hidden")}
         title={online ? "ออนไลน์" : "ออฟไลน์ — โชว์เดินจากเครื่องนี้"}
       >
         {online ? <Wifi aria-hidden /> : <WifiOff aria-hidden />}

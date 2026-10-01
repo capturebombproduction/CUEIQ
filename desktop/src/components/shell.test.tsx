@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, within, act, fireEvent } from "@testing-library/react";
 import { MemoryRouter, Routes, Route } from "react-router-dom";
 import { makePerms } from "@/lib/permissions";
@@ -19,7 +19,9 @@ const h = vi.hoisted(() => ({ supa: null as unknown }));
 vi.mock("@/lib/supabase/client", () => ({ createClient: () => h.supa }));
 // Its own subject (the offline outbox chips) with its own IndexedDB; a marker here.
 vi.mock("~/components/mgmt-sync-status", () => ({
-  MgmtSyncStatus: () => <span data-testid="mgmt-sync" />,
+  MgmtSyncStatus: ({ headless }: { headless?: boolean }) => (
+    <span data-testid="mgmt-sync" data-headless={headless ? "1" : "0"} />
+  ),
 }));
 vi.mock("@/components/outbox-flusher", () => ({ OutboxFlusher: () => null }));
 
@@ -37,6 +39,7 @@ vi.mock("~/data/workspace-context", () => ({
 }));
 
 import { Shell } from "./shell";
+import { WHATS_NEW_ROUND } from "@/components/whats-new";
 
 async function at(path: string) {
   await act(async () => {
@@ -54,7 +57,7 @@ async function at(path: string) {
 
 beforeEach(() => {
   h.supa = makeSupabaseFake({ script: { feedback: ok([]) } });
-  localStorage.setItem("cueiq:whats-new-seen", "2026-10-01");
+  localStorage.setItem("cueiq:whats-new-seen", WHATS_NEW_ROUND);
 });
 
 describe("desktop Shell — feedback", () => {
@@ -101,6 +104,29 @@ describe("desktop Shell — frame", () => {
       expect(document.querySelector('[data-cueiq-screen="shell"]')).toBeTruthy();
     }
   );
+
+  // MgmtSyncStatus is the ONLY thing that flushes the management outbox (boot + every
+  // 'online'). It used to sit in a header present on every route; with the header
+  // gone on the immersive screens, setlist/schedule edits queued offline stayed
+  // unsynced for as long as Live or the caller stayed open. It stays mounted there,
+  // headless (its own flush behaviour: mgmt-sync-status.test.tsx).
+  it.each(["/events/e1/live", "/events/e1/run-order/live"])(
+    "%s keeps the management outbox's auto-flush mounted, headless",
+    async (path) => {
+      await at(path);
+      const marks = screen.getAllByTestId("mgmt-sync");
+      expect(marks).toHaveLength(1);
+      expect(marks[0]).toHaveAttribute("data-headless", "1");
+    }
+  );
+
+  it("an ordinary page shows the outbox chips in the header (not headless)", async () => {
+    await at("/dashboard");
+    const marks = screen.getAllByTestId("mgmt-sync");
+    expect(marks).toHaveLength(1);
+    expect(marks[0]).toHaveAttribute("data-headless", "0");
+    expect(within(screen.getByRole("banner")).getByTestId("mgmt-sync")).toBe(marks[0]);
+  });
 
   // The show screens are edge to edge and own their gutter: with the page frame's
   // container + py-6 left on, Live's gutter doubled, the overtime plate stopped short
@@ -150,5 +176,75 @@ describe("desktop Shell — the page light", () => {
   it.each(["/events/e1/live", "/events/e1/run-order/live"])("%s: the frame hangs none", async (path) => {
     await at(path);
     expect(document.querySelectorAll(".spotlight")).toHaveLength(0);
+  });
+});
+
+// The Event page's tab row sticks at var(--header-h) under this header. The theme's
+// 52px is the PHONE header; the desktop's row is h-14 (56px), so without its own
+// value the tabs slid 4px under the glass — and the frame is where the web declares
+// its lg value too (app/(app)/layout.tsx).
+describe("desktop Shell — the header's height", () => {
+  it("the frame declares the 56px its h-14 header row really is", async () => {
+    await at("/dashboard");
+    const frame = document.querySelector('[data-cueiq-screen="shell"]')!;
+    expect(frame.className.split(/\s+/)).toContain("[--header-h:56px]");
+    expect(screen.getByRole("banner").firstElementChild!.className.split(/\s+/)).toContain("h-14");
+  });
+});
+
+// A RENDER CRASH ON THE SHOW SCREENS. The crash card's own control is a reload, and a
+// reload keeps the hash — so a crash that comes from the data (a bad row in the cached
+// bundle) comes straight back. Before the redesign the header above the card still had
+// the nav and Quick Show; the immersive screens have no header, and the .exe has no
+// back button, so without these the only way out was to quit the app mid-show.
+function Boom(): never {
+  throw new Error("live render exploded");
+}
+
+async function crashAt(path: string) {
+  await act(async () => {
+    render(
+      <MemoryRouter initialEntries={[path]}>
+        <Routes>
+          <Route element={<Shell />}>
+            <Route path="*" element={<Boom />} />
+          </Route>
+        </Routes>
+      </MemoryRouter>
+    );
+  });
+}
+
+describe("desktop Shell — a crash on the show screens", () => {
+  let quiet: ReturnType<typeof vi.spyOn>;
+  beforeEach(() => {
+    // React logs the caught error (and jsdom its unimplemented reload); expected here.
+    quiet = vi.spyOn(console, "error").mockImplementation(() => {});
+  });
+  afterEach(() => {
+    quiet.mockRestore();
+    window.location.hash = "";
+  });
+
+  it.each(["/events/e1/live", "/events/e1/run-order/live"])(
+    "%s: the crash card offers the way back to the event and Quick Show",
+    async (path) => {
+      await crashAt(path);
+      expect(screen.getByText("เกิดข้อผิดพลาดบางอย่าง")).toBeInTheDocument();
+      expect(screen.queryByRole("banner")).toBeNull();
+      // Hash, then reload — as main.tsx's last-resort boundary does: this boundary is
+      // not keyed by route, so an in-router navigate would leave the card standing.
+      fireEvent.click(screen.getByRole("button", { name: /กลับไปหน้างาน/ }));
+      expect(window.location.hash).toBe("#/events/e1");
+      fireEvent.click(screen.getByRole("button", { name: /Quick Show/ }));
+      expect(window.location.hash).toBe("#/my-show");
+    }
+  );
+
+  it("an ordinary page's crash card adds nothing: the header above it keeps the nav and Quick Show", async () => {
+    await crashAt("/dashboard");
+    expect(screen.getByText("เกิดข้อผิดพลาดบางอย่าง")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Quick Show|กลับไปหน้างาน/ })).toBeNull();
+    expect(within(screen.getByRole("banner")).getByRole("link", { name: /Quick Show/ })).toBeTruthy();
   });
 });

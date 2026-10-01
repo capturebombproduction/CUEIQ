@@ -98,12 +98,17 @@ export function Shell() {
     // "above the tab bar" (the Library mini-player) may leave room for one.
     // FRAME_LIGHT_AIM: from lg up the light aims at the left-aligned page title, as on
     // the web frame (components/stage-light.tsx).
+    // [--header-h:56px]: the header row below is h-14, not the theme's 52px phone
+    // header — anything sticky under it (the Event page's tab row) sticks at this.
     <FeedbackUnreadProvider userId={userId}>
       <AccountPanelProvider>
         <div
           data-cueiq-screen="shell"
           data-cueiq-tenant={ws.tenant?.name ?? ""}
-          className={cn("relative isolate min-h-screen bg-background [--tabbar-h:0px]", FRAME_LIGHT_AIM)}
+          className={cn(
+            "relative isolate min-h-screen bg-background [--header-h:56px] [--tabbar-h:0px]",
+            FRAME_LIGHT_AIM
+          )}
         >
           {/* The page light (v3 Stage Wash), first, as on the web frame. Live Mode and
               the show-caller hang their own inside their root — one per document. */}
@@ -118,8 +123,14 @@ export function Shell() {
           <SkinRefresher />
           <OutboxFlusher />
           {immersive ? (
-            // No header to host the offline strip on the immersive screens.
-            <OfflineBanner />
+            // No header to host the offline strip on the immersive screens. The
+            // management outbox's auto-flush lived in that header (MgmtSyncStatus), so
+            // it is mounted here headless — otherwise queued setlist/schedule edits sat
+            // unsynced for as long as Live or the caller stayed open (shell.test.tsx).
+            <>
+              <OfflineBanner />
+              <MgmtSyncStatus headless />
+            </>
           ) : (
             <header className="no-print glass glass-top sticky top-0 z-40">
               <div className="container flex h-14 items-center gap-4">
@@ -151,7 +162,9 @@ export function Shell() {
             {userId ? (
               // A render crash used to leave the desktop on a blank window with no
               // reload and nothing logged — mid-show, on the machine wired to the PA.
-              <AppErrorBoundary userId={userId} tenantId={tenantId}>
+              // hashRoute: on Live / the show-caller (no header) its card adds the way
+              // back to the event and Quick Show (components/error-monitor.tsx).
+              <AppErrorBoundary userId={userId} tenantId={tenantId} hashRoute={pathname}>
                 <ConfirmProvider>
                   <Outlet />
                 </ConfirmProvider>

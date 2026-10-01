@@ -27,11 +27,16 @@ import { Button } from "@/components/ui/button";
  * To announce a later round: change ROUND and ITEMS. A new ROUND shows again on
  * every device; the old key is simply never read.
  */
-// 2026-10-01: a new round, shown once more to every device — it carries a
-// change people would otherwise report as missing (sign-out moved off the phone
-// header; since the redesign it lives in the More tab). The 09-28 items stay below
-// the new ones for anyone who never saw them.
-const ROUND = "2026-10-01";
+// 2026-10-02: the redesign's round, shown once more to every device. The 10-01
+// round (live on main) told phones sign-out was behind "⋯ มุมขวาบน" — the redesign
+// removed that "⋯" AND the floating แจ้งปัญหา button, and a device that had closed the
+// 10-01 card would never have been told either, because seen() compares the ROUND
+// only. So: a new ROUND, with where everything went — the More tab below lg, the
+// name button top right on a wide screen and in the desktop app, ⋯ on the two show
+// screens. The older items stay below for anyone who never saw them.
+const ROUND = "2026-10-02";
+/** For tests that need "this device already read the current round". */
+export const WHATS_NEW_ROUND = ROUND;
 const KEY = "cueiq:whats-new-seen";
 /** Fired when this round is marked read, so every surface that shows it (the card
  *  here, the More sheet's tile, the tab bar's dot) agrees without a reload. */
@@ -47,13 +52,24 @@ const phoneWeb = () =>
   window.matchMedia?.("(max-width: 1023px)").matches === true;
 
 const ITEMS: Item[] = [
-  { text: "หน้าแรก: บอก “นัด” กับ “ขึ้นเวที” ของงานถัดไป และปุ่ม “ซ้อม” พาเข้าห้องซ้อมของวงในแตะเดียว" },
   {
     // 2026-10-01 said "⋯ มุมขวาบน"; the redesign moved these to the More tab, and a
     // card that points at a button that no longer exists is worse than no card.
-    text: "บนมือถือ: ธีม สีวง เปลี่ยนรหัสผ่าน และออกจากระบบ อยู่ในแท็บ “More” มุมขวาล่าง",
+    text: "หน้าตาใหม่: ธีม สีวง เปลี่ยนรหัสผ่าน ออกจากระบบ และ Feedback (แจ้งปัญหา) อยู่ในแท็บ “More” มุมขวาล่าง — ปุ่มแจ้งปัญหาที่ลอยมุมจอไม่มีแล้ว",
     only: phoneWeb,
   },
+  {
+    // A wide browser and the desktop app have no tab bar: the same tools sit behind
+    // the account button (the user's initial) at the right of the header.
+    text: "หน้าตาใหม่: ธีม สีวง เปลี่ยนรหัสผ่าน ออกจากระบบ และ Feedback (แจ้งปัญหา) อยู่ที่ปุ่มตัวอักษรชื่อคุณ มุมขวาบน — ปุ่มแจ้งปัญหาที่ลอยมุมจอไม่มีแล้ว",
+    only: () => !phoneWeb(),
+  },
+  { text: "หน้า Live และคุมคิวงาน: แจ้งปัญหา ธีม และเต็มจอ อยู่ในปุ่ม “⋯” บนแถบด้านบน" },
+  {
+    text: "Live: เตือนเมื่อเหลือ 1 นาที และ 30 วินาที (รายการสั้นเตือนตามความยาว) — เกินเวลาการ์ดจะเปลี่ยนเป็นแผ่นลายเฉียงเหมือนกันทุกวง",
+  },
+  { text: "คลังเพลง: กด ▶ ฟังเพลงได้เลย มีแถบเล่นด้านล่าง — ออกจากหน้าคลังเพลงแล้วเสียงหยุดเอง" },
+  { text: "หน้าแรก: บอก “นัด” กับ “ขึ้นเวที” ของงานถัดไป และปุ่ม “ซ้อม” พาเข้าห้องซ้อมของวงในแตะเดียว" },
   {
     text: "Setlist: ปุ่ม “เปลี่ยน” ข้างชื่อเพลง — สลับเป็นเพลงอื่นจากคลังได้ในที่เดิม ไมค์กับโน้ตคงไว้",
     editorsOnly: true,

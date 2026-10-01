@@ -428,10 +428,12 @@ export function EventWorkspace({
 
             Sticky under the header, on an OPAQUE bar (glass is for the header and
             tab bar only), so the way between the editors is always one tap away.
+            Offline the header is taller by its offline strip, whose measured height
+            components/offline-banner.tsx publishes as --offline-strip-h.
             `lit-bar` (app/stage.css) fills it with the page colour AND the page
             light, so stuck in the hot core it no longer cuts a flat unlit band
             through it; it needs the sticky z-30 (a stacking context) and no bg. */}
-        <div className="lit-bar no-print sticky top-[calc(var(--header-h)+env(safe-area-inset-top))] z-30 -mx-1 px-1 py-2">
+        <div className="lit-bar no-print sticky top-[calc(var(--header-h)+var(--offline-strip-h,0px)+env(safe-area-inset-top))] z-30 -mx-1 px-1 py-2">
           <TabsList className="en">
             {/* NOT a TabsTrigger. A Radix trigger switches on MOUSEDOWN, before the
                 field being edited loses focus and starts its autosave; entering

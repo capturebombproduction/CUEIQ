@@ -23,6 +23,7 @@ vi.mock("@/components/install-button", () => ({
 import { SiteHeader } from "./site-header";
 import { AccountPanelProvider } from "./account-panel";
 import { OfflineBanner } from "./offline-banner";
+import { WHATS_NEW_ROUND } from "./whats-new";
 
 const MEMBER = makePerms("member", [{ group_id: "g1", role: "member" } as never]);
 const STAFF = makePerms("label_staff");
@@ -45,7 +46,7 @@ async function mount(perms = MEMBER, extra?: React.ReactNode) {
 
 beforeEach(() => {
   nav.path = "/dashboard";
-  localStorage.setItem("cueiq:whats-new-seen", "2026-10-01");
+  localStorage.setItem("cueiq:whats-new-seen", WHATS_NEW_ROUND);
 });
 afterEach(() => setOnline(true));
 

@@ -525,7 +525,13 @@ export function NotificationBell({
             )}
           </div>
 
-          <div className="max-h-[60vh] overflow-y-auto">
+          {/* Never taller than the room between the bell and the phone's tab bar: on a
+              sideways phone 60vh ran past the bar (a later layer that paints over the
+              header's), and the last items could not be scrolled into view. */}
+          <div
+            data-testid="notification-list"
+            className="max-h-[min(60vh,calc(100dvh_-_var(--bell-top,0px)_-_var(--tabbar-h,0px)_-_env(safe-area-inset-bottom,0px)_-_56px))] overflow-y-auto"
+          >
             {items.length === 0 ? (
               <p className="px-3 py-8 text-center text-sm text-muted-foreground">
                 ยังไม่มีการแจ้งเตือน

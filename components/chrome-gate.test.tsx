@@ -7,7 +7,36 @@ import { render, screen } from "@testing-library/react";
 const nav = vi.hoisted(() => ({ path: "/dashboard" }));
 vi.mock("next/navigation", () => ({ usePathname: () => nav.path }));
 
-import { ChromeGate, isImmersivePath } from "./chrome-gate";
+import { ChromeGate, immersiveEventId, isImmersivePath } from "./chrome-gate";
+
+// The error cards' way out on the two screens without a header (error-card.tsx,
+// error-monitor.tsx): the event the screen belongs to, and nothing anywhere else.
+describe("immersiveEventId", () => {
+  it.each([
+    ["/events/e1/live", "e1"],
+    ["/events/e1/live/", "e1"],
+    ["/events/e1/run-order/live", "e1"],
+    ["/events/e1", null],
+    ["/events/e1/run-order", null],
+    ["/events/e1/practice", null],
+    ["/dashboard", null],
+    [null, null],
+  ])("%s → %s", (path, id) => {
+    expect(immersiveEventId(path)).toBe(id);
+  });
+});
+
+// The gate unmounts the header — and its install button — on the immersive screens.
+// Chrome fires beforeinstallprompt once per document, so the capture must not live
+// in the button: loading the gate (mounted on every (app) page) installs it, which
+// is what lets a document that OPENS on Live still catch the event.
+describe("ChromeGate — the install prompt is caught with no header mounted", () => {
+  it("loading the gate alone holds Chrome's install prompt back for the app's own button", () => {
+    const e = new Event("beforeinstallprompt", { cancelable: true });
+    window.dispatchEvent(e);
+    expect(e.defaultPrevented).toBe(true);
+  });
+});
 
 describe("isImmersivePath", () => {
   it.each([

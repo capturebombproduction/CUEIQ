@@ -34,6 +34,7 @@ import { AccountPanel, AccountPanelProvider } from "@/components/account-panel";
 import { SiteHeader } from "@/components/site-header";
 import { TabBar } from "@/components/tab-bar";
 import { ACCENT_PRESETS, ACCENT_STORAGE_KEY, SKIN_STYLE_ID } from "@/lib/accent";
+import { WHATS_NEW_ROUND } from "@/components/whats-new";
 
 const MEMBER = makePerms("member", [{ group_id: "g1", role: "member" } as never]);
 const ADMIN = makePerms("admin");
@@ -78,7 +79,7 @@ beforeEach(() => {
   h.supa = supa;
   // This round already read on this device, unless a test says otherwise — so a
   // dot in a test means what that test set up.
-  localStorage.setItem(SEEN_KEY, "2026-10-01");
+  localStorage.setItem(SEEN_KEY, WHATS_NEW_ROUND);
   document.documentElement.classList.add("dark");
   // The panel only offers Fullscreen where the API exists (never on an iPhone).
   (document.documentElement as unknown as { requestFullscreen: unknown }).requestFullscreen =
@@ -138,6 +139,30 @@ describe("AccountPanel — what lives in it", () => {
     expect(panel()).toHaveTextContent("มายด์");
     expect(panel()).toHaveTextContent("สมาชิก · Seishin Kakumei");
     expect(panel()).toHaveTextContent("Designed by PatzNutthapat");
+  });
+
+  // The name is `disp truncate leading-none`: a clip box of +900/−100 units in a
+  // Barlow-first stack, under Kanit's stacked tone marks (+1046) and ุ (−257) —
+  // "พี่บุ๊ค" lost the mark on พี่ and the ุ. Padding widens the clip; the negative
+  // margin gives the room back. jsdom has no layout: the room is what is pinned.
+  it("the signed-in name keeps its Thai tone marks and lower vowels inside its clip", async () => {
+    await mount();
+    openMore();
+    const name = within(panel()).getByText("มายด์");
+    expect(name).toHaveClass("disp", "truncate", "py-[.25em]", "-my-[.25em]");
+  });
+
+  // viewport-fit=cover: the sheet is fixed and edge to edge, so the body's side
+  // padding does not reach it — held sideways, its tiles sat under the notch.
+  it("as a phone's bottom sheet, keeps its content inside a landscape iPhone's side insets", async () => {
+    await mount();
+    openMore();
+    expect(panel()).toHaveClass(
+      "fixed",
+      "pl-[max(1rem,env(safe-area-inset-left))]",
+      "pr-[max(1rem,env(safe-area-inset-right))]"
+    );
+    expect(panel()).not.toHaveClass("px-4");
   });
 
   it("holds each tool once — one panel, one sign-out", async () => {
@@ -273,10 +298,49 @@ describe("AccountPanel — Feedback and What's New, and the dots that point at t
     expect(within(panel()).getByTestId("whats-new-unseen-dot")).toBeTruthy();
     fireEvent.click(within(panel()).getByRole("button", { name: /What's New/ }));
     expect(within(panel()).getByTestId("whats-new-list")).toHaveTextContent("ซ้อมตามเซ็ตลิสต์");
-    expect(localStorage.getItem(SEEN_KEY)).toBe("2026-10-01");
+    expect(localStorage.getItem(SEEN_KEY)).toBe(WHATS_NEW_ROUND);
     fireEvent.click(within(panel()).getByRole("button", { name: "เข้าใจแล้ว" }));
     expect(within(panel()).queryByTestId("whats-new-unseen-dot")).toBeNull();
     expect(screen.queryByTestId("more-unread-dot")).toBeNull();
+  });
+
+  // The floating แจ้งปัญหา button lived for the whole layout, so an unsent report
+  // (and the offline toast's "ข้อความยังอยู่ในกล่อง") survived closing it and moving
+  // between pages. The tile unmounts with this sheet — which also closes itself on
+  // every page change — so the draft must live in the shell's provider, not the tile.
+  it("an unsent report outlives the sheet: the text, category and screenshots come back", async () => {
+    const urls = { create: URL.createObjectURL, revoke: URL.revokeObjectURL };
+    Object.assign(URL, { createObjectURL: () => "blob:preview", revokeObjectURL: () => {} });
+    try {
+      const { rerender } = await mount();
+      openMore();
+      fireEvent.click(within(panel()).getByTitle(/แจ้งปัญหา|มีคำตอบ/));
+      fireEvent.click(await screen.findByRole("button", { name: /ไอเดีย/ }));
+      fireEvent.change(screen.getByLabelText("รายละเอียด"), {
+        target: { value: "กด NEXT แล้วเพลงไม่เปลี่ยน" },
+      });
+      const shot = new File([new Uint8Array(10)], "shot.png", { type: "image/png" });
+      fireEvent.change(document.querySelector('input[type="file"]') as HTMLInputElement, {
+        target: { files: [shot] },
+      });
+      expect(screen.getByAltText("shot.png")).toBeTruthy();
+
+      // A tab tap: the page changes and the sheet (and the report dialog in it) closes.
+      nav.path = "/groups";
+      await act(async () => {
+        rerender(shell());
+      });
+      await waitFor(() => expect(screen.queryByTestId("account-panel")).toBeNull());
+      expect(screen.queryByLabelText("รายละเอียด")).toBeNull();
+
+      openMore();
+      fireEvent.click(within(panel()).getByTitle(/แจ้งปัญหา|มีคำตอบ/));
+      expect(await screen.findByLabelText("รายละเอียด")).toHaveValue("กด NEXT แล้วเพลงไม่เปลี่ยน");
+      expect(screen.getByRole("button", { name: /ไอเดีย/ })).toHaveAttribute("aria-pressed", "true");
+      expect(screen.getByAltText("shot.png")).toBeTruthy();
+    } finally {
+      Object.assign(URL, { createObjectURL: urls.create, revokeObjectURL: urls.revoke });
+    }
   });
 
   it("nothing waiting: no dot anywhere", async () => {

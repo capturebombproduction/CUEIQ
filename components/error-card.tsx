@@ -1,8 +1,24 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { usePathname } from "next/navigation";
 import { AlertTriangle, RotateCw, CloudOff } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { immersiveEventId } from "@/components/chrome-gate";
+
+/** The way out on Live Mode and the show-caller, which have no header and no tab bar
+ *  (ChromeGate) — without it this card's reload was the only control on screen, and a
+ *  phone opened cold from the "งานเริ่มแล้ว" push has no history to go back to. A
+ *  plain <a>, a full navigation, for the same reason the card reloads rather than
+ *  calling reset(): a soft navigation can re-read the errored RSC cache. */
+function BackToEvent({ eventId }: { eventId: string | null }) {
+  if (!eventId) return null;
+  return (
+    <Button asChild variant="outline" size="lg" className="w-full">
+      <a href={`/events/${eventId}`}>กลับไปหน้างาน</a>
+    </Button>
+  );
+}
 
 /** The exact sentence Next substitutes for a Server-Component throw in a
  * production build (verified against the shipped runtime,
@@ -45,6 +61,7 @@ export function ErrorCard({
   // soft nav that can't fetch its data) — the web app needs a connection now that
   // offline show-running lives in the CueIQ Desktop app.
   const [offline, setOffline] = useState(false);
+  const eventId = immersiveEventId(usePathname());
   useEffect(() => {
     setOffline(navigator.onLine === false);
     console.error(`[CueIQ] ${where} render error:`, error);
@@ -67,6 +84,7 @@ export function ErrorCard({
           <Button size="lg" className="w-full" onClick={() => window.location.reload()}>
             <RotateCw aria-hidden /> โหลดใหม่
           </Button>
+          <BackToEvent eventId={eventId} />
         </div>
       </div>
     );
@@ -139,6 +157,9 @@ export function ErrorCard({
         <Button size="lg" className="w-full" onClick={() => window.location.reload()}>
           <RotateCw aria-hidden /> โหลดหน้าใหม่
         </Button>
+        {/* Secondary, and only on the immersive screens: the reload stays the one
+            obvious button (the note above); this is the way out when it keeps failing. */}
+        <BackToEvent eventId={eventId} />
       </div>
     </div>
   );

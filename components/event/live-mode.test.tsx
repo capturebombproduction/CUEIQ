@@ -1059,6 +1059,40 @@ describe("LiveMode · the dock", () => {
     expect(screen.getByTestId("start-show")).toHaveTextContent("เริ่ม Overture");
     expect(screen.getByTestId("start-show")).not.toHaveTextContent("undefined");
   });
+
+  // The key's subtitle is `truncate` inside the key's leading-none, in Kanit: a clip
+  // box of +852/−147 units, and Kanit's stacked tone marks reach +1046, its ู −270.
+  // The pre-start key read "เริม Kakumei Overture" (mai ek gone) on every show. The
+  // padding widens the clip; the margins give the room back so nothing in the key
+  // moves. jsdom has no layout: the room is what is pinned.
+  it("START's and NEXT's Thai subtitles keep their tone marks inside the clip", async () => {
+    const room = ["truncate", "py-[.25em]", "-mb-[.25em]", "mt-[calc(5px_-_.25em)]"];
+    await mountLive();
+    const startSub = screen.getByTestId("start-show").querySelector(".truncate");
+    expect(startSub, "START has no subtitle").not.toBeNull();
+    expect(startSub).toHaveClass(...room);
+    expect(startSub).not.toHaveClass("mt-[5px]");
+
+    await startShowFromUi();
+    const nextSub = screen.getByTestId("next").querySelector(".truncate");
+    expect(nextSub, "NEXT has no subtitle").not.toBeNull();
+    expect(nextSub).toHaveClass(...room);
+    expect(nextSub).not.toHaveClass("mt-[5px]");
+  });
+
+  // viewport-fit=cover: a fixed, edge-to-edge bar ignores the body's side padding,
+  // so on an iPhone held sideways its keys sat in the notch / rounded corner. The
+  // dock pads itself by the side insets (never less than its 16 px gutter).
+  it("keeps its keys inside a landscape iPhone's side insets", async () => {
+    await mountLive();
+    const dock = document.querySelector(".dock") as HTMLElement;
+    expect(dock).toHaveClass(
+      "fixed",
+      "pl-[max(1rem,env(safe-area-inset-left))]",
+      "pr-[max(1rem,env(safe-area-inset-right))]"
+    );
+    expect(dock).not.toHaveClass("px-4");
+  });
 });
 
 describe("LiveMode · the top bar", () => {
@@ -1118,10 +1152,68 @@ describe("LiveMode · Live tools", () => {
     expect(within(sheet()).queryByTitle(/แจ้งปัญหา|มีคำตอบ/)).toBeNull();
   });
 
+  // The header's theme switch was on this screen before the redesign; the header is
+  // hidden here now, and leaving a running show to find it goes through the leave
+  // guard. Presentation only: switching must not touch the show.
+  it("offers Dark | Light mid-show, and switching it sends nothing to the show", async () => {
+    document.documentElement.classList.add("dark");
+    try {
+      await mountLive();
+      await startShowFromUi();
+      await act(async () => open());
+      const before = stateSends().length;
+      await act(async () => {
+        fireEvent.click(within(sheet()).getByRole("radio", { name: /Light/ }));
+      });
+      expect(document.documentElement.classList.contains("dark")).toBe(false);
+      expect(sheet()).toBeVisible();
+      expect(stateSends()).toHaveLength(before);
+    } finally {
+      document.documentElement.classList.add("dark");
+      localStorage.removeItem("cueiq:theme");
+    }
+  });
+
   // The sheet is aria-modal and puts focus on its ปิด key; Space is how a keyboard
   // presses a focused button. The window's Live shortcuts must never see a key
   // pressed in here, or that Space starts the show behind the scrim.
   const root = () => document.querySelector("[data-cueiq-live]") as HTMLElement;
+
+  // aria-modal promises focus stays in here. Without a wrap, Shift+Tab from ปิด went
+  // to the dock key under the scrim (START, or Run/Pause mid-show) and the next
+  // Space pressed it — the show started or paused behind the sheet. jsdom does not
+  // move focus on Tab, so what is pinned is the wrap: prevented, and focus moved.
+  it("Tab and Shift+Tab wrap inside the sheet and never reach the dock under the scrim", async () => {
+    seedSnapshot(); // mid-show: Run/Pause is a live key right before the sheet
+    await mountLive();
+    await act(async () => open());
+    const close = document.activeElement as HTMLElement;
+    expect(close).toHaveAccessibleName("ปิด");
+
+    // Shift+Tab from the first control wraps to the sheet's last one
+    let notPrevented = true;
+    await act(async () => {
+      notPrevented = fireEvent.keyDown(close, { key: "Tab", code: "Tab", shiftKey: true });
+    });
+    expect(notPrevented, "Shift+Tab from ปิด was left to the browser").toBe(false);
+    const last = document.activeElement as HTMLElement;
+    expect(sheet()).toContainElement(last);
+    expect(last).not.toBe(close);
+    expect(screen.getByTestId("run-toggle")).not.toBe(last);
+
+    // Tab from the last wraps back to the first
+    await act(async () => {
+      notPrevented = fireEvent.keyDown(last, { key: "Tab", code: "Tab" });
+    });
+    expect(notPrevented).toBe(false);
+    expect(document.activeElement).toBe(close);
+
+    // in between, Tab is the browser's: ปิด → the next control is not hijacked
+    await act(async () => {
+      notPrevented = fireEvent.keyDown(close, { key: "Tab", code: "Tab" });
+    });
+    expect(notPrevented).toBe(true);
+  });
 
   it("keeps the Live shortcuts out while open: Space on its focused ปิด never starts the show", async () => {
     await mountLive();
@@ -1259,6 +1351,18 @@ describe("LiveMode · the NEXT card", () => {
     expect(lengths[0].parentElement).toContainElement(within(nextCard).getByText("Next", { selector: ".nlabel" }));
     expect(nextCard).toHaveTextContent("Track 2");
   });
+
+  // A one-line clip at the title's own leading (1.02 at stage: +910/−110 units in a
+  // Barlow-first stack) shaves Kanit's ู and stacked tone marks off the item the crew
+  // is preparing. Padding widens the clip; the negative margins (stage's 4 px gap
+  // included) give the room back, so the card is exactly as tall as before.
+  it("the NEXT title keeps its Thai marks inside its clip, and the card's height", async () => {
+    await mountLive();
+    const nextCard = screen.getByText("Next", { selector: ".nlabel" }).closest("section") as HTMLElement;
+    const title = within(nextCard).getByText("Track 2");
+    expect(title).toHaveClass("disp", "truncate", "py-[.25em]", "-my-[.25em]", "stage:mt-[calc(4px_-_.25em)]");
+    expect(title).not.toHaveClass("stage:mt-1");
+  });
 });
 
 describe("LiveMode · a viewer device", () => {
@@ -1274,5 +1378,155 @@ describe("LiveMode · a viewer device", () => {
       fireEvent.click(screen.getByTestId("sound-output-toggle"));
     });
     expect(screen.queryByTestId("request-control")).toBeNull();
+  });
+});
+
+// The status row on a 360 px phone leaves the readiness chip ~88 px of the ~109 it
+// wants. Word and count shared ONE truncating span, so the ellipsis ate the count
+// first ("พร้อม 1…", "ในเครื่อ…") — the number is the whole point of the chip.
+describe("LiveMode · the readiness chip", () => {
+  it("truncates the word, never the count", async () => {
+    const items = [makeItem(1, { audio_path: "t/g/one.mp3" }), makeItem(2), makeItem(3)];
+    supa.setTable("setlist_items", ok(items));
+    await mountLive({ items });
+    const chip = screen.getByTitle(/^(เสียงในเครื่องนี้|กำลังโหลดเสียงลงเครื่อง)/);
+    const count = within(chip).getByText("0/1");
+    expect(count).toHaveClass("num", "shrink-0");
+    expect(count.closest(".truncate"), "the count sits inside the span that truncates").toBeNull();
+    const word = within(chip).getByText(/^(ในเครื่อง|กำลังโหลด)$/);
+    expect(word).toHaveClass("min-w-0", "truncate");
+    // alone on its line now (no 16 px number beside it to lift the line box), the
+    // word's clip needs its own room for the tone mark on เครื่อง
+    expect(word).toHaveClass("py-[.25em]", "-my-[.25em]");
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// WHAT THE REDESIGN MOVED OUT OF REACH (3ddf617 → the Black Stage screen)
+//
+// Each of these was on the old countdown card or status area, on every screen and
+// for every role, and the restyle left it behind a closed sheet, a hover tooltip or
+// a breakpoint no phone matches. jsdom has no CSS, so where a breakpoint decides it,
+// what is pinned is the class the stylesheet reads.
+// ─────────────────────────────────────────────────────────────────────────────
+describe("LiveMode · what a show needs stays where the show can reach it", () => {
+  const root = () => document.querySelector("[data-cueiq-live]") as HTMLElement;
+  const sheet = () => screen.getByRole("dialog", { name: "Live tools", hidden: true });
+  const openTools = () => fireEvent.click(screen.getByRole("button", { name: "Live tools" }));
+  const nowCard = () => screen.getByRole("heading", { level: 2 }).closest("[data-zone]") as HTMLElement;
+  const READINESS = /^(เสียงในเครื่องนี้|กำลังโหลดเสียงลงเครื่อง)/;
+  const LANDSCAPE_PHONE = "[@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]";
+
+  it("the landscape-phone layout is a touch screen's: a short laptop window keeps the fades on NOW", async () => {
+    // Keyed on height alone, a 1366×768 laptop's Chrome (or the .exe on a 768 px
+    // screen) got the phone layout, which takes the fade row and the cue note off
+    // the NOW card. ONE query everywhere, or the card's fades and Live tools' copy
+    // could both show — or neither.
+    await mountLive();
+    await startShowFromUi();
+    const rules = [root(), ...Array.from(root().querySelectorAll("*"))]
+      .flatMap((n) => (n.getAttribute("class") ?? "").split(/\s+/))
+      .filter((t) => t.includes("orientation:landscape"));
+    expect(rules.length).toBeGreaterThan(20);
+    expect(new Set(rules.map((r) => r.slice(0, r.indexOf("]:") + 1)))).toEqual(new Set([LANDSCAPE_PHONE]));
+    // the sheet's copy of the fades is the card's mirror image under that same query
+    const sheetFades = within(sheet()).getByRole("button", { name: "Auto Mute", hidden: true }).parentElement!;
+    expect(sheetFades).toHaveClass("hidden", `${LANDSCAPE_PHONE}:grid`);
+    // (the desktop Show Runner sizes this root by its class — desktop/src/pages/live.tsx)
+    expect(root()).toHaveClass("live-root", "stage:h-[100dvh]");
+  });
+
+  it("Live tools carries the ON-NOW item's whole cue and who is on which mic", async () => {
+    // 3ddf617 listed "1 → Ploy" and the full note on the countdown card; the new
+    // NOW card has one truncated note line (none at all in overtime or on a phone
+    // held sideways) and no mics, and NEXT has moved on to the item after.
+    const SCRIPT =
+      "MC: ขอบคุณทุกคนที่มาวันนี้ — เพลงต่อไปเป็นเพลงใหม่ ขอให้ทุกคนยกไฟขึ้นพร้อมกันตอนท่อนฮุก";
+    const items = [
+      makeItem(1, {
+        kind: "mc",
+        title: "MC 1",
+        notes: SCRIPT,
+        mic_slots: [
+          { mic: "1", member: "Ploy" },
+          { mic: "3", member: "Mint" },
+        ],
+      }),
+      makeItem(2),
+      makeItem(3),
+    ];
+    supa.setTable("setlist_items", ok(items));
+    await mountLive({ items });
+    await startShowFromUi();
+    await act(async () => openTools());
+    expect(within(sheet()).getByText(SCRIPT)).toBeTruthy();
+    expect(within(sheet()).getByText("Ploy")).toBeTruthy();
+    expect(within(sheet()).getByText("Mint")).toBeTruthy();
+    // …and nowhere else is "who is on 1 right now" printed: NEXT is item 2's
+    expect(screen.getAllByText("Ploy")).toHaveLength(1);
+  });
+
+  it("a member running the show on a phone still sees, before START, that tracks are not on this device", async () => {
+    const items = [makeItem(1, { audio_path: "t/g/one.mp3" }), makeItem(2), makeItem(3)];
+    supa.setTable("setlist_items", ok(items));
+    await mountLive({ items, canEdit: false });
+    expect(root()).toHaveAttribute("data-cueiq-live-controller", "1");
+    const chip = screen.getByTitle(READINESS);
+    // 3ddf617's amber banner showed on every device; `hidden stage:inline-flex`
+    // took it off every phone for anyone who is not an admin.
+    expect(chip).not.toHaveClass("hidden");
+    // the โหมดซ้อม chip gives way below stage (its sentence is first in Live tools)
+    expect(screen.getByTitle(/^โหมดซ้อม/)).toHaveClass("hidden", "stage:inline-flex");
+  });
+
+  it("…and when every track is on the device, the phone row keeps โหมดซ้อม instead", async () => {
+    await mountLive({ canEdit: false }); // no audio at all: nothing to be missing
+    expect(screen.queryByTitle(READINESS)).toBeNull();
+    expect(screen.getByTitle(/^โหมดซ้อม/)).not.toHaveClass("hidden");
+  });
+
+  it("a viewer that is the sound device is told which tracks it does not hold; a muted one is not", async () => {
+    seedSnapshot({ isController: false });
+    const items = [makeItem(1, { audio_path: "t/g/one.mp3" }), makeItem(2), makeItem(3)];
+    supa.setTable("setlist_items", ok(items));
+    await mountLive({ items });
+    const banner = screen.getByTestId("viewer-banner");
+    expect(within(banner).getByTitle(READINESS)).toBeTruthy();
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("sound-output-toggle"));
+    });
+    expect(within(screen.getByTestId("viewer-banner")).queryByTitle(READINESS)).toBeNull();
+  });
+
+  it("an iPhone/iPad sound host is told, beside the fade keys themselves, that they cannot change its level", async () => {
+    // iOS: HTMLMediaElement.volume accepts the write and keeps 1. The standing
+    // decision (iOS volume: ช่างมัน) is that the app SAYS so — 3ddf617 said it right
+    // above Auto Mute / MC; the redesign put it in the closed Live tools sheet.
+    const proto = HTMLMediaElement.prototype;
+    const saved = Object.getOwnPropertyDescriptor(proto, "volume");
+    Object.defineProperty(proto, "volume", { configurable: true, get: () => 1, set: () => {} });
+    try {
+      await mountLive();
+      await startShowFromUi();
+      expect(within(nowCard()).getByRole("button", { name: "Auto Mute" })).toBeTruthy();
+      expect(nowCard()).toHaveTextContent(/ปรับ “ระดับเสียง” ในแอปไม่ได้/);
+
+      // the remote with its sound off is not the device whose level is dead
+      await act(async () => {
+        fireEvent.click(screen.getByTestId("sound-output-toggle"));
+      });
+      expect(nowCard()).not.toHaveTextContent(/ปรับ “ระดับเสียง” ในแอปไม่ได้/);
+    } finally {
+      if (saved) Object.defineProperty(proto, "volume", saved);
+      else delete (proto as unknown as Record<string, unknown>).volume;
+    }
+  });
+
+  it("a browser whose volume works gets no such warning", async () => {
+    await mountLive();
+    await startShowFromUi();
+    expect(within(nowCard()).getByRole("button", { name: "Auto Mute" })).toBeTruthy();
+    expect(nowCard()).not.toHaveTextContent(/ปรับ “ระดับเสียง” ในแอปไม่ได้/);
   });
 });

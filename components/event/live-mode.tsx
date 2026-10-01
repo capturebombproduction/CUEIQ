@@ -78,6 +78,7 @@ import { OfflineBanner } from "@/components/offline-banner";
 import { StageLight } from "@/components/stage-light";
 import { useFullscreen } from "@/components/kiosk-mode";
 import { FeedbackButton } from "@/components/feedback-button";
+import { ThemeSeg } from "@/components/account-panel";
 import { cn } from "@/lib/utils";
 import { liveTopic, privateChannel, songsTopic } from "@/lib/realtime";
 import {
@@ -129,6 +130,40 @@ function fmtTime(sec: number) {
   const m = Math.floor(sec / 60);
   const s = Math.floor(sec % 60);
   return `${m}:${s.toString().padStart(2, "0")}`;
+}
+
+/** Live tools is aria-modal but not a Radix dialog, so it keeps Tab in by hand: from
+ *  its last control Tab wraps to the first, and Shift+Tab from the first (or from the
+ *  panel itself) to the last. Without it Shift+Tab from ปิด landed on the dock key
+ *  under the scrim — START, or Run/Pause mid-show — and the next Space pressed it.
+ *  Every other Tab is left to the browser. "Shown" is read from computed style, so a
+ *  control a breakpoint hides (the landscape-phone fade keys) is never a wrap target. */
+function wrapTabInside(e: React.KeyboardEvent, panel: HTMLElement | null) {
+  if (!panel) return;
+  const shown = (el: HTMLElement) => {
+    if (getComputedStyle(el).visibility === "hidden") return false;
+    for (let n: HTMLElement | null = el; n && n !== panel; n = n.parentElement) {
+      if (n.hidden || getComputedStyle(n).display === "none") return false;
+    }
+    return true;
+  };
+  const tabbables = Array.from(
+    panel.querySelectorAll<HTMLElement>(
+      'a[href],button,input:not([type="hidden"]),select,textarea,[tabindex],[contenteditable="true"]'
+    )
+  ).filter((el) => el.tabIndex >= 0 && !(el as HTMLButtonElement).disabled && shown(el));
+  const active = document.activeElement;
+  if (tabbables.length === 0) {
+    e.preventDefault();
+    panel.focus();
+    return;
+  }
+  const first = tabbables[0];
+  const last = tabbables[tabbables.length - 1];
+  if (e.shiftKey ? active === first || active === panel : active === last) {
+    e.preventDefault();
+    (e.shiftKey ? last : first).focus();
+  }
 }
 
 type SongAudioMap = Record<string, { path: string | null; name: string | null }>;
@@ -3340,7 +3375,7 @@ export function LiveMode({
       // cannot hold a status row AND the NOW card above the dock. (A grid would end
       // the sticky top bar at its own row; a flex container keeps it sticky.)
       className={cn(
-        "live-root relative mx-auto flex w-full max-w-2xl flex-col gap-2 px-4 pb-[calc(84px+max(12px,env(safe-area-inset-bottom)))] [@media(orientation:landscape)_and_(max-height:699.98px)]:max-w-none [@media(orientation:landscape)_and_(max-height:699.98px)]:flex-row [@media(orientation:landscape)_and_(max-height:699.98px)]:flex-wrap [@media(orientation:landscape)_and_(max-height:699.98px)]:content-start [@media(orientation:landscape)_and_(max-height:699.98px)]:items-start [@media(orientation:landscape)_and_(max-height:699.98px)]:gap-x-3 [@media(orientation:landscape)_and_(max-height:699.98px)]:px-6 stage:h-[100dvh] stage:max-w-none stage:gap-0 stage:overflow-hidden stage:px-0 stage:pb-[calc(112px+env(safe-area-inset-bottom))] stage:pl-[env(safe-area-inset-left)] stage:pr-[env(safe-area-inset-right)]",
+        "live-root relative mx-auto flex w-full max-w-2xl flex-col gap-2 px-4 pb-[calc(84px+max(12px,env(safe-area-inset-bottom)))] [@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:max-w-none [@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:flex-row [@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:flex-wrap [@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:content-start [@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:items-start [@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:gap-x-3 [@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:px-6 stage:h-[100dvh] stage:max-w-none stage:gap-0 stage:overflow-hidden stage:px-0 stage:pb-[calc(112px+env(safe-area-inset-bottom))] stage:pl-[env(safe-area-inset-left)] stage:pr-[env(safe-area-inset-right)]",
         zone === "over" && "zone-over"
       )}
       // ── WHAT THIS DEVICE THINKS IT IS, readable from outside the process ──────
@@ -3387,7 +3422,7 @@ export function LiveMode({
           strip, so the page-level copy stands down and can never push this screen
           into a scroll in exactly the airplane case. The back control is an <a>: the
           leave guard above intercepts a[href], so leaving a running show still asks. */}
-      <header className="live-top glass glass-top sticky top-0 z-40 -mx-4 shrink-0 pt-[env(safe-area-inset-top)] [@media(orientation:landscape)_and_(max-height:699.98px)]:-mx-6 [@media(orientation:landscape)_and_(max-height:699.98px)]:min-w-0 [@media(orientation:landscape)_and_(max-height:699.98px)]:basis-[calc(100%+48px)] stage:mx-0">
+      <header className="live-top glass glass-top sticky top-0 z-40 -mx-4 shrink-0 pt-[env(safe-area-inset-top)] [@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:-mx-6 [@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:min-w-0 [@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:basis-[calc(100%+48px)] stage:mx-0">
         <div className="flex h-[54px] items-center gap-1 px-1 stage:h-16 stage:gap-3 stage:pl-3 stage:pr-4">
           <Link
             href={`/events/${eventId}`}
@@ -3434,7 +3469,7 @@ export function LiveMode({
               upright keeps its own row). The landscape phone has no other place for
               the running totals, and an operator who cannot see them walks the show
               without noticing the accumulated clock. */}
-          <div className="hidden items-center gap-3 [@media(orientation:landscape)_and_(max-height:699.98px)]:flex stage:flex stage:gap-5">
+          <div className="hidden items-center gap-3 [@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:flex stage:flex stage:gap-5">
             <Stat label="ผ่านไป">{formatDuration(totalElapsed)}</Stat>
             <Stat label="เหลือทั้งโชว์">{formatDuration(showRemaining)}</Stat>
             <Stat label="คาดจบ" suppress>
@@ -3466,7 +3501,7 @@ export function LiveMode({
         {/* A phone held sideways has no 28 px to spare above the NOW card: there the
             sync line beside ON AIR already reads "ออฟไลน์ · โชว์เดินต่อ". The strip
             stays mounted, so the page-level copy still stands down. */}
-        <div className="[@media(orientation:landscape)_and_(max-height:699.98px)]:hidden">
+        <div className="[@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:hidden">
           <OfflineBanner placement="header" />
         </div>
       </header>
@@ -3479,7 +3514,7 @@ export function LiveMode({
         eventId={eventId}
         isController={isController}
         soundOutput={soundOutput}
-        className="stage:mx-5 stage:mb-2 [@media(orientation:landscape)_and_(max-height:699.98px)]:order-1 [@media(orientation:landscape)_and_(max-height:699.98px)]:basis-full"
+        className="stage:mx-5 stage:mb-2 [@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:order-1 [@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:basis-full"
       />
 
       {/* Audio needs a tap to (re)start — after a reload / autoplay block. The one
@@ -3488,7 +3523,7 @@ export function LiveMode({
         <button
           type="button"
           onClick={resumeAudio}
-          className="flex h-[52px] shrink-0 items-center justify-center gap-2 rounded-[2px] bg-warning px-4 font-semibold text-warning-foreground [@media(orientation:landscape)_and_(max-height:699.98px)]:basis-full stage:mx-5 stage:mb-2"
+          className="flex h-[52px] shrink-0 items-center justify-center gap-2 rounded-[2px] bg-warning px-4 font-semibold text-warning-foreground [@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:basis-full stage:mx-5 stage:mb-2"
         >
           <Volume2 aria-hidden className="size-5 shrink-0" /> แตะเพื่อเล่นเสียงต่อ (ตำแหน่งปัจจุบัน)
         </button>
@@ -3497,7 +3532,7 @@ export function LiveMode({
       {/* A real playback failure on this device — the countdown keeps running, so
           say WHY the PA is silent instead of leaving the operator guessing. */}
       {audioFault && (
-        <div className="flex shrink-0 items-center justify-between gap-2 rounded-[2px] bg-destructive/[.14] py-1 pl-3 pr-1 text-[13px] font-medium text-foreground [@media(orientation:landscape)_and_(max-height:699.98px)]:basis-full stage:mx-5 stage:mb-2 [&_svg]:text-destructive">
+        <div className="flex shrink-0 items-center justify-between gap-2 rounded-[2px] bg-destructive/[.14] py-1 pl-3 pr-1 text-[13px] font-medium text-foreground [@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:basis-full stage:mx-5 stage:mb-2 [&_svg]:text-destructive">
           <span className="flex min-w-0 items-center gap-1.5">
             <VolumeX aria-hidden className="size-4 shrink-0" />
             <span className="min-w-0">
@@ -3520,7 +3555,7 @@ export function LiveMode({
 
       {/* Realtime dropped mid-show — make it obvious; the local show keeps running */}
       {state.begun && !syncReady && (
-        <div className="flex shrink-0 items-center justify-center gap-2 rounded-[2px] bg-warning/[.16] px-3 py-2 text-[13px] font-medium text-warning-ink [@media(orientation:landscape)_and_(max-height:699.98px)]:order-1 [@media(orientation:landscape)_and_(max-height:699.98px)]:basis-full stage:mx-5 stage:mb-2">
+        <div className="flex shrink-0 items-center justify-center gap-2 rounded-[2px] bg-warning/[.16] px-3 py-2 text-[13px] font-medium text-warning-ink [@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:order-1 [@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:basis-full stage:mx-5 stage:mb-2">
           <span aria-hidden className="h-2 w-2 shrink-0 bg-warning" />
           การเชื่อมต่อหลุด — กำลังต่อใหม่ (โชว์ยังเดินต่อ)
         </div>
@@ -3532,7 +3567,7 @@ export function LiveMode({
           off, so the remote stays silent without muting the PA. A phone held
           sideways shows it under NOW | NEXT (one short scroll), never hides it:
           Live tools has no copy of the sound key, Manual | Auto or ขอควบคุม. */}
-      <div className="flex h-11 min-w-0 shrink-0 items-center gap-1.5 [@media(orientation:landscape)_and_(max-height:699.98px)]:order-1 [@media(orientation:landscape)_and_(max-height:699.98px)]:basis-full stage:h-[60px] stage:gap-2 stage:px-5 stage:pt-3">
+      <div className="flex h-11 min-w-0 shrink-0 items-center gap-1.5 [@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:order-1 [@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:basis-full stage:h-[60px] stage:gap-2 stage:px-5 stage:pt-3">
         <button
           type="button"
           data-testid="sound-output-toggle"
@@ -3562,14 +3597,16 @@ export function LiveMode({
         {isController ? (
           <>
             {/* Pre-flight readiness — does THIS device hold every track's file, so the
-                show plays offline? The full sentence is in Live tools. */}
+                show plays offline? The full sentence is in Live tools. A non-admin's
+                phone row trades it for โหมดซ้อม only once nothing is missing: a member
+                rehearsing on a phone must still see "ในเครื่อง 3/14" before START. */}
             {audioItems.length > 0 && (
               <span
                 title={readinessSentence}
                 className={cn(
                   "chip chip-lg min-w-0 gap-[5px] overflow-hidden px-2 text-[13px] stage:text-[13.5px]",
                   allReady ? "chip-neutral" : "chip-warning",
-                  !canEdit && "hidden stage:inline-flex"
+                  !canEdit && allReady && "hidden stage:inline-flex"
                 )}
               >
                 {downloadingAudio && !allReady ? (
@@ -3577,18 +3614,36 @@ export function LiveMode({
                 ) : (
                   <HardDriveDownload aria-hidden />
                 )}
-                <span className="min-w-0 truncate">
-                  {allReady ? "พร้อม" : downloadingAudio ? "กำลังโหลด" : "ในเครื่อง"}{" "}
-                  <span className="num text-[16px]">
+                {/* Word, count and stage suffix are separate items on one baseline: a
+                    360 px phone gives this chip ~88 of its ~109 px, and the ellipsis
+                    must eat the word, never the count. Each text span is alone on its
+                    line at the chip's line-height 1, so py/-my gives Kanit's tone
+                    marks room inside its clip at the same height. */}
+                <span className="flex min-w-0 items-baseline gap-[.25em]">
+                  <span className="min-w-0 truncate py-[.25em] -my-[.25em]">
+                    {allReady ? "พร้อม" : downloadingAudio ? "กำลังโหลด" : "ในเครื่อง"}
+                  </span>
+                  <span className="num shrink-0 text-[16px]">
                     {readyCount}/{audioItems.length}
                   </span>
-                  {allReady && <span className="hidden stage:inline"> · เล่นได้แม้เน็ตหลุด</span>}
+                  {allReady && (
+                    <span className="hidden min-w-0 truncate py-[.25em] -my-[.25em] stage:block">
+                      · เล่นได้แม้เน็ตหลุด
+                    </span>
+                  )}
                 </span>
               </span>
             )}
-            {/* Non-admins may play/รัน to rehearse but never edit live. */}
+            {/* Non-admins may play/รัน to rehearse but never edit live. Below stage it
+                gives way to the readiness warning (its sentence opens Live tools). */}
             {!canEdit && (
-              <span title={REHEARSAL_NOTE} className="chip chip-lg chip-info shrink-0 gap-[5px] px-2 text-[13px]">
+              <span
+                title={REHEARSAL_NOTE}
+                className={cn(
+                  "chip chip-lg chip-info shrink-0 gap-[5px] px-2 text-[13px]",
+                  !allReady && "hidden stage:inline-flex"
+                )}
+              >
                 <GraduationCap aria-hidden />
                 โหมดซ้อม
               </span>
@@ -3639,6 +3694,20 @@ export function LiveMode({
             <span className="min-w-0 flex-1 truncate text-[13px] font-medium">
               {audioPlaying ? "เครื่องนี้เล่นเสียงอยู่ — คุมจากเครื่องอื่น" : "ดูอย่างเดียว — ซิงค์จากเครื่องคุม"}
             </span>
+            {/* A viewer that SOUNDS plays from its own files too: say which it lacks
+                (3ddf617's readiness banner reached every device). */}
+            {soundOutput && audioItems.length > 0 && !allReady && (
+              <span title={readinessSentence} className="chip chip-warning shrink-0 gap-1 px-1.5 text-[12px]">
+                {downloadingAudio ? (
+                  <Loader2 aria-hidden className="animate-spin" />
+                ) : (
+                  <HardDriveDownload aria-hidden />
+                )}
+                <span className="num text-[14px]">
+                  {readyCount}/{audioItems.length}
+                </span>
+              </span>
+            )}
             {/* เครื่องเสียงคุมคนเดียว: only a sound-output device may take control.
                 A muted viewer sees no take-control button — turn its sound on first
                 to become the show device (audio + control move here together). */}
@@ -3658,7 +3727,7 @@ export function LiveMode({
       </div>
 
       {/* ── SHOW STRIP ── phone portrait only (stage carries it in the top bar). */}
-      <div className="grid shrink-0 grid-cols-3 gap-[2px] [@media(orientation:landscape)_and_(max-height:699.98px)]:hidden stage:hidden">
+      <div className="grid shrink-0 grid-cols-3 gap-[2px] [@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:hidden stage:hidden">
         <div className="slab min-w-0 px-3 py-1">
           <div className="truncate text-[11px] text-muted-foreground">ผ่านไป</div>
           <div className="num text-[25px] leading-[1.05]">{formatDuration(totalElapsed)}</div>
@@ -3679,7 +3748,7 @@ export function LiveMode({
           NEXT become two half-width items of the root's wrapping row (the status
           rows, then the order, follow them). Stage: NOW | NEXT + SHOW | the running
           order, no page scroll. */}
-      <div className="flex flex-col gap-2 [@media(orientation:landscape)_and_(max-height:699.98px)]:contents stage:grid stage:min-h-0 stage:flex-1 stage:grid-cols-[minmax(0,1fr)_300px_320px] stage:grid-rows-[minmax(0,1fr)] stage:gap-4 stage:px-5 stage:pb-3 stage:pt-2">
+      <div className="flex flex-col gap-2 [@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:contents stage:grid stage:min-h-0 stage:flex-1 stage:grid-cols-[minmax(0,1fr)_300px_320px] stage:grid-rows-[minmax(0,1fr)] stage:gap-4 stage:px-5 stage:pb-3 stage:pt-2">
         <NowCard
           zone={zone}
           blockSec={zoneBlock}
@@ -3722,12 +3791,21 @@ export function LiveMode({
                   <span className="min-w-0 max-w-[40%] truncate">· {audioNames[current.id]}</span>
                 )}
               </div>
+              {/* iOS: the keys above animate and the PA stays at full level — said HERE,
+                  beside them (the standing decision: the app says so on that device),
+                  not only in the closed Live tools sheet. The sound host only. */}
+              {volumeIsDead && soundOutput && (
+                <p className="mt-2 text-[12px] leading-snug text-warning-ink stage:text-[12.5px]">
+                  เครื่องนี้ (iPhone/iPad) ปรับ “ระดับเสียง” ในแอปไม่ได้ — สไลเดอร์กับปุ่มหรี่เสียงจะไม่มีผลจริง
+                  ใช้ปุ่มเพิ่ม/ลดเสียงข้างเครื่อง หรือให้เครื่องอื่นเป็นตัวปล่อยเสียงแทน (ปุ่มปิดเสียงยังใช้ได้)
+                </p>
+              )}
             </>
           ) : null}
         </NowCard>
 
         {/* NEXT (and, on stage, the SHOW totals under it) */}
-        <div className="flex min-w-0 flex-col gap-2 [@media(orientation:landscape)_and_(max-height:699.98px)]:basis-[calc(50%-6px)] stage:min-h-0 stage:gap-3">
+        <div className="flex min-w-0 flex-col gap-2 [@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:basis-[calc(50%-6px)] stage:min-h-0 stage:gap-3">
           <section className="slab shrink-0 px-4 pb-3 pt-2 stage:px-5 stage:pb-4 stage:pt-3.5">
             {next ? (
               <>
@@ -3744,7 +3822,10 @@ export function LiveMode({
                     {formatDuration(blockSeconds(next))}
                   </span>
                 </div>
-                <div className="disp min-w-0 truncate text-[22px] leading-tight stage:mt-1 stage:text-[30px] stage:leading-[1.02]">
+                {/* py + -my (stage's 4 px gap folded into its margin): the clip is the
+                    padding box, so Kanit's tone marks and ุ / ู get room the 1.02
+                    line box does not have, and the card keeps its height. */}
+                <div className="disp min-w-0 truncate py-[.25em] -my-[.25em] text-[22px] leading-tight stage:mt-[calc(4px_-_.25em)] stage:text-[30px] stage:leading-[1.02]">
                   {next.title || "—"}
                 </div>
                 <div className="mb-1.5 mt-2.5 hidden items-center gap-1.5 text-[12.5px] text-muted-foreground stage:flex">
@@ -3804,7 +3885,7 @@ export function LiveMode({
         {/* RUNNING ORDER (memoized — see upcomingRows) */}
         <section
           data-edit={orderEdit ? "on" : "off"}
-          className="group/ro [@media(orientation:landscape)_and_(max-height:699.98px)]:order-2 [@media(orientation:landscape)_and_(max-height:699.98px)]:basis-full stage:flex stage:min-h-0 stage:flex-col stage:rounded-[2px] stage:bg-card stage:p-2.5 stage:shadow-edge"
+          className="group/ro [@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:order-2 [@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:basis-full stage:flex stage:min-h-0 stage:flex-col stage:rounded-[2px] stage:bg-card stage:p-2.5 stage:shadow-edge"
         >
           <div className="hidden items-center gap-2 px-2 pb-1.5 pt-1 stage:flex">
             <h3 className="nlabel text-[19px]">Running Order</h3>
@@ -3839,11 +3920,11 @@ export function LiveMode({
           seconds={lastRun.seconds}
           at={lastRun.at}
           onClear={canEdit ? clearLastRun : null}
-          className="shrink-0 [@media(orientation:landscape)_and_(max-height:699.98px)]:order-3 [@media(orientation:landscape)_and_(max-height:699.98px)]:basis-full stage:hidden"
+          className="shrink-0 [@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:order-3 [@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:basis-full stage:hidden"
         />
       )}
 
-      <p className="px-1 text-center text-[11px] text-faint [@media(orientation:landscape)_and_(max-height:699.98px)]:order-3 [@media(orientation:landscape)_and_(max-height:699.98px)]:basis-full stage:hidden">
+      <p className="px-1 text-center text-[11px] text-faint [@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:order-3 [@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:basis-full stage:hidden">
         <CloudUpload aria-hidden className="mr-1 inline size-3" />
         ไฟล์เพลงเก็บออนไลน์แบบส่วนตัว (เฉพาะคนที่ล็อกอิน) — ทุกเครื่องเล่นได้ และลบได้
       </p>
@@ -3853,7 +3934,7 @@ export function LiveMode({
           inert placeholders (no test id, no handler: a live run-toggle before START
           would bypass the authority probe in start()). NEXT and its overtime invite
           share ONE lock, so the ring can never pulse on a key that cannot be pressed. */}
-      <div className="dock glass glass-bottom fixed inset-x-0 bottom-0 z-40 px-4 pb-[max(12px,env(safe-area-inset-bottom))] pt-3 stage:flex stage:h-[calc(112px+env(safe-area-inset-bottom))] stage:items-center stage:gap-3 stage:px-5 stage:pb-[env(safe-area-inset-bottom)] stage:pt-2">
+      <div className="dock glass glass-bottom fixed inset-x-0 bottom-0 z-40 pb-[max(12px,env(safe-area-inset-bottom))] pl-[max(1rem,env(safe-area-inset-left))] pr-[max(1rem,env(safe-area-inset-right))] pt-3 stage:flex stage:h-[calc(112px+env(safe-area-inset-bottom))] stage:items-center stage:gap-3 stage:px-5 stage:pb-[env(safe-area-inset-bottom)] stage:pt-2">
         <RunMeter
           blocks={runBlocks}
           playheadSeconds={state.begun ? playheadSec : null}
@@ -3908,7 +3989,9 @@ export function LiveMode({
                 <span className="block font-display-x text-[32px] font-extrabold uppercase italic leading-[.82] tracking-[.03em] [font-synthesis:none] stage:text-[36px]">
                   Next
                 </span>
-                <span className="mt-[5px] block max-w-[170px] truncate text-[12.5px] font-medium opacity-90 stage:max-w-none stage:text-[13.5px]">
+                {/* py + margins that give it back (the 5 px gap included): at the key's
+                    leading-none the clip cut Kanit's tone marks and ุ / ู */}
+                <span className="-mb-[.25em] mt-[calc(5px_-_.25em)] block max-w-[170px] truncate py-[.25em] text-[12.5px] font-medium opacity-90 stage:max-w-none stage:text-[13.5px]">
                   {next ? next.title || "—" : "— จบโชว์ —"}
                   {next && (
                     <span className="hidden stage:inline">
@@ -3936,7 +4019,8 @@ export function LiveMode({
                 <span className="block font-display-x text-[26px] font-extrabold uppercase italic leading-[.82] tracking-[.03em] [font-synthesis:none] stage:text-[36px]">
                   Start Show
                 </span>
-                <span className="mt-[5px] block max-w-[170px] truncate text-[12.5px] font-medium opacity-90 stage:max-w-none stage:text-[13.5px]">
+                {/* room for "เริ่ม"'s mai ek inside the clip — see NEXT's subtitle */}
+                <span className="-mb-[.25em] mt-[calc(5px_-_.25em)] block max-w-[170px] truncate py-[.25em] text-[12.5px] font-medium opacity-90 stage:max-w-none stage:text-[13.5px]">
                   {/* The authority probe is in flight (bounded to 1.5s): saying so beats a
                       key that looks alive and does nothing on a half-dead link. */}
                   {starting
@@ -3999,6 +4083,11 @@ export function LiveMode({
             if (e.currentTarget.contains(e.target as Node)) closeTools();
             return;
           }
+          // Tab pressed IN the sheet wraps inside it (the Feedback dialog, portalled
+          // out of this DOM, keeps its own Radix trap).
+          if (e.key === "Tab" && e.currentTarget.contains(e.target as Node)) {
+            wrapTabInside(e, e.currentTarget.querySelector<HTMLElement>('[role="dialog"]'));
+          }
           // Every other key stays in the modal. The window's Live shortcuts would
           // otherwise fire behind it: Space on the focused ปิด would START the show
           // (or pause it mid-show) and N / → / ← would walk the setlist. React's
@@ -4032,6 +4121,31 @@ export function LiveMode({
               <X aria-hidden className="size-4" />
             </span>
           </button>
+
+          {/* Now — the ON-NOW item's whole cue and its mics. The NOW card has one
+              note line (none in overtime or on a phone held sideways) and no mics,
+              and NEXT has already moved on; 3ddf617's countdown card showed both. */}
+          {current && (current.notes || current.mic_slots?.length > 0) && (
+            <>
+              <h4 className="eyebrow key mb-2 mt-5">Now</h4>
+              <p className="mb-2 truncate text-[14px] font-semibold">{current.title || "—"}</p>
+              {current.notes && (
+                <p className="mb-2 flex max-h-40 items-start gap-1.5 overflow-y-auto overscroll-contain rounded-[2px] bg-muted px-3 py-2 text-[13px]">
+                  <Lightbulb aria-hidden className="mt-0.5 size-3.5 shrink-0" />
+                  <span className="min-w-0 whitespace-pre-wrap break-words">{current.notes}</span>
+                </p>
+              )}
+              {current.mic_slots?.length > 0 && (
+                <MicGrid
+                  mics={current.mic_slots.map((s) => ({
+                    mic: s.mic,
+                    name: s.member,
+                    color: "hsl(var(--foreground) / .3)",
+                  }))}
+                />
+              )}
+            </>
+          )}
 
           {/* Show */}
           <h4 className="eyebrow key mb-2 mt-5">Show</h4>
@@ -4085,7 +4199,7 @@ export function LiveMode({
           {/* Landscape phone only: the NOW card drops its fade row there (spec §G.10,
               "everything else in the tools sheet"). Same condition as the card's. */}
           {current && (currentAudioUrl || (isController && state.begun)) && (
-            <div className="mb-2.5 hidden grid-cols-[1.05fr_.72fr_1.25fr] gap-[3px] [@media(orientation:landscape)_and_(max-height:699.98px)]:grid">
+            <div className="mb-2.5 hidden grid-cols-[1.05fr_.72fr_1.25fr] gap-[3px] [@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:grid">
               {fadeKeys}
             </div>
           )}
@@ -4324,6 +4438,11 @@ export function LiveMode({
               : "Manual: กด NEXT เพื่อข้ามรายการ — ซิงค์หลายเครื่องอัตโนมัติ"}
           </p>
           <LiveFullscreenRow />
+          {/* Dark | Light — the header that carried the theme switch is hidden here,
+              and leaving a running show to find it goes through the leave guard. */}
+          <div className="mt-2" data-testid="live-theme">
+            <ThemeSeg />
+          </div>
           {isController && (
             <p className="mt-2 hidden text-[12.5px] text-muted-foreground [@media(hover:hover)_and_(pointer:fine)]:block">
               คีย์ลัด: <kbd>Space</kbd> เริ่ม/รัน · <kbd>→</kbd>/<kbd>N</kbd> ถัดไป · <kbd>←</kbd> ย้อน

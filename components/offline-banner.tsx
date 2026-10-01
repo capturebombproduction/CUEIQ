@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useSyncExternalStore } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { WifiOff } from "lucide-react";
 
 // How many header-hosted strips are mounted right now. While the app header hosts
@@ -15,6 +15,21 @@ const subscribe = (cb: () => void) => {
 };
 const hostedNow = () => hosted;
 const noneOnServer = () => 0;
+
+// The header-hosted strip is IN FLOW inside a sticky header, so offline the header
+// is taller by the strip — and a bar stuck under that header (the Event page's tab
+// row, top = var(--header-h)) has to clear it too, or the strip's height of it
+// slides under the glass. Each header-hosted strip on screen reports its measured
+// height (it wraps to two lines on a 360px phone); the tallest is published as
+// --offline-strip-h on the root, and the property is removed when none is left.
+const stripHeights = new Map<object, number>();
+function publishStripHeight(key: object, height: number | null) {
+  if (height === null) stripHeights.delete(key);
+  else stripHeights.set(key, height);
+  const root = document.documentElement.style;
+  if (stripHeights.size === 0) root.removeProperty("--offline-strip-h");
+  else root.setProperty("--offline-strip-h", `${Math.max(...stripHeights.values())}px`);
+}
 
 function useOffline(): boolean {
   const [offline, setOffline] = useState(false);
@@ -60,9 +75,25 @@ export function OfflineBanner({ placement = "flow" }: { placement?: "flow" | "he
     };
   }, [placement]);
 
+  const stripRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = stripRef.current;
+    if (placement !== "header" || !offline || !el) return;
+    const key = {};
+    const measure = () => publishStripHeight(key, el.getBoundingClientRect().height);
+    measure();
+    const ro = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(measure);
+    ro?.observe(el);
+    return () => {
+      ro?.disconnect();
+      publishStripHeight(key, null);
+    };
+  }, [placement, offline]);
+
   if (!offline || (placement === "flow" && hostedByHeader > 0)) return null;
   return (
     <div
+      ref={stripRef}
       role="status"
       data-testid="offline-strip"
       // min-h, not h-7: on a 360px phone the Thai sentence wraps, and a fixed

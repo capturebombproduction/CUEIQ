@@ -6,6 +6,7 @@ import {
   Users,
   Shirt,
   ExternalLink,
+  OctagonAlert,
 } from "lucide-react";
 import { PrintButton } from "@/components/print-button";
 import { LineupHeadline } from "@/components/event/lineup-headline";
@@ -236,7 +237,14 @@ export default async function SharePage({ params }: { params: Promise<{ token: s
             <Music2 className="h-4 w-4" /> เซ็ตลิสต์ / Run Sheet
             <span className="ml-auto font-normal normal-case tabular-nums text-muted-foreground">
               รวม {formatDuration(timing.totalSeconds)}
-              {timing.isOver && <span className="text-destructive"> · เกิน Hard out</span>}
+              {/* The band-independent alarm, icon + word (spec §0.3 rules 4-5), as on
+                  the in-app sheet. Never --destructive: <BandSkin> above moves that
+                  token off red for a red band, which turned this violet. */}
+              {timing.isOver && (
+                <span className="chip chip-alarm ml-2 align-middle" data-over-hard-out="">
+                  <OctagonAlert aria-hidden /> เกิน Hard out
+                </span>
+              )}
             </span>
           </h2>
           <div className="overflow-x-auto">

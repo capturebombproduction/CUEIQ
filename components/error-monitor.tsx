@@ -4,6 +4,19 @@ import { Component, useEffect, type ReactNode } from "react";
 import { logClientError } from "@/lib/client-log";
 import { Button } from "@/components/ui/button";
 import { FeedbackButton } from "@/components/feedback-button";
+import { immersiveEventId } from "@/components/chrome-gate";
+
+/** A FULL load of `target`: a crashed class boundary never resets on a route change.
+ *  The desktop (a HashRouter) sets the hash and reloads into it — the Quick Show
+ *  escape in desktop/src/main.tsx does the same; the web navigates for real. */
+function leaveTo(target: string, hashRouter: boolean) {
+  if (hashRouter) {
+    window.location.hash = `#${target}`;
+    window.location.reload();
+  } else {
+    window.location.assign(target);
+  }
+}
 
 /**
  * Global client-error capture. Mounted once in the (app) layout. Installs window
@@ -53,7 +66,15 @@ export function ErrorMonitor({
  * fallback with a reload, instead of an unmounted blank page mid-show.
  */
 export class AppErrorBoundary extends Component<
-  { userId: string; tenantId: string | null; children: ReactNode },
+  {
+    userId: string;
+    tenantId: string | null;
+    children: ReactNode;
+    /** Desktop only: the HashRouter's current path (the shell's useLocation). Its
+     *  escapes set the hash and reload, and Quick Show is offered with them. The web
+     *  omits it — its route is the real path. */
+    hashRoute?: string;
+  },
   { crashed: boolean; saved: boolean | null }
 > {
   /** `saved` is null until the capture answers: it is an async write and this is a
@@ -109,6 +130,11 @@ export class AppErrorBoundary extends Component<
       // exactly the screens a member is mid-show, the note pointed at a button that
       // did not exist. The tile carries "แจ้งปัญหา" as its own subtitle.
       const failed = this.state.saved === false;
+      const { hashRoute } = this.props;
+      const hashRouter = hashRoute !== undefined;
+      const eventId = immersiveEventId(
+        hashRouter ? hashRoute : typeof window === "undefined" ? "" : window.location.pathname
+      );
       return (
         <div className="grid min-h-[60vh] place-items-center p-6 text-center">
           <div className="space-y-3">
@@ -121,6 +147,23 @@ export class AppErrorBoundary extends Component<
                   : "ลองโหลดหน้าใหม่อีกครั้ง"}
             </p>
             <Button onClick={() => window.location.reload()}>โหลดหน้าใหม่</Button>
+            {/* The way out on Live / the show-caller. Before the redesign the header
+                above this card (nav, and on the desktop Quick Show) was the way out;
+                those screens have none now, reload re-opens the same screen, and a
+                crash that comes from the data came straight back — on the .exe,
+                quitting mid-show was the only exit. Ordinary pages keep their header. */}
+            {eventId && (
+              <div className="flex flex-wrap items-center justify-center gap-2">
+                <Button variant="outline" onClick={() => leaveTo(`/events/${eventId}`, hashRouter)}>
+                  กลับไปหน้างาน
+                </Button>
+                {hashRouter && (
+                  <Button variant="outline" onClick={() => leaveTo("/my-show", true)}>
+                    Quick Show
+                  </Button>
+                )}
+              </div>
+            )}
             {failed && (
               <div className="mx-auto w-full max-w-[240px] text-left" data-testid="crash-feedback">
                 <FeedbackButton userId={this.props.userId} tenantId={this.props.tenantId} />

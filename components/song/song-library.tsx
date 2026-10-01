@@ -24,6 +24,7 @@ import {
   AudioLines,
   AudioWaveform,
   Hourglass,
+  CircleCheck,
   CircleX,
 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
@@ -658,10 +659,11 @@ export function SongLibrary({
   // How many songs each rights chip would show, within the band filter — the
   // chip says "รอตรวจ 2" before it is pressed, not after.
   const rightsCount = useMemo(() => {
-    const n = { pending: 0, rejected: 0 };
+    const n = { pending: 0, cleared: 0, rejected: 0 };
     for (const s of songs) {
       if (groupFilter !== "all" && s.group_id !== groupFilter) continue;
       if (s.copyright_status === "pending") n.pending++;
+      else if (s.copyright_status === "cleared") n.cleared++;
       else if (s.copyright_status === "rejected") n.rejected++;
     }
     return n;
@@ -1596,6 +1598,15 @@ export function SongLibrary({
         >
           <Hourglass aria-hidden />
           รอตรวจ <span className="num text-[16px]">{rightsCount.pending}</span>
+        </FilterChip>
+        {/* The old rights dropdown's ✅ ถูกต้อง: an approver re-checking a clearance
+            needs the cleared songs on their own. */}
+        <FilterChip
+          on={copyFilter === "cleared"}
+          onClick={() => setCopyFilter((f) => (f === "cleared" ? "all" : "cleared"))}
+        >
+          <CircleCheck aria-hidden />
+          ถูกต้อง <span className="num text-[16px]">{rightsCount.cleared}</span>
         </FilterChip>
         {(rightsCount.rejected > 0 || copyFilter === "rejected") && (
           <FilterChip

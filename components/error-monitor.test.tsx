@@ -198,3 +198,71 @@ describe("the reload button", () => {
     Object.defineProperty(window, "location", { configurable: true, value: original });
   });
 });
+
+// Live Mode and the show-caller have no header and no tab bar since the redesign, so
+// a crash there offered ONLY reload — which re-opens the same screen. On the desktop
+// (.exe, a HashRouter) quitting the app was the only exit. The card now carries a way
+// back to the event page on exactly those screens, and nowhere else.
+describe("the way out on the immersive screens", () => {
+  const original = window.location;
+  function at(loc: { hash: string; pathname: string }) {
+    const stub = { ...loc, reload: vi.fn(), assign: vi.fn() };
+    Object.defineProperty(window, "location", { configurable: true, value: stub });
+    return stub;
+  }
+  afterEach(() => {
+    Object.defineProperty(window, "location", { configurable: true, value: original });
+  });
+
+  function crashDesktop(hashRoute: string) {
+    return render(
+      <AppErrorBoundary userId={ME} tenantId={TENANT} hashRoute={hashRoute}>
+        <Boom />
+      </AppErrorBoundary>
+    );
+  }
+
+  it("desktop Live Mode (hash route /events/<id>/live): sets the event's hash and reloads into it", async () => {
+    const loc = at({ hash: "#/events/e1/live", pathname: "/" });
+    crashDesktop("/events/e1/live");
+    await flush();
+    fireEvent.click(screen.getByRole("button", { name: "กลับไปหน้างาน" }));
+    expect(loc.hash).toBe("#/events/e1");
+    expect(loc.reload).toHaveBeenCalled();
+    expect(loc.assign).not.toHaveBeenCalled();
+  });
+
+  it("desktop show-caller: Quick Show too — the header that carried it is gone there", async () => {
+    const loc = at({ hash: "#/events/e1/run-order/live", pathname: "/" });
+    crashDesktop("/events/e1/run-order/live");
+    await flush();
+    fireEvent.click(screen.getByRole("button", { name: "Quick Show" }));
+    expect(loc.hash).toBe("#/my-show");
+    expect(loc.reload).toHaveBeenCalled();
+  });
+
+  it("web show-caller (/events/<id>/run-order/live): a full navigation to the event page, no Quick Show", async () => {
+    const loc = at({ hash: "", pathname: "/events/e1/run-order/live" });
+    crash();
+    await flush();
+    expect(screen.queryByRole("button", { name: "Quick Show" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "กลับไปหน้างาน" }));
+    expect(loc.assign).toHaveBeenCalledWith("/events/e1");
+  });
+
+  it.each(["/dashboard", "/events/e1", "/events/e1/run-order"])(
+    "an ordinary page (%s) keeps the card as it was, web and desktop",
+    async (path) => {
+      at({ hash: "", pathname: path });
+      crash();
+      await flush();
+      expect(screen.getByText("โหลดหน้าใหม่")).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "กลับไปหน้างาน" })).toBeNull();
+      cleanup();
+      crashDesktop(path);
+      await flush();
+      expect(screen.queryByRole("button", { name: "กลับไปหน้างาน" })).toBeNull();
+      expect(screen.queryByRole("button", { name: "Quick Show" })).toBeNull();
+    }
+  );
+});

@@ -16,6 +16,7 @@ import {
 } from "@/lib/audio-targets";
 import { loadEventBundle, type EventBundle } from "~/data/event-bundle";
 import { useWorkspace } from "~/data/workspace-context";
+import { ImmersiveLoading } from "~/components/immersive-loading";
 
 export function LivePage() {
   const { id } = useParams<{ id: string }>();
@@ -38,7 +39,8 @@ export function LivePage() {
   }, [id]);
 
   if (state.loading) {
-    return <p className="py-16 text-center text-sm text-muted-foreground">กำลังโหลดโชว์…</p>;
+    // Immersive route: no header to leave by while the load runs out its budgets.
+    return <ImmersiveLoading eventId={id} label="กำลังโหลดโชว์…" />;
   }
 
   const bundle = state.bundle;
@@ -72,17 +74,21 @@ export function LivePage() {
 
   // Immersive (the shell drops its header and its <main> padding on this route):
   // the back link is in Live Mode's own top bar.
-  // ⚠️ The readiness card above LiveMode pushes the stage layout down by its own
-  // height, so the .exe stage page scrolls by that much — where it should live is
-  // พี่'s call (review-shots/design/PLANS-surfaces-critic.md, finding L6).
+  // Stage size: Live Mode's root is one screen tall over a FIXED 112 px dock, so the
+  // card in flow above it pushed the board's bottom — the NOW card's fade and volume
+  // rows — under the dock. The page is that one-screen column instead: the card takes
+  // its share (capped, scrolling inside itself once it opens) and Live Mode's root the
+  // rest; `> .live-root` (0,2,0) outranks the root's own `stage:h-[100dvh]` (0,1,0).
+  // Where the card should live in the end is still พี่'s call
+  // (review-shots/design/PLANS-surfaces-critic.md, finding L6).
   return (
-    <div>
+    <div className="stage:flex stage:h-[100dvh] stage:flex-col stage:[&>.live-root]:h-auto stage:[&>.live-root]:min-h-0 stage:[&>.live-root]:flex-1">
       {/* `setlist` is what lets the preflight reconcile rows against the resolvers —
           without it a row whose song was deleted leaves no trace in either list and
           the check prints a green "พร้อมโชว์ออฟไลน์" over a track that plays nothing.
           Round 10 built that guard and never passed this prop. */}
       {/* Its own gutter now that <main> has none; `empty:hidden` when it has nothing to say. */}
-      <div className="px-4 pt-3 empty:hidden stage:px-5">
+      <div className="px-4 pt-3 empty:hidden stage:max-h-[30dvh] stage:shrink-0 stage:overflow-y-auto stage:px-5">
         <ShowReadinessCheck
           eventId={event.id}
           targets={audioTargets}

@@ -26,6 +26,29 @@ function isStandalone(): boolean {
   );
 }
 
+// The deferred prompt lives at MODULE scope, not in the button's state. Chrome fires
+// `beforeinstallprompt` once per document load and never again on a same-document
+// navigation — and since the redesign the header (and this button in it) UNMOUNTS on
+// Live Mode and the show-caller (ChromeGate). Kept in state, the captured event died
+// with the header: back from Live, the install icon was gone until a full reload. Kept
+// here, every mount reads it. The listener is installed when this module loads, which
+// ChromeGate makes sure of on every (app) page — the immersive ones included, so a
+// document that OPENS on Live still catches the event.
+let deferred: InstallPromptEvent | null = null;
+const subscribers = new Set<() => void>();
+const emit = () => subscribers.forEach((fn) => fn());
+if (typeof window !== "undefined") {
+  window.addEventListener("beforeinstallprompt", (e) => {
+    e.preventDefault();
+    deferred = e as InstallPromptEvent;
+    emit();
+  });
+  window.addEventListener("appinstalled", () => {
+    deferred = null;
+    emit();
+  });
+}
+
 function isIOS(): boolean {
   const ua = navigator.userAgent;
   // iPhone/iPod/older iPad, plus iPadOS 13+ which reports as "MacIntel" but has touch.
@@ -55,21 +78,20 @@ export function InstallButton() {
       setIos(true); // iOS → manual instructions (no beforeinstallprompt on Apple)
       return;
     }
-    const onPrompt = (e: Event) => {
-      e.preventDefault();
-      setPrompt(e as InstallPromptEvent);
-    };
-    const onInstalled = () => setPrompt(null);
-    window.addEventListener("beforeinstallprompt", onPrompt);
-    window.addEventListener("appinstalled", onInstalled);
+    // The module-level capture above holds the event; this mount only follows it.
+    const sync = () => setPrompt(deferred);
+    sync();
+    subscribers.add(sync);
     return () => {
-      window.removeEventListener("beforeinstallprompt", onPrompt);
-      window.removeEventListener("appinstalled", onInstalled);
+      subscribers.delete(sync);
     };
   }, []);
 
   async function install() {
-    const p = prompt;
+    const p = deferred ?? prompt;
+    // A prompt event can be used once: every mounted copy lets go of it.
+    deferred = null;
+    emit();
     setPrompt(null);
     try {
       await p?.prompt();

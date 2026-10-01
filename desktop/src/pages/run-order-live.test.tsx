@@ -27,10 +27,12 @@ const h = vi.hoisted(() => ({
   res: null as unknown,
   ws: null as unknown,
   caller: [] as Record<string, unknown>[],
+  /** The load never answers — a joined-but-black-holed venue network. */
+  hang: false,
 }));
 
 vi.mock("~/data/run-order", () => ({
-  loadRunOrderLive: vi.fn(() => Promise.resolve(h.res)),
+  loadRunOrderLive: vi.fn(() => (h.hang ? new Promise(() => {}) : Promise.resolve(h.res))),
 }));
 vi.mock("~/data/workspace-context", () => ({
   useWorkspace: () => ({ loading: false, ws: h.ws, reload: () => {} }),
@@ -76,6 +78,7 @@ beforeEach(() => {
   h.caller = [];
   h.ws = workspace("admin");
   h.res = { status: "ok", data: DATA, fromCache: false };
+  h.hang = false;
 });
 
 describe("desktop RunOrderLivePage — the caller owns the screen", () => {
@@ -125,5 +128,17 @@ describe("desktop RunOrderLivePage — the caller owns the screen", () => {
     expect(back.getAttribute("href")).toBe(`/events/${EVENT_ID}`);
     expect(back.className).toMatch(/(^|\s)h-11(\s|$)/);
     expect(screen.getByRole("button", { name: /ลองใหม่/ })).toBeInTheDocument();
+  });
+
+  // …and so does a read that has not answered yet: the board's 8 s budgets can hold
+  // this screen for a long while on a black-holed venue network, and before the
+  // redesign the header's nav and Quick Show stayed clickable through all of it.
+  it("a load still in flight keeps a way out too: back to the event, and Quick Show", async () => {
+    h.hang = true;
+    renderPage();
+    expect(screen.getByText("กำลังโหลด…")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /กลับ/ }).getAttribute("href")).toBe(`/events/${EVENT_ID}`);
+    expect(screen.getByRole("link", { name: /Quick Show/ }).getAttribute("href")).toBe("/my-show");
+    expect(screen.queryByTestId("caller")).toBeNull();
   });
 });

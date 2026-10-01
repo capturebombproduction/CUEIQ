@@ -1,4 +1,6 @@
-import type { CSSProperties, ReactNode } from "react";
+"use client";
+
+import { useId, useState, type CSSProperties, type ReactNode } from "react";
 import { Hourglass, Lightbulb, OctagonAlert, SkipForward, Timer } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { thresholds, zoneCaption, type LiveZone } from "@/lib/live-zone";
@@ -62,6 +64,12 @@ export function NowCard({
   const pct = (s: number) => (blockSec > 0 ? `${(s / blockSec) * 100}%` : "100%");
   const progress = blockSec > 0 ? Math.min(100, Math.max(0, (elapsed / blockSec) * 100)) : 0;
   const pos = `${p2(index)} / ${p2(total)}`;
+  // The cue note opens in full on a tap — a `title` tooltip never opens on a phone or
+  // an iPad. Open for THIS item's note only: when the show moves on, it is closed.
+  const noteKey = note ? `${index}\u0000${note}` : null;
+  const [openNote, setOpenNote] = useState<string | null>(null);
+  const noteOpen = !over && noteKey !== null && openNote === noteKey;
+  const noteId = useId();
   return (
     <section
       data-zone={zone}
@@ -70,11 +78,11 @@ export function NowCard({
         // and the tight version of the card — 32 px header, no note row, no fade row
         // (Live tools carries the fades there), smaller gaps — so its bottom clears
         // the dock by 8 px with the iPhone's 21 px home-indicator inset too.
-        "now flex flex-col pb-3.5 stage:min-h-0 stage:![--pad:24px] [@media(orientation:landscape)_and_(max-height:699.98px)]:![--pad:18px] [@media(orientation:landscape)_and_(max-height:699.98px)]:min-w-0 [@media(orientation:landscape)_and_(max-height:699.98px)]:basis-[calc(50%-6px)] [@media(orientation:landscape)_and_(max-height:699.98px)]:pb-2.5",
+        "now flex flex-col pb-3.5 stage:min-h-0 stage:![--pad:24px] [@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:![--pad:18px] [@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:min-w-0 [@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:basis-[calc(50%-6px)] [@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:pb-2.5",
         // Overtime breaks the chamfer AND the phone's 16 px gutter: a square plate to
         // the screen edges is the one shape nothing else on the screen has.
         over
-          ? "alarm-plate -mx-4 stage:mx-0 [@media(orientation:landscape)_and_(max-height:699.98px)]:mx-0"
+          ? "alarm-plate -mx-4 stage:mx-0 [@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:mx-0"
           : "lit cut [--cut:18px] stage:[--cut:26px]",
         zone === "warn" && "zone-warn",
         zone === "urgent" && "zone-urgent",
@@ -87,7 +95,7 @@ export function NowCard({
         <div
           key="over"
           role="alert"
-          className="zhead hazard-band stage:h-[46px] [@media(orientation:landscape)_and_(max-height:699.98px)]:h-8"
+          className="zhead hazard-band stage:h-[46px] [@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:h-8"
         >
           <span>
             <OctagonAlert aria-hidden />
@@ -95,7 +103,7 @@ export function NowCard({
           </span>
         </div>
       ) : (
-        <div key="zone" className="zhead stage:h-[46px] [@media(orientation:landscape)_and_(max-height:699.98px)]:h-8">
+        <div key="zone" className="zhead stage:h-[46px] [@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:h-8">
           {zone === "ok" && <span className="ztag">Now</span>}
           {zone === "warn" && (
             <>
@@ -122,8 +130,11 @@ export function NowCard({
         </div>
       )}
 
-      <div className="mt-1.5 flex min-w-0 items-center gap-2 [@media(orientation:landscape)_and_(max-height:699.98px)]:mt-1">
-        <h2 className="disp min-w-0 flex-1 truncate text-[26px] leading-[1.04] stage:text-[40px]">{title}</h2>
+      <div className="mt-1.5 flex min-w-0 items-center gap-2 [@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:mt-1">
+        {/* py + matching -my: the clip (overflow: hidden) is the padding box, and at
+            1.04 a Barlow-first line box ends inside Kanit's stacked tone marks and
+            ุ / ู. The padding gives them room; the margin keeps the row's height. */}
+        <h2 className="disp min-w-0 flex-1 truncate py-[.25em] -my-[.25em] text-[26px] leading-[1.04] stage:text-[40px]">{title}</h2>
         {over && <span className="num shrink-0 text-[16px]">{pos}</span>}
         {kind && (
           <KindChip
@@ -138,10 +149,12 @@ export function NowCard({
       </div>
 
       {/* One line, fixed height in every zone: the cue note, or overtime's instruction.
-          Not on a landscape phone (no room; the zone caption below still speaks). */}
+          Not on a landscape phone (no room; the zone caption below still speaks). A tap
+          lays the whole note OVER the card, so its height never changes; Live tools
+          carries the full note too (a phone held sideways, overtime). */}
       <div
         className={cn(
-          "mt-0.5 flex h-5 min-w-0 items-center gap-1.5 text-[13px] [@media(orientation:landscape)_and_(max-height:699.98px)]:hidden",
+          "relative mt-0.5 flex h-5 min-w-0 items-center gap-1.5 text-[13px] [@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:hidden",
           over ? "font-semibold" : "text-muted-foreground"
         )}
       >
@@ -155,10 +168,25 @@ export function NowCard({
           </>
         ) : note ? (
           <>
-            <Lightbulb aria-hidden className="size-3.5 shrink-0" />
-            <span className="truncate" title={note}>
-              {note}
-            </span>
+            <button
+              type="button"
+              aria-expanded={noteOpen}
+              aria-controls={noteId}
+              title={note}
+              onClick={() => setOpenNote(noteOpen ? null : noteKey)}
+              className="flex h-full min-w-0 flex-1 items-center gap-1.5 text-left"
+            >
+              <Lightbulb aria-hidden className="size-3.5 shrink-0" />
+              <span className="truncate">{note}</span>
+            </button>
+            {noteOpen && (
+              <p
+                id={noteId}
+                className="absolute inset-x-0 top-full z-10 mt-1 max-h-40 overflow-y-auto overscroll-contain whitespace-pre-wrap break-words rounded-[2px] bg-popover px-3 py-2 text-[13px] leading-snug text-popover-foreground shadow-elev-2"
+              >
+                {note}
+              </p>
+            )}
           </>
         ) : null}
       </div>
@@ -167,16 +195,16 @@ export function NowCard({
           column leaves and is fitted to BOTH the width (cqi) and that height (cqb), so
           a resume / fault / sync banner can shrink the numerals but never push the
           fade row out of the card. Landscape phone: the 120 px cap in a 96 px box. */}
-      <div className="mt-2 [@media(orientation:landscape)_and_(max-height:699.98px)]:mt-1 stage:mt-1 stage:grid stage:min-h-0 stage:flex-1 stage:[&_.cd-wrap]:!h-auto stage:[&_.cd-wrap]:[container-type:size] stage:[&_.cd]:![--cd-max:236px] stage:[&_.cd]:![font-size:min(var(--cd-max),calc(100cqi/var(--cd-em,1.84)),calc(100cqb/0.8))] [@media(orientation:landscape)_and_(max-height:699.98px)]:[&_.cd-wrap]:!h-[96px] [@media(orientation:landscape)_and_(max-height:699.98px)]:[&_.cd]:![--cd-max:120px]">
+      <div className="mt-2 [@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:mt-1 stage:mt-1 stage:grid stage:min-h-0 stage:flex-1 stage:[&_.cd-wrap]:!h-auto stage:[&_.cd-wrap]:[container-type:size] stage:[&_.cd]:![--cd-max:236px] stage:[&_.cd]:![font-size:min(var(--cd-max),calc(100cqi/var(--cd-em,1.84)),calc(100cqb/0.8))] [@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:[&_.cd-wrap]:!h-[96px] [@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:[&_.cd]:![--cd-max:120px]">
         <Countdown seconds={Math.round(remaining)} max={164} />
       </div>
 
       {over ? (
-        <div className="mt-3 h-2 shrink-0 hatch [@media(orientation:landscape)_and_(max-height:699.98px)]:mt-2 stage:h-2.5" />
+        <div className="mt-3 h-2 shrink-0 hatch [@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:mt-2 stage:h-2.5" />
       ) : (
         <div
           className={cn(
-            "track zoned mt-3 shrink-0 [@media(orientation:landscape)_and_(max-height:699.98px)]:mt-2 stage:h-2.5",
+            "track zoned mt-3 shrink-0 [@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:mt-2 stage:h-2.5",
             zone === "warn" && "warn",
             zone === "urgent" && "urgent"
           )}
@@ -186,7 +214,7 @@ export function NowCard({
         </div>
       )}
 
-      <div className="mt-2 flex shrink-0 items-baseline justify-between gap-2 text-[11.5px] text-muted-foreground [@media(orientation:landscape)_and_(max-height:699.98px)]:mt-1.5 stage:text-[12.5px]">
+      <div className="mt-2 flex shrink-0 items-baseline justify-between gap-2 text-[11.5px] text-muted-foreground [@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:mt-1.5 stage:text-[12.5px]">
         <span className="num text-[14px] text-foreground stage:text-[16px]">{formatDuration(elapsed)}</span>
         <span
           className={cn(
@@ -201,7 +229,7 @@ export function NowCard({
       </div>
 
       {children && (
-        <div className="mt-2.5 [@media(orientation:landscape)_and_(max-height:699.98px)]:hidden stage:shrink-0">{children}</div>
+        <div className="mt-2.5 [@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:hidden stage:shrink-0">{children}</div>
       )}
     </section>
   );

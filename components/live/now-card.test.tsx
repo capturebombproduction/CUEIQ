@@ -4,7 +4,7 @@
 // when there is no note, a countdown with its fixed box, a meter, the labels. A zone
 // that added or dropped a row would let the NEXT card's mic grid slide under the dock.
 import { describe, it, expect } from "vitest";
-import { render, screen, within } from "@testing-library/react";
+import { render, screen, within, fireEvent } from "@testing-library/react";
 import { NowCard } from "./now-card";
 import type { LiveZone } from "@/lib/live-zone";
 
@@ -122,5 +122,113 @@ describe("NowCard · offline cached rows", () => {
     const { el } = card("ok", { note: "เปิดไฟแดงเต็มเวที" });
     const note = within(el).getByText("เปิดไฟแดงเต็มเวที");
     expect(note.closest(".h-5")).not.toBeNull();
+  });
+});
+
+// ── THAI MARKS INSIDE A ONE-LINE CLIP ───────────────────────────────────────
+// The title is `truncate` (overflow: hidden) at line-height 1.04 in a Barlow-first
+// stack, so the clip box is the line box: +920/−120 units around the baseline. The
+// Thai falls back to Kanit 700, whose stacked tone marks reach +1046 and whose ู
+// reaches −270 — "สู้" lost its ู and "ปฏิวัติ" the tail of ฏ. Vertical padding
+// widens the clip (overflow clips at the padding box) and the matching negative
+// margin gives the room back, so the row is exactly as tall as before. jsdom has no
+// layout: what is pinned is that room, never a measurement.
+describe("NowCard · a Thai title keeps its tone marks and lower vowels", () => {
+  it("the clipped title carries room above and below its line, cancelled by its margin", () => {
+    const { el } = card("ok", { title: "หัวใจปฏิวัติ สู้ ดวงดาวที่ปลายฟ้า" });
+    const h2 = within(el).getByRole("heading", { level: 2 });
+    expect(h2).toHaveClass("truncate", "py-[.25em]", "-my-[.25em]");
+  });
+});
+
+// ── THE CUE NOTE OF THE ITEM ON NOW ─────────────────────────────────────────
+// 3ddf617 showed the whole note, capped and scrollable, on the countdown card — its
+// comment: it once lived only on NEXT and "vanished the instant the item became
+// current — exactly when the cue is due". The redesign's one fixed line cut a
+// multi-sentence MC script to ~35 characters, with the rest in a `title` tooltip a
+// phone cannot open. The line stays (the card's height is measured); a tap opens it.
+describe("NowCard · the cue note of the item ON NOW", () => {
+  const SCRIPT =
+    "MC: ขอบคุณทุกคนที่มาวันนี้ — เพลงต่อไปเป็นเพลงใหม่ที่ยังไม่เคยเล่นที่ไหน ขอให้ทุกคนยกไฟขึ้นพร้อมกันตอนท่อนฮุก แล้วหันไปทางซ้ายเวที";
+
+  function noteCard(props: Partial<React.ComponentProps<typeof NowCard>> = {}) {
+    const all = {
+      zone: "ok" as LiveZone,
+      blockSec: BLOCK,
+      remaining: 60,
+      elapsed: BLOCK - 60,
+      index: 4,
+      total: 16,
+      kind: "mc" as const,
+      title: "MC 2",
+      note: SCRIPT,
+      endClock: "18:05:25",
+      canAdvance: true,
+      ...props,
+    };
+    const view = render(<NowCard {...all} />);
+    const el = () => view.container.querySelector("section[data-zone]") as HTMLElement;
+    return { view, el, all };
+  }
+
+  it("one fixed line until tapped, then the WHOLE script — on a phone, where a tooltip never opens", () => {
+    const { el } = noteCard();
+    const row = within(el()).getByRole("button", { name: SCRIPT });
+    expect(row).toHaveAttribute("aria-expanded", "false");
+    expect(row.closest(".h-5")).not.toBeNull();
+    expect(document.getElementById(row.getAttribute("aria-controls") ?? "")).toBeNull();
+
+    fireEvent.click(row);
+    expect(row).toHaveAttribute("aria-expanded", "true");
+    const full = document.getElementById(row.getAttribute("aria-controls") ?? "");
+    expect(full, "the tap opened nothing").not.toBeNull();
+    expect(full).toHaveTextContent(SCRIPT);
+    expect(full).not.toHaveClass("truncate");
+    expect(el()).toContainElement(full);
+    // laid OVER the card, not into it: the card keeps its one shape (and its height)
+    expect(full).toHaveClass("absolute");
+    expect(shape(el())).toEqual(["header", "title", "note", "countdown", "meter", "labels"]);
+
+    fireEvent.click(row);
+    expect(row).toHaveAttribute("aria-expanded", "false");
+  });
+
+  it("an open script closes when the show moves on — the next item's cue is never hidden behind it", () => {
+    const { view, el, all } = noteCard();
+    fireEvent.click(within(el()).getByRole("button", { name: SCRIPT }));
+    expect(within(el()).getByRole("button", { name: SCRIPT })).toHaveAttribute("aria-expanded", "true");
+
+    view.rerender(<NowCard {...all} index={5} title="Track 5" note="ไฟสโตรบตอนจบเพลง" />);
+    expect(within(el()).getByRole("button", { name: "ไฟสโตรบตอนจบเพลง" })).toHaveAttribute("aria-expanded", "false");
+  });
+});
+
+// ── THE LANDSCAPE-PHONE CARD IS A PHONE'S ───────────────────────────────────
+// The tight landscape card (no note row, no fade row — Live tools carries the fades
+// there) is built for a phone's 390 px height. Keyed on height alone it also caught
+// every mouse-driven window under 700 px tall that is not `stage:` — Chrome on a
+// 1366×768 laptop, the .exe on a 768 px screen — whose NOW card then lost Auto Mute,
+// MC, Auto Loudness and the cue note. jsdom has no CSS: what is pinned is the query.
+const LANDSCAPE_PHONE = "[@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]";
+
+describe("NowCard · the landscape-phone card is a touch screen's, never a short laptop window's", () => {
+  const rulesIn = (el: HTMLElement) =>
+    [el, ...Array.from(el.querySelectorAll("*"))]
+      .flatMap((n) => (n.getAttribute("class") ?? "").split(/\s+/))
+      .filter((t) => t.includes("orientation:landscape"));
+
+  it("every landscape rule names a coarse pointer, in every zone", () => {
+    for (const z of ["ok", "warn", "urgent", "over"] as const) {
+      const { el, unmount } = card(z, { note: "เปิดไฟแดงเต็มเวที" });
+      const rules = rulesIn(el);
+      expect(rules.length, z).toBeGreaterThan(0);
+      for (const r of rules) expect(r.startsWith(`${LANDSCAPE_PHONE}:`), `${z}: ${r}`).toBe(true);
+      unmount();
+    }
+  });
+
+  it("the fade row leaves the card only on that touch screen", () => {
+    const { el } = card("ok");
+    expect(within(el).getByTestId("fade-row").parentElement).toHaveClass(`${LANDSCAPE_PHONE}:hidden`);
   });
 });

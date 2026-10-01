@@ -3,7 +3,7 @@
 // when storage refuses, and editor-only items only for editors.
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, act } from "@testing-library/react";
-import { WhatsNew, markWhatsNewSeen } from "./whats-new";
+import { WhatsNew, markWhatsNewSeen, WHATS_NEW_ROUND } from "./whats-new";
 
 const KEY = "cueiq:whats-new-seen";
 
@@ -34,22 +34,41 @@ describe("WhatsNew", () => {
     await mount();
     expect(screen.getByTestId("whats-new")).toHaveTextContent("ออกจากระบบ");
     expect(screen.getByTestId("whats-new")).toHaveTextContent("“More”");
-    expect(screen.getByTestId("whats-new")).not.toHaveTextContent("⋯");
+    expect(screen.getByTestId("whats-new")).not.toHaveTextContent("ปุ่มตัวอักษรชื่อคุณ");
+    expect(screen.getByTestId("whats-new")).not.toHaveTextContent("⋯ มุมขวาบน");
     document.body.innerHTML = "";
     localStorage.clear();
     (window as unknown as { cueiqNative?: unknown }).cueiqNative = {}; // the desktop app
     await mount();
-    expect(screen.getByTestId("whats-new")).not.toHaveTextContent("ออกจากระบบ");
+    expect(screen.getByTestId("whats-new")).not.toHaveTextContent("“More”");
+    expect(screen.getByTestId("whats-new")).toHaveTextContent("ปุ่มตัวอักษรชื่อคุณ");
     delete (window as unknown as { cueiqNative?: unknown }).cueiqNative;
     mm.mockRestore();
   });
 
-  it("does not mention the More tab on a wide screen, where there is no tab bar", async () => {
+  it("a wide screen is pointed at the name button, never the More tab it does not have", async () => {
     await mount(); // the test DOM's matchMedia matches nothing — a wide screen
-    expect(screen.getByTestId("whats-new")).not.toHaveTextContent("ออกจากระบบ");
+    const card = screen.getByTestId("whats-new");
+    expect(card).not.toHaveTextContent("“More”");
+    expect(card).toHaveTextContent("ออกจากระบบ");
+    expect(card).toHaveTextContent("ปุ่มตัวอักษรชื่อคุณ มุมขวาบน");
   });
 
-  it("comes back for the 2026-10-01 round on a device that closed the 09-28 one", async () => {
+  // The redesign removed the floating แจ้งปัญหา button and the header's "⋯" that the
+  // 10-01 card pointed phones at. 10-01 is live on main, so a device that closed it
+  // holds "2026-10-01" — and was told nothing until the round moved on.
+  it("comes back on a device that closed the 2026-10-01 round, and says where แจ้งปัญหา went", async () => {
+    expect(WHATS_NEW_ROUND).not.toBe("2026-10-01");
+    localStorage.setItem(KEY, "2026-10-01");
+    await mount(false); // a member
+    const card = screen.getByTestId("whats-new");
+    expect(card).toHaveTextContent("Feedback (แจ้งปัญหา)");
+    expect(card).toHaveTextContent("ปุ่มแจ้งปัญหาที่ลอยมุมจอไม่มีแล้ว");
+    // …and on the two show screens, which have neither the tab bar nor the header
+    expect(card).toHaveTextContent("หน้า Live และคุมคิวงาน");
+  });
+
+  it("comes back for the current round on a device that closed the 09-28 one", async () => {
     localStorage.setItem(KEY, "2026-09-28");
     await mount(false);
     expect(screen.getByTestId("whats-new")).toHaveTextContent("ปุ่ม “ซ้อม”");
@@ -106,7 +125,7 @@ describe("WhatsNew — one round, read once, wherever it was read", () => {
     expect(screen.getByTestId("whats-new")).toBeInTheDocument();
     act(() => markWhatsNewSeen());
     expect(screen.queryByTestId("whats-new")).toBeNull();
-    expect(localStorage.getItem(KEY)).toBe("2026-10-01");
+    expect(localStorage.getItem(KEY)).toBe(WHATS_NEW_ROUND);
   });
 
   it("closing the card tells the rest of the app (the More dot listens for this)", async () => {

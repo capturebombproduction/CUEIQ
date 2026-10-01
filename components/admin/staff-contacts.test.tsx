@@ -65,4 +65,21 @@ describe("crew contact cards", () => {
     expect(screen.getByRole("textbox", { name: "ชื่อ" })).toHaveValue("");
     expect(screen.queryByRole("link", { name: /โทรหา/ })).toBeNull();
   });
+
+  // The .exe reuses this page (desktop/src/pages/crew.tsx), and its will-navigate
+  // guard (desktop/electron/main.cjs) cancels every navigation off the app's own URL
+  // — a tel: link there is a button that does nothing at all. The number stays on
+  // the card as text.
+  it("offers no call button inside the desktop app, where a tel: link is dead", () => {
+    (window as unknown as { cueiqNative?: unknown }).cueiqNative = {};
+    try {
+      mount([contact({ id: "c3", name: "พี่พัชร์", role: "ช่างภาพ", phone: "081-234 5678" })]);
+      expect(screen.queryByRole("link", { name: /โทรหา/ })).toBeNull();
+      expect(document.querySelector('a[href^="tel:"]')).toBeNull();
+      const card = screen.getByRole("button", { name: /แก้ไข พี่พัชร์/ }).closest("li")!;
+      expect(card.textContent).toContain("081-234 5678");
+    } finally {
+      delete (window as unknown as { cueiqNative?: unknown }).cueiqNative;
+    }
+  });
 });

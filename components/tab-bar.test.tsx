@@ -18,6 +18,7 @@ vi.mock("@/lib/supabase/client", () => ({ createClient: () => h.supa }));
 import { TabBar } from "./tab-bar";
 import { AccountPanelProvider } from "./account-panel";
 import { FeedbackUnreadProvider } from "./feedback-button";
+import { WHATS_NEW_ROUND } from "./whats-new";
 
 const MEMBER = makePerms("member", [{ group_id: "g1", role: "member" } as never]);
 const AR = makePerms("member", [{ group_id: "g1", role: "artist_manager" } as never]);
@@ -51,7 +52,7 @@ beforeEach(() => {
   nav.path = "/dashboard";
   supa = makeSupabaseFake({ script: { feedback: ok([]) } });
   h.supa = supa;
-  localStorage.setItem("cueiq:whats-new-seen", "2026-10-01");
+  localStorage.setItem("cueiq:whats-new-seen", WHATS_NEW_ROUND);
 });
 afterEach(() => {
   document.documentElement.style.removeProperty("--tabbar-h");
@@ -200,6 +201,40 @@ describe("TabBar — the soft keyboard", () => {
     expect(bar().className).not.toContain("translate-y-full");
     field.remove();
     mm.mockRestore();
+  });
+
+  it("comes back when Android's Back key closes the keyboard but the field keeps focus", async () => {
+    const mm = touch();
+    // a visual viewport that the test can shrink and grow like a real keyboard does
+    const listeners = new Set<() => void>();
+    const vv = {
+      height: 844,
+      addEventListener: (_: string, fn: () => void) => listeners.add(fn),
+      removeEventListener: (_: string, fn: () => void) => listeners.delete(fn),
+    };
+    const prev = Object.getOwnPropertyDescriptor(window, "visualViewport");
+    Object.defineProperty(window, "visualViewport", { configurable: true, value: vv });
+    const resize = (h: number) =>
+      act(() => {
+        vv.height = h;
+        listeners.forEach((fn) => fn());
+      });
+    try {
+      await mount();
+      const field = document.createElement("input");
+      document.body.appendChild(field);
+      act(() => field.focus());
+      resize(480); // the keyboard comes up
+      expect(bar().className).toContain("translate-y-full");
+      resize(844); // Back closes it; the field is still focused, no focusout
+      expect(document.activeElement).toBe(field);
+      expect(bar().className).not.toContain("translate-y-full");
+      field.remove();
+    } finally {
+      if (prev) Object.defineProperty(window, "visualViewport", prev);
+      else delete (window as unknown as { visualViewport?: unknown }).visualViewport;
+      mm.mockRestore();
+    }
   });
 
   it("stays for a control that raises no keyboard (a checkbox)", async () => {

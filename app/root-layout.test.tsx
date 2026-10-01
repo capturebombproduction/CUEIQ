@@ -2,6 +2,9 @@
 // under the notch, the status bar follows the theme from the first paint, toasts
 // sit under the header, and a saved band colour is refreshed on every page.
 import { describe, it, expect, vi } from "vitest";
+import fs from "node:fs";
+import path from "node:path";
+import postcss from "postcss";
 import { isValidElement, type ReactElement } from "react";
 
 vi.mock("next/font/google", () => ({
@@ -29,6 +32,23 @@ const tree = () => all(RootLayout({ children: <div /> }));
 describe("root layout — viewport", () => {
   it("covers the whole screen, so the safe-area insets are real numbers", () => {
     expect(viewport.viewportFit).toBe("cover");
+  });
+
+  // `cover` also stops iOS letterboxing a LANDSCAPE page inside its safe area: an
+  // iPhone held sideways puts its notch / Dynamic Island over x≈0–59 on one side,
+  // and every page's text starts at x=16. The body pays the side insets back (0 on
+  // every other device, so nothing else moves); fixed bars pad themselves.
+  it("…and pays the sides back: the page sits inside a landscape iPhone's side insets", () => {
+    const file = path.resolve(__dirname, "globals.css");
+    const decls: Record<string, string> = {};
+    postcss.parse(fs.readFileSync(file, "utf8"), { from: file }).walkRules((rule) => {
+      if (rule.selector.trim() !== "body") return;
+      rule.walkDecls((d) => {
+        decls[d.prop] = d.value.replace(/\s+/g, "");
+      });
+    });
+    expect(decls["padding-left"]).toBe("env(safe-area-inset-left)");
+    expect(decls["padding-right"]).toBe("env(safe-area-inset-right)");
   });
 
   it("starts the status bar on the dark page colour (dark is the default)", () => {

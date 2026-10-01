@@ -78,6 +78,18 @@ describe("EventWorkspace · the Summary segment", () => {
     fireEvent.click(screen.getByRole("tab", { name: "Summary" }));
     expect(router.refresh).not.toHaveBeenCalled();
   });
+
+  // The row sticks under the app header — and offline that header grows by the
+  // in-flow offline strip (components/offline-banner.tsx publishes its height). With
+  // --header-h alone the strip's height of the row slid under the glass: most of each
+  // segment label hidden, at the venue, exactly when the app is offline.
+  it("sticks below the whole header, the offline strip included", () => {
+    mount();
+    const bar = screen.getByRole("tab", { name: "Summary" }).closest(".lit-bar")!;
+    const cls = bar.className.split(/\s+/);
+    expect(cls).toContain("sticky");
+    expect(cls).toContain("top-[calc(var(--header-h)+var(--offline-strip-h,0px)+env(safe-area-inset-top))]");
+  });
 });
 
 // Spec G.3 puts the approvers' copyright triage IN the Summary. It used to sit

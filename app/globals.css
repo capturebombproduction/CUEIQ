@@ -19,6 +19,13 @@ body {
   background-color: hsl(var(--background));
   color: hsl(var(--foreground));
   font-feature-settings: "rlig" 1, "calt" 1;
+  /* viewport-fit=cover (app/layout.tsx) stops iOS letterboxing a landscape page
+     inside its safe area, so the page pays the side insets back itself: an iPhone
+     held sideways keeps its notch / Dynamic Island off the content. 0 on every
+     other device. Fixed, edge-to-edge bars (the docks, the More sheet) ignore this
+     and pad themselves. */
+  padding-left: env(safe-area-inset-left);
+  padding-right: env(safe-area-inset-right);
 }
 
 /* Numeric columns line up nicely in run sheets / countdowns */

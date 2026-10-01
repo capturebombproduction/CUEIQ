@@ -3,6 +3,7 @@ import { render, screen, fireEvent, waitFor, within } from "@testing-library/rea
 import { renderToString } from "react-dom/server";
 import { makeSupabaseFake, makeSession, ok, type SupabaseFake } from "@/test/fakes/supabase";
 import { ConfirmProvider } from "@/components/ui/confirm-dialog";
+import { AccountPanel, AccountPanelProvider } from "@/components/account-panel";
 import type { RunSeqOp } from "@/lib/run-order-outbox";
 import { notify } from "@/lib/notify-client";
 import { EventLiveCaller, type RunSeqLive } from "./event-live-caller";
@@ -23,6 +24,11 @@ import { spotFor } from "@/lib/skin";
 const h = vi.hoisted(() => ({ supa: null as unknown, ops: [] as unknown[] }));
 vi.mock("@/lib/supabase/client", () => ({ createClient: () => h.supa }));
 vi.mock("@/lib/notify-client", () => ({ notify: vi.fn() }));
+// Only the account panel (opened from the top bar's ⋯) reads these; the board does not.
+vi.mock("next/navigation", () => ({
+  usePathname: () => "/events/ev-1/run-order/live",
+  useRouter: () => ({ replace: vi.fn(), refresh: vi.fn(), push: vi.fn() }),
+}));
 // The queue is what the waiting / parked banners read. Everything else in the
 // outbox (overlay, flush, discard) is the real module.
 vi.mock("@/lib/run-order-outbox", async (orig) => ({
@@ -116,19 +122,23 @@ function goOffline() {
   Object.defineProperty(navigator, "onLine", { configurable: true, get: () => false });
 }
 
+// AccountPanelProvider: the web layout and the desktop shell both wrap this route in
+// one (the top bar's ⋯ opens their account panel), so the board is mounted inside it.
 function caller(rows: RunSeqLive[], over: Partial<Parameters<typeof EventLiveCaller>[0]> = {}) {
   return (
-    <ConfirmProvider>
-      <EventLiveCaller
-        tenantId={TENANT}
-        eventName={FEST}
-        eventDate={FEST_DATE}
-        eventId="ev-1"
-        initial={rows}
-        canControl
-        {...over}
-      />
-    </ConfirmProvider>
+    <AccountPanelProvider>
+      <ConfirmProvider>
+        <EventLiveCaller
+          tenantId={TENANT}
+          eventName={FEST}
+          eventDate={FEST_DATE}
+          eventId="ev-1"
+          initial={rows}
+          canControl
+          {...over}
+        />
+      </ConfirmProvider>
+    </AccountPanelProvider>
   );
 }
 
@@ -156,6 +166,47 @@ describe("EventLiveCaller — Black Stage chrome (§G.11)", () => {
     const hero = container.querySelector(".lit")!;
     expect(hero.classList.contains("now")).toBe(true);
     expect(within(hero as HTMLElement).getByRole("heading", { level: 2 }).textContent).toBe("MC ช่วงเปิด");
+  });
+
+  // One-line clips sized to the line box cut Kanit's stacked tone marks and its
+  // ุ / ู (Barlow-first titles at 1.04: +920/−120 units; Kanit dock subtitles at
+  // the key's leading-none: +852/−147 — "เริ่ม" lost its mai ek). Padding widens the
+  // clip, the negative margin gives the room back. jsdom has no layout, so the room
+  // is what is pinned.
+  it("the NOW title and the dock key's Thai subtitle keep their tone marks inside the clip", () => {
+    const { container } = renderCaller();
+    const hero = container.querySelector(".lit") as HTMLElement;
+    expect(within(hero).getByRole("heading", { level: 2 })).toHaveClass("truncate", "py-[.25em]", "-my-[.25em]");
+    const sub = screen.getByText("จบ + ต่อไป · เกมชิงรางวัล");
+    expect(sub).toHaveClass("truncate", "py-[.25em]", "-mb-[.25em]", "mt-[calc(5px_-_.25em)]");
+    expect(sub).not.toHaveClass("mt-[5px]");
+  });
+
+  // viewport-fit=cover: the fixed dock ignores the body's side padding, so on an
+  // iPhone held sideways its −1 / +1 keys sat in the notch / rounded corner.
+  it("the dock keeps its keys inside a landscape iPhone's side insets", () => {
+    const { container } = renderCaller();
+    const dock = container.querySelector(".dock") as HTMLElement;
+    expect(dock).toHaveClass(
+      "fixed",
+      "pl-[max(1rem,env(safe-area-inset-left))]",
+      "pr-[max(1rem,env(safe-area-inset-right))]"
+    );
+    expect(dock).not.toHaveClass("px-4");
+  });
+
+  it("…and so does START's subtitle before the first act", () => {
+    const fresh = liveBoard().map((r) => ({
+      ...r,
+      status: "pending" as const,
+      actual_start: null,
+      actual_end: null,
+      offset_min: null,
+    }));
+    script(fresh);
+    renderCaller(fresh);
+    const sub = screen.getByText("เริ่มงาน · วงเปิด");
+    expect(sub).toHaveClass("truncate", "py-[.25em]", "-mb-[.25em]", "mt-[calc(5px_-_.25em)]");
   });
 
   it("a viewer gets the hero and the top bar, no dock, and is told it is read-only", () => {
@@ -302,6 +353,46 @@ describe("EventLiveCaller — Black Stage chrome (§G.11)", () => {
 // drives the festival. jsdom has no layout, so this pins the structure that removes
 // the hole: two column wrappers, flex columns at stage and `display: contents` below
 // it, with `order` keeping a phone's reading order.
+// This route has no app header and no tab bar (ChromeGate), and before the redesign
+// the header carried แจ้งปัญหา (floating), fullscreen and the theme switch on this very
+// screen. Without a way into the account panel from the board itself, staff had to
+// leave the board to report — and the report then recorded the wrong page.
+describe("EventLiveCaller — Feedback, theme and fullscreen from the board", () => {
+  beforeEach(() => {
+    (document.documentElement as unknown as { requestFullscreen: unknown }).requestFullscreen =
+      vi.fn(async () => {});
+  });
+  afterEach(() => {
+    delete (document.documentElement as unknown as { requestFullscreen?: unknown }).requestFullscreen;
+  });
+
+  it.each([true, false])("canControl=%s: the top bar's ⋯ opens the account panel with all three", (canControl) => {
+    render(
+      <AccountPanelProvider>
+        <ConfirmProvider>
+          <EventLiveCaller
+            tenantId={TENANT}
+            eventName={FEST}
+            eventDate={FEST_DATE}
+            eventId="ev-1"
+            initial={liveBoard()}
+            canControl={canControl}
+          />
+        </ConfirmProvider>
+        <AccountPanel name="มายด์" userId="u1" tenantId={TENANT} canEdit={false} destinations="never" />
+      </AccountPanelProvider>
+    );
+    const top = document.querySelector<HTMLElement>("header.live-top")!;
+    const menu = within(top).getByRole("button", { name: /แจ้งปัญหา/ });
+    expect(menu.className).toMatch(/\bh-11\b/); // a 44 px target
+    fireEvent.click(menu);
+    const panel = screen.getByTestId("account-panel");
+    expect(within(panel).getByTitle(/แจ้งปัญหา|มีคำตอบ/)).toBeInTheDocument(); // Feedback
+    expect(within(panel).getByRole("radio", { name: /Light/ })).toBeInTheDocument();
+    expect(within(panel).getByRole("switch", { name: /Fullscreen/ })).toBeInTheDocument();
+  });
+});
+
 describe("EventLiveCaller — the stage board is two independent columns", () => {
   const tokens = (el: Element) => classOf(el).split(/\s+/);
   const column = (el: Element) => el.closest('[class~="stage:flex-col"]');

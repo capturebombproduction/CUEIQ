@@ -42,18 +42,46 @@ export function useKeyboardOpen(): boolean {
   const [open, setOpen] = useState(false);
   useEffect(() => {
     if (window.matchMedia?.("(pointer: coarse)").matches !== true) return;
-    const onIn = (e: FocusEvent) => setOpen(raisesKeyboard(e.target));
-    const onOut = (e: FocusEvent) => setOpen(raisesKeyboard(e.relatedTarget));
+    const vv = window.visualViewport;
+    let focused = raisesKeyboard(document.activeElement);
+    // Focus alone is not enough on Android: its Back key closes the keyboard but
+    // leaves the field focused, so no focusout ever comes and the bar stayed hidden
+    // until the user tapped somewhere else. Where the browser reports the visual
+    // viewport, the bar also needs the screen to be really shorter than it was with
+    // nothing focused (the keyboard is actually up). `full` is that keyboard-less
+    // height, refreshed whenever nothing is being typed into (e.g. after a rotation).
+    let full = vv?.height ?? window.innerHeight;
+    const update = () => {
+      if (!focused) {
+        if (vv) full = Math.max(vv.height, 0);
+        setOpen(false);
+      } else {
+        setOpen(!vv || vv.height < full - KEYBOARD_MIN_PX);
+      }
+    };
+    const onIn = (e: FocusEvent) => {
+      focused = raisesKeyboard(e.target);
+      update();
+    };
+    const onOut = (e: FocusEvent) => {
+      focused = raisesKeyboard(e.relatedTarget);
+      update();
+    };
     document.addEventListener("focusin", onIn);
     document.addEventListener("focusout", onOut);
-    setOpen(raisesKeyboard(document.activeElement));
+    vv?.addEventListener("resize", update);
+    update();
     return () => {
       document.removeEventListener("focusin", onIn);
       document.removeEventListener("focusout", onOut);
+      vv?.removeEventListener("resize", update);
     };
   }, []);
   return open;
 }
+
+/** Shorter than this and it is a URL bar collapsing, not a keyboard. */
+const KEYBOARD_MIN_PX = 150;
 
 /**
  * The phone's bottom tab bar (FINAL-SPEC-v2 §F.2): below lg, three destinations

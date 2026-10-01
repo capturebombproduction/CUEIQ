@@ -11,6 +11,7 @@ import { canApprove } from "@/lib/permissions";
 import { EventLiveCaller } from "@/components/event/event-live-caller";
 import { useWorkspace } from "~/data/workspace-context";
 import { loadRunOrderLive, type RunOrderLive } from "~/data/run-order";
+import { ImmersiveLoading } from "~/components/immersive-loading";
 
 export function RunOrderLivePage() {
   const { id } = useParams<{ id: string }>();
@@ -43,7 +44,8 @@ export function RunOrderLivePage() {
   }, [ws?.membership?.tenant_id, id]);
 
   if (loading || (data === undefined && !loadError)) {
-    return <p className="py-16 text-center text-sm text-muted-foreground">กำลังโหลด…</p>;
+    // Immersive route: no header to leave by while the reads run out their budgets.
+    return <ImmersiveLoading eventId={id} label="กำลังโหลด…" />;
   }
   if (!ws?.membership) return <Navigate to="/dashboard" replace />;
   // Failed read (data never arrived): stay put with a retry — only a genuinely

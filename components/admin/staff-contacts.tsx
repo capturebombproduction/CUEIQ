@@ -33,6 +33,9 @@ export function StaffContactsManager({
 }) {
   const supabase = createClient();
   const confirm = useConfirm();
+  // The desktop app exposes its native bridge on window; the web never has it, so
+  // the server render and the browser agree.
+  const inDesktopApp = typeof window !== "undefined" && !!window.cueiqNative;
   const [rows, setRows] = useState<StaffContact[]>(initial);
   const [busy, setBusy] = useState(false);
   // Rows open for editing. A contact reads as a card with a call button; its
@@ -228,7 +231,11 @@ export function StaffContactsManager({
               </li>
             );
           }
-          const tel = telHref(r.phone);
+          // No call button in the CueIQ Desktop app (desktop/src/pages/crew.tsx reuses
+          // this): its will-navigate guard (desktop/electron/main.cjs) cancels every
+          // navigation off the app's own URL, so a tel: link there is a button that does
+          // nothing. The number stays on the card as text.
+          const tel = inDesktopApp ? null : telHref(r.phone);
           return (
             <li key={r.id} className="slab flex items-center gap-3 px-4 py-3">
               <div className="min-w-0 flex-1 space-y-1">

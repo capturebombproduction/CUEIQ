@@ -185,8 +185,10 @@ function Row({
 }
 
 /** Dark | Light, bound to the real theme. No "Auto": the app is dark by default
- *  because venues are dark, not because the phone says so. */
-function ThemeSeg() {
+ *  because venues are dark, not because the phone says so. Exported for Live tools
+ *  (live-mode.tsx): Live Mode cannot open this panel (no header, and its leave guard
+ *  must not sit beside the panel's links and sign-out), so the switch goes there too. */
+export function ThemeSeg() {
   const [dark, setDark] = useState(true);
   useEffect(() => setDark(isDarkMode()), []);
   const choose = (d: boolean) => {
@@ -410,7 +412,7 @@ export function AccountPanel({
               }
             }}
             className={cn(
-              "no-print fixed inset-x-0 bottom-0 z-50 max-h-[88dvh] overflow-y-auto overscroll-contain rounded-t-[12px] bg-popover px-4 pb-[calc(env(safe-area-inset-bottom)+16px)] text-popover-foreground shadow-elev-2 focus:outline-none data-[state=open]:animate-sheet-in",
+              "no-print fixed inset-x-0 bottom-0 z-50 max-h-[88dvh] overflow-y-auto overscroll-contain rounded-t-[12px] bg-popover pb-[calc(env(safe-area-inset-bottom)+16px)] pl-[max(1rem,env(safe-area-inset-left))] pr-[max(1rem,env(safe-area-inset-right))] text-popover-foreground shadow-elev-2 focus:outline-none data-[state=open]:animate-sheet-in",
               "lg:inset-x-auto lg:bottom-auto lg:left-auto lg:right-4 lg:top-[64px] lg:max-h-[80vh] lg:w-[380px] lg:rounded-[4px] lg:pb-4 lg:shadow-float lg:data-[state=open]:animate-in lg:data-[state=open]:fade-in-0 lg:data-[state=open]:zoom-in-95"
             )}
           >
@@ -423,7 +425,9 @@ export function AccountPanel({
                 <div className="flex items-center gap-3.5">
                   <Avatar name={name} size="lg" />
                   <div className="min-w-0 flex-1">
-                    <div className="disp truncate text-[22px] leading-none">{name ?? "—"}</div>
+                    {/* py + -my: room inside the clip for Kanit's tone marks and ุ,
+                        which leading-none's line box cuts ("พี่บุ๊ค"); same height */}
+                    <div className="disp truncate py-[.25em] -my-[.25em] text-[22px] leading-none">{name ?? "—"}</div>
                     {line && (
                       <div className="mt-1 truncate text-[12.5px] text-muted-foreground">{line}</div>
                     )}

@@ -36,10 +36,12 @@ const h = vi.hoisted(() => ({
   bundle: null as unknown,
   ws: null as unknown,
   readiness: [] as Record<string, unknown>[],
+  /** The load never answers — a joined-but-black-holed venue network. */
+  hang: false,
 }));
 
 vi.mock("~/data/event-bundle", () => ({
-  loadEventBundle: vi.fn(() => Promise.resolve(h.bundle)),
+  loadEventBundle: vi.fn(() => (h.hang ? new Promise(() => {}) : Promise.resolve(h.bundle))),
 }));
 
 vi.mock("~/data/workspace-context", () => ({
@@ -56,8 +58,10 @@ vi.mock("@/components/event/show-readiness-check", () => ({
   },
 }));
 
+// `live-root` is the real root's class (pinned in components/event/live-mode.test.tsx):
+// the page sizes Live Mode through it at stage size.
 vi.mock("@/components/event/live-mode", () => ({
-  LiveMode: () => <div data-testid="live-mode" />,
+  LiveMode: () => <div data-testid="live-mode" className="live-root" />,
 }));
 
 import { LivePage } from "./live";
@@ -199,6 +203,7 @@ beforeEach(() => {
   h.bundle = BUNDLE;
   h.ws = memberOf(GROUP_ID);
   h.readiness = [];
+  h.hang = false;
 });
 
 describe("desktop Show Runner — what the preflight is actually handed", () => {
@@ -243,6 +248,37 @@ describe("desktop Show Runner — what the preflight is actually handed", () => 
   });
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// THE READINESS CARD AND THE ONE-SCREEN STAGE BOARD
+//
+// At stage size Live Mode's root is exactly 100dvh, overflow hidden, over a FIXED
+// 112 px dock. With the card in flow above it, the board started that much lower and
+// its bottom — the NOW card's volume row, and Auto Mute / MC / Auto Loudness whenever
+// the card opened itself on a missing file (the usual state at call time on the PA
+// machine) — sat under the dock's glass. jsdom has no layout: what is pinned is the
+// wiring the stylesheet reads, measured once in a real 1280×860 window.
+// ─────────────────────────────────────────────────────────────────────────────
+describe("desktop Show Runner — the readiness card never pushes the stage board under the dock", () => {
+  it("one screen tall at stage: the card takes its share, Live Mode takes the rest", async () => {
+    renderLive();
+    const live = await screen.findByTestId("live-mode");
+    const card = screen.getByTestId("readiness-card").parentElement as HTMLElement;
+    const page = card.parentElement as HTMLElement;
+    expect(page.querySelector(":scope > .live-root")).toBe(live);
+
+    expect(page).toHaveClass("stage:flex", "stage:flex-col", "stage:h-[100dvh]");
+    // the child selector (0,2,0) outranks the root's own `stage:h-[100dvh]` (0,1,0)
+    expect(page).toHaveClass(
+      "stage:[&>.live-root]:h-auto",
+      "stage:[&>.live-root]:min-h-0",
+      "stage:[&>.live-root]:flex-1"
+    );
+    // an opened card scrolls inside its own cap, never squeezes the board off screen
+    expect(card).toHaveClass("stage:shrink-0", "stage:overflow-y-auto");
+    expect(Array.from(card.classList).some((c) => /^stage:max-h-\[\d+dvh\]$/.test(c))).toBe(true);
+  });
+});
+
 describe("desktop Show Runner — a band that may not open this show", () => {
   it("renders the not-found branch and never mounts Live Mode", async () => {
     // A member of a DIFFERENT band. RLS would refuse the reads anyway, but the page
@@ -273,6 +309,22 @@ describe("desktop Show Runner — a band that may not open this show", () => {
     await vi.waitFor(() => {
       expect(container.querySelector('a[href="/dashboard"]')).not.toBeNull();
     });
+    expect(screen.queryByTestId("live-mode")).not.toBeInTheDocument();
+  });
+});
+
+// The route is immersive: the shell draws no header (no nav, no Quick Show) and the
+// .exe has no back button. On a venue network that is joined but black-holed the
+// bundle load runs out its budgets (8 s + 20 s) on this screen, so the loading state
+// has to carry its own way out — before the redesign the header did.
+describe("desktop Show Runner — while the show is still loading", () => {
+  it("offers the way back to the event and Quick Show", async () => {
+    h.hang = true;
+    renderLive();
+    expect(screen.getByText("กำลังโหลดโชว์…")).toBeInTheDocument();
+    const back = screen.getByRole("link", { name: /กลับ/ });
+    expect(back.getAttribute("href")).toBe(`/events/${EVENT_ID}`);
+    expect(screen.getByRole("link", { name: /Quick Show/ }).getAttribute("href")).toBe("/my-show");
     expect(screen.queryByTestId("live-mode")).not.toBeInTheDocument();
   });
 });

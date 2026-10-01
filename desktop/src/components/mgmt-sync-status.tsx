@@ -19,7 +19,11 @@ import {
   type ConflictRec,
 } from "~/data/mgmt-outbox";
 
-export function MgmtSyncStatus() {
+/** `headless`: run the SAME auto-flush (boot + every 'online') but draw nothing. The
+ *  shell mounts it this way on the immersive screens (Live Mode, the show-caller),
+ *  which have no header — without it the management outbox stopped syncing for as
+ *  long as one of those screens stayed open (the redesign hid the header there). */
+export function MgmtSyncStatus({ headless = false }: { headless?: boolean } = {}) {
   const [pending, setPending] = useState(0);
   const [conflicts, setConflicts] = useState<{ key: number; rec: ConflictRec }[]>([]);
   const [open, setOpen] = useState(false);
@@ -82,6 +86,7 @@ export function MgmtSyncStatus() {
     refresh();
   }
 
+  if (headless) return null;
   if (pending === 0 && conflicts.length === 0) return null;
 
   return (

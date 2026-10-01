@@ -57,7 +57,16 @@ const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
  *  the modal, which covers the whole app) hostage to it. */
 const UPLOAD_TIMEOUT_MS = 60_000;
 
-type UnreadState = { unread: number; setUnread: Dispatch<SetStateAction<number>> };
+/** The unsent report: what the person typed, its category and the screenshots. */
+type Draft = { category: Category; message: string; files: File[] };
+const EMPTY_DRAFT: Draft = { category: "bug", message: "", files: [] };
+
+type UnreadState = {
+  unread: number;
+  setUnread: Dispatch<SetStateAction<number>>;
+  draft: Draft;
+  setDraft: Dispatch<SetStateAction<Draft>>;
+};
 const FeedbackUnreadContext = createContext<UnreadState | null>(null);
 
 /**
@@ -72,6 +81,12 @@ const FeedbackUnreadContext = createContext<UnreadState | null>(null);
  * read it: the More tab's dot, the header avatar's dot and the Feedback tile.
  *
  * Cheap, once per mount (the layouts persist across navigations), exactly as before.
+ *
+ * The UNSENT REPORT lives here too, for the same reason. The floating button kept
+ * the draft for the layout's lifetime; the tile unmounts with the More sheet (which
+ * also closes on every page change). Held inside the tile, a report that failed to
+ * send offline — whose toast promises "ข้อความยังอยู่ในกล่อง" — was wiped the moment
+ * the member closed the sheet to get back to the show.
  */
 export function FeedbackUnreadProvider({
   userId,
@@ -81,6 +96,7 @@ export function FeedbackUnreadProvider({
   children: React.ReactNode;
 }) {
   const [unread, setUnread] = useState(0);
+  const [draft, setDraft] = useState<Draft>(EMPTY_DRAFT);
   useEffect(() => {
     if (!userId) return;
     let alive = true;
@@ -98,7 +114,7 @@ export function FeedbackUnreadProvider({
     };
   }, [userId]);
   return (
-    <FeedbackUnreadContext.Provider value={{ unread, setUnread }}>
+    <FeedbackUnreadContext.Provider value={{ unread, setUnread, draft, setDraft }}>
       {children}
     </FeedbackUnreadContext.Provider>
   );
@@ -140,15 +156,21 @@ export function FeedbackButton({
 }) {
   const [open, setOpen] = useState(false);
   const [tab, setTab] = useState<"new" | "mine">("new");
-  const [category, setCategory] = useState<Category>("bug");
-  const [message, setMessage] = useState("");
-  const [files, setFiles] = useState<File[]>([]);
   const [busy, setBusy] = useState(false);
   // No provider → no count and no fetch: the shells always mount one, and a
   // second, private fetch here would be a second source of truth for one dot.
   const shared = useContext(FeedbackUnreadContext);
   const unread = shared?.unread ?? 0;
   const setUnread: Dispatch<SetStateAction<number>> = shared?.setUnread ?? (() => {});
+  // The draft is the shell's (see FeedbackUnreadProvider), so it outlives this tile;
+  // a local one only where no provider is mounted.
+  const [localDraft, setLocalDraft] = useState<Draft>(EMPTY_DRAFT);
+  const setDraft = shared?.setDraft ?? setLocalDraft;
+  const { category, message, files } = shared?.draft ?? localDraft;
+  const setCategory = (c: Category) => setDraft((d) => ({ ...d, category: c }));
+  const setMessage = (m: string) => setDraft((d) => ({ ...d, message: m }));
+  const setFiles = (next: SetStateAction<File[]>) =>
+    setDraft((d) => ({ ...d, files: typeof next === "function" ? next(d.files) : next }));
   // Remount the list on each submit so a brand-new report shows without reopening.
   const [listRev, setListRev] = useState(0);
   const fileInput = useRef<HTMLInputElement | null>(null);

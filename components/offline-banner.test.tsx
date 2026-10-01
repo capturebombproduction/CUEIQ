@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
 import { render, screen, act } from "@testing-library/react";
 import { OfflineBanner } from "./offline-banner";
 
@@ -106,5 +106,90 @@ describe("OfflineBanner — where the strip sits", () => {
     rerender(<OfflineBanner />);
     expect(screen.getAllByText(TEXT)).toHaveLength(1);
     expect(screen.getByText(TEXT).closest("header")).toBeNull();
+  });
+});
+
+// In flow INSIDE the sticky header, the strip makes the header taller — and what
+// sticks under the header (the Event page's tab row, top = var(--header-h)) has to
+// know by how much, or the strip's 28px (two lines on a phone: more) of that row
+// slides under the glass, at the venue, offline. A header-hosted strip publishes its
+// measured height as --offline-strip-h on the root; with none on screen the property
+// is gone (consumers fall back to 0px).
+describe("OfflineBanner — the height a bar stuck under the header has to clear", () => {
+  const published = () => document.documentElement.style.getPropertyValue("--offline-strip-h");
+  let height = 28;
+  let rect: { mockRestore: () => void };
+
+  beforeEach(() => {
+    height = 28;
+    rect = vi
+      .spyOn(HTMLElement.prototype, "getBoundingClientRect")
+      .mockImplementation(() => ({ height }) as DOMRect);
+  });
+  afterEach(() => {
+    rect.mockRestore();
+    vi.unstubAllGlobals();
+  });
+
+  it("in the header, offline: publishes its height — and withdraws it when the network returns", () => {
+    setOnline(false);
+    render(
+      <header>
+        <OfflineBanner placement="header" />
+      </header>
+    );
+    expect(published()).toBe("28px");
+
+    setOnline(true);
+    act(() => {
+      window.dispatchEvent(new Event("online"));
+    });
+    expect(published()).toBe("");
+  });
+
+  it("withdraws it when the header itself goes (an immersive screen)", () => {
+    setOnline(false);
+    const { unmount } = render(
+      <header>
+        <OfflineBanner placement="header" />
+      </header>
+    );
+    expect(published()).toBe("28px");
+    unmount();
+    expect(published()).toBe("");
+  });
+
+  it("follows the strip when it wraps to a second line", () => {
+    const observers: (() => void)[] = [];
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        constructor(cb: () => void) {
+          observers.push(cb);
+        }
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      }
+    );
+    setOnline(false);
+    const { unmount } = render(
+      <header>
+        <OfflineBanner placement="header" />
+      </header>
+    );
+    expect(published()).toBe("28px");
+    height = 46; // a 360px phone: the Thai sentence wraps
+    act(() => observers.forEach((cb) => cb()));
+    expect(published()).toBe("46px");
+    unmount();
+    expect(published()).toBe("");
+  });
+
+  it("the root layout's flow copy publishes nothing — it is not inside a sticky header", () => {
+    setOnline(false);
+    render(<OfflineBanner />);
+    expect(screen.getByTestId("offline-strip")).toBeInTheDocument();
+    expect(published()).toBe("");
   });
 });
