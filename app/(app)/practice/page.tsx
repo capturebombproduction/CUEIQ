@@ -47,7 +47,9 @@ export default async function PracticePage() {
     .map((g) => ({ id: g.id, name: g.name }));
 
   return (
-    <div className="mx-auto max-w-3xl space-y-4">
+    // data-stage-centred: one centred column, so the frame keeps the light centred
+    // on it at lg (components/stage-light.tsx FRAME_LIGHT_AIM)
+    <div data-stage-centred className="mx-auto max-w-3xl space-y-4">
       <PageTitle
         title="Training"
         right={

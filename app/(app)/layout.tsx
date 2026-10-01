@@ -8,6 +8,8 @@ import { PushNudge } from "@/components/notifications/push-nudge";
 import { ChromeGate } from "@/components/chrome-gate";
 import { AppMain } from "@/components/app-main";
 import { TabBar } from "@/components/tab-bar";
+import { FRAME_LIGHT_AIM, StageLight } from "@/components/stage-light";
+import { cn } from "@/lib/utils";
 import { AccountPanel, AccountPanelProvider } from "@/components/account-panel";
 import { accountLine } from "@/lib/role-label";
 import { canEditAnyGroup } from "@/lib/permissions";
@@ -40,12 +42,23 @@ export default async function AppLayout({
     // tab, the header avatar and the Feedback tile all read them.
     <FeedbackUnreadProvider userId={ws.user.id}>
       <AccountPanelProvider>
-        {/* relative isolate: the light layer (redesign round 3) becomes this
-            wrapper's first child, with header / main / bars above it. Nothing here
-            may carry transform, filter or contain — any of them would turn that
-            layer's `fixed` into "absolute to this box". lg: the header row is
-            56px, and there is no tab bar to leave room for. */}
-        <div className="relative isolate min-h-screen bg-background lg:[--header-h:56px] lg:[--tabbar-h:0px]">
+        {/* relative isolate: the page light (v3 Stage Wash) is this wrapper's first
+            child and paints just above its background, with header / main / bars
+            above it. Nothing here may carry transform, filter or contain — any of
+            them would turn that layer's `fixed` into "absolute to this box". lg: the
+            header row is 56px, there is no tab bar to leave room for, and the light
+            aims at the left-aligned page title (FRAME_LIGHT_AIM). */}
+        <div
+          className={cn(
+            "relative isolate min-h-screen bg-background lg:[--header-h:56px] lg:[--tabbar-h:0px]",
+            FRAME_LIGHT_AIM
+          )}
+        >
+          {/* Gated: Live Mode and the live show-caller hang their own, inside the
+              root .zone-over sits on and aimed at the NOW column — one per document. */}
+          <ChromeGate>
+            <StageLight />
+          </ChromeGate>
           {/* auto-capture client errors for the whole authenticated app */}
           <ErrorMonitor userId={ws.user.id} tenantId={tenantId} />
           {/* Live Mode and the live show-caller are immersive: no header there. */}

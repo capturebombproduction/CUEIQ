@@ -6,6 +6,8 @@ import { ConfirmProvider } from "@/components/ui/confirm-dialog";
 import type { RunSeqOp } from "@/lib/run-order-outbox";
 import { notify } from "@/lib/notify-client";
 import { EventLiveCaller, type RunSeqLive } from "./event-live-caller";
+import { bandTriplet } from "@/lib/band-triplet";
+import { spotFor } from "@/lib/skin";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // THE FESTIVAL SHOW-CALLER, RESTYLED (spec §G.11) — and nothing else.
@@ -361,13 +363,82 @@ describe("EventLiveCaller — the stage board is two independent columns", () =>
   });
 });
 
+// v3 "Stage Wash" (FINAL-SPEC-v3 §E.11): the immersive caller has no app frame, so
+// it hangs its own page light — first in its root, aimed at the NOW column (the
+// left one from md: up), and never inside the node the JPG report is shot from.
+describe("EventLiveCaller — the page light", () => {
+  it("hangs ONE light, first in the root, aimed at the NOW column, outside the report", () => {
+    const { container } = renderCaller();
+    const lights = container.querySelectorAll(".spotlight");
+    expect(lights).toHaveLength(1);
+    const light = lights[0] as HTMLElement;
+    const root = container.querySelector(".live-root")!;
+    expect(root.firstElementChild).toBe(light);
+    expect(light).toHaveAttribute("aria-hidden", "true");
+    expect(light).toHaveClass("no-print", "md:[--spot-x:31%]");
+    expect(root).not.toHaveClass("isolate");
+    expect(reportRoot(container).contains(light)).toBe(false);
+  });
+});
+
+// §G.11 (v3): several bands share this board, so the act on stage is keyed and lit in
+// ITS band — the device's own band light on another band's act names the wrong band.
+// run_sequence carries no band, only the band's event (linked_event_id).
+describe("EventLiveCaller — each band act in its own colour", () => {
+  const skOnStage = () =>
+    liveBoard({ kind: "band", title: "Seishin Kakumei", linked_event_id: "ev-sk" });
+
+  it("keys the NOW hero in the act's band and glows in its capped stage light", async () => {
+    supa.setTable("events", ok([{ id: "ev-sk", groups: { color: "#15a65a" } }]));
+    const { container } = renderCaller(skOnStage());
+    const hero = container.querySelector<HTMLElement>(".now.lit")!;
+    await waitFor(() => expect(hero.style.getPropertyValue("--lit")).toBe(bandTriplet("#15a65a")));
+    // the CAPPED light, not the raw band colour (SK Green's raw glow was a neon field)
+    expect(hero.style.getPropertyValue("--lit-g")).toBe(spotFor("#15a65a").dark);
+    // one read, for the linked acts only — never through the board's own refetch
+    const reads = supa.callsTo("events");
+    expect(reads).toHaveLength(1);
+    expect(reads[0].filters).toContainEqual(expect.objectContaining({ op: "in", column: "id" }));
+    expect(new Set(reads[0].filters.find((f) => f.op === "in")!.value as string[])).toEqual(
+      new Set(["ev-sk", "ev-2"])
+    );
+  });
+
+  it("paints a band act's rail in its own band; neutral kinds and unknown bands keep theirs", async () => {
+    supa.setTable("events", ok([{ id: "ev-2", groups: { color: "#2f7fd6" } }]));
+    const { container } = renderCaller();
+    // the board row (NEXT and the JPG report print the title too)
+    const railOf = (title: string) =>
+      within(container)
+        .getAllByText(title)
+        .map((el) => el.closest<HTMLElement>(".slab")?.querySelector<HTMLElement>(":scope > i[aria-hidden]"))
+        .find((el) => el != null)!;
+    await waitFor(() => expect(railOf("Seishin Kakumei").style.getPropertyValue("--band")).toBe(bandTriplet("#2f7fd6")));
+    expect(railOf("Seishin Kakumei")).toHaveClass("bg-[hsl(var(--band))]");
+    // a band act with no link: the device's band, as before
+    expect(railOf("วงเปิด")).toHaveClass("bg-primary");
+    expect(railOf("วงเปิด").style.getPropertyValue("--band")).toBe("");
+    // a game stays neutral
+    expect(railOf("เกมชิงรางวัล")).toHaveClass("bg-foreground/35");
+  });
+
+  it("a colour it cannot read leaves the hero on the device's light — never a borrowed grey glow", async () => {
+    supa.setTable("events", ok([{ id: "ev-sk", groups: { color: null } }]));
+    const { container } = renderCaller(skOnStage());
+    await waitFor(() => expect(supa.callsTo("events")[0]?.settled).toBe(true));
+    const hero = container.querySelector<HTMLElement>(".now.lit")!;
+    expect(hero.style.getPropertyValue("--lit")).toBe("");
+    expect(hero.style.getPropertyValue("--lit-g")).toBe("");
+  });
+});
+
 describe("EventLiveCaller — the JPG report stays flat and light (§D)", () => {
   it("has no lit / cut / display classes, no dark:, no italic, and is outside the hero and the bars", () => {
     const { container } = renderCaller();
     const report = reportRoot(container);
     expect(
       report.querySelectorAll(
-        ".lit, .cut, .ticket, .page-title, .title-slab, .hero-num, .h1, .h2, .ztag, .nlabel, .cone, .glass"
+        ".lit, .cut, .ticket, .page-title, .title-slab, .hero-num, .h1, .h2, .ztag, .nlabel, .spotlight, .glass"
       )
     ).toHaveLength(0);
     const classes = [report, ...Array.from(report.querySelectorAll("[class]"))].map(classOf);

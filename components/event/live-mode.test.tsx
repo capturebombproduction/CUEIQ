@@ -951,6 +951,8 @@ describe("LiveMode · the warning ladder", () => {
     expect(card()).not.toHaveClass("settled");
     // the screen frame + hazard rails, and the invitation to move on
     expect(root()).toHaveClass("zone-over");
+    // …which is what swaps the page light to the alarm light: it must be inside
+    expect(root().contains(document.querySelector(".spotlight"))).toBe(true);
     expect(screen.getByTestId("next")).toHaveClass("next-invite");
     expect(screen.getByTestId("next")).toBeEnabled();
     // overtime announces itself once
@@ -975,6 +977,48 @@ describe("LiveMode · the warning ladder", () => {
     expect(screen.getByTestId("next")).not.toHaveClass("next-invite");
     // …and the card does not tell this device to press it either
     expect(card()).not.toHaveTextContent("กด NEXT เมื่อพร้อม");
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// THE PAGE LIGHT (v3 "Stage Wash", FINAL-SPEC-v3 §E.11 / §G.10)
+//
+// The immersive screen has no app frame, so it hangs its own light — and it has to
+// hang it INSIDE the root, because overtime swaps the light to the neutral alarm
+// light through `.zone-over { --spot: var(--alarm) }` on that root: a light mounted
+// beside the root would stay band red through OVERTIME.
+// ─────────────────────────────────────────────────────────────────────────────
+describe("LiveMode · the page light", () => {
+  const root = () => document.querySelector("[data-cueiq-live]") as HTMLElement;
+  const TRAPS_FIXED = /(^|\s)(?:[\w-]+:)*(?:transform|transform-gpu|-?translate-|-?scale-|-?rotate-|-?skew-|blur|backdrop-|filter|will-change-transform|contain-|perspective)/;
+
+  it("hangs ONE light, first in the root, aimed at the NOW column at stage size", async () => {
+    await mountLive();
+    const lights = document.querySelectorAll(".spotlight");
+    expect(lights).toHaveLength(1);
+    const light = lights[0] as HTMLElement;
+    expect(light.parentElement).toBe(root());
+    expect(root().firstElementChild).toBe(light);
+    expect(light).toHaveAttribute("aria-hidden", "true");
+    expect(light).toHaveClass("no-print", "stage:[--spot-x:27%]");
+    // its base aim is its own: this root sits inside the app frame, whose lg aim
+    // (25 %, at the page title) it would otherwise inherit on an lg screen that is
+    // not "stage" (a portrait iPad Pro)
+    expect(light).toHaveClass("[--spot-x:50%]");
+    // NOT isolated: an isolated root would paint this viewport-sized layer over
+    // whatever sits above LiveMode in the page (the desktop's readiness card).
+    expect(root()).not.toHaveClass("isolate");
+  });
+
+  it("nothing between the light and the viewport traps `position: fixed`", async () => {
+    await mountLive();
+    const light = document.querySelector(".spotlight");
+    expect(light, "no light to walk up from — this would pass on nothing").not.toBeNull();
+    const traps: string[] = [];
+    for (let el = light?.parentElement; el; el = el.parentElement) {
+      if (TRAPS_FIXED.test(el.className) || el.style.transform || el.style.filter) traps.push(el.className);
+    }
+    expect(traps).toEqual([]);
   });
 });
 

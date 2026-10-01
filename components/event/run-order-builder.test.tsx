@@ -160,7 +160,7 @@ describe("RunOrderBuilder — the JPG card stays flat and light (§D)", () => {
     const time = within(card).getByText("18:00–18:30");
     expect(time.classList.contains("num")).toBe(true);
     expect(
-      card.querySelectorAll(".lit, .cut, .ticket, .page-title, .title-slab, .hero-num, .h1, .h2, .ztag, .nlabel, .cone")
+      card.querySelectorAll(".lit, .cut, .ticket, .page-title, .title-slab, .hero-num, .h1, .h2, .ztag, .nlabel, .spotlight")
     ).toHaveLength(0);
     const classes = [card, ...Array.from(card.querySelectorAll("[class]"))].map(classOf);
     expect(classes.filter((c) => /(^|\s)dark:|italic/.test(c))).toEqual([]);

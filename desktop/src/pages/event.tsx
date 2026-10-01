@@ -41,7 +41,8 @@ import { useWorkspace } from "~/data/workspace-context";
  *  own files is the operator's real next move. */
 function EventUnreachable({ onRetry }: { onRetry: () => void }) {
   return (
-    <div className="mx-auto w-full max-w-sm space-y-6 py-16">
+    // data-stage-centred: one centred column (components/stage-light.tsx)
+    <div data-stage-centred className="mx-auto w-full max-w-sm space-y-6 py-16">
       <div className="space-y-1 text-center">
         <p className="text-muted-foreground">โหลดข้อมูลงานไม่สำเร็จ — อาจออฟไลน์อยู่หรือเน็ตมีปัญหา</p>
         {/* Same instruction the dashboard's readiness badge gives, word for word —

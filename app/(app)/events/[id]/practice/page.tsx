@@ -53,12 +53,15 @@ export default async function PracticePlayPage({
   return (
     <div className="space-y-3">
       {/* On a phone the header already reads "‹ TRAINING" (components/header-brand.tsx);
-          from lg the header shows the wordmark, so the way back sits here. */}
+          from lg the header shows the wordmark, so the way back sits here — at the
+          top-left, inside the page light's hot core (FRAME_LIGHT_AIM). 15 px band ink
+          there fell to 4.26:1 on Sakura (light), so the word is ink and the band
+          colour stays on the chevron, as `.lit .eyebrow` does inside a glow. */}
       <Link
         href="/practice"
-        className="caps -ml-2 hidden h-11 w-fit items-center gap-0.5 rounded-[3px] pr-2 text-[15px] text-primary-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring lg:flex"
+        className="caps -ml-2 hidden h-11 w-fit items-center gap-0.5 rounded-[3px] pr-2 text-[15px] text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring lg:flex"
       >
-        <ChevronLeft className="h-5 w-5" strokeWidth={2.6} aria-hidden />
+        <ChevronLeft className="h-5 w-5 text-primary-ink" strokeWidth={2.6} aria-hidden />
         Training
       </Link>
       <PracticeMode

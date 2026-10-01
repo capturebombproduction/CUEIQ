@@ -1108,26 +1108,34 @@ function ExportSchedule({
       />
       {/* Photo + Booth side by side; each hidden when empty so a stage-only show
           (e.g. WARUDO has no photo) doesn't print an empty "ถ่ายรูป · 0 —" table.
-          Mirrors the on-screen ActivityTables. */}
+          Mirrors the on-screen ActivityTables.
+          Side by side only when both FIT: their rows never wrap (name + time stay on
+          one line), so in a fixed half-width grid a long show name (the "· name ·
+          date" tag of a mixed group) ran under the Booth column and off the image.
+          flex-wrap puts Booth under Photo instead, each then full width. */}
       {(photoRows.length > 0 || boothRows.length > 0) && (
-        <div className="grid grid-cols-2 gap-4">
+        <div className="flex flex-wrap gap-x-4 gap-y-2">
           {photoRows.length > 0 && (
-            <ExportActivityCol
-              title="ถ่ายรูป (Photo)"
-              rows={photoRows}
-              showBandColumn={showBandColumn}
-              secondary={secondary}
-              timeOf={(ev) => fmtRange({ start: ev.photo, end: ev.photoEnd })}
-            />
+            <div className="flex-auto">
+              <ExportActivityCol
+                title="ถ่ายรูป (Photo)"
+                rows={photoRows}
+                showBandColumn={showBandColumn}
+                secondary={secondary}
+                timeOf={(ev) => fmtRange({ start: ev.photo, end: ev.photoEnd })}
+              />
+            </div>
           )}
           {boothRows.length > 0 && (
-            <ExportActivityCol
-              title="บูธ (Booth)"
-              rows={boothRows}
-              showBandColumn={showBandColumn}
-              secondary={secondary}
-              timeOf={(ev) => fmtSlots(ev.booth, ev.boothMore)}
-            />
+            <div className="flex-auto">
+              <ExportActivityCol
+                title="บูธ (Booth)"
+                rows={boothRows}
+                showBandColumn={showBandColumn}
+                secondary={secondary}
+                timeOf={(ev) => fmtSlots(ev.booth, ev.boothMore)}
+              />
+            </div>
           )}
         </div>
       )}

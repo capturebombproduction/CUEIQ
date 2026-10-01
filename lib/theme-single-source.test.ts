@@ -210,17 +210,54 @@ describe("export and print palettes (theme.css)", () => {
     expect([...written].filter((k) => !(k in exportLight))).toEqual([]);
   });
 
-  it("carries the v2 tokens and zeroes every light / glow knob", () => {
+  it("carries the v2 + v3 tokens and zeroes every light / glow knob", () => {
     for (const t of [
       "--notify", "--notify-foreground", "--alarm", "--alarm-foreground", "--info-ink",
       "--warning-ink", "--success-ink", "--primary-ink", "--faint-foreground",
+      // v3 (spec §D.6): they differ between :root and .dark, so a capture under
+      // html.dark would otherwise inherit the dark value
+      "--spot", "--shadow", "--lit-muted-foreground",
     ]) {
       expect(exportLight, t).toHaveProperty(t);
     }
-    for (const knob of ["--shadow-a", "--spot-a", "--cone-core-a", "--tex-a", "--edge-a", "--urgent-wash-a", "--scrim-a"]) {
+    // The stage wash's four knobs (page light: long throw, hot core, vignette; the
+    // lit hero's glow) plus v2's: a JPG and a sheet of paper are flat.
+    const KNOBS = ["--shadow-a", "--spot-a", "--spot-core-a", "--vig-a", "--glow-a", "--edge-a", "--urgent-wash-a", "--scrim-a"];
+    for (const knob of KNOBS) {
       expect(exportLight[knob], knob).toBe("0");
+      // …and each is a real screen knob, not one export zeroes and nothing reads
+      expect(light, knob).toHaveProperty(knob);
+      expect(dark, knob).toHaveProperty(knob);
     }
     expect(exportLight["--glass-a"]).toBe("1"); // a solid bar, not a frosted one
+  });
+
+  // v2's light was replaced, not added to (spec §A.1): its knobs must not linger as
+  // dead tokens a later rule could pick up again.
+  it("v2's cone / halftone knobs are gone from every palette and from stage.css", () => {
+    const stageCss = fs.readFileSync(STAGE, "utf8");
+    for (const gone of ["--cone-core-a", "--tex-a", "--beam-k", "--cone-x"]) {
+      for (const [where, d] of Object.entries({ light, dark, exportLight })) {
+        expect(d, `${where} ${gone}`).not.toHaveProperty(gone);
+      }
+      expect(stageCss, `stage.css ${gone}`).not.toContain(gone);
+    }
+  });
+
+  // Every knob is 0 on paper anyway, so a forgotten layer would still paint nothing;
+  // the light layer and the sweep are not painted at all (spec §D.5).
+  it("print hides the page light and the sweep", () => {
+    let hidden: string[] = [];
+    theme.walkAtRules("media", (m) => {
+      if (m.params !== "print") return;
+      m.walkRules((r) => {
+        if (r.nodes.some((n) => n.type === "decl" && n.prop === "display" && /none/.test(n.value) && n.important)) {
+          hidden = hidden.concat(r.selectors);
+        }
+      });
+    });
+    expect(hidden).toEqual(expect.arrayContaining([".spotlight", ".lit.sweep::after"]));
+    expect(hidden.filter((s) => /\.cone\b|::before/.test(s))).toEqual([]);
   });
 
   it("print declares exactly the export palette", () => {

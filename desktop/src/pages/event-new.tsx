@@ -20,7 +20,8 @@ export function NewEventPage() {
   const groups = editableGroups(ws.perms, ws.groups);
 
   return (
-    <div className="mx-auto max-w-2xl space-y-3">
+    // data-stage-centred: one centred column (components/stage-light.tsx)
+    <div data-stage-centred className="mx-auto max-w-2xl space-y-3">
       {/* Same as the web page: the header's Events nav (and the form's ยกเลิก) is
           the way back. */}
       <PageTitle title="New Event" />

@@ -16,11 +16,14 @@
    one exception (export and print never swap a font). Aliases belong in
    tailwind.preset.ts, or element-scoped in stage.css (`.zone-over { --spot: … }`).
 
-   Redesign "Black Stage" v2 (review-shots/design/FINAL-SPEC-v2.md §A). The SURFACE
-   values — --background --card --popover --secondary --muted --border --input, and
-   the text colours that sit on them — are still the pre-redesign ones ON PURPOSE:
-   round 3 re-lights them (band-tinted surfaces + a soft spotlight). Everything else
-   (new tokens, the warning / success / destructive retune, radius, knobs, motion) is v2.
+   Redesign v3 "Black Stage · Stage Wash" (review-shots/design/FINAL-SPEC-v3.md §A):
+   v2 with the background and the light replaced. The surfaces are band-washed again
+   (dark: page L5 / card L9 / well L13; light: a soft L95 blush, white slabs with L80
+   borders), and the light is four knobs read by stage.css: --spot-a (long throw),
+   --spot-core-a (hot core), --vig-a (vignette) and --glow-a (the lit hero's glow),
+   all in --spot, the stage-light colour. Every neutral here is exactly what
+   skinCss("#4f46e5") writes, so a device with no colour and one that picked the
+   default indigo paint the same (lib/skin.test.ts holds that).
 
    Deliberately NOT derived from here: lib/skin.ts (a band's accent rewrites these
    same names at runtime, with its own contrast walk). Retune it when the palette
@@ -45,23 +48,24 @@
   /* Native controls (date/time pickers, range, scrollbars) follow the theme. */
   color-scheme: light;
 
-  --background: 0 0% 100%;
-  --foreground: 222 47% 11%;
+  --background: 243 20% 95%;          /* a soft band wash; = skinCss("#4f46e5") */
+  --foreground: 240 30% 5%;
 
   --card: 0 0% 100%;
-  --card-foreground: 222 47% 11%;
+  --card-foreground: 240 30% 5%;
 
   --popover: 0 0% 100%;
-  --popover-foreground: 222 47% 11%;
+  --popover-foreground: 240 30% 5%;
 
   --primary: 243 75% 59%;
   --primary-foreground: 0 0% 100%;
 
-  --secondary: 220 14% 96%;
-  --secondary-foreground: 222 47% 11%;
+  --secondary: 243 10% 91%;
+  --secondary-foreground: 240 30% 5%;
 
-  --muted: 220 14% 96%;
-  --muted-foreground: 220 9% 46%;
+  --muted: 243 10% 91%;
+  --muted-foreground: 240 6% 32%;
+  --lit-muted-foreground: 240 6% 32%;  /* secondary text INSIDE the lit hero (light: = muted) */
 
   --accent: 243 75% 96%;
   --accent-foreground: 243 75% 30%;
@@ -75,8 +79,8 @@
   --success: 152 62% 32%;              /* white on it 4.7:1 (was 2.3 at 142 71% 45%) */
   --success-foreground: 0 0% 100%;
 
-  --border: 220 13% 91%;
-  --input: 220 13% 91%;
+  --border: 243 10% 80%;
+  --input: 243 10% 54%;                /* field BOUNDARY: 3.94:1 on card, 3.47:1 on page */
   --ring: 243 75% 59%;
 
   --radius: 0.25rem;
@@ -93,13 +97,15 @@
   --notify: 4 86% 48%;                 /* unread dot + bell badge: NEVER skinned, same in both themes */
   --notify-foreground: 0 0% 100%;
 
-  /* Light / glow knobs. Defined so stage.css classes can reference them; round 3
-     retunes the lighting ones. Export and print zero them all. */
+  /* The light (stage.css .spotlight + .lit) and the other glow knobs. Never skinned
+     except --spot; export and print zero every knob. */
   --shadow: 240 30% 10%;
   --shadow-a: 0.1;
-  --spot-a: 0.12;                      /* page cone beam */
-  --cone-core-a: 0.08;                 /* page cone core */
-  --tex-a: 0.14;                       /* halftone dots in the lit hero */
+  --spot: 243 85% 55%;                 /* the stage-light colour; skinCss rewrites it */
+  --spot-a: 0.13;                      /* page light: long throw */
+  --spot-core-a: 0.14;                 /* page light: hot core */
+  --vig-a: 0;                          /* page light: vignette (none in light) */
+  --glow-a: 0.2;                       /* the lit hero's glow */
   --edge-a: 0.9;                       /* lit-hero outline (light: an ink outline) */
   --urgent-wash-a: 0.24;               /* Live URGENT face wash */
   --glass-a: 0.86;
@@ -122,26 +128,27 @@
 
 .dark {
   color-scheme: dark;
-  --background: 222 47% 8%;
-  --foreground: 210 40% 98%;
+  --background: 243 30% 5%;            /* band-washed, deeper than round 1's L6 */
+  --foreground: 0 0% 98%;
 
-  --card: 222 47% 11%;
-  --card-foreground: 210 40% 98%;
+  --card: 243 24% 9%;
+  --card-foreground: 0 0% 98%;
 
-  --popover: 222 47% 11%;
-  --popover-foreground: 210 40% 98%;
+  --popover: 243 24% 11%;
+  --popover-foreground: 0 0% 98%;
 
   --primary: 243 75% 64%;
   --primary-foreground: 0 0% 100%;     /* white on it 4.8:1 (navy was 4.1); lib/skin.test.ts */
 
-  --secondary: 217 33% 17%;
-  --secondary-foreground: 210 40% 98%;
+  --secondary: 243 18% 13%;
+  --secondary-foreground: 0 0% 98%;
 
-  --muted: 217 33% 17%;
-  --muted-foreground: 215 20% 65%;
+  --muted: 243 18% 13%;
+  --muted-foreground: 240 4% 66%;
+  --lit-muted-foreground: 240 5% 80%;  /* ≥ 4.5:1 over the hottest part of the hero glow, every preset */
 
-  --accent: 243 40% 24%;
-  --accent-foreground: 210 40% 98%;
+  --accent: 243 35% 16%;
+  --accent-foreground: 0 0% 98%;
 
   --destructive: 356 70% 52%;          /* white on it 4.7:1 */
   --destructive-foreground: 0 0% 100%;
@@ -152,8 +159,8 @@
   --success: 150 70% 44%;
   --success-foreground: 150 80% 5%;    /* dark ink on the fill: 7.7:1 */
 
-  --border: 217 33% 20%;
-  --input: 217 33% 22%;
+  --border: 243 18% 17%;
+  --input: 243 18% 46%;                /* 3.17:1 on card, 3.37:1 on page */
   --ring: 243 75% 64%;
 
   --primary-ink: 243 90% 76%;
@@ -168,12 +175,14 @@
 
   --shadow: 240 40% 1%;
   --shadow-a: 0.7;
-  --spot-a: 0.42;
-  --cone-core-a: 0.22;
-  --tex-a: 0.26;
+  --spot: 243 90% 60%;                 /* relative luminance ≤ .20 for every band (lib/skin.ts) */
+  --spot-a: 0.34;
+  --spot-core-a: 0.66;
+  --vig-a: 0.9;
+  --glow-a: 0.52;
   --edge-a: 0.12;
   --urgent-wash-a: 0.2;
-  --glass-a: 0.84;
+  --glass-a: 0.7;                      /* .84 → .70: the light shows through the header and the tab bar */
   --scrim-a: 0.74;
 }
 
@@ -198,6 +207,7 @@
   --secondary-foreground: 240 30% 5%;
   --muted: 240 6% 94%;
   --muted-foreground: 240 6% 30%;
+  --lit-muted-foreground: 240 6% 30%;
   --accent: 243 75% 96%;
   --accent-foreground: 243 75% 30%;
   --destructive: 354 72% 46%;
@@ -220,11 +230,13 @@
   --alarm-foreground: 0 0% 100%;
   --notify: 4 86% 48%;
   --notify-foreground: 0 0% 100%;
+  --spot: 243 85% 55%;
   --shadow: 240 30% 10%;
   --shadow-a: 0;
   --spot-a: 0;
-  --cone-core-a: 0;
-  --tex-a: 0;
+  --spot-core-a: 0;
+  --vig-a: 0;
+  --glow-a: 0;
   --edge-a: 0;
   --urgent-wash-a: 0;
   --glass-a: 1;
@@ -256,6 +268,7 @@
     --secondary-foreground: 240 30% 5%;
     --muted: 240 6% 94%;
     --muted-foreground: 240 6% 30%;
+    --lit-muted-foreground: 240 6% 30%;
     --accent: 243 75% 96%;
     --accent-foreground: 243 75% 30%;
     --destructive: 354 72% 46%;
@@ -278,11 +291,13 @@
     --alarm-foreground: 0 0% 100%;
     --notify: 4 86% 48%;
     --notify-foreground: 0 0% 100%;
+    --spot: 243 85% 55%;
     --shadow: 240 30% 10%;
     --shadow-a: 0;
     --spot-a: 0;
-    --cone-core-a: 0;
-    --tex-a: 0;
+    --spot-core-a: 0;
+    --vig-a: 0;
+    --glow-a: 0;
     --edge-a: 0;
     --urgent-wash-a: 0;
     --glass-a: 1;
@@ -291,17 +306,15 @@
   body {
     background: #fff !important;
   }
-  /* Paper is flat and upright: no frosted bars, no stage light, no chamfer clip.
-     (.cone / .page-title::before / .lit's light layers arrive with round 3; hiding
-     them here already costs nothing.) */
+  /* Paper is flat and upright: no frosted bars, no chamfer clip, and the light layer
+     is not painted at all (every knob is 0 above anyway, so a forgotten layer would
+     still paint nothing). */
   .glass {
     -webkit-backdrop-filter: none !important;
     backdrop-filter: none !important;
   }
-  .cone,
-  .page-title::before,
-  .lit::before,
-  .lit::after {
+  .spotlight,
+  .lit.sweep::after {
     display: none !important;
   }
   .cut {

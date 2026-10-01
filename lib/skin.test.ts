@@ -3,13 +3,28 @@ import fs from "node:fs";
 import path from "node:path";
 import postcss from "postcss";
 import { ACCENT_PRESETS } from "@/lib/accent";
-import { THEME_DESTRUCTIVE_HUES, contrast, hexToHsl, skinCss } from "@/lib/skin";
+import {
+  SPOT_LUM_MAX,
+  THEME_DESTRUCTIVE_HUES,
+  contrast,
+  hexToHsl,
+  relativeLuminance,
+  skinCss,
+  spotFor,
+} from "@/lib/skin";
 
 // A band colour lands under or around text in five places: the primary fill (buttons,
 // solid chips, the title slab), the band colour AS text (--primary-ink), the field
 // boundary (--input), and the delete red next to it (--destructive). Each is walked
 // to a WCAG ratio by lib/skin.ts; these hold every preset, both themes, to it — and a
 // sweep of the whole colour wheel, because a band can pick ANY colour.
+//
+// v3 "Stage Wash" (FINAL-SPEC-v3 §C) adds the sixth: the stage light, --spot. In dark
+// it is walked DOWN to a relative luminance of SPOT_LUM_MAX, so every band throws the
+// same amount of light and text over the hot core keeps the same contrast in every
+// preset (SK Green's raw spot was .67 — a neon field). And band text is measured
+// against the LIT surfaces: the band-washed light page, and the dark hero top under
+// the glow (≈ the card at L13).
 
 const BANDS: [string, string][] = [
   ...ACCENT_PRESETS.map((p): [string, string] => [p.name, p.hex]),
@@ -52,6 +67,14 @@ const hueDist = (a: number, b: number) => {
   const d = Math.abs(a - b) % 360;
   return Math.min(d, 360 - d);
 };
+/** The same hue and saturation at another lightness: "6 24% 9%" → "6 24% 13%". */
+const atL = (triplet: string, l: number) => triplet.trim().split(/\s+/).slice(0, 2).concat(`${l}%`).join(" ");
+
+/** Where band TEXT really sits in each theme (spec §C): the light page (band-washed,
+ *  darker than the white card, so it binds), and the dark hero top under the glow —
+ *  the card's own hue and wash, lifted to L13. */
+const litSurface = (theme: Theme, t: Record<string, string>) =>
+  theme === "light" ? t["--background"] : atL(t["--card"], 13);
 
 /** Every WCAG promise the skin makes, for one band colour; [] when all hold. */
 function failures(hex: string): string[] {
@@ -65,8 +88,14 @@ function failures(hex: string): string[] {
     const t = skin[theme];
     need(`${theme} on-primary`, contrast(t["--primary-foreground"], t["--primary"]), 4.5);
     need(`${theme} primary-ink on card`, contrast(t["--primary-ink"], t["--card"]), 4.5);
+    need(`${theme} primary-ink on the lit surface`, contrast(t["--primary-ink"], litSurface(theme, t)), 4.5);
     need(`${theme} input on card`, contrast(t["--input"], t["--card"]), 3);
     need(`${theme} input on page`, contrast(t["--input"], t["--background"]), 3);
+    if (!t["--spot"]) bad.push(`${hex} ${theme} carries no --spot`);
+    // The dark light is capped; the light theme's is a low-alpha tint and needs none.
+    if (theme === "dark" && t["--spot"] && !(relativeLuminance(t["--spot"]) <= SPOT_LUM_MAX)) {
+      bad.push(`${hex} dark --spot ${t["--spot"]} luminance ${relativeLuminance(t["--spot"]).toFixed(3)} > ${SPOT_LUM_MAX}`);
+    }
     // A grey band has no hue for the delete red to be confused with.
     if (s >= 15) {
       const destructive = t["--destructive"] ?? themeDestructive[theme];
@@ -111,6 +140,52 @@ describe("skinCss() holds WCAG for every band preset, both themes", () => {
     expect(skinCss("#2563eb")).not.toContain("--destructive");
   });
 
+  // The spec's published output (FINAL-SPEC-v3 §C), byte for byte: the band-washed
+  // dark surfaces (page L5 / card L9 / well L13), the soft light-page wash, the ink
+  // and the field edge walked against those surfaces, and the stage light.
+  it("Seishin's skin is the spec's v3 output, byte for byte", () => {
+    expect(skinCss("#a62a1c")).toBe(
+      ":root{--primary:6 71% 38%;--ring:6 71% 38%;--primary-foreground:0 0% 100%;--primary-ink:6 71% 38%;" +
+        "--accent:6 25% 95%;--accent-foreground:6 71% 30%;--background:6 20% 95%;--card:0 0% 100%;--popover:0 0% 100%;" +
+        "--secondary:6 10% 91%;--muted:6 10% 91%;--border:6 10% 80%;--input:6 10% 54%;--spot:6 81% 45%;--destructive:265 68% 44%;}" +
+        ".dark{--primary:6 71% 46%;--ring:6 71% 46%;--primary-foreground:0 0% 100%;--primary-ink:6 71% 60%;" +
+        "--accent:6 26% 16%;--accent-foreground:0 0% 98%;--background:6 30% 5%;--card:6 24% 9%;--popover:6 24% 11%;" +
+        "--secondary:6 18% 13%;--muted:6 18% 13%;--border:6 18% 17%;--input:6 18% 43%;--spot:6 86% 50%;--destructive:265 68% 44%;}"
+    );
+  });
+});
+
+describe("the stage light, --spot (v3)", () => {
+  // Seishin's own spot is .196 — under the ceiling, so the band the light was tuned on
+  // is untouched by it.
+  it("Seishin's dark spot is exactly 6 86% 50%, under the ceiling", () => {
+    expect(spotFor("#a62a1c").dark).toBe("6 86% 50%");
+    expect(relativeLuminance("6 86% 50%")).toBeLessThanOrEqual(SPOT_LUM_MAX);
+    expect(SPOT_LUM_MAX).toBe(0.2);
+  });
+
+  // The luminous bands were the problem: their raw spot made the hero a neon field.
+  it.each([
+    ["SK Green", "#15a65a", "149 93% 28%"],
+    ["Emerald", "#10b981", "160 99% 27%"],
+    ["SK Gold", "#8a7436", "44 72% 34%"],
+    ["CueIQ", "#4f46e5", "243 90% 60%"],
+  ])("%s's dark spot is walked down to %s's table value", (_, hex, want) => {
+    expect(spotFor(hex).dark).toBe(want);
+  });
+
+  it.each(BANDS)("%s: the skin's --spot is spotFor()'s, in both themes", (_, hex) => {
+    const skin = parseSkin(skinCss(hex));
+    expect(skin.light["--spot"]).toBe(spotFor(hex).light);
+    expect(skin.dark["--spot"]).toBe(spotFor(hex).dark);
+  });
+
+  it("relativeLuminance() is WCAG's", () => {
+    expect(relativeLuminance("0 0% 100%")).toBeCloseTo(1, 6);
+    expect(relativeLuminance("0 0% 0%")).toBe(0);
+    expect(relativeLuminance("0 100% 50%")).toBeCloseTo(0.2126, 4); // pure red
+  });
+
   // The band that never picked a colour gets theme.css as-is, so theme.css owes it the
   // same on-primary promise skinCss() keeps for every other band. Dark used to put
   // navy text on the indigo fill (4.1:1): the header mark, the avatar letter and every
@@ -138,6 +213,9 @@ describe("what a skin may and may not touch", () => {
     // The Live warning ladder, the overtime plate and the unread dot look the same
     // for every band — by rule, so no skin may write them.
     expect(css).not.toMatch(/--(notify|alarm|warning|urgent-wash-a)[\w-]*:/);
+    // The light's knobs are band-independent by rule (spec §C): every band throws the
+    // same light, and export / print zero them in one place.
+    expect(css).not.toMatch(/--(spot-a|spot-core-a|vig-a|glow-a|glass-a|lit-muted-foreground):/);
   });
 
   it("the guard's idea of the theme red is theme.css's", () => {
@@ -209,22 +287,39 @@ describe("what a skin may and may not touch", () => {
   });
 });
 
-// The band that never picked a colour gets theme.css's own --input, and §J wants a
-// field boundary of 3:1 on every surface it sits on (WCAG 1.4.11). theme.css still
-// carries the PRE-redesign surface values on purpose (see its header): light
-// --input 220 13% 91% is 1.24:1 on white — login, library search and the overview
-// selects showed fields with no visible edge — and dark 217 33% 22% is 1.5:1. The
-// final values (spec §A: light L54 / --border L80) land WITH the surface/lighting
-// decision, because their hue follows it. Until then these two are marked `fails`, so
-// they pass while the gap stands. When the new surfaces land and a theme clears 3:1,
-// its line goes red ("expected to fail"): drop that `.fails` and it becomes the guard.
-describe("theme.css's own field boundary (no band skin)", () => {
-  it.fails.each(["light", "dark"] as const)(
-    "KNOWN GAP until the surface tokens land, %s: --input clears 3:1 on card and page",
-    (theme) => {
-      const t = themeTokens[theme];
-      expect(contrast(t["--input"], t["--card"])).toBeGreaterThanOrEqual(3);
-      expect(contrast(t["--input"], t["--background"])).toBeGreaterThanOrEqual(3);
-    }
-  );
+// The band that never picked a colour gets theme.css as-is, so theme.css owes it every
+// promise skinCss() keeps for a band that did. Until v3 this block was a `.fails`
+// KNOWN GAP: theme.css kept the pre-redesign surfaces (light --input 220 13% 91% was
+// 1.24:1 on white — login, library search and the overview selects showed fields with
+// no visible edge). The Stage Wash surfaces landed with the light, so it is the guard.
+describe("theme.css's own tokens (no band skin)", () => {
+  it.each(["light", "dark"] as const)("%s: --input clears 3:1 on card and page", (theme) => {
+    const t = themeTokens[theme];
+    expect(contrast(t["--input"], t["--card"])).toBeGreaterThanOrEqual(3);
+    expect(contrast(t["--input"], t["--background"])).toBeGreaterThanOrEqual(3);
+  });
+
+  it.each(["light", "dark"] as const)("%s: band ink, and the text in the lit hero, clear AA on the lit surface", (theme) => {
+    const t = themeTokens[theme];
+    const lit = litSurface(theme, t);
+    expect(contrast(t["--primary-ink"], lit)).toBeGreaterThanOrEqual(4.5);
+    // .lit re-points --muted-foreground to this (stage.css): secondary text in the glow
+    expect(contrast(t["--lit-muted-foreground"], lit)).toBeGreaterThanOrEqual(4.5);
+    expect(contrast(t["--lit-muted-foreground"], t["--card"])).toBeGreaterThanOrEqual(4.5);
+  });
+
+  it("dark: the stage light obeys the ceiling every band's does", () => {
+    expect(relativeLuminance(themeTokens.dark["--spot"])).toBeLessThanOrEqual(SPOT_LUM_MAX);
+  });
+
+  // The static defaults had drifted from the skin since v2 (spec §0.0, "Lead" graft):
+  // a device with no colour and a device that picked the default indigo must paint
+  // the same surfaces. Every neutral the skin writes, theme.css writes identically.
+  it.each(["light", "dark"] as const)("%s: the surfaces and the light are exactly skinCss(\"#4f46e5\")'s", (theme) => {
+    const skin = parseSkin(skinCss("#4f46e5"))[theme];
+    const keys = ["--background", "--card", "--popover", "--secondary", "--muted", "--border", "--input", "--spot"];
+    const want = Object.fromEntries(keys.map((k) => [k, skin[k]]));
+    const got = Object.fromEntries(keys.map((k) => [k, themeTokens[theme][k]]));
+    expect(got).toEqual(want);
+  });
 });

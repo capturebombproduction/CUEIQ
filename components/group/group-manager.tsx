@@ -13,7 +13,7 @@ import { Badge } from "@/components/ui/badge";
 import { canEditGroup, groupRoleOf, isAdmin, type Perms } from "@/lib/permissions";
 import { useConfirm } from "@/components/ui/confirm-dialog";
 import type { Group, Member } from "@/lib/types";
-import { bandTriplet } from "@/lib/band-triplet";
+import { bandLitVars, bandTriplet } from "@/lib/band-triplet";
 import { cn } from "@/lib/utils";
 
 export function GroupManager({
@@ -309,7 +309,9 @@ export function GroupManager({
                 aria-label={g.name}
                 data-band-hero={hero || undefined}
                 className={cn(hero ? "lit cut sweep [--cut:20px]" : "slab", "space-y-4 p-4")}
-                style={hero ? ({ "--lit": bandTriplet(g.color) } as CSSProperties) : undefined}
+                // --lit keys the edge in this band's colour; --lit-g makes the glow its
+                // capped stage light (v3 §E.11), not the raw colour --lit alone glows in
+                style={hero ? (bandLitVars(g.color) as CSSProperties) : undefined}
               >
                 {/* Identity: colour square + name + head count. */}
                 <div className="flex flex-wrap items-center gap-3">

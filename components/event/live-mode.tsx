@@ -75,6 +75,7 @@ import { KindChip, KindTile } from "@/components/event/kind";
 import { MicGrid } from "@/components/event/mic-grid";
 import { RunMeter } from "@/components/event/run-meter";
 import { OfflineBanner } from "@/components/offline-banner";
+import { StageLight } from "@/components/stage-light";
 import { useFullscreen } from "@/components/kiosk-mode";
 import { FeedbackButton } from "@/components/feedback-button";
 import { cn } from "@/lib/utils";
@@ -3363,6 +3364,15 @@ export function LiveMode({
       data-cueiq-live-sync={syncStatus}
       data-cueiq-live-settled={syncSettled ? "1" : "0"}
     >
+      {/* The page light (v3 Stage Wash). This immersive screen has no app frame, so
+          it hangs its own — HERE, inside the root, because `zone-over` on the root
+          swaps it to the neutral alarm light; aimed at the NOW column at stage size.
+          The root is deliberately NOT isolated: the light paints in the immersive
+          <main>'s stacking context, under everything in it, including whatever a
+          page puts above LiveMode (the desktop's readiness card). The 50 % base is
+          explicit: this root sits inside the app frame, whose lg aim
+          (FRAME_LIGHT_AIM) it would otherwise inherit below stage size. */}
+      <StageLight className="[--spot-x:50%] stage:[--spot-x:27%]" />
       {/* hidden file input */}
       <input
         ref={fileInputRef}

@@ -63,7 +63,7 @@ describe("TitleSlab", () => {
 });
 
 describe("PageTitle", () => {
-  it("is the display H1 with a right slot, and no ghost word until the lighting round", () => {
+  it("is the display H1 with a right slot, and no ghost word (v3 dropped it)", () => {
     const { container, getByRole } = render(<PageTitle title="Events" right={<button>New</button>} />);
     const h1 = getByRole("heading", { level: 1, name: "Events" });
     expect(h1.classList.contains("h1")).toBe(true);

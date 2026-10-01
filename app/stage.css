@@ -1,5 +1,5 @@
-/* Shared component classes + keyframes — redesign "Black Stage" v2
-   (review-shots/design/FINAL-SPEC-v2.md §E.1). Imported right after ./theme.css by
+/* Shared component classes + keyframes — redesign v3 "Black Stage · Stage Wash"
+   (review-shots/design/FINAL-SPEC-v3.md §E.1). Imported right after ./theme.css by
    app/globals.css (web) and desktop/src/index.css (the .exe): one file, both apps.
 
    PLAIN CSS, NOT `@layer components` — and that is the whole delivery design:
@@ -23,9 +23,9 @@
    theme() / screen() (web compiles this file alone), and no selector that preflight
    could out-rank (a bare `kbd`, `input`, `::placeholder`).
 
-   NOT here yet, on purpose: round 3 (band-tinted surfaces + a soft spotlight) sets
-   the LIGHTING — the .cone page beam, the conic wedges + halftone inside .lit, and
-   the ghost word behind .page-title. Everything structural is final. */
+   The light (v3): ONE static page light (.spotlight, hung by components/stage-light.tsx)
+   and ONE glowing hero per screen (.lit). Static gradients only — no cones, wedges,
+   halftone, ghost words, blur or motion (lib/stage-wash.test.ts). */
 
 /* ================= keyframes (referenced by name from classes + tailwind.preset.ts) ================= */
 @keyframes onair { 0%, 49% { opacity: 1; } 50%, 100% { opacity: .25; } }
@@ -76,8 +76,8 @@ button.en, a.en, button .en, a .en { font-size: 16px; }
 .hard-drop { text-shadow: .045em .04em 0 hsl(var(--primary) / .8); }   /* STATIC Home numeral only — never Live */
 .slam { display: inline-block; animation: slam var(--dur-hero) var(--ease-slam) 60ms 1 both; }
 
-/* Page title row. Its decorative ghost word (::before from data-ghost) and the clip
-   that crops it to the row arrive with round 3's lighting. */
+/* Page title row: H1 + right-hand meta. No ghost word — the page light is the only
+   thing behind it. */
 .page-title { position: relative; display: flex; align-items: flex-end; gap: 12px; padding-top: 6px; }
 
 /* ---------------- surfaces ---------------- */
@@ -89,17 +89,83 @@ button.en, a.en, button .en, a .en { font-size: 16px; }
    every chamfered control gets this inset two-tone ring instead. */
 .cut:focus-visible { outline: none; box-shadow: inset 0 0 0 2px hsl(var(--background)), inset 0 0 0 4px hsl(var(--foreground)); }
 
-/* ---------------- the one lit hero per screen ----------------
-   For now a plain card with the band key-line on top and the chamfer outline drawn
-   across the diagonals (two background layers — a clip-path would cut a border).
-   Round 3 sets its LIGHTING (the conic wedges + the halftone corner); the zone
-   variables below (--lit --key-w --rail --rail-b --wash-a --beam-k) are already the
-   ones it reads. */
-.lit { --lit-c: var(--lit, var(--primary)); position: relative; isolation: isolate; overflow: hidden;
+/* ---------------- the stage light (v3 · Stage Wash) ----------------
+   ONE static wash light hanging just above the screen. Three smooth radials on ONE
+   layer, top to bottom:
+     (1) vignette: pulls the sides and the bottom down to near-black (dark only;
+         --vig-a is 0 in light)
+     (2) hot core: a saturated pool behind the header + title, 320 × 290 px
+     (3) long throw: the soft body that reaches the hero and fades out by ~78 % of 1120 px
+   No edges, no texture, no mask, no blur, no motion. --spot-x aims it (Live at stage
+   size: 27 % = the NOW column). Hung by components/stage-light.tsx, once per document.
+   Every centre sits 47 px higher than the spec's numbers (-12 % / 30 px / -90 px):
+   those were tuned on mockup phones whose 47 px iOS status bar sat INSIDE the lit
+   box, so the header began at y 47. In the app the header begins at y 0 (no bar in
+   the browser, statusBarStyle "default" in the PWA), and with the spec's numbers
+   every title meta and the Live status row sat 47 px deeper in the hot core than in
+   the approved mockup (home meta 3.86–4.10:1 instead of ≥ 4.6). Lifted, the probe
+   reproduces the mockup's pixels and contrast.
+   FIXED, viewport-sized: the vignette always frames the screen and never ends in a
+   seam when the page scrolls — so no ancestor may carry transform / filter /
+   perspective / contain / will-change, which would make "fixed" mean "absolute to
+   that box".
+   z-index -1, not the spec's 0: on the Live screens the light is a SIBLING of in-flow
+   content (inside .live-root, so .zone-over below reaches it), and a positioned layer
+   at 0 paints OVER every non-positioned sibling — the .9 vignette would sink the
+   status row and the NEXT card into black. At -1 it paints just above the background
+   of its nearest stacking context (the app frame / the immersive <main> / the login
+   screen, each `relative` + isolate or z-index) and under everything in it.
+   The radials are shared with .lit-bar::before (below), which repeats this light
+   inside an opaque sticky bar. */
+.spotlight { position: fixed; inset: 0; pointer-events: none; z-index: -1; }
+.spotlight, .lit-bar::before {
+  background-image:
+    radial-gradient(ellipse 118% 94% at var(--spot-x, 50%) calc(-12% - 47px), transparent 46%, hsl(var(--shadow) / calc(var(--vig-a) * .5)) 74%, hsl(var(--shadow) / var(--vig-a)) 100%),
+    radial-gradient(ellipse 320px 290px at var(--spot-x, 50%) -17px, hsl(var(--spot) / var(--spot-core-a)) 0%, hsl(var(--spot) / calc(var(--spot-core-a) * .56)) 34%, hsl(var(--spot) / calc(var(--spot-core-a) * .18)) 68%, hsl(var(--spot) / 0) 100%),
+    radial-gradient(ellipse 560px 1120px at var(--spot-x, 50%) -137px, hsl(var(--spot) / var(--spot-a)) 0%, hsl(var(--spot) / calc(var(--spot-a) * .62)) 26%, hsl(var(--spot) / calc(var(--spot-a) * .26)) 54%, hsl(var(--spot) / calc(var(--spot-a) * .08)) 78%, hsl(var(--spot) / 0) 100%); }
+/* Overtime: the page light becomes the neutral work light — element-scoped on the
+   Live root, so it is the same for every band. WARN and URGENT never touch it (a band
+   near amber would otherwise get an "amber light" that reads as a step).
+   Dark caps it like every band light (lib/skin.ts SPOT_LUM_MAX .20): the dark
+   --alarm is the L88 plate colour (luminance ≈ .75), and as a light its hot core
+   turned the top bar and the status row light grey — the green "เสียงออกเครื่องนี้"
+   chip measured 1.9:1 at the loudest moment of the show. L48 grey (≈ .196) still
+   reads as a grey-white work light; the plate, the hazard rails and the frame carry
+   the alarm. lib/stage-wash.test.ts holds it under the ceiling. */
+.zone-over { --spot: var(--alarm); }
+.dark .zone-over { --spot: 0 0% 48%; }
+:root:not(.dark) .zone-over .spotlight { opacity: .5; }
+/* An OPAQUE sticky bar inside the page light: the Event page's segmented tabs, which
+   stick under the glass header right in the hot core. A flat page-colour fill there
+   cut an unlit band through the light (lit header, black strip, lit page below).
+   Sticky tabs stay solid, never glass (§0.3 rule 2), but the bar now repeats the
+   light behind itself: a FIXED ::before with the same radials over the page colour,
+   clipped to the bar by clip-path (not background-attachment: fixed, which iOS
+   ignores). So the bar paints exactly the pixels the page light paints around it, and
+   still hides what scrolls under it. Its host must be a stacking context (sticky +
+   z-index) with no background of its own, and it takes --spot-x from the frame, as
+   the light does. */
+.lit-bar { clip-path: inset(0); }
+.lit-bar::before { content: ""; position: fixed; inset: 0; z-index: -1; pointer-events: none; background-color: hsl(var(--background)); }
+
+/* ---------------- the ONE lit hero per screen ----------------
+   A band glow pouring in from the key edge — a 14 px bloom right under the key line,
+   a lip and a body — plus the 3 px key edge and the ink outline, drawn across the
+   chamfer diagonals too (two background layers: a clip-path would cut a border). No
+   wedge, no dots. Element-scoped knobs (zones and call sites set them): --lit (hue),
+   --lit-g (glow colour: a hero lit in another band's colour sets it inline from
+   lib/band-triplet.ts bandLitVars, under the light ceiling), --key-w, --rail, --rail-b,
+   --glow-k, --wash-a. Secondary text in the glow is lifted to --lit-muted-foreground
+   (dark L80: ≥ 4.35:1 at its worst pixel, every preset). */
+.lit { --lit-c: var(--lit, var(--primary)); --lit-g: var(--lit, var(--spot)); position: relative; isolation: isolate; overflow: hidden;
+  --muted-foreground: var(--lit-muted-foreground);
   background:
     linear-gradient(45deg, transparent calc(50% - 1.5px), hsl(var(--foreground) / var(--edge-a)) calc(50% - 1.5px) 50%, transparent 50%) right top / var(--cut) var(--cut) no-repeat,
     linear-gradient(45deg, transparent 50%, hsl(var(--foreground) / var(--edge-a)) 50% calc(50% + 1.5px), transparent calc(50% + 1.5px)) left bottom / var(--cut) var(--cut) no-repeat,
     linear-gradient(hsl(var(--lit-c) / var(--wash-a, 0)), hsl(var(--lit-c) / var(--wash-a, 0))),
+    linear-gradient(180deg, hsl(var(--lit-g) / calc(var(--glow-a) * .6 * var(--glow-k, 1))) 0, hsl(var(--lit-g) / calc(var(--glow-a) * .16 * var(--glow-k, 1))) 7px, hsl(var(--lit-g) / 0) 14px),
+    radial-gradient(ellipse 66% 150px at 50% -40px, hsl(var(--lit-g) / calc(var(--glow-a) * .7 * var(--glow-k, 1))) 0%, hsl(var(--lit-g) / 0) 100%),
+    radial-gradient(ellipse 140% 92% at 50% -18%, hsl(var(--lit-g) / calc(var(--glow-a) * var(--glow-k, 1))) 0%, hsl(var(--lit-g) / calc(var(--glow-a) * .52 * var(--glow-k, 1))) 40%, hsl(var(--lit-g) / calc(var(--glow-a) * .16 * var(--glow-k, 1))) 72%, hsl(var(--lit-g) / 0) 100%),
     hsl(var(--card));
   box-shadow:
     inset 0 var(--key-w, 3px) 0 hsl(var(--lit-c)),
@@ -109,7 +175,12 @@ button.en, a.en, button .en, a .en { font-size: 16px; }
     inset 0 0 0 1.5px hsl(var(--foreground) / var(--edge-a)); }
 .lit.sweep::after { content: ""; position: absolute; top: 0; bottom: 0; left: 0; width: 34%; z-index: -1; pointer-events: none;
   background: hsl(var(--foreground) / .07); transform: translateX(-140%) skewX(-20deg); animation: sweep 1100ms var(--ease-out) 150ms 1 both; }
-.lit .eyebrow { color: hsl(var(--foreground)); }      /* band ink on a band beam is ~3:1 — band colour stays on the key bar */
+/* With motion off the animation is killed, and the skewed START pose stayed painted
+   as a pale wedge on the hero's top-left (a v2 bug, real reduced-motion users
+   included). No motion = no sweep. */
+html.reduce-motion .lit.sweep::after { display: none; }
+@media (prefers-reduced-motion: reduce) { .lit.sweep::after { display: none; } }
+.lit .eyebrow { color: hsl(var(--foreground)); }      /* band ink on a band glow is ~3:1 — band colour stays on the key bar */
 
 /* ---------------- Live NOW card: one shape, four zones, constant height (§G.10) ----------------
    Zones restyle through element-scoped variables, never !important descendant overrides. */
@@ -126,13 +197,20 @@ button.en, a.en, button .en, a .en { font-size: 16px; }
 .zend { margin-left: auto; font-size: 12px; color: hsl(var(--muted-foreground)); white-space: nowrap; }
 .zend b { font: 700 16px/1 var(--font-num); font-variant-numeric: tabular-nums; color: hsl(var(--foreground)); margin-left: 3px; }
 /* WARN = frame step: tinted strip, solid tag, 4px amber key + rails; the card stays dark. */
-.now.zone-warn   { --lit: var(--warning); --key-w: 4px; --rail: 4px; --beam-k: .45; }
+.now.zone-warn   { --lit: var(--warning); --key-w: 4px; --rail: 4px; --glow-k: .62; }   /* amber glow at .62 */
 .zone-warn .zhead { background: hsl(var(--warning) / .17); box-shadow: inset 0 -2px 0 hsl(var(--warning)); }
+/* Dark: the header row's amber text (≤0:46, 02 / 16) and the lifted "จบ" sat on amber
+   strip over amber glow at 3.6–4.0:1. A lower glow and a thinner tint bring every
+   preset to ≥ 4.7 (probe, 390 + 1180); the frame, the rails, the solid WARN tag and
+   the amber numerals still carry the step. Light keeps .62 / .17 (light WARN was the
+   venue's "too faint" must-fix, and its ink is dark). */
+.dark .now.zone-warn { --glow-k: .45; }
+.dark .zone-warn .zhead { background: hsl(var(--warning) / .13); }
 .zone-warn .ztag  { background: hsl(var(--warning)); color: hsl(var(--warning-foreground)); }
 .zone-warn .zthr, .zone-warn .zidx { color: hsl(var(--warning-ink)); }
 /* URGENT = fill step: a striped amber plate slammed in ONCE (no blink — WCAG 2.2.2),
    and a LOW-luminance amber wash, so dark URGENT is still a dark card. */
-.now.zone-urgent { --lit: var(--warning); --key-w: 0px; --rail: 8px; --rail-b: 4px; --beam-k: 0; --wash-a: var(--urgent-wash-a); }
+.now.zone-urgent { --lit: var(--warning); --key-w: 0px; --rail: 8px; --rail-b: 4px; --glow-k: .3; --wash-a: var(--urgent-wash-a); }   /* glow .3 under the wash */
 .zone-urgent .zhead { color: hsl(var(--warning-foreground)); transform-origin: top; animation: slam-y var(--dur-2) var(--ease-snap) 1;
   background: repeating-linear-gradient(-55deg, transparent 0 9px, hsl(var(--warning-foreground) / .14) 9px 18px), hsl(var(--warning)); }
 .zone-urgent .ztag { background: hsl(var(--warning-foreground)); color: hsl(var(--warning)); font-size: 23px; }

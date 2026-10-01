@@ -102,12 +102,14 @@ export function PracticeRoom() {
 
   return (
     <div className="space-y-3">
-      {/* the desktop shell has no "‹ TRAINING" in its header — the way back is here */}
+      {/* the desktop shell has no "‹ TRAINING" in its header — the way back is here,
+          in the page light's hot core: the word is ink, the band colour stays on the
+          chevron (as on the web page — band ink there fell to 4.26:1 on Sakura) */}
       <Link
         to="/practice"
-        className="caps -ml-2 flex h-11 w-fit items-center gap-0.5 rounded-[3px] pr-2 text-[15px] text-primary-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        className="caps -ml-2 flex h-11 w-fit items-center gap-0.5 rounded-[3px] pr-2 text-[15px] text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
       >
-        <ChevronLeft className="h-5 w-5" strokeWidth={2.6} aria-hidden />
+        <ChevronLeft className="h-5 w-5 text-primary-ink" strokeWidth={2.6} aria-hidden />
         Training
       </Link>
       {state.partial && (

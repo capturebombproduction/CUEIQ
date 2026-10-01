@@ -9,10 +9,9 @@ import { hasThai } from "@/lib/thai";
  * Page titles are English by house rule; a Thai one still renders sanely — upright
  * Kanit at a size its tone marks fit — rather than squeezed into a .84 line-height.
  *
- * Round 3 (the lighting) adds the outlined ghost word behind the title (`data-ghost`,
- * drawn by `.page-title::before`) and the clip that crops it to this row. The page's
- * `main` will need `overflow-x-clip` then — never overflow-hidden, which breaks the
- * sticky header and tabs.
+ * Nothing is drawn behind the title (v3 dropped v2's outlined ghost word): the page
+ * light is the only thing there. The page's `main` keeps `overflow-x-clip` — never
+ * overflow-hidden, which breaks the sticky header and tabs.
  */
 export function PageTitle({
   title,

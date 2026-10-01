@@ -52,7 +52,9 @@ export function ErrorCard({
 
   if (offline) {
     return (
-      <div className="mx-auto max-w-md px-4 py-12">
+      // data-stage-centred: one centred column, so the frame keeps the page light
+      // on it (components/stage-light.tsx FRAME_LIGHT_AIM)
+      <div data-stage-centred className="mx-auto max-w-md px-4 py-12">
         <div className="slab space-y-4 rounded-[3px] p-6 text-center">
           <span className="mx-auto grid h-12 w-12 place-items-center rounded-[2px] bg-warning/[.16] text-warning-ink">
             <CloudOff className="h-6 w-6" aria-hidden />
@@ -94,7 +96,8 @@ export function ErrorCard({
     // supplies its own padding — the ROOT one does not, and max-w-md (448px) is wider
     // than the 375px phone this is actually read on at a venue, so without it the
     // digest box the copy asks the operator to send runs edge to edge.
-    <div className="mx-auto max-w-md px-4 py-12">
+    // data-stage-centred: one centred column (components/stage-light.tsx).
+    <div data-stage-centred className="mx-auto max-w-md px-4 py-12">
       <div className="slab space-y-4 rounded-[3px] p-6 text-center">
         <span className="mx-auto grid h-12 w-12 place-items-center rounded-[2px] bg-destructive/[.16] text-destructive">
           <AlertTriangle className="h-6 w-6" aria-hidden />

@@ -16,7 +16,8 @@ export default async function NewEventPage() {
   const groups = editableGroups(ws.perms, ws.groups);
 
   return (
-    <div className="mx-auto max-w-2xl space-y-3">
+    // data-stage-centred: one centred column (components/stage-light.tsx)
+    <div data-stage-centred className="mx-auto max-w-2xl space-y-3">
       {/* The way back is the header's "‹ EVENTS" (and the form's ยกเลิก) — a second
           back link here said the same thing twice (spec §G.3). */}
       <PageTitle title="New Event" />

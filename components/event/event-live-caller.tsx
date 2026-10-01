@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import Link from "next/link";
 import type { RealtimeChannel } from "@supabase/supabase-js";
 import {
@@ -40,7 +40,9 @@ import { Button } from "@/components/ui/button";
 import { useConfirm } from "@/components/ui/confirm-dialog";
 import { Countdown } from "@/components/live/countdown";
 import { OfflineBanner } from "@/components/offline-banner";
+import { StageLight } from "@/components/stage-light";
 import { cn } from "@/lib/utils";
+import { bandLitVars, bandTriplet } from "@/lib/band-triplet";
 import { privateChannel, runOrderTopic } from "@/lib/realtime";
 import { isQueueableWriteError } from "@/lib/mgmt-outbox";
 import {
@@ -287,6 +289,48 @@ export function EventLiveCaller({
     ) ?? null;
   const firstPending = ordered.find((r) => r.status === "pending") ?? null;
   const started = ordered.some((r) => r.status !== "pending");
+
+  // Each band act's OWN colour (spec §G.11) — several bands share this board, and the
+  // device's band light on another band's act names the wrong band. run_sequence has
+  // no band column, only the band's EVENT (linked_event_id), so the board asks
+  // events → groups once per set of linked acts. Presentation only: it is not part of
+  // the rows, the refetch or the realtime channel. A read that fails (offline, RLS) or
+  // a band with no colour leaves that act on the device's own light, as before.
+  const linkedKey = useMemo(
+    () =>
+      [...new Set(rows.map((r) => r.linked_event_id).filter((v): v is string => !!v))]
+        .sort()
+        .join(","),
+    [rows]
+  );
+  const [actColors, setActColors] = useState<Record<string, string>>({});
+  useEffect(() => {
+    if (!linkedKey) return;
+    let alive = true;
+    Promise.resolve(
+      supabase.from("events").select("id, groups(color)").in("id", linkedKey.split(","))
+    )
+      .then(({ data }) => {
+        if (!alive || !data) return;
+        const next: Record<string, string> = {};
+        for (const e of data as { id: string; groups: unknown }[]) {
+          const g = (Array.isArray(e.groups) ? e.groups[0] : e.groups) as
+            | { color?: string | null }
+            | null
+            | undefined;
+          if (g?.color) next[e.id] = g.color;
+        }
+        setActColors(next);
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [supabase, linkedKey]);
+  /** A band act's own colour, when the board knows it (a cached row can lack the link). */
+  const actColor = (r: RunSeqLive | null) =>
+    r?.kind === "band" && r.linked_event_id ? actColors[r.linked_event_id] : undefined;
+  const liveColor = actColor(liveRow);
 
   // Project a row's start onto the clock given the current drift.
   function projectedStartSec(r: RunSeqLive): number | null {
@@ -1003,6 +1047,12 @@ export function EventLiveCaller({
     // content wrapper: any of them makes the off-screen report's `fixed` relative to
     // that box instead of the viewport, and the capture would shoot it in place.
     <div className="live-root">
+      {/* The page light (v3 Stage Wash): this immersive route has no app frame, so it
+          hangs its own, first in the root (not isolated — it paints in the immersive
+          <main>'s stacking context, under everything), aimed at the NOW column: the
+          left one from md: up (≈ 29–33 % of the window from a 768 px tablet to a
+          1280 px laptop). Never inside the report below — that node is captured. */}
+      <StageLight className="md:[--spot-x:31%]" />
       {/* The immersive top bar (this route has no app header): the way back, ON AIR,
           the show, and the stage clock. Sticky, not fixed, so the offline strip it
           hosts pushes the board down instead of sliding under the bar. */}
@@ -1181,8 +1231,14 @@ export function EventLiveCaller({
             NEXT holds nothing focusable, so tab order matches what is seen. */}
         <div className="grid grid-cols-1 items-start gap-3 md:grid-cols-[minmax(0,1.35fr)_minmax(0,1fr)]">
           <div className="contents stage:flex stage:min-w-0 stage:flex-col stage:gap-3">
-            {/* NOW — the screen's ONE lit hero. No px-*: `.now` owns its padding. */}
-            <section className="now lit cut pb-3.5 [--cut:18px] stage:[--cut:26px] stage:[--pad:24px]">
+            {/* NOW — the screen's ONE lit hero. No px-*: `.now` owns its padding.
+                Keyed and lit in the act's OWN band (§G.11): --lit for the edge, and
+                --lit-g its capped stage light (lib/band-triplet.ts). Unknown colour →
+                no inline style, so the device's band light, never a grey borrowed glow. */}
+            <section
+              className="now lit cut pb-3.5 [--cut:18px] stage:[--cut:26px] stage:[--pad:24px]"
+              style={liveColor ? (bandLitVars(liveColor) as CSSProperties) : undefined}
+            >
               <div className="zhead stage:h-[46px]">
                 <span className="ztag">Now</span>
                 {liveRow && (
@@ -1401,8 +1457,21 @@ export function EventLiveCaller({
                           isDone && "opacity-60"
                         )}
                       >
-                        {/* the kind's rail: band colour for a band act, neutral otherwise */}
-                        <i aria-hidden className={cn("absolute inset-y-0 left-0 w-1", meta.rail)} />
+                        {/* the kind's rail: the act's OWN band colour for a band act
+                            (the device's band when the board can't know it), neutral
+                            otherwise */}
+                        <i
+                          aria-hidden
+                          className={cn(
+                            "absolute inset-y-0 left-0 w-1",
+                            actColor(r) ? "bg-[hsl(var(--band))]" : meta.rail
+                          )}
+                          style={
+                            actColor(r)
+                              ? ({ "--band": bandTriplet(actColor(r)) } as CSSProperties)
+                              : undefined
+                          }
+                        />
 
                         {/* time — numerals are never band-coloured */}
                         <div className="w-[4.5rem] shrink-0 text-center">

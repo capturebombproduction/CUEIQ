@@ -28,7 +28,8 @@ export default async function EditEventPage({
   }
 
   return (
-    <div className="mx-auto max-w-2xl space-y-3">
+    // data-stage-centred: one centred column (components/stage-light.tsx)
+    <div data-stage-centred className="mx-auto max-w-2xl space-y-3">
       {/* Back to THIS show — the header's "‹ EVENTS" goes up to the list, a
           different place, so this one stays. */}
       <Button asChild variant="ghost" className="no-print -ml-3 text-primary-ink">

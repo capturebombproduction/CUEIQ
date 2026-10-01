@@ -11,8 +11,9 @@ const Tabs = TabsPrimitive.Root;
 // an inverted (foreground) block via `.seg > [data-state=active]`, so the trigger
 // carries no colour of its own. Labels are Kanit; add `en` to the TabsList when every
 // trigger is English (the Event tabs), or to one trigger.
-// The Event page's sticky row wraps the list in an OPAQUE bar, not glass:
-//   sticky top-[calc(var(--header-h)+env(safe-area-inset-top))] z-30 bg-background/95 py-2
+// The Event page's sticky row wraps the list in an OPAQUE bar, not glass, that
+// carries the page light (app/stage.css `.lit-bar`):
+//   lit-bar sticky top-[calc(var(--header-h)+env(safe-area-inset-top))] z-30 py-2
 const TabsList = React.forwardRef<
   React.ElementRef<typeof TabsPrimitive.List>,
   React.ComponentPropsWithoutRef<typeof TabsPrimitive.List>

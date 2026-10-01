@@ -715,13 +715,14 @@ export function PracticePlayer({
         style={{ "--cut": "22px" } as CSSProperties}
       >
         <div className="flex items-center gap-3.5">
-          {/* band cover: the fill with one hard 60° white wedge, never a glow */}
+          {/* band cover: the fill under a soft white top highlight (spec v3 §G.6 —
+              v2's hard 60° wedge is gone with the rest of the wedge language) */}
           <span
             aria-hidden
             className="grid h-[84px] w-[84px] flex-none place-items-center rounded-[2px] text-primary-foreground"
             style={{
               background:
-                "conic-gradient(from 150deg at 50% -40%, transparent 0deg, hsl(0 0% 100% / .22) .3deg 59.7deg, transparent 60deg), hsl(var(--primary))",
+                "radial-gradient(120% 80% at 50% 0%, hsl(0 0% 100% / .24), transparent 64%), hsl(var(--primary))",
             }}
           >
             <AudioLines className="h-[38px] w-[38px]" strokeWidth={2.4} />

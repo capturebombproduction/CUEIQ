@@ -123,3 +123,32 @@ describe("desktop Shell — frame", () => {
     );
   });
 });
+
+// v3 "Stage Wash" (FINAL-SPEC-v3 §E.11 / §F.4 desktop parity): the same page light
+// the web frame hangs, in the same place — and none on the immersive screens, where
+// Live Mode and the show-caller hang their own (one light per document).
+describe("desktop Shell — the page light", () => {
+  it("an ordinary page: ONE light, the frame's first element, the frame isolated", async () => {
+    await at("/dashboard");
+    const frame = document.querySelector('[data-cueiq-screen="shell"]')!;
+    const lights = document.querySelectorAll(".spotlight");
+    expect(lights).toHaveLength(1);
+    expect(frame.firstElementChild).toBe(lights[0]);
+    expect(lights[0]).toHaveAttribute("aria-hidden", "true");
+    expect(frame.className.split(/\s+/)).toEqual(expect.arrayContaining(["relative", "isolate"]));
+  });
+
+  it("aims it at the left-aligned title from lg up, from the frame, as the web frame does", async () => {
+    await at("/dashboard");
+    const frame = document.querySelector('[data-cueiq-screen="shell"]')!;
+    const cls = frame.className.split(/\s+/);
+    expect(cls).toContain("lg:[--spot-x:25%]");
+    expect(cls).toContain("lg:[&:has([data-stage-centred])]:[--spot-x:50%]");
+    expect((document.querySelector(".spotlight") as HTMLElement).style.getPropertyValue("--spot-x")).toBe("");
+  });
+
+  it.each(["/events/e1/live", "/events/e1/run-order/live"])("%s: the frame hangs none", async (path) => {
+    await at(path);
+    expect(document.querySelectorAll(".spotlight")).toHaveLength(0);
+  });
+});

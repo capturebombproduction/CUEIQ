@@ -7,6 +7,7 @@ import { ConfirmProvider } from "@/components/ui/confirm-dialog";
 import { GroupManager } from "@/components/group/group-manager";
 import { makePerms } from "@/lib/permissions";
 import { bandTriplet } from "@/lib/band-triplet";
+import { spotFor } from "@/lib/skin";
 import type { Group, Member } from "@/lib/types";
 
 vi.mock("@/lib/supabase/client", () => ({ createClient: () => ({}) }));
@@ -74,6 +75,10 @@ describe("Artists for someone who can only look", () => {
     expect(sections[0]).toHaveAttribute("data-band-hero", "true");
     expect(sections[0].className).toContain("lit");
     expect(sections[0].style.getPropertyValue("--lit")).toBe(bandTriplet(SEISHIN.color));
+    // v3: its glow is that band's STAGE light, under the luminance ceiling — the raw
+    // band colour (what --lit alone would glow in) is how SK Green lit a neon field.
+    expect(sections[0].style.getPropertyValue("--lit-g")).toBe(spotFor(SEISHIN.color!).dark);
+    expect(sections[0].style.getPropertyValue("--lit-g")).toBe("6 86% 50%");
     // Exactly one lit hero on the screen.
     expect(document.querySelectorAll(".lit")).toHaveLength(1);
   });

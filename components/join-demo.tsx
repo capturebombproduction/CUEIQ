@@ -11,7 +11,8 @@ import {
 // an admin must provision their access.
 export function JoinDemo() {
   return (
-    <div className="mx-auto max-w-md py-10">
+    // data-stage-centred: one centred column (components/stage-light.tsx)
+    <div data-stage-centred className="mx-auto max-w-md py-10">
       <Card>
         <CardHeader>
           <CardTitle>บัญชียังไม่ได้รับสิทธิ์เข้าวง</CardTitle>

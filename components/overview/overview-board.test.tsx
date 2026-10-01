@@ -277,3 +277,33 @@ describe("show stubs", () => {
     expect(missing.textContent).toMatch(/ยังขาด\s*3/);
   });
 });
+
+// The JPG the crew receives. Its rows never wrap (name + time stay on one line, the
+// time packed beside the name), so in the old fixed half-width grid a long show name —
+// a mixed group's "· name · date" tag — ran under the Booth column and off the edge
+// of the image: "…RED REVOLUTION · 2026-1SEISHIN KAKUMEI 1st Oneman…". jsdom has no
+// layout; this pins the structure that cannot overlap.
+describe("the JPG: Photo and Booth never overlap", () => {
+  it("sit in a wrapping row — side by side when both fit, Booth under Photo when not", () => {
+    const withBoth = (id: string, name: string, date: string) =>
+      ev({ id, name, event_date: date, photo: "17:00", booth: { start: "19:00", end: null } });
+    const { container } = mount([
+      withBoth("a", ONEMAN.name, "2026-10-04"),
+      withBoth("b", "Japan Expo Thailand 2026 — Idol Stage", "2026-10-11"),
+    ]);
+    const tables = Array.from(exportBlock(container).querySelectorAll("table"));
+    expect(tables).toHaveLength(3); // Stage, Photo, Booth
+    const [, photo, booth] = tables;
+    const row = photo.closest<HTMLElement>(".flex-wrap");
+    expect(row, "Photo + Booth are not in a wrapping row").not.toBeNull();
+    expect(row!.contains(booth)).toBe(true);
+    expect(row!.className).not.toMatch(/(^|\s)grid(-cols-\d)?(\s|$)/);
+    // each column takes its content's width and grows — no fixed half that a long
+    // row can run out of
+    for (const t of [photo, booth]) {
+      const col = Array.from(row!.children).find((c) => c.contains(t))!;
+      expect(col.className.split(/\s+/)).toContain("flex-auto");
+      expect(col.className).not.toMatch(/(^|\s)(w-|basis-|max-w-)/);
+    }
+  });
+});

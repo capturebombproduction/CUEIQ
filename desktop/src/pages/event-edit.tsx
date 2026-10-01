@@ -41,7 +41,8 @@ export function EditEventPage() {
   }
 
   return (
-    <div className="mx-auto max-w-2xl space-y-3">
+    // data-stage-centred: one centred column (components/stage-light.tsx)
+    <div data-stage-centred className="mx-auto max-w-2xl space-y-3">
       <Button asChild variant="ghost" className="no-print -ml-3 text-primary-ink">
         <Link to={`/events/${id}`}>
           <ArrowLeft aria-hidden /> กลับไปหน้างาน

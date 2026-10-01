@@ -28,6 +28,7 @@ import { ChromeGate } from "@/components/chrome-gate";
 import { AppMain } from "@/components/app-main";
 import { SiteHeader } from "@/components/site-header";
 import { PushNudge } from "@/components/notifications/push-nudge";
+import { FRAME_LIGHT_AIM, StageLight } from "@/components/stage-light";
 
 type El = ReactElement<Record<string, unknown>>;
 
@@ -115,6 +116,54 @@ describe("(app) layout — the shell's parts", () => {
     expect(frameCls).toContain("bg-background");
     expect(frameCls).not.toContain("bg-muted/30");
     expect(frameCls).toContain("lg:[--tabbar-h:0px]");
+  });
+});
+
+/** A class that would turn a `position: fixed` descendant into "absolute to this
+ *  box" (it would scroll away and end in a seam), or make it a containing block. */
+const TRAPS_FIXED = /(^|\s)(?:[\w-]+:)*(?:transform|transform-gpu|-?translate-|-?scale-|-?rotate-|-?skew-|blur|backdrop-|filter|drop-shadow|will-change-transform|contain-|perspective)/;
+
+describe("(app) layout — the page light (v3 Stage Wash, §E.11 / §F.4)", () => {
+  it("mounts ONE StageLight as the frame's first child, gated off the immersive screens", async () => {
+    const all = await tree();
+    const lights = find(all, StageLight);
+    expect(lights).toHaveLength(1);
+    const [light] = lights;
+    // Live Mode and the live show-caller mount their own (aimed at the NOW column,
+    // and inside the root that .zone-over sits on) — one per document.
+    expect(light.up.at(-1)?.type).toBe(ChromeGate);
+    const frame = light.up.at(-2)!;
+    expect(String(frame.props.className).split(/\s+/)).toEqual(expect.arrayContaining(["relative", "isolate"]));
+    const first = ([] as unknown[]).concat(frame.props.children).find(isValidElement) as El;
+    expect(first.type).toBe(ChromeGate);
+    expect(first.props.children).toBe(light.el);
+  });
+
+  // From lg up a page title sits at the container's LEFT edge; a light hung at 50 %
+  // put its hot core in the empty middle of the row and its throw as a pale stripe
+  // down the middle of the light theme. The aim is set on the FRAME, so the light and
+  // the Event page's sticky .lit-bar (which repeats it) can never disagree.
+  it("aims the light at the left-aligned title from lg up, from the frame", async () => {
+    const [light] = find(await tree(), StageLight);
+    const frame = light.up.at(-2)!;
+    const cls = String(frame.props.className).split(/\s+/);
+    expect(cls).toEqual(expect.arrayContaining(FRAME_LIGHT_AIM.split(" ")));
+    expect(cls).toContain("lg:[--spot-x:25%]");
+    // a page that is one centred column keeps it centred on that column
+    expect(cls).toContain("lg:[&:has([data-stage-centred])]:[--spot-x:50%]");
+    // and the element itself states no aim, so it inherits the frame's
+    expect(light.el.props.className).toBeUndefined();
+    expect(light.el.props.x).toBeUndefined();
+  });
+
+  it("nothing between it and the viewport traps `position: fixed`", async () => {
+    const [light] = find(await tree(), StageLight);
+    const traps = light.up
+      .filter((a) => typeof a.type === "string")
+      .map((a) => String(a.props.className ?? ""))
+      .filter((c) => TRAPS_FIXED.test(c));
+    expect(traps).toEqual([]);
+    for (const a of light.up) expect((a.props.style as Record<string, unknown> | undefined)?.transform).toBeUndefined();
   });
 });
 

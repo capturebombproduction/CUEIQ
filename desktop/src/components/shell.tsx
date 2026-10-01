@@ -11,6 +11,8 @@ import { SignOutButton } from "@/components/sign-out-button";
 import { OfflineBanner } from "@/components/offline-banner";
 import { OutboxFlusher } from "@/components/outbox-flusher";
 import { SkinRefresher } from "@/components/skin-refresher";
+import { FRAME_LIGHT_AIM, StageLight } from "@/components/stage-light";
+import { cn } from "@/lib/utils";
 import { ConfirmProvider } from "@/components/ui/confirm-dialog";
 import { ErrorMonitor, AppErrorBoundary } from "@/components/error-monitor";
 import { FeedbackUnreadProvider } from "@/components/feedback-button";
@@ -94,13 +96,18 @@ export function Shell() {
     // did.
     // [--tabbar-h:0px]: the desktop has no bottom tab bar, so nothing that floats
     // "above the tab bar" (the Library mini-player) may leave room for one.
+    // FRAME_LIGHT_AIM: from lg up the light aims at the left-aligned page title, as on
+    // the web frame (components/stage-light.tsx).
     <FeedbackUnreadProvider userId={userId}>
       <AccountPanelProvider>
         <div
           data-cueiq-screen="shell"
           data-cueiq-tenant={ws.tenant?.name ?? ""}
-          className="relative isolate min-h-screen bg-background [--tabbar-h:0px]"
+          className={cn("relative isolate min-h-screen bg-background [--tabbar-h:0px]", FRAME_LIGHT_AIM)}
         >
+          {/* The page light (v3 Stage Wash), first, as on the web frame. Live Mode and
+              the show-caller hang their own inside their root — one per document. */}
+          {!immersive && <StageLight />}
           {/* The web app has captured its own client errors since round 2; the
               desktop shipped with NEITHER that nor a way to report — and the desktop
               is the copy that goes to the venue, so the one place a real bug happens
