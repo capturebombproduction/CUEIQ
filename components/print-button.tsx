@@ -7,7 +7,7 @@ import { isIOS, isStandalone } from "@/lib/platform";
 
 /**
  * Opens the browser print dialog (also "Save as PDF") for the current page.
- * Print styling lives in globals.css (@media print): light/ink-friendly, app-only
+ * Print styling lives in app/theme.css (@media print): light/ink-friendly, app-only
  * controls hidden via `.no-print`, rows kept from splitting across pages.
  *
  * One exception: a home-screen iOS app has no print UI at all, so window.print()

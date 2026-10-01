@@ -17,6 +17,8 @@ import {
   Lock,
   FolderInput,
   Undo2,
+  Play,
+  Pause,
 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { notify } from "@/lib/notify-client";
@@ -89,6 +91,9 @@ import {
 import { canApprove, canEditGroup, type Perms } from "@/lib/permissions";
 import { useConfirm } from "@/components/ui/confirm-dialog";
 import { privateChannel, songsTopic } from "@/lib/realtime";
+import { cn } from "@/lib/utils";
+import { useLibraryPreview } from "@/components/song/use-library-preview";
+import { LibraryMiniPlayer } from "@/components/song/library-mini-player";
 
 const NONE = "__none__";
 const COPYRIGHT_KEYS = Object.keys(COPYRIGHT_META) as CopyrightStatus[];
@@ -203,6 +208,22 @@ export function SongLibrary({
       window.removeEventListener(MGMT_OUTBOX_EVENT, refresh);
     };
   }, []);
+
+  // Preview playback — one song at a time, and it stops the moment this page goes
+  // away (see components/song/use-library-preview.ts for why that is not optional).
+  const preview = useLibraryPreview();
+  // The practice room's rule for "has audio": an online master, or bytes held on
+  // THIS device (a desktop local source, an upload still queued). No file, no ▶.
+  const canPreview = (song: Song) => !!song.audio_path || localIds.has(song.id);
+  // A song deleted, or stripped of its file, while it is the one in the player must
+  // not keep sounding under a title the list no longer shows.
+  const previewId = preview.current?.id ?? null;
+  const stopPreview = preview.stop;
+  useEffect(() => {
+    if (!previewId) return;
+    const s = songs.find((x) => x.id === previewId);
+    if (!s || !(s.audio_path || localIds.has(s.id))) stopPreview();
+  }, [songs, localIds, previewId, stopPreview]);
 
   const groupName = useMemo(
     () => Object.fromEntries(groups.map((g) => [g.id, g.name])),
@@ -1287,6 +1308,43 @@ export function SongLibrary({
     );
   }
 
+  // ▶ / ⏸ for one song — the same button on the table row and the phone card.
+  function previewButton(song: Song) {
+    if (!canPreview(song)) return null;
+    const isCurrent = preview.current?.id === song.id;
+    const busy = isCurrent && preview.loading;
+    const sounding = isCurrent && preview.playing;
+    return (
+      <Button
+        type="button"
+        variant={isCurrent ? "default" : "outline"}
+        size="icon"
+        className="h-9 w-9 shrink-0 rounded-full"
+        aria-label={`${busy || sounding ? "หยุดตัวอย่าง" : "เล่นตัวอย่าง"} ${song.title}`}
+        title={busy || sounding ? "หยุดฟัง" : "ฟังตัวอย่าง"}
+        onClick={() => preview.play(song)}
+      >
+        {busy ? (
+          <Loader2 className="animate-spin" />
+        ) : sounding ? (
+          <Pause />
+        ) : (
+          <Play />
+        )}
+      </Button>
+    );
+  }
+
+  // Marks the song in the player: aria-current while it is loaded (playing or
+  // paused), data-playing only while it is actually sounding.
+  function previewMarks(song: Song) {
+    const isCurrent = preview.current?.id === song.id;
+    return {
+      "aria-current": isCurrent ? ("true" as const) : undefined,
+      "data-playing": isCurrent && preview.playing ? "true" : undefined,
+    };
+  }
+
   function rowActions(song: Song) {
     if (!canEditSong(song)) return null;
     return (
@@ -1450,27 +1508,37 @@ export function SongLibrary({
             </TableHeader>
             <TableBody>
               {visible.map((song) => (
-                  <TableRow key={song.id}>
+                  <TableRow
+                    key={song.id}
+                    {...previewMarks(song)}
+                    className={cn(preview.current?.id === song.id && "bg-primary/5")}
+                  >
                     <TableCell>
-                      <div className="font-medium">{song.title}</div>
-                      {/* โน้ตของเพลง — until now it was write-only (visible only by
-                          reopening the edit dialog). Clamped so a long note can't
-                          blow the row height up; the full text stays reachable via
-                          the tooltip, and the mobile card prints it whole. */}
-                      {song.notes && (
-                        <div
-                          className="line-clamp-2 whitespace-pre-wrap break-words text-xs text-muted-foreground"
-                          title={song.notes}
-                        >
-                          {song.notes}
+                      <div className="flex items-start gap-2">
+                        {/* no file → an empty slot the button's size, so titles stay in one column */}
+                        {previewButton(song) ?? <span aria-hidden className="h-9 w-9 shrink-0" />}
+                        <div className="min-w-0">
+                          <div className="font-medium">{song.title}</div>
+                          {/* โน้ตของเพลง — until now it was write-only (visible only by
+                              reopening the edit dialog). Clamped so a long note can't
+                              blow the row height up; the full text stays reachable via
+                              the tooltip, and the mobile card prints it whole. */}
+                          {song.notes && (
+                            <div
+                              className="line-clamp-2 whitespace-pre-wrap break-words text-xs text-muted-foreground"
+                              title={song.notes}
+                            >
+                              {song.notes}
+                            </div>
+                          )}
+                          {song.file_name && (
+                            <div className="flex items-center gap-1 text-xs text-muted-foreground">
+                              <FileAudio className="h-3 w-3" />
+                              {song.file_name}
+                            </div>
+                          )}
                         </div>
-                      )}
-                      {song.file_name && (
-                        <div className="flex items-center gap-1 text-xs text-muted-foreground">
-                          <FileAudio className="h-3 w-3" />
-                          {song.file_name}
-                        </div>
-                      )}
+                      </div>
                     </TableCell>
                     <TableCell className="text-right tabular-nums">
                       {song.duration_seconds
@@ -1515,10 +1583,15 @@ export function SongLibrary({
             {visible.map((song) => (
               <div
                 key={song.id}
-                className="space-y-3 rounded-lg border bg-card p-4"
+                {...previewMarks(song)}
+                className={cn(
+                  "space-y-3 rounded-lg border bg-card p-4",
+                  preview.current?.id === song.id && "border-primary/50"
+                )}
               >
                 <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0">
+                  {previewButton(song)}
+                  <div className="min-w-0 flex-1">
                     <div className="font-medium leading-tight">{song.title}</div>
                     {/* Full text, no clamp: a card grows, and a phone has no
                         hover to reveal a tooltip with the rest. */}
@@ -1747,6 +1820,22 @@ export function SongLibrary({
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {preview.current && (
+        <>
+          {/* room to scroll the last song out from under the fixed player */}
+          <div aria-hidden className="h-20" />
+          <LibraryMiniPlayer
+            title={preview.current.title}
+            position={preview.position}
+            duration={preview.duration}
+            playing={preview.playing}
+            loading={preview.loading}
+            onToggle={preview.toggle}
+            onClose={preview.stop}
+          />
+        </>
+      )}
     </div>
   );
 }

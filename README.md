@@ -16,7 +16,7 @@ Run Sheet, Setlist + Run Time, Mic Map และ Live Mode ในแอปเด
 | 2 | **Event + Schedule** | สร้างงาน + ตารางนัดหมาย (On Location, STB, Sound Check, Stage, Booth, Photo…) |
 | 3 | **Setlist Builder** | เพิ่ม/เรียง เพลง·MC·SE·Interlude + Buffer + **คำนวณ Run Time อัตโนมัติ** + เตือน Hard Out |
 | 4 | **Mic & Member Map** | กำหนดไมค์ → สมาชิก (รองรับ “วนไมค์”) + สรุปไมค์แยกตามเพลง |
-| 5 | **Live Mode** | นับถอยหลังต่อรายการ, โซนเตือน 5/2 นาที, ปุ่ม Next, **ซิงค์หลายเครื่อง (Realtime)** |
+| 5 | **Live Mode** | นับถอยหลังต่อรายการ, โซนเตือน 1 นาที / 30 วินาที (รายการสั้นย่อตามความยาว), ปุ่ม Next, **ซิงค์หลายเครื่อง (Realtime)** |
 | 6 | **Export Excel** | ดาวน์โหลด Run Sheet เป็น `.xlsx` (3 ชีต: Run Sheet / Schedule / Mic Map) |
 
 Multi-tenant SaaS + **Row-Level Security** ตั้งแต่แรก — ขยายต่อ Phase 2/3 ได้โดยไม่ต้องรื้อ

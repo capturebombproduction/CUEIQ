@@ -112,11 +112,19 @@ export async function cacheSongBlob(
  * same R2 presigned GET as everywhere else) and cache for next time. This is what
  * the practice player calls instead of downloadEventAudio, so a prefetched song
  * opens instantly and an un-prefetched one still works (and is cached after).
+ *
+ * `signal` is handed straight to downloadEventAudio, so a caller that gives up
+ * (the Library preview's ✕, a switched song, leaving the page) stops the bytes IN
+ * FLIGHT instead of leaving an orphaned 27–88 MB master competing with Live Mode's
+ * own fetches on the same venue link. A cancelled download is never cached.
  */
-export async function getSongBlob(path: string): Promise<Blob> {
+export async function getSongBlob(
+  path: string,
+  opts: { signal?: AbortSignal } = {}
+): Promise<Blob> {
   const hit = await getCachedSongBlob(path);
   if (hit) return hit;
-  const blob = await downloadEventAudio(path);
+  const blob = await downloadEventAudio(path, { signal: opts.signal });
   cacheSongBlob(path, blob).catch(() => {}); // best-effort; don't block playback
   return blob;
 }

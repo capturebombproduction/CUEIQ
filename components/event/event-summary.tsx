@@ -418,7 +418,7 @@ export function EventSummary({
           event.group?.color
             ? ({
                 borderTopColor: event.group.color,
-                // read by the print rule in globals.css (.print-flat.band-bar)
+                // read by the print rule in app/theme.css (.print-flat.band-bar)
                 "--band-color": event.group.color,
               } as React.CSSProperties)
             : undefined

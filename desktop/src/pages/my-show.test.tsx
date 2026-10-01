@@ -731,3 +731,46 @@ describe("Quick Show — Auto mode", () => {
     expect(media.callsFor(second).filter((c) => c.type === "play")).toHaveLength(0);
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 5. The warning ladder (lib/live-zone) — the page has to USE the item's block
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** The line under the big countdown, and the card whose colour carries the zone. */
+const zoneCaptionText = () => heading().nextElementSibling?.nextElementSibling?.textContent;
+const countdownCard = () => heading().parentElement as HTMLElement;
+
+describe("Quick Show — the warning ladder", () => {
+  it("a 1:32 item starts neutral, then warns and urges at its own scaled thresholds", async () => {
+    // Block 92 s = 80 + 12 after. The split is the point: a page that fed the ladder
+    // durationSeconds (80 → 40/20) instead of the block `remaining` runs on would
+    // still be neutral at 46 s left, and this test would catch it.
+    await boot([song("SE", { durationSeconds: 80, bufferAfterSeconds: 12, sortOrder: 1 })]);
+    await click(startButton());
+
+    // The old ladder painted this red ("เหลือน้อยกว่า 2 นาที") from its first second.
+    expect(zoneCaptionText()).toBe("เวลาคงเหลือของรายการ");
+    expect(countdownCard()).toHaveClass("bg-card");
+
+    // 50 s left: under a full song's 60 s cap, but NOT under this item's own 46 s —
+    // a page that fed liveZone a fixed block instead of the item's would warn here.
+    await tick(42_000);
+    expect(countdownCard()).toHaveClass("bg-card");
+
+    await tick(4_000); // 46 s left — half the block
+    expect(zoneCaptionText()).toBe("เหลือไม่ถึง 46 วินาที");
+    expect(countdownCard()).toHaveClass("bg-warning");
+
+    await tick(21_000); // 25 s left — under 30, over this item's 23
+    expect(countdownCard()).toHaveClass("bg-warning");
+
+    await tick(2_000); // 23 s left — a quarter
+    expect(zoneCaptionText()).toBe("เหลือไม่ถึง 23 วินาที");
+    expect(countdownCard()).toHaveClass("bg-destructive");
+    expect(countdownCard()).not.toHaveClass("animate-pulse-ring");
+
+    await tick(23_000);
+    expect(zoneCaptionText()).toBe("เลยเวลาแล้ว");
+    expect(countdownCard()).toHaveClass("animate-pulse-ring");
+  });
+});

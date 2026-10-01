@@ -874,3 +874,70 @@ describe("LiveMode · a swapped row never plays the old song", () => {
     expect(fileButton().getAttribute("title")).toBe("โหลดไฟล์เพลง (อัปโหลดขึ้นคลาวด์)");
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// THE WARNING LADDER (lib/live-zone) — the card has to be fed the item's block
+//
+// The ladder itself is pinned in lib/live-zone.test.ts. What only a render can
+// prove is that this screen passes the CURRENT item's block (buffers included)
+// rather than a constant, and maps the zones onto the card it colours.
+// ─────────────────────────────────────────────────────────────────────────────
+describe("LiveMode · the warning ladder", () => {
+  it("a 1:32 SE starts neutral, then warns and urges at its own scaled thresholds", async () => {
+    // Block 92 s = 4 + 80 + 8. The split is the point: a screen that fed the ladder
+    // duration_seconds (80 → 40/20) instead of the block `remaining` runs on would
+    // still be neutral at 46 s left, and this test would catch it.
+    const se = [
+      makeItem(1, {
+        kind: "se",
+        title: "Opening SE",
+        duration_seconds: 80,
+        buffer_before_seconds: 4,
+        buffer_after_seconds: 8,
+      }),
+    ];
+    supa.setTable("setlist_items", ok(se));
+    await mountLive({ items: se });
+    await startShowFromUi();
+
+    const heading = () => screen.getByRole("heading", { level: 2 });
+    const caption = () => heading().nextElementSibling?.nextElementSibling?.textContent;
+    const card = () => heading().parentElement as HTMLElement;
+
+    // The old ladder painted this red ("เหลือน้อยกว่า 2 นาที") from its first second.
+    expect(heading()).toHaveTextContent("Opening SE");
+    expect(caption()).toBe("เวลาคงเหลือของรายการ");
+    expect(card()).toHaveClass("bg-card");
+
+    // 50 s left: under a full song's 60 s cap, but NOT under this item's own 46 s —
+    // a screen that fed liveZone a fixed block instead of the item's would warn here.
+    await act(async () => {
+      vi.advanceTimersByTime(42_000);
+    });
+    expect(card()).toHaveClass("bg-card");
+
+    await act(async () => {
+      vi.advanceTimersByTime(4_000); // 46 s left — half the block
+    });
+    expect(caption()).toBe("เหลือไม่ถึง 46 วินาที");
+    expect(card()).toHaveClass("bg-warning");
+
+    await act(async () => {
+      vi.advanceTimersByTime(21_000); // 25 s left — under 30, over this item's 23
+    });
+    expect(card()).toHaveClass("bg-warning");
+
+    await act(async () => {
+      vi.advanceTimersByTime(2_000); // 23 s left — a quarter
+    });
+    expect(caption()).toBe("เหลือไม่ถึง 23 วินาที");
+    expect(card()).toHaveClass("bg-destructive");
+    expect(card()).not.toHaveClass("animate-pulse-ring");
+
+    await act(async () => {
+      vi.advanceTimersByTime(23_000);
+    });
+    expect(caption()).toBe("เลยเวลาแล้ว");
+    expect(card()).toHaveClass("animate-pulse-ring");
+  });
+});

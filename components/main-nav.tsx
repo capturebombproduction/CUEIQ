@@ -3,7 +3,14 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { cn } from "@/lib/utils";
-import { isAdmin, canApprove, canViewOverview, canViewLibrary, type Perms } from "@/lib/permissions";
+import {
+  isAdmin,
+  isLabelWideUser,
+  canApprove,
+  canViewOverview,
+  canViewLibrary,
+  type Perms,
+} from "@/lib/permissions";
 
 export type NavLink = { href: string; label: string };
 
@@ -61,6 +68,66 @@ export function activeNavHref(pathname: string, hrefs: string[]): string | null 
     if (hrefs.includes("/overview")) return "/overview";
   }
   return null;
+}
+
+/** The phone tab bar's last slot: opens a sheet, so it is not a route. */
+export const MORE_HREF = "#more";
+
+export type BottomTabs = { tabs: NavLink[]; more: NavLink[] };
+
+const BOTTOM_TAB_SLOTS = 3;
+
+/**
+ * Which destinations earn a thumb slot, by who is holding the phone. Band people
+ * live in their shows and rehearse from them; label-wide viewers (admin, CEO)
+ * read across every band; label staff proof from Overview and keep the artist
+ * and crew records. Hrefs a role cannot use are dropped by bottomTabsFor, so a
+ * list here can never put a link in front of someone who may not open it.
+ */
+function tabPriority(perms?: Perms): string[] {
+  if (perms?.tenantRole === "label_staff") return ["/overview", "/groups", "/crew"];
+  if (perms && isLabelWideUser(perms)) return ["/dashboard", "/overview", "/library"];
+  return ["/dashboard", "/practice", "/library"];
+}
+
+/**
+ * The phone bottom bar: up to three tabs plus More, and everything else in the
+ * More sheet. Built from navLinksFor so the bar and the desktop nav always offer
+ * the same set — only the arrangement differs. If a priority destination is not
+ * available to this account (a band user with no band yet has no Library), the
+ * slot goes to the next link in nav order rather than staying empty.
+ */
+export function bottomTabsFor(perms?: Perms): BottomTabs {
+  const links = navLinksFor(perms);
+  const preferred = tabPriority(perms)
+    .map((href) => links.find((l) => l.href === href))
+    .filter((l): l is NavLink => !!l);
+  const picked = [...preferred, ...links.filter((l) => !preferred.includes(l))].slice(
+    0,
+    BOTTOM_TAB_SLOTS
+  );
+  // Feedback is not a nav link — it is reached from the floating แจ้งปัญหา button
+  // and the bell. The More sheet gives it a fixed place on the phone as well.
+  const more = [
+    ...links.filter((l) => !picked.includes(l)),
+    { href: "/feedback", label: "Feedback" },
+  ];
+  return { tabs: [...picked, { href: MORE_HREF, label: "More" }], more };
+}
+
+/**
+ * The tab to light. Same page→destination rules as activeNavHref (a show page is
+ * Events, its practice room is Training), then: if that destination sits in the
+ * More sheet, More lights — otherwise someone on /admin sees no tab lit and
+ * cannot tell where they are.
+ */
+export function activeTabHref(pathname: string, layout: BottomTabs): string | null {
+  const destinations = [...layout.tabs, ...layout.more]
+    .map((l) => l.href)
+    .filter((h) => h !== MORE_HREF);
+  const hit = activeNavHref(pathname, destinations);
+  if (!hit) return null;
+  return layout.tabs.some((t) => t.href === hit) ? hit : MORE_HREF;
 }
 
 export function MainNav({ perms }: { perms?: Perms }) {

@@ -67,6 +67,7 @@ import {
   type SetlistKind,
 } from "@/lib/types";
 import { formatCountdown, formatDuration, nowClock } from "@/lib/time";
+import { liveZone, zoneCaption } from "@/lib/live-zone";
 
 type ShowMode = "manual" | "auto";
 
@@ -2389,20 +2390,15 @@ export function LiveMode({
   // accumulated = real elapsed time since show start; keeps counting through pauses
   const totalElapsed = state.startedAt ? (now - state.startedAt) / 1000 : 0;
 
-  const zone: "over" | "red" | "amber" | "ok" = !state.running
-    ? "ok"
-    : remaining <= 0
-      ? "over"
-      : remaining <= 120
-        ? "red"
-        : remaining <= 300
-          ? "amber"
-          : "ok";
+  // Warning ladder (lib/live-zone): warn/urgent scale to the item's own block.
+  const zoneBlock = current ? blockSeconds(current) : 0;
+  const zone = liveZone({ running: state.running, remaining, blockSec: zoneBlock });
 
+  // warn/urgent wear the old amber/red until the visual redesign lands.
   const zoneClasses = {
     over: "bg-destructive text-destructive-foreground animate-pulse-ring",
-    red: "bg-destructive text-destructive-foreground",
-    amber: "bg-warning text-warning-foreground",
+    urgent: "bg-destructive text-destructive-foreground",
+    warn: "bg-warning text-warning-foreground",
     ok: "bg-card text-foreground",
   }[zone];
 
@@ -3331,15 +3327,7 @@ export function LiveMode({
         <p className="text-5xl font-bold tabular-nums sm:text-6xl lg:text-7xl">
           {formatCountdown(Math.round(remaining))}
         </p>
-        <p className="mt-2 text-sm opacity-80">
-          {zone === "over"
-            ? "เลยเวลาแล้ว"
-            : zone === "red"
-              ? "เหลือน้อยกว่า 2 นาที"
-              : zone === "amber"
-                ? "เหลือน้อยกว่า 5 นาที"
-                : "เวลาคงเหลือของรายการ"}
-        </p>
+        <p className="mt-2 text-sm opacity-80">{zoneCaption(zone, zoneBlock)}</p>
         {current && current.mic_slots?.length > 0 && (
           <div className="mt-4 flex flex-wrap justify-center gap-1.5">
             {current.mic_slots.map((s, i) => (

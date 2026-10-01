@@ -1,0 +1,140 @@
+/* THE design tokens: the one place a colour, radius or font stack is defined.
+   Imported by app/globals.css (web) and desktop/src/index.css (the .exe), and read
+   by tailwind.preset.ts through the hsl(var(--token)) names. The desktop used to
+   carry a hand copy of these blocks, which had already drifted (it had no print
+   sheet) — change a value HERE and both apps follow.
+
+   Only rules whose position does not matter may live here: an @import has to sit
+   above @tailwind base, so everything in this file lands BEFORE preflight. That is
+   why `* { border-color }` stays in each importer — preflight's own `*` rule sets
+   border-color too, and whichever comes later wins.
+
+   Deliberately NOT derived from here: lib/export-image.ts EXPORT_LIGHT_VARS (a light
+   palette forced onto a node while it is saved as a JPG) and lib/skin.ts (a band's
+   accent rewrites these same names at runtime). Retune those when the palette moves. */
+
+:root {
+  --font-sans: var(--font-kanit), "Inter", "Noto Sans Thai", "Leelawadee UI",
+    "Sarabun", system-ui, -apple-system, "Segoe UI", Tahoma, sans-serif;
+
+  --background: 0 0% 100%;
+  --foreground: 222 47% 11%;
+
+  --card: 0 0% 100%;
+  --card-foreground: 222 47% 11%;
+
+  --popover: 0 0% 100%;
+  --popover-foreground: 222 47% 11%;
+
+  --primary: 243 75% 59%;
+  --primary-foreground: 0 0% 100%;
+
+  --secondary: 220 14% 96%;
+  --secondary-foreground: 222 47% 11%;
+
+  --muted: 220 14% 96%;
+  --muted-foreground: 220 9% 46%;
+
+  --accent: 243 75% 96%;
+  --accent-foreground: 243 75% 30%;
+
+  --destructive: 0 72% 51%;
+  --destructive-foreground: 0 0% 100%;
+
+  --warning: 38 92% 50%;
+  --warning-foreground: 28 80% 16%;
+
+  --success: 142 71% 45%;
+  --success-foreground: 0 0% 100%;
+
+  --border: 220 13% 91%;
+  --input: 220 13% 91%;
+  --ring: 243 75% 59%;
+
+  --radius: 0.65rem;
+
+  /* Native controls (date/time pickers, range, scrollbars) follow the theme. */
+  color-scheme: light;
+}
+
+.dark {
+  color-scheme: dark;
+  --background: 222 47% 8%;
+  --foreground: 210 40% 98%;
+
+  --card: 222 47% 11%;
+  --card-foreground: 210 40% 98%;
+
+  --popover: 222 47% 11%;
+  --popover-foreground: 210 40% 98%;
+
+  --primary: 243 75% 66%;
+  --primary-foreground: 222 47% 11%;
+
+  --secondary: 217 33% 17%;
+  --secondary-foreground: 210 40% 98%;
+
+  --muted: 217 33% 17%;
+  --muted-foreground: 215 20% 65%;
+
+  --accent: 243 40% 24%;
+  --accent-foreground: 210 40% 98%;
+
+  --destructive: 0 63% 50%;
+  --destructive-foreground: 0 0% 100%;
+
+  --warning: 38 92% 50%;
+  --warning-foreground: 28 80% 16%;
+
+  --success: 142 64% 42%;
+  --success-foreground: 0 0% 100%;
+
+  --border: 217 33% 20%;
+  --input: 217 33% 22%;
+  --ring: 243 75% 66%;
+}
+
+/* Print: a paper run sheet for show day. Force light (ink-friendly) regardless of
+   theme, hide on-screen-only controls, and keep rows/sections from splitting across
+   pages. Add `no-print` to anything that shouldn't appear on paper. Sitting above the
+   utilities (see the note at the top) changes nothing: each rule is !important, sets
+   a token no utility sets, or is an element selector any class out-ranks anyway. */
+@media print {
+  :root,
+  .dark {
+    color-scheme: light;
+    --background: 0 0% 100%;
+    --foreground: 222 47% 11%;
+    --card: 0 0% 100%;
+    --card-foreground: 222 47% 11%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 222 47% 11%;
+    --muted: 220 14% 96%;
+    --muted-foreground: 220 9% 38%;
+    --primary: 243 75% 45%;
+    --border: 220 13% 80%;
+  }
+  body {
+    background: #fff !important;
+  }
+  .no-print {
+    display: none !important;
+  }
+  .print-flat {
+    box-shadow: none !important;
+    border-color: hsl(220 13% 80%) !important;
+  }
+  /* The run sheet's band-colour top bar (event-summary.tsx): the rule above would
+     otherwise turn it into a thick GREY bar on paper / PDF. */
+  .print-flat.band-bar {
+    border-top-color: var(--band-color) !important;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+  table tr,
+  li,
+  section,
+  header {
+    break-inside: avoid;
+  }
+}
