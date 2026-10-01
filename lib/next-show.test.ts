@@ -1,5 +1,11 @@
 import { describe, it, expect } from "vitest";
-import { callTimeByEvent, callTimeOf, practiceRoomByGroup, showTimesLabel } from "./next-show";
+import {
+  callTimeByEvent,
+  callTimeOf,
+  practiceRoomByGroup,
+  showReminderBody,
+  showTimesLabel,
+} from "./next-show";
 
 describe("callTimeOf — the call time", () => {
   it("is the earliest row before the stage, whatever order the rows come in", () => {
@@ -99,5 +105,19 @@ describe("practiceRoomByGroup", () => {
   });
   it("leaves out a band with no room at all", () => {
     expect(practiceRoomByGroup([], [{ event_id: "x", group_id: "g1" }])).toEqual({});
+  });
+});
+
+describe("showReminderBody — the daily show reminder", () => {
+  it("carries the call and stage times after the name and band", () => {
+    expect(showReminderBody("Thailand hobbyfestival", "Seishin Kakumei", "11:00:00", "13:00:00")).toBe(
+      "Thailand hobbyfestival · Seishin Kakumei — นัด 11:00 · ขึ้นเวที 13:00"
+    );
+  });
+  it("is the name and band alone when the schedule is not in yet", () => {
+    expect(showReminderBody("Dok! Dok!", "Seishin Kakumei", null, null)).toBe("Dok! Dok! · Seishin Kakumei");
+  });
+  it("without a band name, starts at the show", () => {
+    expect(showReminderBody("Dok! Dok!", null, "15:30:00", null)).toBe("Dok! Dok! — นัด 15:30");
   });
 });

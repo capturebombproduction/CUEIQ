@@ -4,6 +4,7 @@ import { pushToUsers } from "@/lib/notify-server";
 import { cronSecretMatches, reportCronFailure } from "@/lib/cron-report";
 import { approvalNagBody, approvalsNeedingNag } from "@/lib/approval-nag";
 import { expireSupersededDailyNotifications } from "@/lib/notification-expiry";
+import { callTimeByEvent, showReminderBody } from "@/lib/next-show";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -130,11 +131,24 @@ async function runReminders(): Promise<Response> {
   // 1) Upcoming shows today / tomorrow → the whole band (Ar + members).
   const { data: shows } = await admin
     .from("events")
-    .select("id, name, group_id, tenant_id, event_date, groups(name)")
+    .select("id, name, group_id, tenant_id, event_date, show_start_time, groups(name)")
     .eq("is_template", false)
     .eq("is_practice", false)
     .gte("event_date", today)
     .lte("event_date", tomorrow);
+  // Their call times, for the reminder's body (lib/next-show.ts). Best-effort: a
+  // failed read sends the reminder as it always was — name and band.
+  const showIds = (shows ?? []).map((e) => e.id as string);
+  const { data: scheduleRows } = showIds.length
+    ? await admin
+        .from("schedule_items")
+        .select("event_id, start_time, kind")
+        .in("event_id", showIds)
+    : { data: [] };
+  const callTimes = callTimeByEvent(
+    (scheduleRows ?? []) as { event_id: string; start_time: string | null; kind: string | null }[],
+    Object.fromEntries((shows ?? []).map((e) => [e.id as string, e.show_start_time as string | null]))
+  );
   for (const ev of shows ?? []) {
     const { data: roles } = await admin
       .from("group_roles")
@@ -149,7 +163,12 @@ async function runReminders(): Promise<Response> {
       (roles ?? []).map((r) => r.user_id as string),
       "event_reminder",
       `📅 โชว์${when}`,
-      band ? `${ev.name} · ${band}` : (ev.name as string)
+      showReminderBody(
+        ev.name as string,
+        band,
+        callTimes[ev.id as string],
+        ev.show_start_time as string | null
+      )
     );
   }
 

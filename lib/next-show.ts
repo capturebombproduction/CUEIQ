@@ -91,3 +91,17 @@ export function practiceRoomByGroup(
   }
   return out;
 }
+
+/** The daily "📅 โชว์พรุ่งนี้" body: "ชื่องาน · วง — นัด 11:20 · ขึ้นเวที 13:20".
+ *  The times are the line a member reads it for, on a lock screen where the app
+ *  is one more tap away; without a schedule it is the name and band, as before. */
+export function showReminderBody(
+  name: string,
+  band: string | null | undefined,
+  call: string | null | undefined,
+  stage: string | null | undefined
+): string {
+  const head = band ? `${name} · ${band}` : name;
+  const times = showTimesLabel(call, stage);
+  return times ? `${head} — ${times}` : head;
+}
