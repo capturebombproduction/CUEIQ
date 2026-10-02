@@ -26,10 +26,12 @@ import {
   Hourglass,
   CircleCheck,
   CircleX,
+  ImagePlus,
 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { notify } from "@/lib/notify-client";
 import { detectAudioDuration } from "@/lib/audio";
+import { makeCoverDataUrl } from "@/lib/song-cover";
 import {
   buildSongAudioPath,
   uploadEventAudio,
@@ -136,6 +138,19 @@ function isSoundEffect(song: Song): boolean {
 function CoverTile({ song, current }: { song: Song; current: boolean }) {
   const se = isSoundEffect(song);
   const Icon = current ? AudioLines : se ? AudioWaveform : Music;
+  if (song.cover) {
+    return (
+      <span aria-hidden className="relative h-11 w-11 flex-none overflow-hidden rounded-[2px] bg-muted">
+        {/* eslint-disable-next-line @next/next/no-img-element -- a 192 px data-URL thumbnail: next/image adds nothing */}
+        <img src={song.cover} alt="" className="h-full w-full object-cover" />
+        {current && (
+          <span className="absolute inset-0 grid place-items-center bg-[hsl(var(--scrim)/.55)] text-white">
+            <AudioLines className="h-[19px] w-[19px]" strokeWidth={2.8} />
+          </span>
+        )}
+      </span>
+    );
+  }
   return (
     <span
       aria-hidden
@@ -245,6 +260,10 @@ export function SongLibrary({
     [groups, editableGroupIds]
   );
   const canEditSong = (song: Song) => editableGroupIds.has(song.group_id);
+  // Cover art (0044): a picked picture is cropped square and shrunk to a ~10 KB thumbnail
+  // in the browser (lib/song-cover.ts) and stored on the song row itself.
+  const coverInputRef = useRef<HTMLInputElement>(null);
+  const [coverBusy, setCoverBusy] = useState<string | null>(null);
   const canEditAny = editableGroupIds.size > 0;
   const approver = canApprove(perms);
   const [songs, setSongs] = useState<Song[]>(initialSongs);
@@ -865,6 +884,50 @@ export function SongLibrary({
     } else if (status === "cleared") {
       notify("song_cleared", { songId: song.id });
     }
+  }
+
+  async function saveCover(song: Song, cover: string | null) {
+    const failed = cover ? "ใส่ปกไม่สำเร็จ" : "ลบปกไม่สำเร็จ";
+    setCoverBusy(song.id);
+    try {
+      const { data, error } = await supabase.from("songs").update({ cover }).eq("id", song.id).select("id");
+      if (error) {
+        toast.error(failed, { description: friendlyError(error.message) });
+        return;
+      }
+      // no error and no row = the write never landed (lib/write-guard.ts)
+      if (wroteNothing(data)) {
+        toast.error(failed, { description: await noRowsMessage() });
+        return;
+      }
+      setSongs((prev) => prev.map((s) => (s.id === song.id ? { ...s, cover } : s)));
+      toast.success(cover ? "ใส่ปกเพลงแล้ว" : "ลบปกเพลงแล้ว");
+    } catch (e) {
+      toast.error(failed, { description: e instanceof Error ? e.message : undefined });
+    } finally {
+      setCoverBusy(null);
+    }
+  }
+
+  async function pickCover(song: Song, file: File) {
+    let cover: string;
+    try {
+      cover = await makeCoverDataUrl(file);
+    } catch (e) {
+      toast.error("ใส่ปกไม่สำเร็จ", { description: e instanceof Error ? e.message : undefined });
+      return;
+    }
+    await saveCover(song, cover);
+  }
+
+  async function removeCover(song: Song) {
+    const ok = await confirm({
+      title: "ลบปกเพลงนี้?",
+      description: `“${song.title}” จะกลับไปใช้ไอคอนเดิม (ใส่ปกใหม่ได้ทุกเมื่อ)`,
+      confirmText: "ลบปก",
+    });
+    if (!ok) return;
+    await saveCover(song, null);
   }
 
   // Tell any open Live Mode (same band) that a song's audio changed, so it
@@ -1969,6 +2032,67 @@ export function SongLibrary({
                   {sheetSong.notes}
                 </p>
               )}
+              <div className="space-y-2">
+                <span className="eyebrow text-muted-foreground">Cover</span>
+                <div className="flex items-center gap-3">
+                  {sheetSong.cover ? (
+                    // eslint-disable-next-line @next/next/no-img-element -- data-URL thumbnail
+                    <img
+                      src={sheetSong.cover}
+                      alt={`ปกเพลง ${sheetSong.title}`}
+                      className="h-24 w-24 flex-none rounded-[2px] object-cover shadow-edge"
+                    />
+                  ) : (
+                    <span
+                      aria-hidden
+                      className="well grid h-24 w-24 flex-none place-items-center rounded-[2px] text-muted-foreground"
+                    >
+                      <ImagePlus className="h-7 w-7" strokeWidth={1.6} />
+                    </span>
+                  )}
+                  {canEditSong(sheetSong) ? (
+                    <div className="flex flex-wrap gap-2">
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        disabled={coverBusy === sheetSong.id}
+                        onClick={() => coverInputRef.current?.click()}
+                      >
+                        {coverBusy === sheetSong.id ? (
+                          <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
+                        ) : (
+                          <ImagePlus className="h-4 w-4" aria-hidden />
+                        )}
+                        {sheetSong.cover ? "เปลี่ยนปก" : "ใส่ปกเพลง"}
+                      </Button>
+                      {sheetSong.cover && (
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          disabled={coverBusy === sheetSong.id}
+                          onClick={() => removeCover(sheetSong)}
+                        >
+                          <Trash2 className="h-4 w-4" aria-hidden /> ลบปก
+                        </Button>
+                      )}
+                      <input
+                        ref={coverInputRef}
+                        type="file"
+                        accept="image/*"
+                        className="hidden"
+                        aria-label="เลือกรูปปกเพลง"
+                        onChange={(e) => {
+                          const file = e.target.files?.[0];
+                          e.target.value = ""; // the same picture can be picked again
+                          if (file) void pickCover(sheetSong, file);
+                        }}
+                      />
+                    </div>
+                  ) : (
+                    !sheetSong.cover && <p className="text-[12.5px] text-muted-foreground">ยังไม่มีปก</p>
+                  )}
+                </div>
+              </div>
               <div className="flex items-center justify-between gap-3">
                 <span className="eyebrow text-muted-foreground">Rights</span>
                 {copyrightControl(sheetSong)}
@@ -2207,6 +2331,7 @@ export function SongLibrary({
           <div aria-hidden className="h-20" />
           <LibraryMiniPlayer
             title={preview.current.title}
+            cover={songs.find((s) => s.id === preview.current?.id)?.cover ?? null}
             position={preview.position}
             duration={preview.duration}
             playing={preview.playing}

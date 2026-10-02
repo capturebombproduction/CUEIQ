@@ -502,6 +502,7 @@ export interface Song {
   audio_name?: string | null; // original filename, for display
   audio_expires_at?: string | null; // null = permanent; timestamp = temp (ad-hoc), auto-cleaned after
   bpm?: number | null; // tempo for the practice metronome (null = unset)
+  cover?: string | null; // square thumbnail data URL (0044, lib/song-cover.ts); null = none
   created_at: string;
   updated_at: string;
 }

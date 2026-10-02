@@ -28,6 +28,7 @@ function clock(sec: number): string {
  */
 export function LibraryMiniPlayer({
   title,
+  cover = null,
   position,
   duration,
   playing,
@@ -36,6 +37,8 @@ export function LibraryMiniPlayer({
   onClose,
 }: {
   title: string;
+  /** the song's cover thumbnail (songs.cover, a data URL); null = the band tile */
+  cover?: string | null;
   position: number;
   duration: number;
   playing: boolean;
@@ -67,12 +70,17 @@ export function LibraryMiniPlayer({
         />
       </div>
       <div className="flex h-[60px] items-center gap-3 pl-2 pr-1">
-        <span
-          aria-hidden
-          className="grid h-11 w-11 flex-none place-items-center rounded-[2px] bg-primary text-primary-foreground"
-        >
-          <AudioLines className="h-5 w-5" strokeWidth={2.4} />
-        </span>
+        {cover ? (
+          // eslint-disable-next-line @next/next/no-img-element -- data-URL thumbnail
+          <img src={cover} alt="" aria-hidden className="h-11 w-11 flex-none rounded-[2px] object-cover" />
+        ) : (
+          <span
+            aria-hidden
+            className="grid h-11 w-11 flex-none place-items-center rounded-[2px] bg-primary text-primary-foreground"
+          >
+            <AudioLines className="h-5 w-5" strokeWidth={2.4} />
+          </span>
+        )}
         <div className="min-w-0 flex-1">
           {/* Barlow has no Thai: a Thai title is set in Kanit, never at 800 */}
           <div
