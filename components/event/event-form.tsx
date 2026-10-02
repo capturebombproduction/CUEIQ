@@ -532,8 +532,12 @@ export function EventForm({
       )}
 
       {/* Sticky: Save is one tap away from any field, floating 8 px above the tab
-          bar on a phone (the viewport bottom from lg). Solid, not glass. */}
-      <div className="sticky bottom-[calc(var(--tabbar-h)+env(safe-area-inset-bottom)+8px)] z-30 flex justify-end gap-2 rounded-[3px] bg-card p-2 shadow-float lg:bottom-4">
+          bar on a phone (the viewport bottom from lg). Solid, not glass.
+          `has-action-bar` is the marker app/globals.css reads to keep keyboard focus
+          from scrolling in under it. On a phone held sideways (under 500 px tall) it
+          rests at the end of the form instead — a slab that tall left ~150 px for the
+          fields, and the submit button is the last thing in the form anyway. */}
+      <div className="has-action-bar sticky bottom-[calc(var(--tabbar-h)+env(safe-area-inset-bottom)+8px)] z-30 flex justify-end gap-2 rounded-[3px] bg-card p-2 shadow-float lg:bottom-4 [@media(max-height:500px)]:static">
         <Button type="button" variant="secondary" onClick={() => router.back()}>
           ยกเลิก
         </Button>

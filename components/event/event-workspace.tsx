@@ -57,11 +57,6 @@ import {
   type Song,
 } from "@/lib/types";
 
-/** The Summary segment's own classes — a TabsTrigger's, which it copies because it
- *  cannot be one (see the note at the TabsList). The seg primitive draws the rest. */
-const SEG_ITEM_CLS =
-  "transition-colors duration-2 ease-out data-[state=inactive]:hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring";
-
 export function EventWorkspace({
   event,
   eventId,
@@ -295,6 +290,11 @@ export function EventWorkspace({
   }, [seeds, view, opened]);
   const seedKey = (tab: string) => seedRev[tab] ?? 0;
 
+  // True from a left-button press on the Summary segment until its click (or until
+  // it loses focus or the pointer leaves it). A press focuses the button BEFORE the
+  // click — see the trigger.
+  const summaryPress = useRef(false);
+
   function changeView(v: string) {
     // Entering Summary (which renders the export JPG / printable run-sheet) from
     // an editor tab: pull fresh server data first, so the summary and its image
@@ -419,7 +419,16 @@ export function EventWorkspace({
         </div>
       )}
 
-      <Tabs value={view} onValueChange={changeView} className="w-full">
+      {/* "summary" from Radix is ignored: it reports it on MOUSEDOWN, on focus and on
+          Enter/Space, every one of them before the field being edited has started
+          its autosave — see the Summary segment below, which switches itself. */}
+      <Tabs
+        value={view}
+        onValueChange={(v) => {
+          if (v !== "summary") changeView(v);
+        }}
+        className="w-full"
+      >
         {/* ⚠️ THESE HAVE TO LOOK LIKE BUTTONS. Reported from a phone on 2026-09-06:
             "แก้เซ็ตลิสต์ในงานไม่ได้ กดตรงไหน" — not broken, unfindable. The default
             view, Summary, used to sit OUTSIDE this row as a big button, so on arrival
@@ -433,25 +442,63 @@ export function EventWorkspace({
             components/offline-banner.tsx publishes as --offline-strip-h.
             `lit-bar` (app/stage.css) fills it with the page colour AND the page
             light, so stuck in the hot core it no longer cuts a flat unlit band
-            through it; it needs the sticky z-30 (a stacking context) and no bg. */}
-        <div className="lit-bar no-print sticky top-[calc(var(--header-h)+var(--offline-strip-h,0px)+env(safe-area-inset-top))] z-30 -mx-1 px-1 py-2">
+            through it; it needs the sticky z-30 (a stacking context) and no bg.
+            On a phone held sideways (under 500 px tall) the row gives back 8 px,
+            as the save bars drop out of sticky there (CQ-43). */}
+        <div className="lit-bar no-print sticky top-[calc(var(--header-h)+var(--offline-strip-h,0px)+env(safe-area-inset-top))] z-30 -mx-1 px-1 py-2 [@media(max-height:500px)]:py-1">
           <TabsList className="en">
-            {/* NOT a TabsTrigger. A Radix trigger switches on MOUSEDOWN, before the
-                field being edited loses focus and starts its autosave; entering
-                Summary refreshes the page data for the run sheet and its JPG
-                (changeView), so that refresh would read the database a moment
-                before the last edit lands, and the sheet would miss it. A plain
-                click fires after the blur, as the old Summary button did. */}
-            <button
-              type="button"
-              role="tab"
-              aria-selected={view === "summary"}
-              data-state={view === "summary" ? "active" : "inactive"}
-              onClick={() => changeView("summary")}
-              className={SEG_ITEM_CLS}
+            {/* A TabsTrigger like its neighbours, so it sits IN the roving-focus
+                group: Tab enters the strip at the SELECTED segment and the arrow
+                keys walk the whole row. As a plain button outside the group it made
+                Tab land on Setlist, and Radix's automatic activation then switched
+                the page to Setlist the moment the strip got focus (CQ-47, WCAG 3.2.1).
+
+                What stays different is WHEN it switches. Radix switches on MOUSEDOWN
+                (and on focus, and on Enter/Space), before the field being edited
+                loses focus and starts its autosave; entering Summary refreshes the
+                page data for the run sheet and its JPG (changeView), so that refresh
+                would read the database a moment before the last edit lands, and the
+                sheet would miss it. So the Tabs above ignore "summary", and this
+                switches itself: on CLICK (after the blur, as the old Summary button
+                did — Enter and Space click too), or on focus that arrives from a
+                SIBLING tab (arrow keys, Home/End), where there is no field left to
+                blur. Focus from anywhere else must not switch: Radix makes the
+                LAST-FOCUSED trigger the strip's tab stop, so Shift+Tab out of a field
+                can land here while another tab is open, and switching then would be
+                the same context change on focus that CQ-47 removed. A press focuses
+                the button before it clicks (and may come from a focused sibling),
+                hence the flag. */}
+            <TabsTrigger
+              value="summary"
+              onMouseDown={(e) => {
+                if (e.button === 0 && !e.ctrlKey) summaryPress.current = true;
+              }}
+              onMouseLeave={() => {
+                // Pressed, then dragged away: no click is coming, and where the
+                // button takes no focus on a press (Safari) no blur will clear this.
+                summaryPress.current = false;
+              }}
+              onFocus={(e) => {
+                const from = e.relatedTarget;
+                if (
+                  view !== "summary" &&
+                  !summaryPress.current &&
+                  from?.getAttribute("role") === "tab" &&
+                  from.closest('[role="tablist"]') === e.currentTarget.closest('[role="tablist"]')
+                ) {
+                  changeView("summary");
+                }
+              }}
+              onBlur={() => {
+                summaryPress.current = false;
+              }}
+              onClick={() => {
+                summaryPress.current = false;
+                changeView("summary");
+              }}
             >
               Summary
-            </button>
+            </TabsTrigger>
             <TabsTrigger value="setlist">Setlist</TabsTrigger>
             <TabsTrigger value="schedule">Schedule</TabsTrigger>
             {modules.micMap && <TabsTrigger value="mic">Mics</TabsTrigger>}
@@ -595,8 +642,14 @@ function SaveBar({
   onSave: () => void;
 }) {
   useHoldBottomSlot();
+  // `has-action-bar` is the marker app/globals.css reads (`html:has(.has-action-bar)`)
+  // to widen the bottom scroll-padding by this bar's height, so keyboard focus is
+  // never scrolled to sit under it. On a phone held sideways (under 500 px tall) the
+  // bar leaves sticky and rests at the end of the page: header + tab row + tab bar +
+  // this slab left ~150 px for the rows being edited, and nothing is lost by it
+  // (every editor autosaves; this button only confirms).
   return (
-    <div className="no-print sticky bottom-[calc(var(--tabbar-h)+env(safe-area-inset-bottom)+8px)] z-30 mt-2 flex items-center justify-end gap-2 rounded-[3px] bg-card p-2 shadow-float lg:bottom-4">
+    <div className="has-action-bar no-print sticky bottom-[calc(var(--tabbar-h)+env(safe-area-inset-bottom)+8px)] z-30 mt-2 flex items-center justify-end gap-2 rounded-[3px] bg-card p-2 shadow-float lg:bottom-4 [@media(max-height:500px)]:static">
       <Button type="button" variant="secondary" onClick={onSummary}>
         <ClipboardList aria-hidden /> ดูสรุปงาน
       </Button>
