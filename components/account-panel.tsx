@@ -34,7 +34,13 @@ import { FeedbackButton, useFeedbackUnread } from "@/components/feedback-button"
 import { ChangePasswordDialog } from "@/components/change-password-button";
 import { KioskMode, useFullscreen } from "@/components/kiosk-mode";
 import { useSignOut } from "@/components/sign-out-button";
-import { markWhatsNewSeen, useWhatsNewUnseen, whatsNewItems } from "@/components/whats-new";
+import {
+  markWhatsNewSeen,
+  readerFor,
+  useWhatsNewUnseen,
+  whatsNewItems,
+  type Reader,
+} from "@/components/whats-new";
 import {
   ACCENT_PRESETS,
   DEFAULT_ACCENT_HEX,
@@ -381,6 +387,18 @@ export function AccountPanel({
   // Set while handing focus to the password dialog, so closing this panel does not
   // pull focus back to the More tab underneath it.
   const handingOff = useRef(false);
+  // What had focus when the sheet opened (the More tab, the header avatar). Radix gives
+  // focus back only to its own Trigger, and this sheet is opened from state, so without
+  // this an Esc left focus on <body> and the next Tab restarted from the page's top.
+  const opener = useRef<HTMLElement | null>(null);
+  // Who is reading, for What's New: the account's own rules, with the layout's canEdit.
+  const reader = useMemo<Reader>(
+    () =>
+      perms
+        ? readerFor(perms, canEdit)
+        : { canEdit, canLibrary: true, canPractice: true, seesPracticeButton: true },
+    [perms, canEdit]
+  );
 
   // A destination tap navigates; the sheet must not ride along onto the next page.
   useEffect(() => setOpen(false), [pathname, setOpen]);
@@ -405,21 +423,35 @@ export function AccountPanel({
           <DialogPrimitive.Content
             aria-describedby={undefined}
             data-testid="account-panel"
+            onOpenAutoFocus={() => {
+              const el = document.activeElement;
+              opener.current = el instanceof HTMLElement && el !== document.body ? el : null;
+            }}
             onCloseAutoFocus={(e) => {
+              const back = opener.current;
+              opener.current = null;
               if (handingOff.current) {
+                // the password dialog is taking focus: not the More tab underneath it
                 e.preventDefault();
                 handingOff.current = false;
+                return;
               }
+              // Radix runs after this and, with no Trigger to give focus to, leaves it.
+              if (back?.isConnected) back.focus({ preventScroll: true });
             }}
             className={cn(
               "no-print fixed inset-x-0 bottom-0 z-50 max-h-[88dvh] overflow-y-auto overscroll-contain rounded-t-[12px] bg-popover pb-[calc(env(safe-area-inset-bottom)+16px)] pl-[max(1rem,env(safe-area-inset-left))] pr-[max(1rem,env(safe-area-inset-right))] text-popover-foreground shadow-elev-2 focus:outline-none data-[state=open]:animate-sheet-in",
-              "lg:inset-x-auto lg:bottom-auto lg:left-auto lg:right-4 lg:top-[64px] lg:max-h-[80vh] lg:w-[380px] lg:rounded-[4px] lg:pb-4 lg:shadow-float lg:data-[state=open]:animate-in lg:data-[state=open]:fade-in-0 lg:data-[state=open]:zoom-in-95"
+              // lg:right — the header's container is centred and stops at 1280 px, with a
+              // 1rem gutter; a panel pinned 1rem from the VIEWPORT hung 43 px past the avatar at
+              // 1366 and 80 px at 1440. 100% of a fixed box is the viewport without its scrollbar,
+              // which is what the centring container sits in (100vw would be half a scrollbar out).
+              "lg:inset-x-auto lg:bottom-auto lg:left-auto lg:right-[max(1rem,calc((100%_-_1280px)/2_+_1rem))] lg:top-[64px] lg:max-h-[80vh] lg:w-[380px] lg:rounded-[4px] lg:pb-4 lg:shadow-float lg:data-[state=open]:animate-in lg:data-[state=open]:fade-in-0 lg:data-[state=open]:zoom-in-95"
             )}
           >
             <div aria-hidden className="mx-auto mt-2 h-1 w-9 rounded-[2px] bg-foreground/25 lg:hidden" />
             <DialogPrimitive.Title className="sr-only">More</DialogPrimitive.Title>
             {view === "news" ? (
-              <NewsView canEdit={canEdit} onBack={() => setView("home")} />
+              <NewsView reader={reader} onBack={() => setView("home")} />
             ) : (
               <div className="pt-3">
                 <div className="flex items-center gap-3.5">
@@ -560,8 +592,8 @@ function WhatsNewTile({ onOpen }: { onOpen: () => void }) {
 
 /** The same list as the dashboard's "มีอะไรใหม่" card. Opening it IS reading it, so
  *  the round is marked read here — and the card and the dot go with it. */
-function NewsView({ canEdit, onBack }: { canEdit: boolean; onBack: () => void }) {
-  const [items] = useState(() => whatsNewItems(canEdit));
+function NewsView({ reader, onBack }: { reader: Reader; onBack: () => void }) {
+  const [items] = useState(() => whatsNewItems(reader));
   useEffect(() => markWhatsNewSeen(), []);
   return (
     <div className="pt-3">

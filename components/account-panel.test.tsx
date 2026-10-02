@@ -351,3 +351,108 @@ describe("AccountPanel — Feedback and What's New, and the dots that point at t
     expect(screen.queryByTestId("whats-new-unseen-dot")).toBeNull();
   });
 });
+
+// The sheet is opened from STATE (the More tab, the header avatar), so Radix has no
+// Trigger to give focus back to and, before this, an Esc left focus on <body> — the
+// next Tab started from the top of the page, behind a keyboard user's last position.
+describe("AccountPanel — where focus goes when it closes", () => {
+  const pressEscape = () =>
+    fireEvent.keyDown(panel(), { key: "Escape", code: "Escape" });
+
+  it("Esc closes it and puts focus back on the More tab that opened it", async () => {
+    await mount();
+    const more = screen.getByRole("button", { name: "เมนูเพิ่มเติม" });
+    more.focus();
+    fireEvent.click(more);
+    expect(document.activeElement).not.toBe(more); // focus moved into the sheet
+    pressEscape();
+    await waitFor(() => expect(screen.queryByTestId("account-panel")).toBeNull());
+    await waitFor(() => expect(document.activeElement).toBe(more));
+  });
+
+  it("…and onto the header's avatar when the avatar opened it", async () => {
+    await mount();
+    const avatar = screen.getByRole("button", { name: /เมนูบัญชี/ });
+    avatar.focus();
+    fireEvent.click(avatar);
+    pressEscape();
+    await waitFor(() => expect(screen.queryByTestId("account-panel")).toBeNull());
+    await waitFor(() => expect(document.activeElement).toBe(avatar));
+  });
+
+  it("the close button gives it back too", async () => {
+    await mount();
+    const more = screen.getByRole("button", { name: "เมนูเพิ่มเติม" });
+    more.focus();
+    fireEvent.click(more);
+    fireEvent.click(within(panel()).getByRole("button", { name: "ปิดเมนู" }));
+    await waitFor(() => expect(screen.queryByTestId("account-panel")).toBeNull());
+    await waitFor(() => expect(document.activeElement).toBe(more));
+  });
+
+  it("handing over to the password dialog does NOT pull focus back to the More tab", async () => {
+    await mount();
+    const more = screen.getByRole("button", { name: "เมนูเพิ่มเติม" });
+    more.focus();
+    fireEvent.click(more);
+    fireEvent.click(within(panel()).getByRole("button", { name: /Change password/ }));
+    await waitFor(() => expect(screen.queryByTestId("account-panel")).toBeNull());
+    expect(await screen.findByLabelText("รหัสผ่านปัจจุบัน")).toBeTruthy();
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 10)); // Radix returns focus on a timer
+    });
+    expect(document.activeElement).not.toBe(more);
+  });
+});
+
+// jsdom has no layout: this pins the class that was measured in a real browser (the
+// harness measures the edge itself). The header's container is centred and stops at
+// 1280 px with a 1rem gutter; lg:right-4 pinned the panel 1rem from the VIEWPORT, so
+// it hung 43 px past the avatar at 1366 and 80 px at 1440.
+describe("AccountPanel — anchored to the avatar on a wide screen", () => {
+  it("its right edge follows the centred 1280 px header, not the viewport", async () => {
+    await mount();
+    openMore();
+    const cls = (panel().getAttribute("class") ?? "").split(/\s+/);
+    expect(cls).toContain("lg:right-[max(1rem,calc((100%_-_1280px)/2_+_1rem))]");
+    expect(cls).not.toContain("lg:right-4");
+  });
+});
+
+// A round of "มีอะไรใหม่" that points at a button the reader cannot see invites the
+// very "it doesn't work" report it exists to prevent: label staff have no Library, no
+// Training and no home banner; an admin's banner has no practice button.
+describe("AccountPanel — What's New is only about what this role can reach", () => {
+  const STAFF = makePerms("label_staff");
+  const MEMBER_BAND = makePerms("member", [{ group_id: "g1", role: "member" } as never]);
+
+  async function readNews(perms: ReturnType<typeof makePerms>) {
+    localStorage.removeItem(SEEN_KEY);
+    await mount(perms);
+    openMore();
+    fireEvent.click(within(panel()).getByRole("button", { name: /What's New/ }));
+    return within(panel()).getByTestId("whats-new-list");
+  }
+
+  it("label staff: no Library, no home banner, no practice room", async () => {
+    const list = await readNews(STAFF);
+    expect(list).not.toHaveTextContent("คลังเพลง");
+    expect(list).not.toHaveTextContent("หน้าแรก");
+    expect(list).not.toHaveTextContent("ห้องซ้อม");
+    expect(list).toHaveTextContent("ออกจากระบบ"); // where sign-out went — theirs too
+  });
+
+  it("an admin: the banner's practice button is not theirs (their second button is Live Mode)", async () => {
+    const list = await readNews(ADMIN);
+    expect(list).not.toHaveTextContent("ปุ่ม “ซ้อม"); // under either wording of the button
+    expect(list).toHaveTextContent("คลังเพลง");
+    expect(list).toHaveTextContent("ห้องซ้อม");
+  });
+
+  it("a band member: told about the button by its real name", async () => {
+    const list = await readNews(MEMBER_BAND);
+    expect(list).toHaveTextContent("ปุ่ม “ซ้อมตามเซ็ต” บนการ์ดงานถัดไป");
+    expect(list).not.toHaveTextContent("ปุ่ม “ซ้อม”");
+    expect(list).toHaveTextContent("คลังเพลง");
+  });
+});

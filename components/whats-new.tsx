@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { Sparkles, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { canEditAnyGroup, canLiveEdit, canViewLibrary, type Perms } from "@/lib/permissions";
 
 /**
  * "มีอะไรใหม่" — a short card on All Events, once per device per round of changes.
@@ -42,7 +43,52 @@ const KEY = "cueiq:whats-new-seen";
  *  here, the More sheet's tile, the tab bar's dot) agrees without a reload. */
 const SEEN_EVENT = "cueiq:whats-new-seen";
 
-type Item = { text: string; editorsOnly?: boolean; only?: () => boolean };
+/**
+ * Who is reading — what the round may say to THIS account. An item about a button
+ * the reader will never see invites exactly the "it doesn't work" report this card
+ * exists to prevent, so each item is tagged with the reader it is true for.
+ *
+ *  · canEdit            edits some band's shows (admin, or an Ar)
+ *  · canLibrary         has the Library (not label staff, who work from Overview)
+ *  · canPractice        has Training / the practice rooms, AND the home page's
+ *                       banner — label staff have neither (the web sends them to
+ *                       /overview, main-nav leaves Training out of their tabs)
+ *  · seesPracticeButton the banner's "ซ้อมตามเซ็ต" button — everyone with a practice
+ *                       room except an admin, whose second button is Live Mode
+ *                       (canLiveEdit; components/event/events-list.tsx)
+ */
+export interface Reader {
+  canEdit: boolean;
+  canLibrary: boolean;
+  canPractice: boolean;
+  seesPracticeButton: boolean;
+}
+
+/** The old one-flag reader: no one is told less than before. For callers that only
+ *  know `canEdit` (the desktop dashboard). */
+const everyone = (canEdit: boolean): Reader => ({
+  canEdit,
+  canLibrary: true,
+  canPractice: true,
+  seesPracticeButton: true,
+});
+
+/** The Reader for an account, from the same rules the nav and the banner use.
+ *  `canEdit` defaults to "edits some band" and can be given where the caller has
+ *  already decided it (the layout and the dashboard each did, before this existed). */
+export function readerFor(perms: Perms, canEdit = canEditAnyGroup(perms)): Reader {
+  const canPractice = perms.tenantRole !== "label_staff";
+  return {
+    canEdit,
+    canLibrary: canViewLibrary(perms),
+    canPractice,
+    seesPracticeButton: canPractice && !canLiveEdit(perms),
+  };
+}
+
+type Item = { text: string; who?: (r: Reader) => boolean; only?: () => boolean };
+
+const editors = (r: Reader) => r.canEdit;
 
 /** The web below lg — where the bottom tab bar (and its More tab) exists. Not the
  *  desktop app (its own shell) and not a wide browser (the tools sit behind the
@@ -68,22 +114,39 @@ const ITEMS: Item[] = [
   {
     text: "Live: เตือนเมื่อเหลือ 1 นาที และ 30 วินาที (รายการสั้นเตือนตามความยาว) — เกินเวลาการ์ดจะเปลี่ยนเป็นแผ่นลายเฉียงเหมือนกันทุกวง",
   },
-  { text: "คลังเพลง: กด ▶ ฟังเพลงได้เลย มีแถบเล่นด้านล่าง — ออกจากหน้าคลังเพลงแล้วเสียงหยุดเอง" },
-  { text: "หน้าแรก: บอก “นัด” กับ “ขึ้นเวที” ของงานถัดไป และปุ่ม “ซ้อม” พาเข้าห้องซ้อมของวงในแตะเดียว" },
+  {
+    text: "คลังเพลง: กด ▶ ฟังเพลงได้เลย มีแถบเล่นด้านล่าง — ออกจากหน้าคลังเพลงแล้วเสียงหยุดเอง",
+    who: (r) => r.canLibrary,
+  },
+  {
+    // The banner is on the home page, which label staff never reach (canPractice is
+    // the same "not label staff" the nav uses for Training).
+    text: "หน้าแรก: บอก “นัด” กับ “ขึ้นเวที” ของงานถัดไป",
+    who: (r) => r.canPractice,
+  },
+  {
+    // The button's real label — the bare “ซ้อม” was the banner's old wording. An admin's
+    // second button is Live Mode, so for them this one does not exist.
+    text: "หน้าแรก: ปุ่ม “ซ้อมตามเซ็ต” บนการ์ดงานถัดไป พาเข้าห้องซ้อมของวงในแตะเดียว",
+    who: (r) => r.seesPracticeButton,
+  },
   {
     text: "Setlist: ปุ่ม “เปลี่ยน” ข้างชื่อเพลง — สลับเป็นเพลงอื่นจากคลังได้ในที่เดิม ไมค์กับโน้ตคงไว้",
-    editorsOnly: true,
+    who: editors,
   },
   {
     text: "ก๊อปงาน: ใส่ชื่อ วันที่ และเวลาขึ้นเวทีได้ในหน้าเดียว — คิวทั้งวันเลื่อนตามให้เอง",
-    editorsOnly: true,
+    who: editors,
   },
   {
     text: "Setlist: ปุ่ม “เติมให้พอดี” ข้างเวลารวม — แถวปิดท้ายพอดีช่วงขึ้นเวทีในแตะเดียว",
-    editorsOnly: true,
+    who: editors,
   },
   { text: "รูปสรุป: บอกว่ามากี่คน ขาดใคร และเวลาที่ส่งออก (หลายรูปในกลุ่ม ให้ใช้รูปใหม่สุด)" },
-  { text: "ห้องซ้อม: “ซ้อมตามเซ็ตลิสต์” — กดเล่นทั้งเซ็ต จบเพลงแล้วเล่นเพลงถัดไปเอง" },
+  {
+    text: "ห้องซ้อม: “ซ้อมตามเซ็ตลิสต์” — กดเล่นทั้งเซ็ต จบเพลงแล้วเล่นเพลงถัดไปเอง",
+    who: (r) => r.canPractice,
+  },
 ];
 
 function seen(): boolean {
@@ -94,9 +157,9 @@ function seen(): boolean {
   }
 }
 
-/** This round's items for this account — browser only (`only` reads the screen). */
-export function whatsNewItems(canEdit: boolean): string[] {
-  return ITEMS.filter((i) => (canEdit || !i.editorsOnly) && (!i.only || i.only())).map(
+/** This round's items for this reader — browser only (`only` reads the screen). */
+export function whatsNewItems(reader: Reader): string[] {
+  return ITEMS.filter((i) => (!i.who || i.who(reader)) && (!i.only || i.only())).map(
     (i) => i.text
   );
 }
@@ -128,21 +191,24 @@ export function useWhatsNewUnseen(): boolean {
   return unseen;
 }
 
-/** `canEdit`: this account can edit at least one band's shows — the editor-only
- *  items are about buttons that exist only for them. */
-export function WhatsNew({ canEdit }: { canEdit: boolean }) {
+/** `reader`: who is reading (see Reader) — build it with readerFor(). A caller that
+ *  only knows `canEdit` (the desktop dashboard) may pass just that; it is told what
+ *  it always was. */
+export function WhatsNew(props: { canEdit: boolean } | { reader: Reader }) {
+  const r = "reader" in props ? props.reader : everyone(props.canEdit);
+  const { canEdit, canLibrary, canPractice, seesPracticeButton } = r;
   const [items, setItems] = useState<string[] | null>(null);
 
   // After mount only: the web dashboard is server-rendered, and the storage read
   // needs the browser.
   useEffect(() => {
     if (seen()) return;
-    setItems(whatsNewItems(canEdit));
+    setItems(whatsNewItems({ canEdit, canLibrary, canPractice, seesPracticeButton }));
     // Read from the More sheet while this card is on screen → it goes too.
     const hide = () => setItems(null);
     window.addEventListener(SEEN_EVENT, hide);
     return () => window.removeEventListener(SEEN_EVENT, hide);
-  }, [canEdit]);
+  }, [canEdit, canLibrary, canPractice, seesPracticeButton]);
 
   const dismiss = () => {
     markWhatsNewSeen();

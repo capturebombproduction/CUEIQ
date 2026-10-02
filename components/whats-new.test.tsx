@@ -3,7 +3,15 @@
 // when storage refuses, and editor-only items only for editors.
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, act } from "@testing-library/react";
-import { WhatsNew, markWhatsNewSeen, WHATS_NEW_ROUND } from "./whats-new";
+import {
+  WhatsNew,
+  markWhatsNewSeen,
+  readerFor,
+  whatsNewItems,
+  WHATS_NEW_ROUND,
+  type Reader,
+} from "./whats-new";
+import { makePerms } from "@/lib/permissions";
 
 const KEY = "cueiq:whats-new-seen";
 
@@ -71,7 +79,8 @@ describe("WhatsNew", () => {
   it("comes back for the current round on a device that closed the 09-28 one", async () => {
     localStorage.setItem(KEY, "2026-09-28");
     await mount(false);
-    expect(screen.getByTestId("whats-new")).toHaveTextContent("ปุ่ม “ซ้อม”");
+    // the banner's real label — "ซ้อมตามเซ็ต", not the bare "ซ้อม" it was once called
+    expect(screen.getByTestId("whats-new")).toHaveTextContent("ปุ่ม “ซ้อมตามเซ็ต”");
   });
 
   it("goes for good on เข้าใจแล้ว — this round is remembered", async () => {
@@ -135,5 +144,106 @@ describe("WhatsNew — one round, read once, wherever it was read", () => {
     fireEvent.click(screen.getByRole("button", { name: "เข้าใจแล้ว" }));
     expect(heard).toHaveBeenCalledTimes(1);
     window.removeEventListener("cueiq:whats-new-seen", heard);
+  });
+});
+
+// An item about a button the reader will never see invites the "it doesn't work"
+// report this card exists to prevent. Each reader below is what readerFor() builds
+// for that role (pinned separately), written out so the item rules read on their own.
+const STAFF: Reader = { canEdit: false, canLibrary: false, canPractice: false, seesPracticeButton: false };
+const ADMIN: Reader = { canEdit: true, canLibrary: true, canPractice: true, seesPracticeButton: false };
+const MEMBER: Reader = { canEdit: false, canLibrary: true, canPractice: true, seesPracticeButton: true };
+
+const LIBRARY = "คลังเพลง";
+const BANNER = "หน้าแรก: บอก “นัด”";
+const BANNER_BUTTON = "ปุ่ม “ซ้อมตามเซ็ต” บนการ์ดงานถัดไป";
+const PRACTICE_ROOM = "ห้องซ้อม: “ซ้อมตามเซ็ตลิสต์”";
+const has = (items: string[], part: string) => items.some((t) => t.includes(part));
+
+describe("whatsNewItems — only what THIS reader can reach", () => {
+  it("label staff are told nothing about the Library, the home banner or the practice room", () => {
+    const items = whatsNewItems(STAFF);
+    expect(has(items, LIBRARY)).toBe(false);
+    expect(has(items, BANNER)).toBe(false);
+    expect(has(items, BANNER_BUTTON)).toBe(false);
+    expect(has(items, PRACTICE_ROOM)).toBe(false);
+    // …and still hear what is theirs: where sign-out went.
+    expect(has(items, "ออกจากระบบ")).toBe(true);
+  });
+
+  it("an admin is not told about the banner's practice button — theirs is Live Mode", () => {
+    const items = whatsNewItems(ADMIN);
+    expect(has(items, BANNER_BUTTON)).toBe(false);
+    expect(has(items, "ปุ่ม “ซ้อม")).toBe(false); // under either wording
+    // the rest of the home banner, the Library and the practice room are theirs
+    expect(has(items, BANNER)).toBe(true);
+    expect(has(items, LIBRARY)).toBe(true);
+    expect(has(items, PRACTICE_ROOM)).toBe(true);
+    expect(has(items, "ก๊อปงาน")).toBe(true); // editor items
+  });
+
+  it("a member is told about the banner button by its real name, ซ้อมตามเซ็ต", () => {
+    const items = whatsNewItems(MEMBER);
+    expect(has(items, BANNER_BUTTON)).toBe(true);
+    expect(has(items, LIBRARY)).toBe(true);
+    expect(has(items, PRACTICE_ROOM)).toBe(true);
+    expect(has(items, "ก๊อปงาน")).toBe(false); // not an editor
+    // nobody is pointed at a bare “ซ้อม” button — the banner has no such label
+    expect(items.some((t) => t.includes("ปุ่ม “ซ้อม”"))).toBe(false);
+  });
+
+  it("an account with no band yet has no Library, so is not told about one", () => {
+    expect(has(whatsNewItems({ ...MEMBER, canLibrary: false }), LIBRARY)).toBe(false);
+  });
+
+  it("the card itself follows the reader it is given", async () => {
+    await act(async () => {
+      render(<WhatsNew reader={STAFF} />);
+    });
+    const card = screen.getByTestId("whats-new");
+    expect(card).not.toHaveTextContent(LIBRARY);
+    expect(card).not.toHaveTextContent("ห้องซ้อม:");
+    expect(card).toHaveTextContent("ออกจากระบบ");
+  });
+
+  it("a caller that only knows canEdit (the desktop dashboard) is told what it always was", async () => {
+    await act(async () => {
+      render(<WhatsNew canEdit={false} />);
+    });
+    const card = screen.getByTestId("whats-new");
+    expect(card).toHaveTextContent(LIBRARY);
+    expect(card).toHaveTextContent("ปุ่ม “ซ้อมตามเซ็ต”");
+    expect(card).not.toHaveTextContent("ก๊อปงาน");
+  });
+});
+
+describe("readerFor — the rules the nav and the banner already use", () => {
+  const MEMBER_PERMS = makePerms("member", [{ group_id: "g1", role: "member" } as never]);
+  const AR_PERMS = makePerms("member", [{ group_id: "g1", role: "artist_manager" } as never]);
+
+  it("label_staff: no Library, no Training, no banner button, edits nothing", () => {
+    expect(readerFor(makePerms("label_staff"))).toEqual(STAFF);
+  });
+
+  it("admin: everything, except the banner's practice button (canLiveEdit leads with Live Mode)", () => {
+    expect(readerFor(makePerms("admin"))).toEqual(ADMIN);
+  });
+
+  it("ceo: sees the Library and the practice button, edits nothing", () => {
+    expect(readerFor(makePerms("ceo"))).toEqual(MEMBER);
+  });
+
+  it("a band member sees the Library and the practice button; an Ar also edits", () => {
+    expect(readerFor(MEMBER_PERMS)).toEqual(MEMBER);
+    expect(readerFor(AR_PERMS)).toEqual({ ...MEMBER, canEdit: true });
+  });
+
+  it("a member with no band at all has no Library", () => {
+    expect(readerFor(makePerms("member", [])).canLibrary).toBe(false);
+  });
+
+  it("a caller that has already decided canEdit hands it over", () => {
+    expect(readerFor(makePerms("admin"), false).canEdit).toBe(false);
+    expect(readerFor(MEMBER_PERMS, true).canEdit).toBe(true);
   });
 });

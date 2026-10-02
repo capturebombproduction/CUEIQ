@@ -1,4 +1,5 @@
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { useState } from "react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import {
   Dialog,
@@ -7,6 +8,7 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
+  DialogTrigger,
 } from "./dialog";
 import { Button } from "./button";
 import { ConfirmProvider, useConfirm, type ConfirmOptions } from "./confirm-dialog";
@@ -84,6 +86,130 @@ describe("Dialog", () => {
   });
 });
 
+// ── where focus goes when it closes ─────────────────────────────────────────────
+// Radix gives focus back to its Trigger and nothing else. A dialog opened from state
+// has no Trigger, so Esc dropped keyboard focus on <body> — the next Tab started from
+// the top of the page. (jsdom: a click does not focus, so each test focuses the
+// opener first, as a keyboard user's Enter on it would have.)
+function FromState({
+  onCloseAutoFocus,
+  typed,
+  removeOpenerOnOpen,
+}: {
+  onCloseAutoFocus?: (e: Event) => void;
+  typed?: boolean;
+  removeOpenerOnOpen?: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      {!(removeOpenerOnOpen && open) && (
+        <button type="button" onClick={() => setOpen(true)}>
+          เปิด
+        </button>
+      )}
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent onCloseAutoFocus={onCloseAutoFocus}>
+          <DialogTitle>Edit mics</DialogTitle>
+          <DialogDescription>รายละเอียด</DialogDescription>
+          {/* autoFocus moves focus at commit, before Radix looks at what had it */}
+          {typed && <input aria-label="พิมพ์" autoFocus />}
+        </DialogContent>
+      </Dialog>
+    </>
+  );
+}
+
+const pressEscape = () =>
+  fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape", code: "Escape" });
+
+describe("Dialog — focus after it closes", () => {
+  it("a dialog opened from state hands focus back to the button that opened it", async () => {
+    render(<FromState />);
+    const opener = screen.getByRole("button", { name: "เปิด" });
+    opener.focus();
+    fireEvent.click(opener);
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+    expect(document.activeElement).not.toBe(opener);
+    pressEscape();
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    await waitFor(() => expect(document.activeElement).toBe(opener));
+  });
+
+  it("…also when a field inside took focus on open (the type-to-confirm input)", async () => {
+    render(<FromState typed />);
+    const opener = screen.getByRole("button", { name: "เปิด" });
+    opener.focus();
+    fireEvent.click(opener);
+    expect(document.activeElement).toBe(screen.getByLabelText("พิมพ์"));
+    pressEscape();
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    await waitFor(() => expect(document.activeElement).toBe(opener));
+  });
+
+  it("a caller that takes focus itself (preventDefault) is left alone", async () => {
+    render(<FromState onCloseAutoFocus={(e) => e.preventDefault()} />);
+    const opener = screen.getByRole("button", { name: "เปิด" });
+    opener.focus();
+    fireEvent.click(opener);
+    pressEscape();
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 10));
+    });
+    expect(document.activeElement).not.toBe(opener);
+  });
+
+  it("an opener that is gone by the time it closes is skipped, not an error", async () => {
+    render(<FromState removeOpenerOnOpen />);
+    const opener = screen.getByRole("button", { name: "เปิด" });
+    opener.focus();
+    fireEvent.click(opener);
+    expect(screen.queryByRole("button", { name: "เปิด" })).toBeNull();
+    pressEscape();
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 10));
+    });
+    expect(document.activeElement).toBe(document.body);
+  });
+
+  it("each open remembers its OWN opener", async () => {
+    render(
+      <>
+        <FromState />
+      </>
+    );
+    const opener = screen.getByRole("button", { name: "เปิด" });
+    for (let i = 0; i < 2; i++) {
+      opener.focus();
+      fireEvent.click(opener);
+      pressEscape();
+      await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+      await waitFor(() => expect(document.activeElement).toBe(opener));
+      (document.activeElement as HTMLElement).blur();
+    }
+  });
+
+  it("a dialog with a Trigger still returns to it", async () => {
+    render(
+      <Dialog>
+        <DialogTrigger>แก้ไข</DialogTrigger>
+        <DialogContent>
+          <DialogTitle>Edit mics</DialogTitle>
+          <DialogDescription>รายละเอียด</DialogDescription>
+        </DialogContent>
+      </Dialog>
+    );
+    const trigger = screen.getByRole("button", { name: "แก้ไข" });
+    trigger.focus();
+    fireEvent.click(trigger);
+    pressEscape();
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    await waitFor(() => expect(document.activeElement).toBe(trigger));
+  });
+});
+
 // ── ConfirmDialog ───────────────────────────────────────────────────────────────
 let ask: (o: ConfirmOptions) => Promise<boolean>;
 function Grab() {
@@ -142,5 +268,29 @@ describe("ConfirmDialog", () => {
     expect((action as HTMLButtonElement).disabled).toBe(false);
     fireEvent.click(action);
     await expect(result()).resolves.toBe(true);
+  });
+
+  // The confirm path every delete goes through; requireTyped puts an autoFocus field in it.
+  it("a type-to-confirm delete gives focus back to the button that asked", async () => {
+    function Asker() {
+      const confirm = useConfirm();
+      return (
+        <button type="button" onClick={() => void confirm({ title: "Delete band?", requireTyped: "Seishin Kakumei" })}>
+          ลบวง
+        </button>
+      );
+    }
+    render(
+      <ConfirmProvider>
+        <Asker />
+      </ConfirmProvider>
+    );
+    const asker = screen.getByRole("button", { name: "ลบวง" });
+    asker.focus();
+    fireEvent.click(asker);
+    expect(document.activeElement).toBe(screen.getByPlaceholderText("Seishin Kakumei"));
+    pressEscape();
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    await waitFor(() => expect(document.activeElement).toBe(asker));
   });
 });

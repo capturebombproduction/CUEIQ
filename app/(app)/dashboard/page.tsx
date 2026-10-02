@@ -8,11 +8,19 @@ import { Card, CardContent } from "@/components/ui/card";
 import { JoinDemo } from "@/components/join-demo";
 import { EventsList } from "@/components/event/events-list";
 import { CreateFromTemplateButton } from "@/components/event/create-from-template-button";
-import { canCreateAnyEvent, canEditGroup, canLiveEdit, viewableGroups } from "@/lib/permissions";
+import {
+  canCreateAnyEvent,
+  canEditGroup,
+  canLiveEdit,
+  canViewLibrary,
+  viewableGroups,
+} from "@/lib/permissions";
 import { bkkTodayKey } from "@/lib/time";
 import { callTimeByEvent, practiceRoomByGroup } from "@/lib/next-show";
 import { type EventRow } from "@/lib/types";
-import { WhatsNew } from "@/components/whats-new";
+// A type only: whats-new.tsx is a client module, so its functions (readerFor) cannot be
+// CALLED from this server page — the Reader is built here from what this page knows.
+import { WhatsNew, type Reader } from "@/components/whats-new";
 import { PageTitle } from "@/components/page-title";
 
 export const dynamic = "force-dynamic";
@@ -121,7 +129,17 @@ export default async function DashboardPage() {
     month: "short",
     timeZone: "Asia/Bangkok",
   }).format(new Date());
-  const whatsNew = <WhatsNew canEdit={editableGroupIds.length > 0} />;
+  // Who is reading, so the card never announces a button this account cannot see.
+  // label_staff was redirected above, so everyone here has the home banner and a
+  // practice room; the banner's "ซ้อมตามเซ็ต" is the second button only when
+  // canRunLive is false (an admin's second button is Live Mode — see EventsList).
+  const reader: Reader = {
+    canEdit: editableGroupIds.length > 0,
+    canLibrary: canViewLibrary(ws.perms),
+    canPractice: true,
+    seesPracticeButton: !canRunLive,
+  };
+  const whatsNew = <WhatsNew reader={reader} />;
 
   return (
     <div className="space-y-3">

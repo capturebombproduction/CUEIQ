@@ -1,6 +1,14 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+} from "react";
 import { useRouter } from "next/navigation";
 import { Bell, Check, BellRing, Loader2, Ban, ChevronRight } from "lucide-react";
 import { toast } from "sonner";
@@ -108,6 +116,8 @@ export function NotificationBell({
   // a probe resolves.
   const probeUntrustedRef = useRef(false);
   const rootRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const panelId = useId();
   // How many rows the last TRUSTED read returned — see load() for why an empty
   // answer that would erase a non-empty bell is not trusted on its own.
   const countRef = useRef(0);
@@ -298,14 +308,35 @@ export function NotificationBell({
     return () => data.subscription.unsubscribe();
   }, [supabase]);
 
-  // close the panel on an outside click
+  // Close the panel on an outside click — and for a keyboard the same two ways out:
+  // Esc, and focus moving past it. It is a plain popover (not a Radix dialog), so
+  // neither came for free: Esc did nothing, and Tab walked on into the header's
+  // controls hidden behind the open panel.
   useEffect(() => {
     if (!open) return;
+    const outside = (t: EventTarget | null) =>
+      !!rootRef.current && !rootRef.current.contains(t as Node);
     const onDown = (e: MouseEvent) => {
-      if (rootRef.current && !rootRef.current.contains(e.target as Node)) setOpen(false);
+      if (outside(e.target)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape" || e.defaultPrevented) return;
+      setOpen(false);
+      // The panel is about to unmount with focus possibly inside it — put it back on
+      // the bell rather than let it fall to <body>.
+      triggerRef.current?.focus();
+    };
+    const onFocusIn = (e: FocusEvent) => {
+      if (outside(e.target)) setOpen(false);
     };
     document.addEventListener("mousedown", onDown);
-    return () => document.removeEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    document.addEventListener("focusin", onFocusIn);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+      document.removeEventListener("focusin", onFocusIn);
+    };
   }, [open]);
 
   // WHERE THE PANEL GOES ON A PHONE, measured rather than assumed.
@@ -490,10 +521,14 @@ export function NotificationBell({
   return (
     <div className="relative" ref={rootRef}>
       <Button
+        ref={triggerRef}
         variant="ghost"
         size="icon"
         title="การแจ้งเตือน"
         onClick={() => setOpen((o) => !o)}
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        aria-controls={open ? panelId : undefined}
         className="relative h-11 w-11"
       >
         <Bell className="h-[21px] w-[21px]" aria-hidden />
@@ -505,11 +540,19 @@ export function NotificationBell({
 
       {open && (
         <div
+          id={panelId}
+          role="dialog"
+          aria-label="การแจ้งเตือน"
           data-testid="notification-panel"
           style={{ "--bell-top": `${anchorTop}px` } as CSSProperties}
-          className="fixed inset-x-3 top-[var(--bell-top)] z-50 overflow-hidden rounded-lg border bg-popover text-popover-foreground shadow-lg sm:absolute sm:inset-x-auto sm:right-0 sm:top-full sm:mt-2 sm:w-80"
+          // The cap is on the PANEL, not the list. It was a 56 px reserve on the list
+          // alone, but the header and the push footer are about 96 px between them, so
+          // on a sideways phone (844 x 390) the footer ended 40 px under the tab bar —
+          // the opt-in button painted behind it and could not be pressed. Capped here,
+          // the list is the part that gives (min-h-0 flex-1) and the other two never move.
+          className="fixed inset-x-3 top-[var(--bell-top)] z-50 flex max-h-[calc(100dvh_-_var(--bell-top,0px)_-_var(--tabbar-h,0px)_-_env(safe-area-inset-bottom,0px)_-_8px)] flex-col overflow-hidden rounded-lg border bg-popover text-popover-foreground shadow-lg sm:absolute sm:inset-x-auto sm:right-0 sm:top-full sm:mt-2 sm:w-80"
         >
-          <div className="flex items-center justify-between border-b px-3 py-2">
+          <div className="flex shrink-0 items-center justify-between border-b px-3 py-2">
             <span className="text-sm font-semibold">การแจ้งเตือน</span>
             {unread > 0 && (
               // A 44 px-tall target (it measured 72×16 on a phone). -my-2 hands the
@@ -525,12 +568,12 @@ export function NotificationBell({
             )}
           </div>
 
-          {/* Never taller than the room between the bell and the phone's tab bar: on a
-              sideways phone 60vh ran past the bar (a later layer that paints over the
-              header's), and the last items could not be scrolled into view. */}
+          {/* Never taller than 60vh, and never more than the panel's cap leaves it (see
+              the panel): on a sideways phone the rest ran past the tab bar, a later layer
+              that paints over the header's, and the last items could not be scrolled to. */}
           <div
             data-testid="notification-list"
-            className="max-h-[min(60vh,calc(100dvh_-_var(--bell-top,0px)_-_var(--tabbar-h,0px)_-_env(safe-area-inset-bottom,0px)_-_56px))] overflow-y-auto"
+            className="max-h-[60vh] min-h-0 flex-1 overflow-y-auto"
           >
             {items.length === 0 ? (
               <p className="px-3 py-8 text-center text-sm text-muted-foreground">
@@ -591,7 +634,7 @@ export function NotificationBell({
           </div>
 
           {/* Web Push opt-in (per device) */}
-          <div className="border-t px-3 py-2">
+          <div className="shrink-0 border-t px-3 py-2">
             {pushState === "on" ? (
               <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
                 <BellRing className="h-3.5 w-3.5 text-success" /> เปิดแจ้งเตือนเด้งบนอุปกรณ์นี้แล้ว
