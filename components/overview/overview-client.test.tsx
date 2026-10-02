@@ -535,6 +535,31 @@ describe("print hides the controls (CQ-29)", () => {
     const row = boardRows(container)[0];
     expect(row.closest(".no-print")).toBeNull();
   });
+
+  it("an editable photo time prints as its time, not as two input boxes", () => {
+    mountAt([ev({ id: "a", event_date: "2026-10-10", canEditPhoto: true, photo: "10:00", photoEnd: "10:10" })]);
+    const field = screen.getByLabelText("เวลาเริ่มถ่ายรูป");
+    expect(field.closest(".print\\:hidden"), "the inputs leave the page").not.toBeNull();
+    const printed = Array.from(document.querySelectorAll<HTMLElement>(".print\\:inline"));
+    expect(printed.map((e) => e.textContent)).toContain("10:00–10:10");
+    expect(printed[0]).toHaveClass("hidden"); // and never on screen or in the JPG
+  });
+
+  it("a SHUT Past fold is a control (its rows do not print): the bar stays off paper; open, it prints", () => {
+    mountAt([ev({ id: "a", event_date: "2026-10-10" }), ev({ id: "old", name: "Old show", event_date: "2026-09-01" })]);
+    const fold = screen.getByText("Past").closest("details")!;
+    expect(fold.className).toMatch(/(^|\s)no-print(\s|$)/);
+    fireEvent.click(screen.getByText("Past"));
+    fold.open = true;
+    fireEvent(fold, new Event("toggle"));
+    expect(fold.className).not.toMatch(/(^|\s)no-print(\s|$)/);
+  });
+
+  it("the 'ยังไม่กำหนดเวลาถ่ายรูป' disclosure bar is a control: not on paper", () => {
+    mountAt([ev({ id: "a", event_date: "2026-10-10", canEditPhoto: true })]);
+    const bar = screen.getByRole("button", { name: /ยังไม่กำหนดเวลาถ่ายรูป/ }).closest("tr")!;
+    expect(bar.className).toMatch(/(^|\s)no-print(\s|$)/);
+  });
 });
 
 // CQ-36 — A TOUCH iPAD IS NOT A MOUSE.

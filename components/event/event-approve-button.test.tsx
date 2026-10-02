@@ -15,7 +15,7 @@ vi.mock("@/lib/supabase/client", () => ({
       const b = {
         update: (v: unknown) => (h.updates.push(v), b),
         eq: () => b,
-        select: () => Promise.resolve({ data: [{ id: "e1" }], error: null }),
+        select: () => ({ abortSignal: () => Promise.resolve({ data: [{ id: "e1" }], error: null }) }),
       };
       return b;
     },

@@ -18,6 +18,12 @@ import {
 } from "@/components/ui/dialog";
 import { STATUS_META, type GroupStatus } from "@/lib/types";
 
+/** How long อนุมัติ / ปฏิเสธ may wait on the network. The dialog cannot be closed while a
+ *  write is in flight (closing would hide whether it landed), so a hanging connection at a
+ *  venue used to leave it stuck open with a spinner. After this long the request is cut and
+ *  the dialog frees itself. */
+export const STATUS_WRITE_TIMEOUT_MS = 15_000;
+
 const knownStatus = (s: GroupStatus): GroupStatus =>
   Object.prototype.hasOwnProperty.call(STATUS_META, s) ? s : "draft";
 
@@ -56,13 +62,28 @@ export function EventStatusActions({
     setBusy(true);
     const prev = status;
     setStatus(next);
+    const cut = new AbortController();
+    const timer = setTimeout(() => cut.abort(), STATUS_WRITE_TIMEOUT_MS);
     const { data, error } = await createClient()
       .from("events")
       .update({ status: next })
       .eq("id", eventId)
-      .select("id");
+      .select("id")
+      .abortSignal(cut.signal)
+      .then(
+        (r) => r,
+        (e: unknown) => ({ data: null, error: { message: e instanceof Error ? e.message : String(e) } })
+      );
+    clearTimeout(timer);
     setBusy(false);
-    if (error) {
+    if (cut.signal.aborted) {
+      // The request was cut, not answered: it MAY still have landed, so neither outcome is
+      // claimed - the last known status stays and the user is told how to see the real one.
+      toast.error("เน็ตช้าเกินไป — ยังไม่รู้ว่าบันทึกแล้วหรือยัง", {
+        description: "กดรีเฟรชเพื่อดูสถานะล่าสุด แล้วค่อยลองใหม่",
+      });
+      setStatus(prev);
+    } else if (error) {
       toast.error("เปลี่ยนสถานะไม่สำเร็จ", { description: error.message });
       setStatus(prev);
     } else if (wroteNothing(data)) {
@@ -99,7 +120,7 @@ export function EventStatusActions({
           className="relative inline-flex min-h-11 items-center gap-1 rounded-[2px] transition-opacity duration-2 hover:opacity-80 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 sm:min-h-0 sm:after:absolute sm:after:-inset-y-2.5 sm:after:inset-x-0 sm:after:content-['']"
         >
           <StatusBadge status={status} />
-          <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" aria-hidden />
+          <ChevronDown className="h-3.5 w-3.5 text-muted-foreground print:hidden" aria-hidden />
         </button>
       )}
 

@@ -427,15 +427,21 @@ const PhotoSaveContext = createContext<
 function PhotoCell({ ev }: { ev: OverviewEvent }) {
   const onPhotoSaved = useContext(PhotoSaveContext);
   return ev.canEditPhoto ? (
-    <PhotoTimeCell
-      eventId={ev.id}
-      tenantId={ev.tenant_id}
-      initialItemId={ev.photoItemId}
-      initialTime={ev.photo}
-      initialEnd={ev.photoEnd}
-      nextSortOrder={ev.photoSortOrder}
-      onSaved={(next) => onPhotoSaved(ev.id, next)}
-    />
+    <>
+      {/* On paper the two inputs are just their time (print shows the board, not its controls). */}
+      <span className="print:hidden">
+        <PhotoTimeCell
+          eventId={ev.id}
+          tenantId={ev.tenant_id}
+          initialItemId={ev.photoItemId}
+          initialTime={ev.photo}
+          initialEnd={ev.photoEnd}
+          nextSortOrder={ev.photoSortOrder}
+          onSaved={(next) => onPhotoSaved(ev.id, next)}
+        />
+      </span>
+      <span className="hidden print:inline">{fmtRange({ start: ev.photo, end: ev.photoEnd })}</span>
+    </>
   ) : (
     <>{fmtRange({ start: ev.photo, end: ev.photoEnd })}</>
   );
@@ -832,7 +838,7 @@ function ActivityTables({
     ...photoRows.map((ev) => renderPhotoRow(ev)),
     ...(photoTodoRows.length > 0
       ? [
-          <tr key="__photo-todo" className="flex border-b border-border/70 last:border-0 sm:table-row">
+          <tr key="__photo-todo" className="no-print flex border-b border-border/70 last:border-0 sm:table-row">
             <td colSpan={2} className="w-full p-0 sm:table-cell">
               <button
                 type="button"
@@ -1039,7 +1045,7 @@ function ExportActivityCol({
               return (
                 <tr key={ev.id} className="border-b last:border-0">
                   <td className="py-1.5 pr-4 font-medium">
-                    <div className="block w-max max-w-[34rem] whitespace-normal">
+                    <div className="block w-max max-w-[34rem] whitespace-normal [overflow-wrap:anywhere]">
                       {showBandColumn ? (
                         <span className="inline-flex items-center gap-1.5">
                           <span
@@ -1996,7 +2002,8 @@ export function OverviewClient({
         <details
           open={pastOpen}
           onToggle={(e) => setPastOpen(e.currentTarget.open)}
-          className="group pt-2"
+          // Shut, it is a control (its rows do not print): the bar stays off paper too.
+          className={pastOpen ? "group pt-2" : "no-print group pt-2"}
         >
           <summary className="flex min-h-11 cursor-pointer list-none items-center gap-2 rounded-[2px] bg-card px-3 py-2 shadow-edge transition-colors duration-2 hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
             <History className="h-[18px] w-[18px] shrink-0 text-muted-foreground" aria-hidden />
@@ -2006,7 +2013,7 @@ export function OverviewClient({
             </span>
             <ChevronDown
               aria-hidden
-              className="ml-auto h-5 w-5 shrink-0 text-muted-foreground transition-transform duration-2 group-open:rotate-180"
+              className="ml-auto h-5 w-5 shrink-0 text-muted-foreground transition-transform duration-2 group-open:rotate-180 print:hidden"
             />
           </summary>
           <div className="mt-4 space-y-6">{pastBuckets.map((b) => renderBucket(b, false, true))}</div>
