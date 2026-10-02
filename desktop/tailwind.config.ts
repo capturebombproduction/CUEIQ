@@ -11,6 +11,10 @@ const config: Config = {
     "./src/**/*.{js,ts,jsx,tsx}",
     "../components/**/*.{js,ts,jsx,tsx}",
     "../lib/**/*.{js,ts,jsx,tsx}",
+    // A test's fixtures are strings too, and Tailwind would ship them as classes.
+    "!./src/**/*.test.{js,ts,jsx,tsx}",
+    "!../components/**/*.test.{js,ts,jsx,tsx}",
+    "!../lib/**/*.test.{js,ts,jsx,tsx}",
   ],
   presets: [preset],
 };

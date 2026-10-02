@@ -1,4 +1,5 @@
 import { fireEvent, render, screen } from "@testing-library/react";
+import type { AtRule, Node } from "postcss";
 import { describe, expect, it } from "vitest";
 import { Input } from "./input";
 import { Textarea } from "./textarea";
@@ -210,16 +211,74 @@ describe("Table", () => {
       expect(css).toMatch(/@media \(min-width: 768px\) \{[^@]*\.md\\:overflow-x-clip \{ overflow-x: clip;? \}/);
     });
 
-    it("the header sticks UNDER the fixed app header, not at the viewport's top edge", async () => {
+    it("at md+ the header sticks UNDER the fixed app header, not at the viewport's top edge", async () => {
       mountBare();
       const thead = screen.getByRole("table").querySelector("thead")!;
       expect(classes(thead)).toContain("sticky");
-      expect(classes(thead)).not.toContain("top-0");
       // the same offset the Event page's tab row uses (strip height included)
       const css = flat(await compileTableCss());
       expect(css).toContain(
         "top: calc(var(--header-h) + var(--offline-strip-h,0px) + env(safe-area-inset-top))"
       );
+    });
+
+    // R15 final verification. That offset was written for every width, but below md the
+    // slab is overflow-x-auto — the header's scroll container — so `top` was measured
+    // from the SLAB and a 52 px offset (more under a notch) pushed the header down onto
+    // row 1: on every phone, in the summary JPG a phone exports, in print. Measured in
+    // a real browser (head top minus table top): 52 px at 390 on screen and in print,
+    // 0 once gated; at 1280 the header still sticks under the app header. jsdom has no
+    // layout, so this reads WHERE in the compiled CSS each `top` can apply.
+    describe("the header's offset is only where the slab is not its scroll container", () => {
+      /** The at-rules a declaration sits in, e.g. ["@media (min-width:768px)", "@supports (overflow:clip)"]. */
+      const guards = (node: Node): string[] => {
+        const out: string[] = [];
+        for (let p: Node | undefined = node.parent; p && p.type !== "root" && p.type !== "document"; p = p.parent) {
+          if (p.type === "atrule") {
+            const at = p as AtRule;
+            out.unshift(`@${at.name} ${at.params}`.replace(/\s*:\s*/g, ":").replace(/\s+/g, " ").trim());
+          }
+        }
+        return out;
+      };
+      const declsOf = async (prop: string) => {
+        const { default: postcss } = await import("postcss");
+        const out: { value: string; guards: string[] }[] = [];
+        postcss.parse(await compileTableCss()).walkDecls(prop, (d) => {
+          out.push({ value: d.value.replace(/\s+/g, " "), guards: guards(d) });
+        });
+        return out;
+      };
+
+      it("is offset from md up AND only where overflow: clip is supported; everywhere else the top is zero", async () => {
+        mountBare();
+        const thead = screen.getByRole("table").querySelector("thead")!;
+        expect(classes(thead)).toContain("top-0");
+
+        const tops = await declsOf("top");
+        const offset = tops.filter((t) => t.value.includes("--header-h"));
+        // exactly one offset, reachable at md+ with clip support and nowhere else
+        expect(offset).toHaveLength(1);
+        expect(offset[0].guards).toEqual(["@media (min-width:768px)", "@supports (overflow:clip)"]);
+        // every other `top` — below md, in an old Safari — is zero
+        expect(tops.filter((t) => !t.value.includes("--header-h")).map((t) => t.value)).toEqual(["0px"]);
+
+        // the clip the offset relies on is gated on the same breakpoint, so they cannot drift apart
+        const clip = (await declsOf("overflow-x")).filter((d) => d.value === "clip");
+        expect(clip.map((d) => d.guards)).toEqual([[offset[0].guards[0]]]);
+      });
+
+      it("is static in print, where a page's top has no app header above it", async () => {
+        mountBare();
+        const thead = screen.getByRole("table").querySelector("thead")!;
+        expect(classes(thead)).toContain("print:static");
+        const position = await declsOf("position");
+        const staticRules = position.filter((d) => d.value === "static");
+        expect(staticRules.map((d) => d.guards)).toEqual([["@media print"]]);
+        // it must come AFTER the base `sticky`, or it loses to it
+        const order = position.map((d) => d.value);
+        expect(order.indexOf("static")).toBeGreaterThan(order.indexOf("sticky"));
+      });
     });
 
     it("the stuck header is opaque — rows slide under it", () => {

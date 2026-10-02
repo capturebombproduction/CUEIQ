@@ -271,10 +271,30 @@ describe("SongLibrary — tablet table, phone meta line, chip row", () => {
     expect(dots).toHaveLength(2);
     for (const dot of dots) {
       expect(dot.textContent).toBe("·");
-      expect(cls(dot)).toEqual(expect.arrayContaining(["mx-1.5", "[@media(max-width:380px)]:mx-1"]));
+      expect(cls(dot)).toEqual(expect.arrayContaining(["mx-1.5", "[@media(max-width:380px)]:mx-0.5"]));
     }
     // length · language · BPM still read in order
     expect(meta.textContent).toBe("3:48·ญี่ปุ่น·174 BPM");
+  });
+
+  // R15 final verification. At 360 the line's box is 122-126 px and "length · language ·
+  // BPM" with the old 4 px separators was 125 px for a Japanese row and 135 for an English
+  // one — "BPM" read "B…". Real browser, 360, 20 library rows: 12 were cut (max 13 px
+  // over); with these three tightenings none are (widest line 122 px in 126); at 375 / 390
+  // / 430 the line measures what it did. jsdom has no layout, so this pins the classes.
+  it("under 380 px the BPM unit and the row's gap tighten with the separators, and not above", () => {
+    mount([song("s1", "Seishin Kakumei", { language: "jp", bpm: 174 })]);
+    const row = phoneList().children[0] as HTMLElement;
+    const meta = [...row.querySelectorAll("span.truncate")].find((el) => /BPM/.test(el.textContent ?? ""))!;
+    // the unit word is its own span so it can shrink; the numeral beside it keeps 15 px
+    const unit = [...meta.querySelectorAll("span")].find((el) => el.textContent === "BPM")!;
+    expect(unit).toBeTruthy();
+    expect(cls(unit)).toContain("[@media(max-width:380px)]:text-[10px]");
+    // every tightening is under the media query: nothing narrows the line at 390 and up
+    expect(cls(unit).filter((c) => /^text-/.test(c))).toEqual([]);
+    expect(cls(row)).toEqual(expect.arrayContaining(["gap-2", "[@media(max-width:380px)]:gap-1.5"]));
+    const number = [...meta.querySelectorAll("span.num")].find((el) => el.textContent === "174")!;
+    expect(cls(number)).toContain("text-[15px]");
   });
 
   // CQ-62: no autoprefixer, so `[scrollbar-width:none]` alone leaves chip-row scrollbars

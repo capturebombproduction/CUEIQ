@@ -1477,7 +1477,8 @@ export function SongLibrary({
     if (song.bpm) {
       parts.push(
         <span key="bpm">
-          <span className="num text-[15px]">{song.bpm}</span> BPM
+          <span className="num text-[15px]">{song.bpm}</span>{" "}
+          <span className="[@media(max-width:380px)]:text-[10px]">BPM</span>
         </span>
       );
     }
@@ -1869,7 +1870,7 @@ export function SongLibrary({
                   key={song.id}
                   {...previewMarks(song)}
                   className={cn(
-                    "slab flex min-h-[62px] items-center gap-2 py-2 pl-3 pr-2",
+                    "slab flex min-h-[62px] items-center gap-2 py-2 pl-3 pr-2 [@media(max-width:380px)]:gap-1.5",
                     isCurrent &&
                       "bg-[linear-gradient(90deg,hsl(var(--primary)/.16),transparent_70%)] shadow-[inset_4px_0_0_hsl(var(--primary)),inset_0_0_0_1px_hsl(var(--border))]"
                   )}
@@ -1893,15 +1894,19 @@ export function SongLibrary({
                       {/* `block truncate`, never `flex`: text-overflow does not apply to
                           flex items, so on a 360 px phone "174 BPM" was cut mid-glyph with
                           no ellipsis. The separators carry their own margin for the same
-                          reason (no flex gap); it tightens under 380 px so the common
-                          length · language · BPM line still fits whole on a 360 px row. */}
+                          reason (no flex gap). Under 380 px three things tighten together
+                          so length · language · BPM fits WHOLE on a 360 px row: the
+                          separator margin, the unit word (10 px; the numeral beside it
+                          stays 15) and the row's own gap. At 360 the line's box is 122-126
+                          px; an English row with a 3-digit tempo was 135 wide ("B…"), the
+                          widest is now 122. Wider phones keep the 12.5 px unit and 6 px margins. */}
                       {meta.length > 0 && (
                         <span className="mt-[3px] block truncate text-[12.5px] text-muted-foreground">
                           {meta.flatMap((p, i) =>
                             i === 0
                               ? [p]
                               : [
-                                  <span key={`dot-${i}`} aria-hidden className="mx-1.5 [@media(max-width:380px)]:mx-1">
+                                  <span key={`dot-${i}`} aria-hidden className="mx-1.5 [@media(max-width:380px)]:mx-0.5">
                                     ·
                                   </span>,
                                   p,
