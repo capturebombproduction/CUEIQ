@@ -3,6 +3,7 @@ import { render, screen, fireEvent, waitFor, within } from "@testing-library/rea
 import { toast } from "sonner";
 import { makeSupabaseFake, makeSession, ok, type SupabaseFake } from "@/test/fakes/supabase";
 import { ConfirmProvider } from "@/components/ui/confirm-dialog";
+import { captureElementToImage } from "@/lib/export-image";
 import { RunOrderBuilder, type RunSequence, type RunBandEvent } from "./run-order-builder";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -18,7 +19,10 @@ import { RunOrderBuilder, type RunSequence, type RunBandEvent } from "./run-orde
 
 const h = vi.hoisted(() => ({ supa: null as unknown }));
 vi.mock("@/lib/supabase/client", () => ({ createClient: () => h.supa }));
-vi.mock("@/lib/export-image", () => ({
+// Only the capture is faked (html-to-image has no canvas here); the file-name helper
+// is the real one, so the name the builder asks for is what a download would be called.
+vi.mock("@/lib/export-image", async (orig) => ({
+  ...(await orig<typeof import("@/lib/export-image")>()),
   captureElementToImage: vi.fn(() => Promise.resolve("downloaded")),
 }));
 vi.mock("sonner", () => ({
@@ -60,12 +64,12 @@ beforeEach(() => {
   h.supa = supa;
 });
 
-function renderBuilder(rows: RunSequence[] = ROWS) {
+function renderBuilder(rows: RunSequence[] = ROWS, eventName = FEST) {
   return render(
     <ConfirmProvider>
       <RunOrderBuilder
         tenantId="t1"
-        eventName={FEST}
+        eventName={eventName}
         eventDate="2026-08-09"
         initial={rows}
         bandEvents={BANDS}
@@ -171,6 +175,18 @@ describe("RunOrderBuilder — the JPG card stays flat and light (§D)", () => {
     fireEvent.click(screen.getByRole("button", { name: /บันทึกเป็นรูป/ }));
     await waitFor(() => expect(toast.success).toHaveBeenCalled());
     expect(toast.success).toHaveBeenCalledWith("บันทึกรูปแล้ว");
+  });
+
+  // 2026-10-02 (CQ-25): `eventName.replace(/[^\w\-]+/g, "_")` — \w is ASCII-only, so a
+  // Thai festival saved as "_runorder.jpg".
+  it("is named after the festival in Thai too, not '_runorder.jpg'", async () => {
+    vi.mocked(captureElementToImage).mockClear();
+    renderBuilder(ROWS, "ปฏิวัติหัวใจ");
+    fireEvent.click(screen.getByRole("button", { name: /บันทึกเป็นรูป/ }));
+    await waitFor(() => expect(captureElementToImage).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(captureElementToImage).mock.calls[0][1]).toMatchObject({
+      filename: "ปฏิวัติหัวใจ_runorder.jpg",
+    });
   });
 });
 

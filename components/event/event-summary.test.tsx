@@ -7,8 +7,8 @@
 // What is asserted is the DOM at the instant html-to-image would read it, not
 // the page at rest: the on-screen view was always right, which is how this
 // shipped and stayed wrong for three months.
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
 import type { EventRow, Group, Member, SetlistItem } from "@/lib/types";
 
 vi.mock("@/lib/supabase/client", () => ({ createClient: () => ({}) }));
@@ -17,10 +17,17 @@ const captured = vi.hoisted(() => ({
   text: [] as string[],
   // The classes the sheet wears at the instant html-to-image reads it.
   classes: [] as { grid: string; tile: string; title: string }[],
+  // The file name the sheet asked for, and the alarm badge as the capture tree has it
+  // (rows also carry data-over-hard-out, so the badge is whatever is not a <tr>).
+  filenames: [] as string[],
+  overBadge: [] as (string | null)[],
 }));
-vi.mock("@/lib/export-image", () => ({
-  captureElementToImage: async (el: HTMLElement) => {
+vi.mock("@/lib/export-image", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/export-image")>()),
+  captureElementToImage: async (el: HTMLElement, opts: { filename: string }) => {
     captured.text.push(el.textContent ?? "");
+    captured.filenames.push(opts.filename);
+    captured.overBadge.push(el.querySelector(":not(tr)[data-over-hard-out]")?.textContent ?? null);
     // the "ขึ้นเวที" tile of the four-times grid (the label also appears in the table)
     const well = Array.from(el.querySelectorAll(".well")).find(
       (w) => w.firstElementChild?.textContent === "ขึ้นเวที"
@@ -308,5 +315,152 @@ describe("EventSummary — the JPG looks the same whichever screen sent it", () 
     expect(well.children[1].className).toContain("text-[20px]");
     expect(well.children[1].className).toContain("sm:text-[26px]");
     expect(screen.getByText("เพลง 1").className).toBe("text-xs sm:text-sm");
+  });
+});
+
+// ── 2026-10-02 (CQ-23 / CQ-25 / CQ-26 / CQ-30): what the sheet says and saves ─────
+const songRow = (id: string, sort_order: number, seconds: number) =>
+  ({
+    id,
+    tenant_id: "t1",
+    event_id: "e1",
+    kind: "song",
+    title: `เพลง ${sort_order}`,
+    duration_seconds: seconds,
+    buffer_before_seconds: 0,
+    buffer_after_seconds: 0,
+    mic_slots: [],
+    notes: null,
+    sort_order,
+  }) as SetlistItem;
+
+const mountSheet = (ev: Partial<typeof event>, setlist: SetlistItem[]) =>
+  render(
+    <EventSummary
+      event={{ ...event, ...ev }}
+      schedule={[]}
+      setlist={setlist}
+      members={[]}
+      showMic={false}
+      onNavigate={() => {}}
+      tenantId="t1"
+    />
+  );
+
+const exportButton = () => screen.getByRole("button", { name: /บันทึกเป็นรูป/ });
+
+// The rows past the hard out are only tinted (7 % alarm), railed (3 px) and carry a
+// 12 px octagon in the picture — their label "เกิน Hard Out · " is sr-only. The one
+// sentence that names the overtime and says by how much was inside the stats bar the
+// capture removes, so the JPG that gets forwarded never said the show ran over.
+describe("EventSummary — the JPG says the set runs past the hard out (CQ-23)", () => {
+  const overRun = { show_start_time: "18:00:00", hard_out_time: "18:05:00" };
+
+  beforeEach(() => {
+    captured.overBadge = [];
+  });
+
+  it("the picture carries the alarm badge with how far over", async () => {
+    mountSheet(overRun, [songRow("a", 1, 240), songRow("b", 2, 240)]);
+    fireEvent.click(exportButton());
+    await waitFor(() => expect(captured.overBadge).toHaveLength(1));
+    expect(captured.overBadge[0]).toContain("เกิน Hard Out +3:00");
+  });
+
+  it("on screen it is still one badge, in the stats bar", async () => {
+    mountSheet(overRun, [songRow("a", 1, 240), songRow("b", 2, 240)]);
+    expect(screen.getAllByText(/เกิน Hard Out \+3:00/)).toHaveLength(1);
+    fireEvent.click(exportButton());
+    await waitFor(() => expect(captured.overBadge).toHaveLength(1));
+    await waitFor(() => expect(exportButton()).not.toBeDisabled()); // capture over, sheet back on screen
+    expect(screen.getAllByText(/เกิน Hard Out \+3:00/)).toHaveLength(1);
+  });
+
+  it("a set that fits the hard out puts no badge in the picture", async () => {
+    mountSheet({ show_start_time: "18:00:00", hard_out_time: "21:15:00" }, [songRow("a", 1, 240)]);
+    fireEvent.click(exportButton());
+    await waitFor(() => expect(captured.overBadge).toHaveLength(1));
+    expect(captured.overBadge[0]).toBeNull();
+  });
+});
+
+describe("EventSummary — the JPG is named after the show, in any script (CQ-25)", () => {
+  beforeEach(() => {
+    captured.filenames = [];
+  });
+
+  it("a Thai show name is kept in the file name, not flattened to '_.jpg'", async () => {
+    mountSheet({ name: "ปฏิวัติหัวใจ" }, []);
+    fireEvent.click(exportButton());
+    await waitFor(() => expect(captured.filenames).toHaveLength(1));
+    expect(captured.filenames[0]).toBe("ปฏิวัติหัวใจ.jpg");
+  });
+
+  it("a name with no usable character falls back to 'summary'", async () => {
+    mountSheet({ name: "///" }, []);
+    fireEvent.click(exportButton());
+    await waitFor(() => expect(captured.filenames).toHaveLength(1));
+    expect(captured.filenames[0]).toBe("summary.jpg");
+  });
+});
+
+// A hard out with no songs under it said "Remaining 3:15:00" in the success green:
+// nothing was scheduled, so nothing was on time. The empty-state line below says so.
+describe("EventSummary — an empty setlist is not 'on time' (CQ-26)", () => {
+  const hours = { show_start_time: "18:00:00", hard_out_time: "21:15:00" };
+
+  it("no green Remaining badge while there are no items", () => {
+    mountSheet(hours, []);
+    expect(screen.queryByText(/Remaining/)).toBeNull();
+    expect(screen.getByText("ยังไม่มีรายการ")).toBeInTheDocument();
+  });
+
+  it("with items inside the hard out it still says how much is left", () => {
+    mountSheet(hours, [songRow("a", 1, 240)]);
+    expect(screen.getByText(/Remaining/).textContent).toContain("3:11:00");
+  });
+});
+
+// The map is a cross-origin iframe: offline it is a blank white 192 px box (the
+// desktop app is mostly used at venues with no signal).
+describe("EventSummary — the embedded map needs a network (CQ-30)", () => {
+  const withMap = { venue: "Impact Arena", map_url: "https://maps.app.goo.gl/abc" };
+  const setOnline = (on: boolean) =>
+    Object.defineProperty(navigator, "onLine", { configurable: true, get: () => on });
+  // an own property shadowing Navigator.prototype.onLine; deleting it restores jsdom's
+  afterEach(() => {
+    delete (navigator as unknown as Record<string, unknown>).onLine;
+  });
+
+  it("online: the map frame is there and the offline note is not", () => {
+    setOnline(true);
+    const { container } = mountSheet(withMap, []);
+    expect(container.querySelector("iframe")).not.toBeNull();
+    expect(screen.queryByText("แผนที่ต้องใช้อินเทอร์เน็ต")).toBeNull();
+  });
+
+  it("offline: no iframe, a muted one-line note instead, and View Map stays", () => {
+    setOnline(false);
+    const { container } = mountSheet(withMap, []);
+    expect(container.querySelector("iframe")).toBeNull();
+    const note = screen.getByText("แผนที่ต้องใช้อินเทอร์เน็ต");
+    expect(note.className).toContain("text-muted-foreground");
+    expect(note.querySelector("svg")).not.toBeNull(); // icon + words
+    const link = screen.getByRole("link", { name: /View Map/ });
+    expect(link).toHaveAttribute("href", withMap.map_url);
+  });
+
+  it("follows the network: the frame appears when it comes back and goes when it drops", () => {
+    setOnline(false);
+    const { container } = mountSheet(withMap, []);
+    expect(container.querySelector("iframe")).toBeNull();
+    setOnline(true);
+    act(() => void window.dispatchEvent(new Event("online")));
+    expect(container.querySelector("iframe")).not.toBeNull();
+    expect(screen.queryByText("แผนที่ต้องใช้อินเทอร์เน็ต")).toBeNull();
+    setOnline(false);
+    act(() => void window.dispatchEvent(new Event("offline")));
+    expect(container.querySelector("iframe")).toBeNull();
+    expect(screen.getByText("แผนที่ต้องใช้อินเทอร์เน็ต")).toBeInTheDocument();
   });
 });

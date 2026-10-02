@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useRef, useState, useSyncExternalStore } from "react";
 import Link from "next/link";
 import { toast } from "sonner";
 import {
@@ -16,6 +16,7 @@ import {
   StickyNote,
   Mic,
   OctagonAlert,
+  WifiOff,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -48,12 +49,27 @@ import {
   type ScheduleKind,
   type SetlistItem,
 } from "@/lib/types";
-import { captureElementToImage } from "@/lib/export-image";
+import { captureElementToImage, safeFileStem } from "@/lib/export-image";
 import { callTimeOf } from "@/lib/next-show";
 import { type CompletenessResult } from "@/lib/completeness";
 import { EventRunStatusCard } from "@/components/event/event-run-status";
 import { LineupHeadline } from "@/components/event/lineup-headline";
 import { type RunSeqLive } from "@/components/event/event-live-caller";
+
+// The embedded Google Map is a cross-origin iframe: with no network it is a blank
+// white 192 px box (the desktop app's main use is a venue with no signal), so it is
+// mounted only while the device is online. The server has no network state, so it
+// renders as online and a device that is offline corrects itself on hydration.
+function subscribeOnline(onChange: () => void) {
+  window.addEventListener("online", onChange);
+  window.addEventListener("offline", onChange);
+  return () => {
+    window.removeEventListener("online", onChange);
+    window.removeEventListener("offline", onChange);
+  };
+}
+const isOnline = () => navigator.onLine !== false;
+const assumeOnline = () => true;
 
 function fmtDate(date: string | null): string {
   if (!date) return "—";
@@ -186,6 +202,7 @@ export function EventSummary({
   const [exporting, setExporting] = useState(false);
   const [isCapturing, setIsCapturing] = useState(false);
   const [exportedAt, setExportedAt] = useState<Date | null>(null);
+  const online = useSyncExternalStore(subscribeOnline, isOnline, assumeOnline);
 
   const showStartSec = parseClockToSeconds(event.show_start_time);
   const hardOutSec = parseClockToSeconds(event.hard_out_time);
@@ -288,7 +305,7 @@ export function EventSummary({
     setIsCapturing(true); // swap iframe → static map
     await new Promise((r) => setTimeout(r, 120)); // wait for re-render
     try {
-      const filename = `${event.name.replace(/[^\w\-]+/g, "_") || "summary"}.jpg`;
+      const filename = `${safeFileStem(event.name, "summary")}.jpg`;
       const how = await captureElementToImage(el, {
         filename,
         shareTitle: event.name,
@@ -319,6 +336,13 @@ export function EventSummary({
     ["Hard Out", shortClock(event.hard_out_time) || "—"],
     ["Run time", formatDuration(timing.totalSeconds)],
   ];
+
+  const overBadge =
+    hardOutSec != null && timing.isOver ? (
+      <Badge variant="alarm" data-over-hard-out="">
+        <OctagonAlert aria-hidden /> เกิน Hard Out +{formatDuration(timing.overBy)}
+      </Badge>
+    ) : null;
 
   return (
     <div className="space-y-4">
@@ -505,17 +529,25 @@ export function EventSummary({
               </a>
             </div>
           )}
-          {mapQuery && !isCapturing && (
-            <div className="no-print overflow-hidden rounded-[2px] border">
-              <iframe
-                title="map"
-                src={mapsEmbedUrl(mapQuery)}
-                className="h-48 w-full"
-                loading="lazy"
-                referrerPolicy="no-referrer-when-downgrade"
-              />
-            </div>
-          )}
+          {mapQuery && !isCapturing &&
+            (online ? (
+              <div className="no-print overflow-hidden rounded-[2px] border">
+                <iframe
+                  title="map"
+                  src={mapsEmbedUrl(mapQuery)}
+                  className="h-48 w-full"
+                  loading="lazy"
+                  referrerPolicy="no-referrer-when-downgrade"
+                />
+              </div>
+            ) : (
+              // Offline the frame would be a blank white box. The View Map link above
+              // stays, for when the signal is back.
+              <p className="no-print flex items-center gap-2 rounded-[2px] bg-muted px-3 py-2 text-sm text-muted-foreground">
+                <WifiOff aria-hidden className="h-4 w-4 shrink-0" />
+                แผนที่ต้องใช้อินเทอร์เน็ต
+              </p>
+            ))}
         </Section>
 
         {/* The day, in order */}
@@ -551,17 +583,21 @@ export function EventSummary({
                   band, and "เกิน Hard Out" came out violet on Seishin's sheet. */}
               {hardOutSec != null &&
                 (timing.isOver ? (
-                  <Badge variant="alarm" data-over-hard-out="">
-                    <OctagonAlert aria-hidden /> เกิน Hard Out +{formatDuration(timing.overBy)}
-                  </Badge>
-                ) : (
+                  overBadge
+                ) : setlist.length > 0 ? (
+                  // "On time" is a claim about a set: with no songs there is nothing
+                  // to be on time, and a green "Remaining 3:15:00" said the show fit.
                   <Badge variant="success">
                     <CheckCircle2 aria-hidden /> Remaining{" "}
                     {formatDuration(Math.max(0, timing.hardOutSec! - timing.endSec))}
                   </Badge>
-                ))}
+                ) : null)}
             </div>
           )}
+          {/* The bar above is not part of the picture (the four times already say the
+              run time), but the alarm is: the rows past the hard out are only tinted
+              and railed in the JPG, so the sentence that names them is kept. */}
+          {isCapturing && overBadge && <div className="pb-1">{overBadge}</div>}
 
           {setlist.length === 0 ? (
             <p className="text-sm text-muted-foreground">ยังไม่มีรายการ</p>

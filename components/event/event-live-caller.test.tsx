@@ -36,6 +36,16 @@ vi.mock("@/lib/run-order-outbox", async (orig) => ({
   listRunSeqOps: async () => h.ops,
 }));
 
+// The report's JPG: only the file name it asks for is read (html-to-image has no canvas here).
+const shot = vi.hoisted(() => ({ filenames: [] as string[] }));
+vi.mock("@/lib/export-image", async (orig) => ({
+  ...(await orig<typeof import("@/lib/export-image")>()),
+  captureElementToImage: async (_el: HTMLElement, o: { filename: string }) => {
+    shot.filenames.push(o.filename);
+    return "downloaded" as const;
+  },
+}));
+
 const TENANT = "t1";
 const FEST = "A Lot Of Tone Fest";
 const FEST_DATE = "2026-08-09";
@@ -541,6 +551,72 @@ describe("EventLiveCaller — the JPG report stays flat and light (§D)", () => 
     // and the kind labels it prints are unchanged
     expect(within(report).getByText("Break")).toBeInTheDocument();
     expect(within(report).getAllByText("วง", { selector: "div" })).toHaveLength(2);
+  });
+
+  // 2026-10-02 (CQ-25): the file name was `eventName.replace(/[^\w\-]+/g, "_")`, and
+  // \w is ASCII-only — a Thai festival saved as "_report.jpg".
+  it("is named after the festival in Thai too, not '_report.jpg'", async () => {
+    shot.filenames = [];
+    renderCaller(liveBoard(), { eventName: "ปฏิวัติหัวใจ" });
+    fireEvent.click(await screen.findByRole("button", { name: /บันทึกรายงาน/ }));
+    await waitFor(() => expect(shot.filenames).toHaveLength(1));
+    expect(shot.filenames[0]).toBe("ปฏิวัติหัวใจ_report.jpg");
+  });
+});
+
+// 2026-10-02 (CQ-22): on a landscape phone (844 × 390, the dock fixed over the bottom
+// 88 px) the NOW card's 164 px clock — a 131 px box — sat from y 225 to 356, half of
+// it behind the dock that starts at 302. The card had none of the landscape-phone
+// variants components/live/now-card.tsx uses there. jsdom has no layout: what is
+// pinned is the classes and the query; the harness measures the clock clearing the
+// dock at 844×390 and 667×375 (touch).
+const LANDSCAPE_PHONE = "[@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]";
+
+describe("EventLiveCaller — the NOW card fits a landscape phone above the dock (CQ-22)", () => {
+  const now = (container: HTMLElement) => container.querySelector(".now")!;
+  const tokens = (el: Element) => classOf(el).split(/\s+/);
+
+  it("the clock sits in the same 96 px box with a 120 px cap the NOW card uses there", () => {
+    const { container } = renderCaller();
+    const wrap = now(container).querySelector(".cd-wrap")!.parentElement!;
+    expect(tokens(wrap)).toEqual(
+      expect.arrayContaining([
+        `${LANDSCAPE_PHONE}:mt-1`,
+        `${LANDSCAPE_PHONE}:[&_.cd-wrap]:!h-[96px]`,
+        `${LANDSCAPE_PHONE}:[&_.cd]:![--cd-max:120px]`,
+      ])
+    );
+    // the phone's 164 px clock is untouched everywhere else
+    expect(tokens(wrap)).toContain("mt-2");
+  });
+
+  it("the strip is 32 px, and the 'เริ่มจริง' line and the drift row's 44 px floor give their rows back", () => {
+    const { container } = renderCaller();
+    expect(tokens(now(container).querySelector(".zhead")!)).toContain(`${LANDSCAPE_PHONE}:h-8`);
+    expect(tokens(screen.getByText(/เริ่มจริง/).closest("p")!)).toContain(`${LANDSCAPE_PHONE}:hidden`);
+    expect(tokens(container.querySelector(".chip-lg")!.parentElement!)).toContain(`${LANDSCAPE_PHONE}:min-h-0`);
+  });
+
+  // 844 × 390: the clock's box bottom went 356 → 287 against a dock at 302. 667 × 375
+  // (iPhone SE): the dock is at 287, so the same changes alone left the box ending ON it
+  // (287 = 287) and 10 px more are taken from the title row's margin and the page's top
+  // padding and row gap.
+  it("the title row and the page's padding and row gap tighten too, so a 375 px tall phone clears the dock", () => {
+    const { container } = renderCaller();
+    expect(tokens(now(container).querySelector("h2")!.parentElement!)).toContain(`${LANDSCAPE_PHONE}:mt-1`);
+    const page = container.querySelector(".chip-lg")!.parentElement!.parentElement!;
+    expect(tokens(page)).toEqual(
+      expect.arrayContaining([`${LANDSCAPE_PHONE}:pt-2`, `${LANDSCAPE_PHONE}:space-y-2`])
+    );
+  });
+
+  it("every landscape rule on this screen names a coarse pointer — never a short laptop window", () => {
+    const { container } = renderCaller();
+    const rules = [container, ...Array.from(container.querySelectorAll("*"))]
+      .flatMap((n) => classOf(n).split(/\s+/))
+      .filter((t) => t.includes("orientation:landscape"));
+    expect(rules.length).toBeGreaterThan(0);
+    for (const r of rules) expect(r.startsWith(`${LANDSCAPE_PHONE}:`), r).toBe(true);
   });
 });
 

@@ -36,7 +36,7 @@ import { toast } from "sonner";
 import { createClient } from "@/lib/supabase/client";
 import { hasLiveSession } from "@/lib/auth-session";
 import { notify } from "@/lib/notify-client";
-import { captureElementToImage } from "@/lib/export-image";
+import { captureElementToImage, safeFileStem } from "@/lib/export-image";
 import { Button } from "@/components/ui/button";
 import { useConfirm } from "@/components/ui/confirm-dialog";
 import { Countdown } from "@/components/live/countdown";
@@ -1010,7 +1010,7 @@ export function EventLiveCaller({
     if (!el) return;
     setReportBusy(true);
     try {
-      const safe = eventName.replace(/[^\w\-]+/g, "_") || "run-order";
+      const safe = safeFileStem(eventName, "run-order");
       const how = await captureElementToImage(el, {
         filename: `${safe}_report.jpg`,
         shareTitle: `${eventName} — รายงานเวลา`,
@@ -1134,7 +1134,7 @@ export function EventLiveCaller({
           fixed dock by 20+ px when scrolled to the end. */}
       <div
         className={cn(
-          "mx-auto w-full max-w-5xl space-y-3 px-4 pt-3 stage:px-5 stage:pt-4",
+          "mx-auto w-full max-w-5xl space-y-3 px-4 pt-3 stage:px-5 stage:pt-4 [@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:space-y-2 [@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:pt-2",
           canControl
             ? "pb-[calc(112px+env(safe-area-inset-bottom))] stage:pb-[calc(124px+env(safe-area-inset-bottom))]"
             : "pb-6"
@@ -1203,7 +1203,7 @@ export function EventLiveCaller({
         )}
 
         {/* Overall drift (icon + word, never colour alone) + the report export */}
-        <div className="flex min-h-[44px] items-center gap-2">
+        <div className="flex min-h-[44px] items-center gap-2 [@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:min-h-0">
           <span
             className={cn(
               "chip chip-lg",
@@ -1266,7 +1266,7 @@ export function EventLiveCaller({
               className="now lit cut pb-3.5 [--cut:18px] stage:[--cut:26px] stage:[--pad:24px]"
               style={liveColor ? (bandLitVars(liveColor) as CSSProperties) : undefined}
             >
-              <div className="zhead stage:h-[46px]">
+              <div className="zhead stage:h-[46px] [@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:h-8">
                 <span className="ztag">Now</span>
                 {liveRow && (
                   <span className="num zidx text-[16px]">
@@ -1287,7 +1287,7 @@ export function EventLiveCaller({
               </div>
               {liveRow ? (
                 <>
-                  <div className="mt-1.5 flex items-center gap-2">
+                  <div className="mt-1.5 flex items-center gap-2 [@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:mt-1">
                     {/* the act's name as typed — display face, never caps. py + -my:
                         room inside the clip for Kanit's tone marks and ุ / ู
                         (components/live/now-card.tsx), at the same row height */}
@@ -1296,7 +1296,7 @@ export function EventLiveCaller({
                     </h2>
                     <RunKindChip kind={liveRow.kind} />
                   </div>
-                  <p className="mt-0.5 flex h-5 items-center gap-1.5 overflow-hidden whitespace-nowrap text-[13px] text-muted-foreground">
+                  <p className="mt-0.5 flex h-5 items-center gap-1.5 overflow-hidden whitespace-nowrap text-[13px] text-muted-foreground [@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:hidden">
                     เริ่มจริง{" "}
                     <span className="num text-[15px] text-foreground">
                       {mounted && liveRow.actual_start
@@ -1311,7 +1311,14 @@ export function EventLiveCaller({
                   </p>
                   {/* Elapsed, on the Live countdown face: fixed height, fitted to the
                       column, never italic. */}
-                  <div className="mt-2">
+                  {/* Landscape phone (390 px tall, the dock fixed over the bottom 88): the
+                      164 px clock's box alone is 131 px, so it is the same 120 px cap in
+                      a 96 px box the NOW card uses there (components/live/now-card.tsx),
+                      and the strip, the "เริ่มจริง" line, the title row's top margin and
+                      the page's top padding / row gap above give their pixels back — on a
+                      667 × 375 iPhone SE the clock then clears the dock by ~10 px
+                      (without those it only touched it). */}
+                  <div className="mt-2 [@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:mt-1 [@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:[&_.cd-wrap]:!h-[96px] [@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:[&_.cd]:![--cd-max:120px]">
                     <Countdown seconds={mounted ? Math.floor(liveElapsed) : 0} max={164} />
                   </div>
                   {/* The act's planned slot: a meter inside it, hazard hatch past it. */}

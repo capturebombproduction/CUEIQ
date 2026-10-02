@@ -15,6 +15,17 @@
 export const EXPORT_LIGHT_CLASS = "export-light";
 
 /**
+ * A file name taken from a show's name. Keeps letters, marks and digits of ANY script
+ * — the old `[^\w\-]+` is ASCII-only, so "ปฏิวัติหัวใจ" came out as "_" (truthy, so
+ * the caller's `|| "summary"` fallback never fired) and every Thai show saved as
+ * "_.jpg". Marks (\p{M}) are kept because Thai vowels and tone marks are combining
+ * characters. Runs of anything else (spaces, slashes, colons, dashes, emoji) become one
+ * "_"; the ends are trimmed; nothing left → `fallback`.
+ */
+export const safeFileStem = (name: string, fallback: string): string =>
+  name.replace(/[^\p{L}\p{M}\p{N}_-]+/gu, "_").replace(/^_+|_+$/g, "") || fallback;
+
+/**
  * Capture `el` as a JPG and either share it (mobile) or download it (desktop).
  * Returns how it was delivered so the caller can tailor its toast. The caller
  * owns any pre-capture setup (e.g. swapping live iframes for static content) and
@@ -43,6 +54,12 @@ export async function captureElementToImage(
       backgroundColor: "#ffffff",
       cacheBust: true,
       quality: 0.92,
+      // html-to-image sizes the canvas from the node's clientHeight but copies its
+      // COMPUTED margin onto the clone it draws, so a node with a sibling margin (the
+      // summary sits under a `space-y-4` — margin-top 16 px) came out with a 16 px
+      // white strip on top and the bottom 16 px of the card cut off. `style` is applied
+      // to the cloned root only; the live node is never touched.
+      style: { margin: "0" },
     });
     // A node that isn't laid out (0×0 — e.g. captured while its container is
     // hidden) makes an empty canvas, and toDataURL() hands back "data:," without

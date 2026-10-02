@@ -8,7 +8,7 @@ import { createClient } from "@/lib/supabase/client";
 import { Button } from "@/components/ui/button";
 import { FIELD, Input } from "@/components/ui/input";
 import { useConfirm } from "@/components/ui/confirm-dialog";
-import { captureElementToImage } from "@/lib/export-image";
+import { captureElementToImage, safeFileStem } from "@/lib/export-image";
 import { privateChannel, runOrderTopic } from "@/lib/realtime";
 import { cn } from "@/lib/utils";
 
@@ -541,7 +541,7 @@ export function RunOrderBuilder({
     if (!el) return;
     setExportBusy(true);
     try {
-      const safe = eventName.replace(/[^\w\-]+/g, "_") || "run-order";
+      const safe = safeFileStem(eventName, "run-order");
       const how = await captureElementToImage(el, {
         filename: `${safe}_runorder.jpg`,
         shareTitle: `${eventName} — ลำดับงาน`,
