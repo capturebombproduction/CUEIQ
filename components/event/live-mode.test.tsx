@@ -1530,3 +1530,186 @@ describe("LiveMode · what a show needs stays where the show can reach it", () =
     expect(nowCard()).not.toHaveTextContent(/ปรับ “ระดับเสียง” ในแอปไม่ได้/);
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ROUND 15 · THE LIVE SEAMS THE AUDIT FOUND (CQ-06 wording, CQ-11, CQ-15, CQ-16,
+// CQ-18, CQ-19, CQ-21)
+//
+// jsdom evaluates no media query and has no layout, so none of the geometry here is
+// measured — what is pinned is the class the stylesheet reads (and a class that
+// compiles: the preset's raw `stage` screen drops every min-* / max-* variant, which
+// is why every width / height guard below is an arbitrary @media variant). The
+// real-browser numbers belong to the harness (probe6, probe11, ov5, ev_chip). The
+// one behaviour here, the scroll lock under Live tools, is plain DOM.
+// ─────────────────────────────────────────────────────────────────────────────
+describe("LiveMode · round 15 seams", () => {
+  const root = () => document.querySelector("[data-cueiq-live]") as HTMLElement;
+  const sheet = () => screen.getByRole("dialog", { name: "Live tools", hidden: true });
+  const openTools = () => fireEvent.click(screen.getByRole("button", { name: "Live tools" }));
+  const nowCard = () => screen.getByRole("heading", { level: 2 }).closest("[data-zone]") as HTMLElement;
+  const nextCard = () => screen.getByText("Next", { selector: ".nlabel" }).closest("section") as HTMLElement;
+  const order = () => screen.getByRole("heading", { name: "Running Order" }).closest("section") as HTMLElement;
+
+  it("CQ-15: NEXT holds 300 px, the running order gives ground below 1175 px, and the fade keys are 14 px until the window is 1060 wide", async () => {
+    await mountLive();
+    await startShowFromUi();
+    const board = nowCard().parentElement as HTMLElement;
+    expect(board).toHaveClass("stage:grid-cols-[minmax(0,1fr)_300px_clamp(270px,calc(40vw_-_150px),320px)]");
+    // NEXT never shrinks: its label row (NEXT, the index, a kind chip, a 48 px length)
+    // is ~260 px for a 12:00 block, and a 250 px card spilled the length over the
+    // running order at 1024 -> 1194 (measured: the first CQ-15 cut did exactly that)
+    expect(board.className).not.toMatch(/clamp\(250px/);
+    expect(board.className).not.toContain("24vw");
+    // the running order: the approved 320 px from 1175 px up (both iPads, 1180 and 1194,
+    // keep their layout), 270 px at the narrow end. Evaluate the formula it carries.
+    const m = /_clamp\((\d+)px,calc\((\d+)vw_-_(\d+)px\),(\d+)px\)\]/.exec(board.className);
+    expect(m).not.toBeNull();
+    const [lo, vw, off, hi] = m!.slice(1).map(Number);
+    const ro = (w: number) => Math.min(hi, Math.max(lo, (vw / 100) * w - off));
+    expect(ro(1024)).toBe(270);
+    expect(ro(1050)).toBe(270);
+    expect(ro(1175)).toBe(320);
+    expect(ro(1180)).toBe(320);
+    expect(ro(1194)).toBe(320);
+    expect(ro(1366)).toBe(320);
+    // monotonic: the running order never gets narrower as the window grows
+    for (let w = 900; w < 1400; w += 10) expect(ro(w + 10)).toBeGreaterThanOrEqual(ro(w));
+    // the old fixed pair is gone, or NOW would still get only the leftover at 1024
+    expect(board.className).not.toContain("_300px_320px");
+    for (const name of ["Auto Mute", "MC", "Auto Loudness"]) {
+      const key = within(nowCard()).getByRole("button", { name });
+      expect(key, name).toHaveClass("!text-[14px]", "stage:[@media(min-width:1060px)]:!text-[16px]");
+      expect(key, name).not.toHaveClass("stage:!text-[16px]");
+    }
+  });
+
+  it("CQ-16: under 390 px the readiness word steps aside whole; the count and the full sentence stay", async () => {
+    const items = [makeItem(1, { audio_path: "t/g/one.mp3" }), makeItem(2), makeItem(3)];
+    supa.setTable("setlist_items", ok(items));
+    await mountLive({ items });
+    const chip = screen.getByTitle(/^(เสียงในเครื่องนี้|กำลังโหลดเสียงลงเครื่อง)/);
+    const word = within(chip).getByText(/^(ในเครื่อง|กำลังโหลด)$/);
+    expect(word).toHaveClass("[@media(max-width:389.98px)]:sr-only");
+    // out of the layout but not out of the accessible text: display:none would leave a
+    // screen reader the bare "0/1"
+    expect(word.className).not.toContain("hidden");
+    expect(chip).toHaveTextContent(/(ในเครื่อง|กำลังโหลด)\s*0\/1/);
+    // never the count: it is the whole point of the chip, and the icon beside it stays
+    const count = within(chip).getByText("0/1");
+    expect(count.className).not.toContain("hidden");
+    expect(chip.querySelector("svg")).not.toBeNull();
+    // the sentence the word no longer carries is on the chip's title
+    expect(chip.getAttribute("title")).toMatch(/0\/1/);
+  });
+
+  describe("CQ-18 · the page under the Live tools sheet", () => {
+    let savedScrollY: PropertyDescriptor | undefined;
+    let scrollTo: ReturnType<typeof vi.spyOn>;
+    let y = 0;
+    beforeEach(() => {
+      y = 240;
+      savedScrollY = Object.getOwnPropertyDescriptor(window, "scrollY");
+      Object.defineProperty(window, "scrollY", { configurable: true, get: () => y });
+      scrollTo = vi.spyOn(window, "scrollTo").mockImplementation(() => {});
+      document.documentElement.style.overflow = "";
+    });
+    afterEach(() => {
+      scrollTo.mockRestore();
+      if (savedScrollY) Object.defineProperty(window, "scrollY", savedScrollY);
+      else delete (window as unknown as Record<string, unknown>).scrollY;
+      document.documentElement.style.overflow = "";
+    });
+
+    it("is frozen while the sheet is open, and put back where it was when it closes", async () => {
+      await mountLive();
+      expect(document.documentElement.style.overflow).toBe("");
+      await act(async () => openTools());
+      expect(document.documentElement.style.overflow).toBe("hidden");
+
+      y = 880; // something moved the page while it was frozen (iOS ignores overflow on <html>)
+      await act(async () => {
+        fireEvent.keyDown(document.activeElement!, { key: "Escape" });
+      });
+      expect(document.documentElement.style.overflow).toBe("");
+      expect(scrollTo).toHaveBeenCalledWith(0, 240);
+    });
+
+    it("gives back a page that had its own overflow, and leaves nothing frozen if the screen unmounts open", async () => {
+      document.documentElement.style.overflow = "scroll";
+      const { unmount } = await mountLive();
+      await act(async () => openTools());
+      expect(document.documentElement.style.overflow).toBe("hidden");
+      unmount();
+      expect(document.documentElement.style.overflow).toBe("scroll");
+    });
+
+    it("its scrim takes no touch drag and chains no scroll to the page", async () => {
+      await mountLive();
+      const scrim = sheet().previousElementSibling as HTMLElement;
+      expect(scrim).toHaveClass("absolute", "inset-0", "touch-none", "overscroll-none");
+      await act(async () => openTools());
+      await act(async () => {
+        fireEvent.click(scrim);
+      });
+      expect(sheet()).not.toBeVisible(); // a tap on it still closes the sheet
+    });
+  });
+
+  it("CQ-19: under 800 px tall the SHOW slab drops its duplicate elapsed row, and both tiles stay", async () => {
+    await mountLive();
+    const slab = screen.getByText("Show", { selector: ".nlabel" }).closest("section") as HTMLElement;
+    // the top bar prints ผ่านไป; this is the 50 px copy of it beside the planned total
+    const elapsed = slab.querySelector(".items-baseline") as HTMLElement;
+    expect(elapsed).not.toBeNull();
+    expect(elapsed).toHaveClass("[@media(max-height:799.98px)]:hidden");
+    const tiles = Array.from(slab.querySelectorAll(".well"));
+    expect(tiles).toHaveLength(2);
+    for (const t of tiles) expect(t.className).not.toContain("max-height");
+  });
+
+  it("CQ-21: the dock's key row is as wide as the cards above it, not the 2xl a portrait iPad overshoots", async () => {
+    await mountLive();
+    const row = screen.getByTestId("start-show").parentElement as HTMLElement;
+    expect(row.closest(".dock")).not.toBeNull();
+    expect(row).toHaveClass("mx-auto", "max-w-[40rem]", "stage:max-w-none");
+    expect(row).not.toHaveClass("max-w-2xl");
+    // the landscape phone's root is max-w-none, so its cards never matched the row
+    // anyway: it keeps the 2xl it always had (only the portrait iPad moves)
+    expect(row).toHaveClass("[@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:max-w-2xl");
+    // the cards: the root's 42rem less its 1rem gutters each side = 40rem
+    expect(root()).toHaveClass("max-w-2xl", "px-4");
+  });
+
+  it("CQ-06: NEXT with no per-song mic slots says the mics stay as they are, never that there are none", async () => {
+    await mountLive();
+    expect(nextCard()).toHaveTextContent("— ไมค์เหมือนเดิม —");
+    expect(nextCard()).not.toHaveTextContent("ไม่มีไมค์ที่ต้องเตรียม");
+  });
+
+  it("CQ-06: …and a NEXT that does carry mic slots prints them, with neither sentence", async () => {
+    const items = [
+      makeItem(1),
+      makeItem(2, { mic_slots: [{ mic: "4", member: "Ploy" }] }),
+      makeItem(3),
+    ];
+    supa.setTable("setlist_items", ok(items));
+    await mountLive({ items });
+    expect(within(nextCard()).getByText("Ploy")).toBeTruthy();
+    expect(nextCard()).not.toHaveTextContent("ไมค์เหมือนเดิม");
+    expect(nextCard()).not.toHaveTextContent("ไม่มีไมค์ที่ต้องเตรียม");
+  });
+
+  it("CQ-11: a long running-order title wraps to a second line on a phone before it is cut, and stays one line on stage", async () => {
+    const LONG = "[SYSTEM_BOOT] SE (Overture)";
+    const items = [makeItem(1, { title: LONG }), makeItem(2), makeItem(3)];
+    supa.setTable("setlist_items", ok(items));
+    await mountLive({ items });
+    const title = within(order()).getByText(LONG);
+    expect(title).toHaveClass("min-w-0", "line-clamp-2", "break-words");
+    // stage hands the one-line clip back (truncate must come back AFTER line-clamp-none
+    // in the stylesheet — tailwind orders them, the composed build is the harness's)
+    expect(title).toHaveClass("stage:line-clamp-none", "stage:truncate", "stage:flex-1");
+    // a base `truncate` (nowrap) would make the line-clamp inert on a phone
+    expect(title).not.toHaveClass("truncate");
+  });
+});

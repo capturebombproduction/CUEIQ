@@ -2513,6 +2513,23 @@ export function LiveMode({
     setToolsOpen(false);
     toolsBtnRef.current?.focus();
   };
+  // The sheet is aria-modal, so the page under it must not move: a wheel or a drag
+  // on its scrim used to scroll the document and leave NOW's timer off-screen after
+  // the sheet closed. Open: freeze the document's scroll (and remember where it
+  // was); close: put both back. Presentation only — nothing here reads or writes
+  // the show, the audio or the sync.
+  useEffect(() => {
+    if (!toolsOpen) return;
+    const root = document.documentElement;
+    const y = window.scrollY;
+    const overflow = root.style.overflow;
+    root.style.overflow = "hidden";
+    return () => {
+      root.style.overflow = overflow;
+      // a no-op unless something moved the page while it was frozen (iOS ignores overflow)
+      if (window.scrollY !== y) window.scrollTo(0, y);
+    };
+  }, [toolsOpen]);
 
   // Play an item's audio if a file is loaded; otherwise stop current playback.
   function playItemAudio(itemId: string) {
@@ -3183,15 +3200,17 @@ export function LiveMode({
                 kind={it.kind as SetlistKind}
                 className="stage:!size-[22px] stage:[&_svg]:!size-3 stage:group-data-[edit=on]/ro:hidden"
               />
-              {/* Phone: the title gets the row's whole width on its own line, the
-                  marks and the length under it (an admin's edit keys take the right
-                  side). Stage: one 29 px line ending in two right-aligned columns,
+              {/* Phone: the title gets the row's whole width, wrapping to a second line
+                  before it is cut (an admin's edit keys leave it ~126 px, and one
+                  line cut a real "[SYSTEM_BOOT] SE (Overture)" to "…SE (Ove…"), the
+                  marks and the length under it. Stage keeps its one truncated line.
+                  Stage: one 29 px line ending in two right-aligned columns,
                   planned start and length; edit mode goes back to two lines, so the
                   title keeps its room beside the keys. */}
               <span className="flex min-w-0 flex-1 flex-col justify-center gap-0.5 stage:flex-row stage:items-center stage:justify-start stage:gap-1.5 stage:group-data-[edit=on]/ro:flex-col stage:group-data-[edit=on]/ro:items-stretch stage:group-data-[edit=on]/ro:justify-center stage:group-data-[edit=on]/ro:gap-0.5">
                 <span
                   className={cn(
-                    "min-w-0 truncate stage:flex-1 stage:group-data-[edit=on]/ro:flex-none",
+                    "min-w-0 line-clamp-2 break-words stage:line-clamp-none stage:truncate stage:flex-1 stage:group-data-[edit=on]/ro:flex-none",
                     i === state.currentIndex && "font-semibold"
                   )}
                 >
@@ -3323,7 +3342,9 @@ export function LiveMode({
 
   // The one-tap fades. Rendered in the NOW card, and again in Live tools for the
   // landscape phone only, where the card has no room for them (CSS picks one; the
-  // keys carry no test id, so nothing that counts ids sees two).
+  // keys carry no test id, so nothing that counts ids sees two). Stage text is 14 px
+  // until the window is 1060 px wide, then 16: "Auto Loudness" at 16 px needs ~122 px
+  // of its grid track, and a 1024 px iPad's NOW column used to give it 115.
   const fadeKeys = (
     <>
       <Button
@@ -3332,7 +3353,7 @@ export function LiveMode({
         onClick={() => fadeVolumeTo(0, 3000)}
         disabled={!isController}
         title="ค่อย ๆ ปิดเสียงเป็น 0% ใน 3 วินาที"
-        className="en h-11 min-w-0 gap-1.5 rounded-[2px] px-1 !text-[14px] stage:h-12 stage:!text-[16px]"
+        className="en h-11 min-w-0 gap-1.5 rounded-[2px] px-1 !text-[14px] stage:h-12 stage:[@media(min-width:1060px)]:!text-[16px]"
       >
         <VolumeX aria-hidden />
         Auto Mute
@@ -3343,7 +3364,7 @@ export function LiveMode({
         onClick={() => fadeVolumeTo(30)}
         disabled={!isController}
         title="ค่อย ๆ ลดเสียงลงเป็น 30% ใน 2 วินาที (ช่วง MC)"
-        className="en h-11 min-w-0 gap-1.5 rounded-[2px] px-1 !text-[14px] stage:h-12 stage:!text-[16px]"
+        className="en h-11 min-w-0 gap-1.5 rounded-[2px] px-1 !text-[14px] stage:h-12 stage:[@media(min-width:1060px)]:!text-[16px]"
       >
         <Volume1 aria-hidden />
         MC
@@ -3354,7 +3375,7 @@ export function LiveMode({
         onClick={() => fadeVolumeTo(100, 2500)}
         disabled={!isController}
         title="ค่อย ๆ เพิ่มเสียงกลับเป็น 100% ใน 2.5 วินาที"
-        className="en h-11 min-w-0 gap-1.5 rounded-[2px] px-1 !text-[14px] stage:h-12 stage:!text-[16px]"
+        className="en h-11 min-w-0 gap-1.5 rounded-[2px] px-1 !text-[14px] stage:h-12 stage:[@media(min-width:1060px)]:!text-[16px]"
       >
         <Volume2 aria-hidden />
         Auto Loudness
@@ -3614,13 +3635,19 @@ export function LiveMode({
                 ) : (
                   <HardDriveDownload aria-hidden />
                 )}
-                {/* Word, count and stage suffix are separate items on one baseline: a
-                    360 px phone gives this chip ~88 of its ~109 px, and the ellipsis
-                    must eat the word, never the count. Each text span is alone on its
-                    line at the chip's line-height 1, so py/-my gives Kanit's tone
-                    marks room inside its clip at the same height. */}
+                {/* Word, count and stage suffix are separate items on one baseline: the
+                    ellipsis must eat the word, never the count. A 360 / 375 px phone
+                    gives this chip ~85 px after the sound chip and Manual | Auto, the
+                    icon and the count take all but 7 / 22 of them, and a word that
+                    narrow cannot even show an ellipsis (a clipped half-glyph, "ห").
+                    Under 390 px it steps aside whole (sr-only: out of the layout, still
+                    in the accessible text): the icon, the count and the amber of the
+                    warning still say it, and the title holds the sentence. Each
+                    text span is alone on its line at the chip's line-height 1, so
+                    py/-my gives Kanit's tone marks room inside its clip at the same
+                    height. */}
                 <span className="flex min-w-0 items-baseline gap-[.25em]">
-                  <span className="min-w-0 truncate py-[.25em] -my-[.25em]">
+                  <span className="min-w-0 truncate py-[.25em] -my-[.25em] [@media(max-width:389.98px)]:sr-only">
                     {allReady ? "พร้อม" : downloadingAudio ? "กำลังโหลด" : "ในเครื่อง"}
                   </span>
                   <span className="num shrink-0 text-[16px]">
@@ -3747,8 +3774,14 @@ export function LiveMode({
       {/* ── THE BOARD ── phone: one column. Landscape phone: `contents`, so NOW and
           NEXT become two half-width items of the root's wrapping row (the status
           rows, then the order, follow them). Stage: NOW | NEXT + SHOW | the running
-          order, no page scroll. */}
-      <div className="flex flex-col gap-2 [@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:contents stage:grid stage:min-h-0 stage:flex-1 stage:grid-cols-[minmax(0,1fr)_300px_320px] stage:grid-rows-[minmax(0,1fr)] stage:gap-4 stage:px-5 stage:pb-3 stage:pt-2">
+          order, no page scroll. NOW takes what the two side columns leave. NEXT
+          holds 300 px at every width: its label row (NEXT, the index, the kind
+          chip and a 48 px length) is ~260 px wide for a 12:00 block, so a narrower
+          card spills the length over the running order. The running order gives
+          the ground instead: 320 px from 1175 px up (the approved widths on both
+          iPads), easing to 270 px at 1050 px and below, which hands NOW the ~50 px
+          its title and fade keys were short of at 1024. */}
+      <div className="flex flex-col gap-2 [@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:contents stage:grid stage:min-h-0 stage:flex-1 stage:grid-cols-[minmax(0,1fr)_300px_clamp(270px,calc(40vw_-_150px),320px)] stage:grid-rows-[minmax(0,1fr)] stage:gap-4 stage:px-5 stage:pb-3 stage:pt-2">
         <NowCard
           zone={zone}
           blockSec={zoneBlock}
@@ -3842,7 +3875,10 @@ export function LiveMode({
                     }))}
                   />
                 ) : (
-                  <p className="mt-2 text-[13px] text-muted-foreground">— ไม่มีไมค์ที่ต้องเตรียม —</p>
+                  // Per-song mic slots are only the SWAPS. A show whose members hold
+                  // standing mic numbers has none, and "no mics to prepare" read as
+                  // "no mics at all" — so say the mics stay as they are.
+                  <p className="mt-2 text-[13px] text-muted-foreground">— ไมค์เหมือนเดิม —</p>
                 )}
                 {/* The cue the band typed for what's coming — capped and scrollable,
                     never cut, so a long MC script stays reachable. */}
@@ -3863,7 +3899,10 @@ export function LiveMode({
 
           <section className="slab hidden min-h-0 flex-1 flex-col overflow-hidden px-5 pb-4 pt-3.5 stage:flex">
             <span className="nlabel">Show</span>
-            <div className="mt-2 flex items-baseline gap-2">
+            {/* The top bar already prints ผ่านไป, so on a window under 800 px tall (the
+                NEXT card with six mics and a note leaves this slab ~138 of the ~188 px
+                it needs) this big copy steps aside and both tiles keep their values. */}
+            <div className="mt-2 flex items-baseline gap-2 [@media(max-height:799.98px)]:hidden">
               <span className="num text-[50px] font-extrabold leading-none">{formatDuration(totalElapsed)}</span>
               <span className="num text-[24px] text-faint">/ {formatDuration(plannedTotal)}</span>
             </div>
@@ -3958,7 +3997,10 @@ export function LiveMode({
             </div>
           )}
         </div>
-        <div className="mx-auto flex max-w-2xl gap-2 stage:mx-0 stage:max-w-none stage:flex-1 stage:gap-3">
+        {/* 40rem, not 2xl: the cards above are the root's 42rem less its 1rem gutters,
+            and this row already sits inside the dock's own 1rem, so 2xl stood 16 px
+            outside the cards on each side on a portrait iPad. */}
+        <div className="mx-auto flex max-w-[40rem] gap-2 [@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:max-w-2xl stage:mx-0 stage:max-w-none stage:flex-1 stage:gap-3">
           {state.begun ? (
             <Button
               variant="dock"
@@ -4097,7 +4139,11 @@ export function LiveMode({
           e.stopPropagation();
         }}
       >
-        <div aria-hidden className="absolute inset-0 bg-[hsl(var(--scrim)/var(--scrim-a))]" onClick={closeTools} />
+        <div
+          aria-hidden
+          className="absolute inset-0 touch-none overscroll-none bg-[hsl(var(--scrim)/var(--scrim-a))]"
+          onClick={closeTools}
+        />
         <div
           role="dialog"
           aria-modal="true"
