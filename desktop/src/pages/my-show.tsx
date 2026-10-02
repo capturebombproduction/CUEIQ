@@ -50,6 +50,8 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { AudioOutputPicker, AUDIO_SINK_KEY, loadAudioSink } from "@/components/event/audio-output-picker";
 import { KindChip } from "@/components/event/kind";
+import { HeaderBrand } from "@/components/header-brand";
+import { StageLight } from "@/components/stage-light";
 import { cn } from "@/lib/utils";
 import { formatCountdown, formatDuration, isSettled, nowClock } from "@/lib/time";
 import { liveZone, zoneCaption } from "@/lib/live-zone";
@@ -1414,7 +1416,13 @@ export function MyShow() {
     // data-cueiq-screen — see the note on App.tsx's BootScreen. Quick Show is the
     // break-glass runner every other screen's fallback link points at, so the
     // packaged self-test checks it can be reached with no account and no network.
-    <div data-cueiq-screen="quick-show" className="min-h-screen bg-background">
+    // The sign-in screen's wrapper (relative isolate + bg-background + the page light as
+    // the first element — see ~/pages/Login): this page sits outside the Shell, so
+    // nothing else hangs the light, and without it the runner every fallback screen
+    // links to was the one flat black page. Centred column, so the light keeps its
+    // default 50% aim.
+    <div data-cueiq-screen="quick-show" className="relative isolate min-h-screen bg-background">
+      <StageLight />
       <div className="mx-auto max-w-2xl space-y-4 p-4 sm:p-6 lg:max-w-5xl">
         <input
           ref={addInputRef}
@@ -1435,11 +1443,16 @@ export function MyShow() {
           onChange={handleReplaceFile}
         />
 
-        <div className="flex items-center justify-between gap-2">
-          <Button variant="ghost" size="sm" className="-ml-2" onClick={exitToLogin}>
+        {/* The wordmark between the back button and the storage note — the header the
+            Shell would have drawn. Centred on the page from sm up (a 1fr-auto-1fr grid,
+            so the two ends' unequal widths do not push it off-centre); a phone-narrow
+            window lets the three wrap instead. */}
+        <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2 sm:grid sm:grid-cols-[1fr_auto_1fr]">
+          <Button variant="ghost" size="sm" className="-ml-2 justify-self-start" onClick={exitToLogin}>
             <ArrowLeft className="h-4 w-4" /> กลับหน้าเข้าสู่ระบบ
           </Button>
-          <span className="text-[11px] text-muted-foreground">
+          <HeaderBrand />
+          <span className="text-right text-[11px] text-muted-foreground sm:justify-self-end">
             เก็บในเครื่องนี้เท่านั้น · {items.length} รายการ
             {storageBytes > 0 ? ` · ${Math.round(storageBytes / 1048576)} MB` : ""}
           </span>

@@ -442,6 +442,56 @@ describe("Quick Show — the Black Stage look", () => {
   });
 });
 
+// This page sits OUTSIDE the Shell, so nothing else hangs the page light or draws the
+// header's wordmark — and the boot, sign-in and fallback screens that all link here do
+// both. It was the one flat black page, and the self-test's marker is all that said it
+// belonged to the same app. Same wrapper as the sign-in screen (relative isolate +
+// bg-background + ONE light as the first element) and the same HeaderBrand wordmark.
+describe("Quick Show — the page light and the wordmark", () => {
+  const rootOf = (container: HTMLElement) =>
+    container.querySelector('[data-cueiq-screen="quick-show"]') as HTMLElement;
+
+  for (const [label, items] of [
+    ["with a running order", threeUp],
+    ["on the empty state", () => [] as SoloItem[]],
+  ] as const) {
+    it(`hangs ONE page light as the root's first element ${label}`, async () => {
+      const { container } = await boot(items());
+      const root = rootOf(container);
+      expect(root.className.split(/\s+/)).toEqual(
+        expect.arrayContaining(["relative", "isolate", "bg-background"])
+      );
+      const lights = document.querySelectorAll(".spotlight");
+      expect(lights).toHaveLength(1);
+      expect(root.firstElementChild).toBe(lights[0]);
+      expect(lights[0]).toHaveAttribute("aria-hidden", "true");
+    });
+
+    it(`carries the wordmark in the top row, between the back button and the storage note ${label}`, async () => {
+      const { container } = await boot(items());
+      const marks = container.querySelectorAll(".brand-mark");
+      expect(marks).toHaveLength(1);
+      const brand = marks[0].parentElement as HTMLElement;
+      expect(brand.textContent).toBe("CueIQ");
+      const back = screen.getByRole("button", { name: /กลับหน้าเข้าสู่ระบบ/ });
+      const note = screen.getByText(/เก็บในเครื่องนี้เท่านั้น/);
+      // one row: back button, wordmark, note — in that order
+      expect(back.parentElement).toBe(brand.parentElement);
+      expect(note.parentElement).toBe(brand.parentElement);
+      expect(back.compareDocumentPosition(brand) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      expect(brand.compareDocumentPosition(note) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    });
+  }
+
+  it("keeps the self-test's marker exactly once, and the wordmark is not a heading", async () => {
+    const { container } = await boot(threeUp());
+    expect(document.querySelectorAll('[data-cueiq-screen]')).toHaveLength(1);
+    expect(rootOf(container).getAttribute("data-cueiq-screen")).toBe("quick-show");
+    // the countdown's h2 is still the page's only heading (heading() above relies on it)
+    expect(screen.getAllByRole("heading")).toHaveLength(1);
+  });
+});
+
 describe("Quick Show — restore after a relaunch", () => {
   it("a show that already ended does not re-arm the display blocker", async () => {
     // THE ONE THAT MATTERS. จบโชว์ leaves begun:true on purpose (clock frozen,

@@ -48,3 +48,22 @@ body {
 .tabular-nums {
   font-variant-numeric: tabular-nums;
 }
+
+/* Keyboard focus (and scrollIntoView, and a #hash jump) must stop in the visible band,
+   never fully under the sticky chrome — WCAG 2.4.11. The web app does this in
+   app/globals.css, which the .exe never loads (this file imports theme.css + stage.css
+   only), so the desktop restates it with its own numbers. They are literals, not
+   var(--header-h): the shell sets `--header-h:56px` / `--tabbar-h:0px` on a frame BELOW
+   <html>, so <html> itself still reads theme.css's phone tokens (52px header, 58px tab
+   bar), and the desktop has neither a phone header nor a tab bar. Top: the 56px header
+   row + the offline strip it grows by (offline-banner.tsx publishes it on <html>) + 8px.
+   Bottom: 12px of air, plus the ~76px sticky save bar on a page that carries
+   `has-action-bar` — its own rule, because a selector list with `:has()` in it would be
+   dropped whole by an engine that cannot parse it. */
+html {
+  scroll-padding-top: calc(56px + var(--offline-strip-h, 0px) + 8px);
+  scroll-padding-bottom: 12px;
+}
+html:has(.has-action-bar) {
+  scroll-padding-bottom: calc(12px + 76px);
+}
