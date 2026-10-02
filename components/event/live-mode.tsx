@@ -2527,7 +2527,13 @@ export function LiveMode({
     return () => {
       root.style.overflow = overflow;
       // a no-op unless something moved the page while it was frozen (iOS ignores overflow)
-      if (window.scrollY !== y) window.scrollTo(0, y);
+      // — and only while Live is still on screen. This cleanup also runs when Live
+      // UNMOUNTS with the sheet open (a route change, the back arrow): the page that
+      // opens next is a new page, and handing it Live's scroll position opened it
+      // scrolled down. The ⋯ button is the witness, read NOW and not when the effect
+      // started: by then React has cleared its ref and taken it out of the document.
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+      if (toolsBtnRef.current?.isConnected && window.scrollY !== y) window.scrollTo(0, y);
     };
   }, [toolsOpen]);
 
@@ -3153,12 +3159,13 @@ export function LiveMode({
                 onDragEnd={() => {
                   dragIndexRef.current = null;
                 }}
-                title="ลากเพื่อสลับลำดับ (เดสก์ท็อป) — มือถือใช้ปุ่ม ▲▼"
-                // A phone (coarse pointer, not stage) gets the ▲▼ keys only, and the
-                // title its room back. Stage shows the grip in edit mode only, on the
-                // iPad too: iPadOS starts HTML drag from a long-press. The edit-mode
-                // rule outranks the coarse-pointer one by specificity, because an
-                // arbitrary @media variant is emitted AFTER the stage screen and a
+                title="ลากเพื่อสลับลำดับ"
+                // A phone (coarse pointer, not stage) gets neither the grip nor the ▲▼
+                // keys (CQ-17: the keys are stage-only, a phone reorders in the setlist
+                // editor), and the title its room back. Stage shows the grip in edit mode
+                // only, on the iPad too: iPadOS starts HTML drag from a long-press. The
+                // edit-mode rule outranks the coarse-pointer one by specificity, because
+                // an arbitrary @media variant is emitted AFTER the stage screen and a
                 // plain `stage:inline` would lose to it.
                 className="-ml-1 shrink-0 cursor-grab text-muted-foreground/40 hover:text-muted-foreground active:cursor-grabbing [@media(pointer:coarse)]:hidden stage:hidden stage:group-data-[edit=on]/ro:inline-flex"
               >
@@ -3246,9 +3253,12 @@ export function LiveMode({
                 down the list. Stage: only in edit mode, at 36 px. */}
             {canEdit && (
               <div className="flex shrink-0 items-center gap-1 stage:hidden stage:group-data-[edit=on]/ro:flex">
-                {/* quick reorder — Admin + Manual + controller only (detailed edits = setlist editor) */}
+                {/* quick reorder — Admin + Manual + controller only (detailed edits = setlist editor).
+                    Stage only (CQ-17): on a phone the two 22 px keys took ~28 px from a title that
+                    already shares the row with the Loop and file keys, and a thumb on a 22 px key
+                    mid-show is how a running order gets reordered by accident. */}
                 {!locked && (
-                  <div className="flex flex-col">
+                  <div className="hidden flex-col stage:flex">
                     <button
                       onClick={() => moveItem(i, -1)}
                       disabled={i === 0}
@@ -3805,8 +3815,12 @@ export function LiveMode({
           {current && (currentAudioUrl || (isController && state.begun)) ? (
             <>
               <div className="grid grid-cols-[1.05fr_.72fr_1.25fr] gap-[3px]">{fadeKeys}</div>
-              {/* Stage only: the track's level under the fades (the phone has it in Live tools). */}
-              <div className="mt-2.5 hidden min-w-0 items-center gap-2.5 text-[12.5px] text-muted-foreground stage:flex">
+              {/* Stage only: the track's level under the fades (the phone has it in Live tools).
+                  It is the first row the NOW card gives up when the card gets short (the
+                  card is a size container on stage, see now-card.tsx): the stage now starts
+                  at 600 px, where every row above the countdown leaves it 64, and a banner
+                  takes 60 more. Live tools still carries the slider. */}
+              <div className="mt-2.5 hidden min-w-0 items-center gap-2.5 text-[12.5px] text-muted-foreground stage:flex [@container_(max-height:334px)]:hidden">
                 <Volume1 aria-hidden className="size-4 shrink-0" />
                 <span className="shrink-0">ความดัง</span>
                 <input
@@ -3882,8 +3896,12 @@ export function LiveMode({
                 ) : (
                   // Per-song mic slots are only the SWAPS. A show whose members hold
                   // standing mic numbers has none, and "no mics to prepare" read as
-                  // "no mics at all" — so say the mics stay as they are.
-                  <p className="mt-2 text-[13px] text-muted-foreground">— ไมค์เหมือนเดิม —</p>
+                  // "no mics at all" — so say where the mics come from: the Mic Map.
+                  // "The same as before" was wrong whenever NOW HAS swaps: the
+                  // swapped mics go back to the Mic Map for this song, so say that.
+                  <p className="mt-2 text-[13px] text-muted-foreground">
+                    — {(current?.mic_slots?.length ?? 0) > 0 ? "กลับไมค์ตาม Mic Map" : "ไมค์ตาม Mic Map"} —
+                  </p>
                 )}
                 {/* The cue the band typed for what's coming — capped and scrollable,
                     never cut, so a long MC script stays reachable. */}
@@ -3903,7 +3921,7 @@ export function LiveMode({
           </section>
 
           <section className="slab hidden min-h-0 flex-1 flex-col overflow-hidden px-5 pb-4 pt-3.5 stage:flex stage:[container-type:size]">
-            <span className="nlabel">Show</span>
+            <span className="nlabel [@container_(max-height:26px)]:hidden">Show</span>
             {/* The top bar already prints ผ่านไป, so when THIS SLAB is too short to show
                 the big copy and its two tiles unclipped (the NEXT card with six mics
                 and a note leaves it ~138 of the ~188 px it needs), the copy steps
@@ -3918,12 +3936,19 @@ export function LiveMode({
                 to hold 22 (label) + 8 + 54 (the row) + 12 + 62 (tiles) = 158 px
                 (188 with the slab's 30 px of padding, as measured); 162 is that plus
                 4 px. Without the row the tiles need 96 (126). No container queries
-                (Safari < 16) = the row always shows, as before the viewport rule. */}
+                (Safari < 16) = the row always shows, as before the viewport rule.
+                Two steps more, for the stage that now starts at 600 px (CQ-20): NEXT
+                with six mics and a note is ~293 px, the column is 100vh - 256, so at
+                620 the slab is ~58 px and at 600 ~38, and the tiles were sliced
+                through. When the content box cannot hold the tiles (96, + 4) they step
+                aside too, and when it cannot hold the label (22, + 4) that goes: an
+                empty plate, never a cut one. The top bar prints the same three totals
+                (ผ่านไป · เหลือทั้งโชว์ · คาดจบ), so nothing is lost but "/ 12:00". */}
             <div className="mt-2 flex items-baseline gap-2 [@container_(max-height:162px)]:hidden">
               <span className="num text-[50px] font-extrabold leading-none">{formatDuration(totalElapsed)}</span>
               <span className="num text-[24px] text-faint">/ {formatDuration(plannedTotal)}</span>
             </div>
-            <div className="mt-3 grid grid-cols-2 gap-[2px]">
+            <div className="mt-3 grid grid-cols-2 gap-[2px] [@container_(max-height:100px)]:hidden">
               <div className="well min-w-0 px-3 py-1.5">
                 <div className="truncate text-[11px] text-muted-foreground">จบประมาณ</div>
                 <div className="num text-[32px] leading-[1.05]" suppressHydrationWarning>

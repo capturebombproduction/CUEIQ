@@ -45,8 +45,21 @@ const preset: Partial<Config> = {
       // BEFORE the screens and would lose. The price: an object-valued screen makes
       // Tailwind drop every `min-*` / `max-*` variant (one build warning, easy to miss),
       // so lib/theme-single-source.test.ts fails any source that writes one.
+      //
+      // Two ranges, one list. 700 px tall and up is the stage on any device. 600-699 px
+      // is the stage only for a MOUSE (`pointer: fine`): a maximised 768p laptop's Chrome
+      // or the .exe on a 768 px screen leaves ~620-700 px (CQ-20), and the stage fits in
+      // 600 (the NOW card's countdown box simply gets what is left). A touch screen of
+      // that height (a short iPad window, an iPad mini's Safari tab) keeps the
+      // landscape-phone layout: that layout's own query is `max-height: 699.98px` +
+      // `pointer: coarse` at ~40 sites (Live, the NOW card, the Caller, stage.css), and
+      // an arbitrary @media variant is emitted AFTER this screen, so a coarse device in
+      // both would get the phone's `display: contents` on top of the stage's grid. Move
+      // those to 599.98px and the second range can drop its `pointer: fine`.
       screens: {
-        stage: { raw: "(orientation: landscape) and (min-width: 900px) and (min-height: 700px)" },
+        stage: {
+          raw: "(orientation: landscape) and (min-width: 900px) and (min-height: 700px), (orientation: landscape) and (min-width: 900px) and (min-height: 600px) and (pointer: fine)",
+        },
       },
       fontFamily: {
         sans: ["var(--font-sans)", "ui-sans-serif", "system-ui", "sans-serif"],

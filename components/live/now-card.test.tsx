@@ -592,7 +592,8 @@ describe("NowCard · the stage countdown's cq overrides are gated on support, wi
     expect(named.some((t) => t.startsWith("[--cd-col:min(80vw,"))).toBe(true);
     expect(named.some((t) => t.startsWith("[@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:[--cd-col:calc(50vw_"))).toBe(true);
     expect(named).toContain("stage:[--cd-col:calc(100vw_-_760px)]");
-    expect(named).toContain("stage:[--cd-h:calc(100vh_-_600px)]");
+    // max(48px, ...): 100vh - 600px is 0 at the stage's 600 px floor and the numerals would vanish (CQ-20)
+    expect(named).toContain("stage:[--cd-h:max(48px,calc(100vh_-_600px))]");
     for (const t of named) expect(t, t).not.toMatch(/cq/);
     // no `@supports not` font-size class: that fallback is the stylesheet's now (it was width-only)
     expect(wrapperClasses().filter((t) => t.includes("@supports_not_"))).toHaveLength(0);
@@ -600,5 +601,47 @@ describe("NowCard · the stage countdown's cq overrides are gated on support, wi
 
   it("the stage's 236 px cap is still set, whatever the engine", () => {
     expect(wrapperClasses()).toContain("stage:[&_.cd]:![--cd-max:236px]");
+  });
+});
+
+// ── A SHORT STAGE GIVES UP A ROW WHOLE, IT DOES NOT SQUEEZE THE NUMERALS (CQ-20) ─────────────────
+// The stage layout now starts at 600 px (a mouse window). The countdown box is what is left of the
+// card after every other row, and a banner takes 60 px more: 4 px at 600 with one (Chromium). So on
+// stage the card is a size container and its cue note row steps aside when the card is short
+// (live-mode.tsx's volume row does the same, first). jsdom has no layout: what is pinned is that the
+// card asks (a container query, not a viewport one) in EVERY zone, so the box is the same size
+// whichever zone the show is in; app/stage-css.test.tsx compiles the classes and the real-browser
+// numbers are in the round's findings.
+describe("NowCard · a short stage sheds the cue note row from the card's own height", () => {
+  const sheddingRule = (el: HTMLElement) => {
+    const row = Array.from(el.children).find((c) => c.classList.contains("h-5"))!;
+    return Array.from(row.classList).find((c) => c.includes("container_") && c.includes("max-height") && c.endsWith(":hidden"));
+  };
+
+  it("the card is a size container on the stage layout only", () => {
+    const { el } = card("ok");
+    expect(el).toHaveClass("stage:[container-type:size]");
+    // never bare: below the stage layout the card sizes to its content, which containment would zero
+    expect(el.className).not.toMatch(/(^|\s)\[container-type:size\]/);
+  });
+
+  it("the note row asks the card, not the window, and does so in every zone", () => {
+    for (const z of ["ok", "warn", "urgent", "over"] as const) {
+      const { el, unmount } = card(z, { note: "เปิดไฟแดงเต็มเวที" });
+      const rule = sheddingRule(el);
+      expect(rule, `${z}: the note row has a container rule`).toBeDefined();
+      expect(rule, z).not.toContain("@media");
+      unmount();
+    }
+  });
+
+  it("goes under 300 px of card content: 265.6 px of other rows, less the volume row's 34, plus a 68 px countdown box", () => {
+    // measured in Chromium at 1366 x 700 (the card's content box is 430 px): the countdown box is 164.4,
+    // so the rows around it are 265.6; the volume row (live-mode.tsx) is 10 + 24 of them
+    const { el } = card("ok");
+    const threshold = Number(/max-height:([\d.]+)px/.exec(sheddingRule(el)!)![1]);
+    const needed = 265.6 - 34 + 68;
+    expect(threshold).toBeGreaterThanOrEqual(needed);
+    expect(threshold).toBeLessThanOrEqual(needed + 2);
   });
 });

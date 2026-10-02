@@ -1667,6 +1667,18 @@ describe("LiveMode · round 15 seams", () => {
       expect(document.documentElement.style.overflow).toBe("scroll");
     });
 
+    it("does not hand its scroll position to the NEXT page when the screen unmounts with the sheet open", async () => {
+      // The cleanup that puts the page back runs on UNMOUNT too (the back arrow, a route
+      // change). The page that opens next is a new page: restoring Live's 240 there opened
+      // it scrolled down. The overflow is given back either way (the test above).
+      const { unmount } = await mountLive();
+      await act(async () => openTools());
+      y = 880; // the page moved while the sheet was open
+      unmount();
+      expect(document.documentElement.style.overflow).toBe("");
+      expect(scrollTo).not.toHaveBeenCalled();
+    });
+
     it("its scrim takes no touch drag and chains no scroll to the page", async () => {
       await mountLive();
       const scrim = sheet().previousElementSibling as HTMLElement;
@@ -1706,7 +1718,8 @@ describe("LiveMode · round 15 seams", () => {
     const needed = 22 + 8 + 54 + 12 + 62.1;
     expect(threshold).toBeGreaterThanOrEqual(needed + 2);
     expect(threshold).toBeLessThanOrEqual(needed + 8);
-    // the tiles alone: 22 + 12 + 62.1 = 96.1 (126.1 with the padding) — they never hide
+    // the tiles alone: 22 + 12 + 62.1 = 96.1 (126.1 with the padding). Neither tile hides on
+    // its own — they stand aside together, one row down (CQ-20, the next test)
     const tiles = Array.from(slab.querySelectorAll(".well"));
     expect(tiles).toHaveLength(2);
     for (const t of tiles) expect(t.className).not.toContain("max-height");
@@ -1722,6 +1735,77 @@ describe("LiveMode · round 15 seams", () => {
     expect(root()).toHaveClass("stage:h-[100dvh]");
   });
 
+  it("CQ-20: the stage now starts at 600 px, so the SHOW slab's tiles and label step aside too, whole, when IT cannot hold them", async () => {
+    // NEXT with six mics and a note is ~293 px and the column is 100vh - 256: at 620 the slab
+    // is ~58 px, at 600 ~38, and the tiles were sliced through. The top bar prints the same
+    // totals. Each step reads the slab's CONTENT box (its 30 px of padding are outside it).
+    await mountLive();
+    const slab = screen.getByText("Show", { selector: ".nlabel" }).closest("section") as HTMLElement;
+    const stepAside = (el: Element) => {
+      const rule = Array.from(el.classList).find((c) => c.includes("container_") && c.includes("max-height") && c.endsWith(":hidden"));
+      expect(rule, "the element hides on a container query").toBeDefined();
+      expect(rule).not.toContain("@media"); // the slab asks, not the window
+      return Number(/max-height:([\d.]+)px/.exec(rule!)![1]);
+    };
+    const tiles = slab.querySelector(".well")!.parentElement as HTMLElement;
+    expect(tiles.querySelectorAll(".well")).toHaveLength(2); // one step for both: never one tile
+    const label = slab.querySelector(".nlabel") as HTMLElement;
+    const big = slab.querySelector(".items-baseline") as HTMLElement;
+    // the tiles need 22 + 12 + 62.1 = 96.1: a few px over, never under, and not far over
+    expect(stepAside(tiles)).toBeGreaterThanOrEqual(96.1 + 2);
+    expect(stepAside(tiles)).toBeLessThanOrEqual(96.1 + 8);
+    // the label is 22 px tall
+    expect(stepAside(label)).toBeGreaterThanOrEqual(22 + 2);
+    expect(stepAside(label)).toBeLessThanOrEqual(22 + 8);
+    // and they go in order: the 50 px copy first, then the tiles, then the label
+    expect(stepAside(big)).toBeGreaterThan(stepAside(tiles));
+    expect(stepAside(tiles)).toBeGreaterThan(stepAside(label));
+  });
+
+  it("CQ-20: the NOW card sheds its volume row first, then its cue note, so a banner never squeezes the numerals out", async () => {
+    // The countdown box is what is left of the card after every other row: 265.6 px of rows
+    // (Chromium, 1366 x 700: box 164.4 in a 430 px content box). The volume row is 10 + 24 of
+    // them, the cue note row 2 + 20, a banner takes 60 from the whole card. 4 px of box at 600
+    // with one banner; the rows leave while it still has 68. Live tools carries both.
+    await mountLive();
+    await startShowFromUi();
+    const volume = within(nowCard()).getByTitle(/^ความดังของแทร็คนี้/).parentElement as HTMLElement;
+    expect(volume).toHaveClass("stage:flex"); // stage only, as before
+    const rule = Array.from(volume.classList).find((c) => c.includes("container_") && c.includes("max-height") && c.endsWith(":hidden"));
+    expect(rule, "the volume row hides on a container query").toBeDefined();
+    expect(rule).not.toContain("@media");
+    const threshold = Number(/max-height:([\d.]+)px/.exec(rule!)![1]);
+    const needed = 265.6 + 68;
+    expect(threshold).toBeGreaterThanOrEqual(needed);
+    expect(threshold).toBeLessThanOrEqual(needed + 2);
+    // it goes BEFORE the note row (NowCard's own test pins that one's 265.6 - 34 + 68)
+    const note = Array.from(nowCard().children).find((c) => c.classList.contains("h-5"))!;
+    const noteRule = Array.from(note.classList).find((c) => c.includes("container_") && c.endsWith(":hidden"))!;
+    expect(threshold).toBeGreaterThan(Number(/max-height:([\d.]+)px/.exec(noteRule)![1]));
+    // …and the card is the container they ask
+    expect(nowCard()).toHaveClass("stage:[container-type:size]");
+    // Live tools still carries the level (it is what the row hands over to)
+    await act(async () => openTools());
+    expect(within(sheet()).getAllByTitle(/^ความดังของแทร็คนี้/).length).toBeGreaterThan(0);
+  });
+
+  it("CQ-17: the quick-reorder ▲▼ keys are the stage's: a phone's row has no arrows, an admin's stage edit mode keeps them", async () => {
+    // On a phone the two 22 px keys took ~28 px from a title that shares the row with the Loop
+    // and file keys, and a thumb on a 22 px key mid-show reorders the running order by accident.
+    // A phone reorders in the setlist editor. (jsdom has no CSS: what is pinned is the classes.)
+    await mountLive();
+    const ups = within(order()).getAllByTitle("เลื่อนขึ้น");
+    expect(ups.length).toBeGreaterThan(0);
+    for (const up of ups) {
+      const column = up.parentElement as HTMLElement;
+      expect(column).toHaveClass("hidden", "flex-col", "stage:flex");
+      // both arrows sit in that one column, so they come and go together
+      expect(within(column).getByTitle("เลื่อนลง").parentElement).toBe(column);
+      // the keys' own wrapper still shows them on the stage in edit mode only (as before)
+      expect(column.parentElement).toHaveClass("stage:hidden", "stage:group-data-[edit=on]/ro:flex");
+    }
+  });
+
   it("CQ-21: the dock's key row is as wide as the cards above it, not the 2xl a portrait iPad overshoots", async () => {
     await mountLive();
     const row = screen.getByTestId("start-show").parentElement as HTMLElement;
@@ -1735,9 +1819,25 @@ describe("LiveMode · round 15 seams", () => {
     expect(root()).toHaveClass("max-w-2xl", "px-4");
   });
 
-  it("CQ-06: NEXT with no per-song mic slots says the mics stay as they are, never that there are none", async () => {
+  it("CQ-06: NEXT with no per-song mic slots says the mics come from the Mic Map, never that there are none", async () => {
     await mountLive();
-    expect(nextCard()).toHaveTextContent("— ไมค์เหมือนเดิม —");
+    expect(nextCard()).toHaveTextContent("— ไมค์ตาม Mic Map —");
+    expect(nextCard()).not.toHaveTextContent("ไม่มีไมค์ที่ต้องเตรียม");
+    // per-song slots are only SWAPS: "the same as before" was wrong the moment NOW had some
+    expect(nextCard()).not.toHaveTextContent("ไมค์เหมือนเดิม");
+    expect(nextCard()).not.toHaveTextContent("กลับไมค์");
+  });
+
+  it("CQ-06: …and when NOW has swaps and NEXT has none, the swapped mics go back to the Mic Map", async () => {
+    const items = [
+      makeItem(1, { mic_slots: [{ mic: "4", member: "Ploy" }] }),
+      makeItem(2),
+      makeItem(3),
+    ];
+    supa.setTable("setlist_items", ok(items));
+    await mountLive({ items });
+    expect(nextCard()).toHaveTextContent("— กลับไมค์ตาม Mic Map —");
+    expect(nextCard()).not.toHaveTextContent("ไมค์เหมือนเดิม");
     expect(nextCard()).not.toHaveTextContent("ไม่มีไมค์ที่ต้องเตรียม");
   });
 
@@ -1751,6 +1851,7 @@ describe("LiveMode · round 15 seams", () => {
     await mountLive({ items });
     expect(within(nextCard()).getByText("Ploy")).toBeTruthy();
     expect(nextCard()).not.toHaveTextContent("ไมค์เหมือนเดิม");
+    expect(nextCard()).not.toHaveTextContent("Mic Map");
     expect(nextCard()).not.toHaveTextContent("ไม่มีไมค์ที่ต้องเตรียม");
   });
 

@@ -9,6 +9,7 @@ import tailwind from "tailwindcss";
 import loadConfig from "tailwindcss/loadConfig";
 import { render } from "@testing-library/react";
 import { NowCard } from "@/components/live/now-card";
+import preset from "@/tailwind.preset";
 import type { LiveZone } from "@/lib/live-zone";
 
 const root = path.resolve(__dirname, "..");
@@ -51,6 +52,8 @@ const indexOfRule = (tree: Root, rule: Rule) => {
 const CQ_UNIT = /\d(cqi|cqb|cqw|cqh|cqmin|cqmax)\b/;
 const SUPPORTS_CQ = "@supports(width:1cqi)";
 const LANDSCAPE_PHONE = "@media(orientation:landscape)and(max-height:699.98px)and(pointer:coarse)";
+/** the `stage` screen exactly as tailwind.preset.ts spells it (the web and the .exe both load that one) */
+const stageRaw = (): string => (preset.theme!.extend!.screens as unknown as Record<string, { raw: string }>).stage.raw;
 
 // ── CQ-13 · the Live countdown must not rely on container-query units alone ───
 // `font-size: min(var(--cd-max, 164px), calc(100cqi / …))` PARSES in every browser (var() defers
@@ -157,11 +160,12 @@ function tokenValue(tokens: string[], prefix: string): string {
   expect(t, `no ${prefix} class on the countdown's box`).toBeDefined();
   return t!.slice(prefix.length, -1).replace(/_/g, " ");
 }
-/** A length made of vw / vh / px, calc() and min() (every form these rules use), in px at a viewport */
+/** A length made of vw / vh / px, calc(), min() and max() (every form these rules use), in px at a viewport */
 function len(expr: string, vw: number, vh = 0): number {
   const js = expr
     .replace(/calc/g, "")
     .replace(/min\(/g, "Math.min(")
+    .replace(/max\(/g, "Math.max(")
     .replace(/(\d+(?:\.\d+)?)vw/g, (_m, n) => `(${n}*${vw}/100)`)
     .replace(/(\d+(?:\.\d+)?)vh/g, (_m, n) => `(${n}*${vh}/100)`)
     .replace(/(\d+(?:\.\d+)?)px/g, "$1");
@@ -202,7 +206,9 @@ describe("the NOW card's classes · Tailwind turns them into supported / unsuppo
     return out.root;
   }
 
-  const STAGE_MEDIA = "@media(orientation:landscape)and(min-width:900px)and(min-height:700px)";
+  // the screen as the preset spells it, a list of two ranges (the describe at the end of this
+  // block pins what they are); what Tailwind emits for `stage:` is that list, whitespace aside
+  const STAGE_MEDIA = "@media" + norm(stageRaw());
 
   it("the one `!important` font-size is the cq one, and it is generated only under @supports (width:1cqi)", async () => {
     const tree = await compiled();
@@ -237,6 +243,59 @@ describe("the NOW card's classes · Tailwind turns them into supported / unsuppo
     expect([...(seen["--cd-col"] ?? [])].sort()).toEqual(["", LANDSCAPE_PHONE, STAGE_MEDIA].sort());
     expect(seen["--cd-h"]).toEqual([STAGE_MEDIA]);
   }, 30_000);
+
+  it("the card is a size container on the stage layout and nowhere else; the cue note row is the one thing it asks about (CQ-20)", async () => {
+    const tree = await compiled();
+    // the card's own `container-type: size` (the `.cd-wrap` one inside it is a different rule)
+    const containers: string[] = [];
+    tree.walkDecls("container-type", (d) => {
+      const rule = d.parent as Rule;
+      if (rule.selector?.includes(".cd-wrap")) return;
+      expect(flat(d.value), rule.selector).toBe("size");
+      containers.push(chainOf(rule));
+    });
+    expect(containers, "the card's container rule").toEqual([STAGE_MEDIA]);
+    // …and what it asks: the cue note row steps aside under 300 px of card (one class, so one rule,
+    // however many zones carry it)
+    const asked: string[] = [];
+    tree.walkAtRules("container", (a) => {
+      a.walkDecls("display", (d) => void asked.push(`${norm(a.params)} ${flat(d.value)}`));
+    });
+    expect(asked).toEqual(["(max-height:300px) none"]);
+  }, 30_000);
+});
+
+// ── CQ-20 · the stage layout starts at 600 px for a mouse window, 700 for a touch screen ──────────
+// A maximised 768p laptop's Chrome (or the .exe on a 768 px screen) has ~620-700 px, and used to fall
+// out of the stage layout into a scrolling page. The stage fits in 600: the NOW card's countdown box
+// simply gets what is left. A touch screen of that height keeps the landscape-phone layout: that
+// query is `max-height: 699.98px` + `pointer: coarse` at ~40 sites (Live, the NOW card, the Caller,
+// stage.css), and an arbitrary @media variant is emitted AFTER the stage screen, so a device in both
+// would wear the phone's `display: contents` over the stage's grid.
+describe("tailwind.preset.ts · the stage screen starts at 600 px for a mouse and 700 for a touch screen (CQ-20)", () => {
+  const ranges = () =>
+    stageRaw()
+      .split(",")
+      .map((r) => ({
+        landscape: /\(orientation:\s*landscape\)/.test(r),
+        minWidth: Number(/min-width:\s*([\d.]+)px/.exec(r)?.[1]),
+        minHeight: Number(/min-height:\s*([\d.]+)px/.exec(r)?.[1]),
+        mouse: /\(pointer:\s*fine\)/.test(r),
+      }));
+
+  it("700 px tall and up is the stage on any device; 600-699 px is the stage for a mouse only", () => {
+    expect(ranges()).toEqual([
+      { landscape: true, minWidth: 900, minHeight: 700, mouse: false },
+      { landscape: true, minWidth: 900, minHeight: 600, mouse: true },
+    ]);
+  });
+
+  it("no touch screen is in the stage AND the landscape-phone layout: a range open to one starts above the phone's max-height", () => {
+    const phoneMax = Number(/max-height:([\d.]+)px/.exec(LANDSCAPE_PHONE)![1]);
+    expect(phoneMax).toBe(699.98);
+    expect(LANDSCAPE_PHONE).toContain("and(pointer:coarse)");
+    for (const r of ranges().filter((x) => !x.mouse)) expect(r.minHeight).toBeGreaterThan(phoneMax);
+  });
 });
 
 // The fallback's inputs against what a real browser laid out. MEASURED, not derived: Chromium at the
@@ -244,17 +303,24 @@ describe("the NOW card's classes · Tailwind turns them into supported / unsuppo
 // stage's `.cd-wrap` height (always 100vh - 536 px: the stage's rows, with the fade keys and the volume
 // row in the card). A fallback sizes from these, so it must stay at or under them. A real browser has to
 // re-measure when the layout moves (the round's harness, NOCQ emulation); this holds the numbers.
+// The 600-699 px rows (1366 x 600 / 620 / 662 / 699, 1024 x 640) are CQ-20's, from a mouse window:
+// the stage starts at 600 there, and the box is 64 px at the floor. They are the box with the rows
+// IN the card, which is what an engine with no container queries has: the card sheds rows only
+// where container queries exist, and there the fallback is not used.
 const MEASURED = {
   phone: [[360, 292], [390, 322], [430, 362], [768, 604], [820, 604]],
   landscapePhone: [[844, 356]],
-  stage: [[900, 700, 160, 164], [1024, 768, 284, 232], [1112, 834, 372, 298], [1180, 820, 440, 284], [1366, 700, 626, 164], [1366, 1024, 626, 488], [1920, 1080, 1180, 544]],
+  stage: [[900, 700, 160, 164], [1024, 768, 284, 232], [1112, 834, 372, 298], [1180, 820, 440, 284], [1366, 700, 626, 164], [1366, 1024, 626, 488], [1920, 1080, 1180, 544],
+    [1366, 600, 626, 64], [1366, 620, 626, 84], [1366, 662, 626, 126], [1366, 699, 626, 163], [1024, 640, 314, 104]],
   caller: [[390, 322], [768, 380], [820, 410], [1024, 510], [1180, 510], [1440, 510]],
 };
 describe("the countdown fallback never sizes past the column or the box a browser measured (CQ-13)", () => {
-  it("the evaluator reads vw / vh / px, calc() and min()", () => {
+  it("the evaluator reads vw / vh / px, calc(), min() and max()", () => {
     expect(len("calc(100vw - 760px)", 1180)).toBe(420);
     expect(len("min(80vw, 100vw - 72px, 600px)", 390)).toBe(312);
     expect(len("calc(100vh - 600px)", 0, 700)).toBe(100);
+    expect(len("max(48px, calc(100vh - 600px))", 0, 700)).toBe(100);
+    expect(len("max(48px, calc(100vh - 600px))", 0, 600)).toBe(48);
   });
 
   it("the NOW card's phone, landscape-phone and stage columns are each at or under the measured one", () => {
@@ -267,12 +333,18 @@ describe("the countdown fallback never sizes past the column or the box a browse
     for (const [vw, vh, col] of MEASURED.stage) expect(len(onStage, vw, vh), `stage ${vw}x${vh}`).toBeLessThanOrEqual(col);
   });
 
-  it("the stage's height input is at or under the box at every measured height, down to the 700 px floor", () => {
+  it("the stage's height input is at or under the box at every measured height, down to the 600 px floor", () => {
     const h = tokenValue(nowWrapperTokens(), "stage:[--cd-h:");
     for (const [vw, vh, , box] of MEASURED.stage) {
       // the digits are .8 of the font size, and the font size is at most --cd-h / .8
       expect(len(h, vw, vh), `stage ${vw}x${vh}`).toBeLessThanOrEqual(box);
     }
+  });
+
+  it("…and it is never the 0 that 100vh - 600px is at the floor: an engine with no cq units still draws numerals (CQ-20)", () => {
+    const h = tokenValue(nowWrapperTokens(), "stage:[--cd-h:");
+    // every height the stage layout can have, in 1 px steps up to a tall monitor
+    for (let vh = 600; vh <= 1400; vh++) expect(len(h, 1366, vh), `stage 1366x${vh}`).toBeGreaterThanOrEqual(40);
   });
 
   it("the Caller's `.now` columns (page column below md, the grid's from md) are under the measured ones", () => {

@@ -102,7 +102,7 @@ export function NowCard({
         // and the tight version of the card — 32 px header, no note row, no fade row
         // (Live tools carries the fades there), smaller gaps — so its bottom clears
         // the dock by 8 px with the iPhone's 21 px home-indicator inset too.
-        "now flex flex-col pb-3.5 stage:min-h-0 stage:![--pad:24px] [@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:![--pad:18px] [@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:min-w-0 [@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:basis-[calc(50%-6px)] [@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:pb-2.5",
+        "now flex flex-col pb-3.5 stage:min-h-0 stage:[container-type:size] stage:![--pad:24px] [@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:![--pad:18px] [@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:min-w-0 [@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:basis-[calc(50%-6px)] [@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:pb-2.5",
         // Overtime breaks the chamfer AND the phone's 16 px gutter: a square plate to
         // the screen edges is the one shape nothing else on the screen has.
         over
@@ -187,10 +187,12 @@ export function NowCard({
       {/* One line, fixed height in every zone: the cue note, or overtime's instruction.
           Not on a landscape phone (no room; the zone caption below still speaks). A tap
           lays the whole note OVER the card, so its height never changes; Live tools
-          carries the full note too (a phone held sideways, overtime). */}
+          carries the full note too (a phone held sideways, overtime). On stage it also
+          steps aside, in every zone alike, when the card is short (see the countdown
+          box's comment below). */}
       <div
         className={cn(
-          "relative mt-0.5 flex h-5 min-w-0 items-center gap-1.5 text-[13px] [@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:hidden",
+          "relative mt-0.5 flex h-5 min-w-0 items-center gap-1.5 text-[13px] [@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:hidden [@container_(max-height:300px)]:hidden",
           over ? "font-semibold" : "text-muted-foreground"
         )}
       >
@@ -241,12 +243,22 @@ export function NowCard({
                       the gap and the padding. Stage: the viewport less 740 px (gutters, the other
                       two columns, the padding), and 20 px of slack.
             --cd-h    the box's height, stage only. The box is 100vh - 536 px (fade keys and the
-                      volume row in the card), 164 px at the stage's 700 px floor, and the
-                      digits are .8 of the font size (189 px at the 236 px cap): a width-only fit
-                      overlapped the fade row on a short stage. 64 px of slack more, for the iOS
-                      volume note or a banner, which this box then loses.
-          Both size a little under what the cq fit gives, never over. */}
-      <div className="mt-2 [@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:mt-1 stage:mt-1 stage:grid stage:min-h-0 stage:flex-1 stage:[&_.cd-wrap]:!h-auto stage:[&_.cd-wrap]:[container-type:size] stage:[&_.cd]:![--cd-max:236px] stage:supports-[width:1cqi]:[&_.cd]:![font-size:min(var(--cd-max),calc(100cqi/var(--cd-em,1.84)),calc(100cqb/0.8))] [--cd-col:min(80vw,100vw_-_72px,600px)] [@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:[--cd-col:calc(50vw_-_68px)] stage:[--cd-col:calc(100vw_-_760px)] stage:[--cd-h:calc(100vh_-_600px)] [@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:[&_.cd-wrap]:!h-[96px] [@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:[&_.cd]:![--cd-max:120px]">
+                      volume row in the card), 164 px at 700 px and 64 px at 600, the floor of a
+                      mouse window (CQ-20), and the digits are .8 of the font size (189 px at the
+                      236 px cap): a width-only fit overlapped the fade row on a short stage. 64 px
+                      of slack more, for the iOS volume note or a banner, which this box then
+                      loses; `max(48px, ...)` because 100vh - 600 reaches 0 at the 600 px floor and
+                      the numerals would vanish (an engine with no container queries never sheds
+                      the rows below, so the box really is 64 px there, and 48 stays under it).
+          Both size a little under what the cq fit gives, never over.
+          On stage the card is itself a size container, for one reason: it gives up rows,
+          whole, when it is short. The countdown box is what is left of the card after every
+          other row (265.6 px of them at full height), so a short window or a banner (60 px)
+          squeezed the numerals toward nothing: 4 px at 600 px tall with one banner. Below 334 px
+          of card content the volume row goes (live-mode.tsx), below 300 the cue note row: the
+          box keeps 60 px or more (the font 75 and up) even in a 600 px window with a banner.
+          Live tools carries both. No container queries (Safari < 16): the rows always show. */}
+      <div className="mt-2 [@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:mt-1 stage:mt-1 stage:grid stage:min-h-0 stage:flex-1 stage:[&_.cd-wrap]:!h-auto stage:[&_.cd-wrap]:[container-type:size] stage:[&_.cd]:![--cd-max:236px] stage:supports-[width:1cqi]:[&_.cd]:![font-size:min(var(--cd-max),calc(100cqi/var(--cd-em,1.84)),calc(100cqb/0.8))] [--cd-col:min(80vw,100vw_-_72px,600px)] [@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:[--cd-col:calc(50vw_-_68px)] stage:[--cd-col:calc(100vw_-_760px)] stage:[--cd-h:max(48px,calc(100vh_-_600px))] [@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:[&_.cd-wrap]:!h-[96px] [@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:[&_.cd]:![--cd-max:120px]">
         <Countdown seconds={Math.round(remaining)} max={164} />
       </div>
 
