@@ -445,7 +445,12 @@ export function AccountPanel({
               // 1rem gutter; a panel pinned 1rem from the VIEWPORT hung 43 px past the avatar at
               // 1366 and 80 px at 1440. 100% of a fixed box is the viewport without its scrollbar,
               // which is what the centring container sits in (100vw would be half a scrollbar out).
-              "lg:inset-x-auto lg:bottom-auto lg:left-auto lg:right-[max(1rem,calc((100%_-_1280px)/2_+_1rem))] lg:top-[64px] lg:max-h-[80vh] lg:w-[380px] lg:rounded-[4px] lg:pb-4 lg:shadow-float lg:data-[state=open]:animate-in lg:data-[state=open]:fade-in-0 lg:data-[state=open]:zoom-in-95"
+              // While the panel is open the modal scroll lock REMOVES a classic scrollbar and pads
+              // the body by its width (react-remove-scroll-bar's --removed-body-scroll-bar-size), so
+              // the page centres in 100% minus that pad: the anchor follows it, or the panel sat
+              // 7.5 px (1366) to 15 px (1280) right of the avatar on a Windows mouse. 0 where
+              // scrollbars overlay (macOS, iPad, phones).
+              "lg:inset-x-auto lg:bottom-auto lg:left-auto lg:right-[max(calc(1rem_+_var(--removed-body-scroll-bar-size,0px)),calc((100%_-_var(--removed-body-scroll-bar-size,0px)_-_1280px)/2_+_1rem_+_var(--removed-body-scroll-bar-size,0px)))] lg:top-[64px] lg:max-h-[80vh] lg:w-[380px] lg:rounded-[4px] lg:pb-4 lg:shadow-float lg:data-[state=open]:animate-in lg:data-[state=open]:fade-in-0 lg:data-[state=open]:zoom-in-95"
             )}
           >
             <div aria-hidden className="mx-auto mt-2 h-1 w-9 rounded-[2px] bg-foreground/25 lg:hidden" />

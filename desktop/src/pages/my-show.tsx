@@ -1452,7 +1452,7 @@ export function MyShow() {
             <ArrowLeft className="h-4 w-4" /> กลับหน้าเข้าสู่ระบบ
           </Button>
           <HeaderBrand />
-          <span className="text-right text-[11px] text-muted-foreground sm:justify-self-end">
+          <span className="basis-full text-right text-[11px] text-muted-foreground sm:basis-auto sm:justify-self-end">
             เก็บในเครื่องนี้เท่านั้น · {items.length} รายการ
             {storageBytes > 0 ? ` · ${Math.round(storageBytes / 1048576)} MB` : ""}
           </span>

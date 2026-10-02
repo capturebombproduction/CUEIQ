@@ -160,6 +160,11 @@ export async function loadWorkspace(): Promise<WorkspaceData> {
     // If we have a cached workspace for this same user, trust it over an empty.
     const cached = readCache<WorkspaceData>(WS_CACHE_KEY);
     if (cached && cached.user?.id === user.id && cached.membership) return cached;
+    // …and with nothing cached, a read that FAILED (an error, or no answer at all) says
+    // nothing about the account. Reject: the Shell shows "โหลดข้อมูลไม่สำเร็จ" with a retry,
+    // never "บัญชีนี้ยังไม่ได้ผูกกับ Label", which at a venue outage sends people chasing an
+    // account problem. Only a read that ANSWERED with no row means "not linked".
+    if (!firstBatch || firstBatch[0]?.error) throw new Error("workspace: the membership read failed");
     return empty(base);
   }
 

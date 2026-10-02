@@ -1,7 +1,7 @@
 // Desktop dashboard — the events list. Mirrors app/(app)/dashboard/page.tsx but
 // fetches client-side, then renders the SAME EventsList component the web uses
 // (search + next-show banner + offline-ready badges all reused verbatim).
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { Music2, Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -119,6 +119,12 @@ export function Dashboard() {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- cacheTick re-reads the cache
     [events, cacheTick]
   );
+  // A show deleted from the list leaves the list the call times are worked out from, so
+  // the ticket's next show is judged on its own cache, never the deleted one's.
+  const dropDeleted = useCallback(
+    (id: string) => setEvents((cur) => (cur ? cur.filter((e) => e.id !== id) : cur)),
+    []
+  );
 
   if (!ws?.membership || !ws.tenant) {
     return (
@@ -213,6 +219,7 @@ export function Dashboard() {
           events={events}
           editableGroupIds={editableGroupIds}
           callTimes={callTimes}
+          onDeleted={dropDeleted}
           canRunLive={canLiveEdit(ws.perms)}
           canPractice={ws.perms.tenantRole !== "label_staff"}
           belowHero={whatsNew}

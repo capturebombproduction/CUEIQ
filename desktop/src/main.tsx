@@ -97,7 +97,7 @@ class AppErrorBoundary extends React.Component<
             กด “โหลดใหม่” เพื่อเริ่มหน้าจอใหม่ ถ้ายังไม่หาย เปิด Quick Show
             เพื่อคุมโชว์ต่อจากไฟล์ในเครื่องนี้ (ไม่ต้องใช้เน็ต)
           </p>
-          <pre className="max-h-40 overflow-auto rounded-[2px] bg-muted p-3 text-left text-xs text-muted-foreground">
+          <pre className="max-h-40 overflow-auto rounded-[2px] bg-muted p-3 text-left text-xs text-muted-foreground [scrollbar-color:hsl(var(--muted-foreground)/.45)_transparent] [scrollbar-width:thin]">
             {String(error.message || error)}
           </pre>
           <div className="flex items-center justify-center gap-2">

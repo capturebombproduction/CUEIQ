@@ -94,4 +94,13 @@ describe("desktop Shell fallback — the workspace failed to load", () => {
     fireEvent.click(within(fallback()).getByRole("button", { name: "ลองใหม่" }));
     expect(h.state.reload).toHaveBeenCalledTimes(1);
   });
+
+  // A slow boot passes from the boot screen (RefreshButton: default size, the turn icon) to
+  // this one; the retry button used to shrink to size "sm" and lose its icon on the way.
+  it("its retry is the boot screen's button: full size, with the turn icon", () => {
+    renderShell();
+    const retry = within(fallback()).getByRole("button", { name: "ลองใหม่" });
+    expect(retry.querySelector("svg")).not.toBeNull();
+    expect(retry.className).not.toMatch(/(^|\s)h-9(\s|$)/); // Button size="sm"
+  });
 });

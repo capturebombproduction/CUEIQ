@@ -241,6 +241,41 @@ describe("loadWorkspace — auth that answers, badly", () => {
   });
 });
 
+// A cold device (nothing cached) at a venue whose server is down: sign-in still answers, every
+// table read fails. That used to come back as empty(user) - and every page then said "บัญชีนี้
+// ยังไม่ได้ผูกกับ Label", sending people to chase an account problem during an outage. A read
+// that FAILED says nothing about the account: the load rejects, so the Shell shows
+// "โหลดข้อมูลไม่สำเร็จ" with a retry. A read that answered with NO membership still means it.
+describe("loadWorkspace — a failed membership read is not 'no membership'", () => {
+  it("rejects on a cold device when the membership read errors", async () => {
+    supa.setScript({ tenant_members: fail("Service Unavailable", 503), group_roles: fail("Service Unavailable", 503) });
+    await expect(loadWorkspace()).rejects.toThrow();
+  });
+
+  it("rejects on a cold device when the membership read never answers", async () => {
+    supa.defer("tenant_members");
+    const p = loadWorkspace();
+    const settled = expect(p).rejects.toThrow();
+    await vi.advanceTimersByTimeAsync(WORKSPACE_READ_TIMEOUT_MS);
+    await settled;
+  });
+
+  it("still serves this user's cache when the read fails (unchanged)", async () => {
+    seedStoredSession();
+    seedWorkspaceCache();
+    supa.setScript({ tenant_members: fail("Service Unavailable", 503), group_roles: fail("Service Unavailable", 503) });
+    const ws = await loadWorkspace();
+    expect(ws.membership?.role).toBe("member");
+  });
+
+  it("an answered read with no membership row is still 'not linked' (empty, with the user)", async () => {
+    supa.setScript({ tenant_members: ok(null), group_roles: ok([]) });
+    const ws = await loadWorkspace();
+    expect(ws.user?.id).toBe(USER_ID);
+    expect(ws.membership).toBeNull();
+  });
+});
+
 describe("loadWorkspace — offline", () => {
   it("serves the cache without touching the network at all", async () => {
     seedStoredSession();

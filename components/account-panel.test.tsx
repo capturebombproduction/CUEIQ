@@ -414,7 +414,7 @@ describe("AccountPanel — anchored to the avatar on a wide screen", () => {
     await mount();
     openMore();
     const cls = (panel().getAttribute("class") ?? "").split(/\s+/);
-    expect(cls).toContain("lg:right-[max(1rem,calc((100%_-_1280px)/2_+_1rem))]");
+    expect(cls).toContain("lg:right-[max(calc(1rem_+_var(--removed-body-scroll-bar-size,0px)),calc((100%_-_var(--removed-body-scroll-bar-size,0px)_-_1280px)/2_+_1rem_+_var(--removed-body-scroll-bar-size,0px)))]");
     expect(cls).not.toContain("lg:right-4");
   });
 });

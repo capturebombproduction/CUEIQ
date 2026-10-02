@@ -308,6 +308,7 @@ export function EventsList({
   canPractice = true,
   practiceRoomByGroup,
   belowHero,
+  onDeleted,
 }: {
   events: EventWithGroup[];
   /** Group ids the user may edit — drives the per-card duplicate button. */
@@ -333,6 +334,11 @@ export function EventsList({
   /** Rendered right under the hero (the What's New card): under the ticket, never
    *  above the one thing a member opened the app to see. */
   belowHero?: ReactNode;
+  /** After a card's own delete (the card is already gone from this list): lets a page
+   *  that derives something from `events` drop the show too - the desktop dashboard
+   *  builds the ticket's call times from it, and a deleted ticket show must not keep
+   *  deciding what the next one's "นัด" says. */
+  onDeleted?: (id: string) => void;
 }) {
   const [q, setQ] = useState("");
   // Local copy so a delete drops the card instantly; re-synced when the server
@@ -340,8 +346,11 @@ export function EventsList({
   const [items, setItems] = useState(events);
   useEffect(() => setItems(events), [events]);
   const handleDeleted = useCallback(
-    (id: string) => setItems((cur) => cur.filter((e) => e.id !== id)),
-    []
+    (id: string) => {
+      setItems((cur) => cur.filter((e) => e.id !== id));
+      onDeleted?.(id);
+    },
+    [onDeleted]
   );
   const canEditEvent = (ev: EventWithGroup) =>
     !!ev.group_id && editableGroupIds.includes(ev.group_id);

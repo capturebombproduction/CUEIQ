@@ -3,7 +3,7 @@
 // the same components so it looks identical, and wraps the routed Outlet in the
 // same ConfirmProvider the web (app)/layout provides (delete buttons call useConfirm).
 import { Link, Outlet, useLocation } from "react-router-dom";
-import { Play } from "lucide-react";
+import { Play, RotateCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { MainNav } from "@/components/main-nav";
 import { HeaderBrand } from "@/components/header-brand";
@@ -54,7 +54,10 @@ function ShellFallback({ failed, onRetry }: { failed: boolean; onRetry: () => vo
             {failed ? "โหลดข้อมูลไม่สำเร็จ — อาจออฟไลน์อยู่หรือเน็ตมีปัญหา" : "กำลังโหลด…"}
           </p>
           <div className="mt-5 flex justify-center gap-2">
-            <Button variant="outline" size="sm" onClick={onRetry}>
+            {/* The boot screen's RefreshButton look (44 px, the turn icon): a slow boot
+                passes through both screens, and the one button should not change shape. */}
+            <Button variant="outline" onClick={onRetry}>
+              <RotateCw className="h-4 w-4" aria-hidden />
               ลองใหม่
             </Button>
             {failed && <SignOutButton />}

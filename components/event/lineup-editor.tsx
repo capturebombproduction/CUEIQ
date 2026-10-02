@@ -8,6 +8,7 @@ import { OFFLINE_QUEUED_MESSAGE, tryQueueChildList } from "@/lib/mgmt-write";
 import { Button } from "@/components/ui/button";
 import { useConfirm } from "@/components/ui/confirm-dialog";
 import { cn } from "@/lib/utils";
+import { SaveStatus, useSaveSignal } from "@/components/event/save-status";
 import { lineupStatus, memberLabel } from "@/lib/lineup";
 import type { Member } from "@/lib/types";
 
@@ -38,6 +39,40 @@ export function LineupEditor({
   const [lineup, setLineup] = useState<Set<string>>(new Set(initialLineup));
   const supabase = createClient();
   const confirm = useConfirm();
+  // The same receipt and the same pending count the setlist / schedule / mic editors keep
+  // (components/event/save-status.tsx -> lib/dirty-guard.ts): "บันทึก / อัปเดต" and the Summary
+  // switch refresh the page only once nothing is pending, and a lineup write on the wire used
+  // to be invisible to that - the refresh could read the half-saved list and re-seed the
+  // Lineup panel and the Mics tab from it.
+  const save = useSaveSignal();
+  /** One lineup write, reported begin -> end. A dead network queues the post-edit set
+   *  offline (queued IS saved: it is on disk and will flush); anything else that failed
+   *  rolls back to `rollback`. A fetch that throws is a failure too, never a stuck "saving". */
+  async function write(
+    run: () => PromiseLike<{ error: { message: string } | null }>,
+    next: Set<string>,
+    rollback: Set<string>,
+    failTitle: string
+  ) {
+    save.begin();
+    let error: { message: string } | null;
+    try {
+      ({ error } = await run());
+    } catch (e) {
+      error = { message: e instanceof Error ? e.message : String(e) };
+    }
+    if (!error) {
+      save.end(true);
+      return;
+    }
+    if (await queueOffline(next, rollback, error.message)) {
+      save.end(true);
+      return;
+    }
+    save.end(false);
+    toast.error(failTitle, { description: error.message });
+    commit(new Set(rollback));
+  }
 
   // Every move of the list goes through here, so the page can never be told less
   // than the screen shows. (The parent's setter is called out here, not inside a
@@ -85,20 +120,15 @@ export function LineupEditor({
     if (wasIn) next.delete(memberId);
     else next.add(memberId);
     commit(next);
-    const { error } = wasIn
-      ? await supabase
-          .from("event_members")
-          .delete()
-          .eq("event_id", eventId)
-          .eq("member_id", memberId)
-      : await supabase
-          .from("event_members")
-          .insert({ tenant_id: tenantId, event_id: eventId, member_id: memberId });
-    if (error) {
-      if (await queueOffline(next, lineup, error.message)) return;
-      toast.error("บันทึกไม่สำเร็จ", { description: error.message });
-      commit(new Set(lineup)); // roll back
-    }
+    await write(
+      () =>
+        wasIn
+          ? supabase.from("event_members").delete().eq("event_id", eventId).eq("member_id", memberId)
+          : supabase.from("event_members").insert({ tenant_id: tenantId, event_id: eventId, member_id: memberId }),
+      next,
+      lineup,
+      "บันทึกไม่สำเร็จ"
+    );
   }
 
   async function selectAll() {
@@ -109,14 +139,12 @@ export function LineupEditor({
       .filter((m) => !prev.has(m.id))
       .map((m) => ({ tenant_id: tenantId, event_id: eventId, member_id: m.id }));
     if (rows.length === 0) return;
-    const { error } = await supabase
-      .from("event_members")
-      .upsert(rows, { onConflict: "event_id,member_id", ignoreDuplicates: true });
-    if (error) {
-      if (await queueOffline(new Set(members.map((m) => m.id)), prev, error.message)) return;
-      toast.error("เลือกทั้งหมดไม่สำเร็จ", { description: error.message });
-      commit(prev);
-    }
+    await write(
+      () => supabase.from("event_members").upsert(rows, { onConflict: "event_id,member_id", ignoreDuplicates: true }),
+      new Set(members.map((m) => m.id)),
+      prev,
+      "เลือกทั้งหมดไม่สำเร็จ"
+    );
   }
 
   async function clearAll() {
@@ -130,15 +158,7 @@ export function LineupEditor({
     if (!ok) return;
     const prev = new Set(lineup);
     commit(new Set());
-    const { error } = await supabase
-      .from("event_members")
-      .delete()
-      .eq("event_id", eventId);
-    if (error) {
-      if (await queueOffline(new Set(), prev, error.message)) return;
-      toast.error("ล้างไม่สำเร็จ", { description: error.message });
-      commit(prev);
-    }
+    await write(() => supabase.from("event_members").delete().eq("event_id", eventId), new Set(), prev, "ล้างไม่สำเร็จ");
   }
 
   if (members.length === 0) {
@@ -165,6 +185,7 @@ export function LineupEditor({
             <span className="truncate">ขาด {absent.map(memberLabel).join(", ")}</span>
           </span>
         )}
+        {editable && <SaveStatus state={save.state} className="text-[12.5px]" />}
         {editable && (
           <div className="ml-auto flex gap-2">
             <Button type="button" variant="secondary" onClick={selectAll}>
