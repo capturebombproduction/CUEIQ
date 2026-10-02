@@ -202,18 +202,23 @@ export function skinCss(hex: string): string {
   const inDark = edgeL(h, nw, 40, [darkCard, darkPage], 1);
   const spot = spotFor(hex);
   const dh = destructiveHue(h, s);
-  const dz = dh === null ? "" : `--destructive:${dh} 68% 44%;`;
+  // The moved delete red is one hue but two lightnesses (CQ-14): 44 % is right on the
+  // white card (8:1 for white on the fill) and was 2.0-2.4:1 on the 5-13 % dark
+  // surfaces — trash icons, Ban / X, the save-failed mark, the error toast's rail.
+  // 60 % holds ≥ 3:1 on the dark page, card, popover and well, white on it 4.7:1.
+  const dzLight = dh === null ? "" : `--destructive:${dh} 68% 44%;`;
+  const dzDark = dh === null ? "" : `--destructive:${dh} 68% 60%;`;
 
   return (
     `:root{--primary:${h} ${s}% ${lt.L}%;--ring:${h} ${s}% ${lt.L}%;--primary-foreground:${lt.fg};` +
     `--primary-ink:${h} ${s}% ${inkLight}%;--accent:${h} ${Math.round(s * 0.35)}% 95%;` +
     `--accent-foreground:${h} ${s}% 30%;--background:${page};--card:0 0% 100%;--popover:0 0% 100%;` +
     `--secondary:${h} ${bw}% 91%;--muted:${h} ${bw}% 91%;--border:${h} ${bw}% 80%;` +
-    `--input:${h} ${bw}% ${inLight}%;--spot:${spot.light};${dz}}` +
+    `--input:${h} ${bw}% ${inLight}%;--spot:${spot.light};${dzLight}}` +
     `.dark{--primary:${h} ${sat}% ${dk.L}%;--ring:${h} ${sat}% ${dk.L}%;--primary-foreground:${dk.fg};` +
     `--primary-ink:${h} ${Math.min(90, sat)}% ${inkDark}%;--accent:${h} ${wash}% 16%;` +
     `--accent-foreground:0 0% 98%;--background:${darkPage};--card:${darkCard};--popover:${h} ${cw}% 11%;` +
     `--secondary:${h} ${nw}% 13%;--muted:${h} ${nw}% 13%;--border:${h} ${nw}% 17%;` +
-    `--input:${h} ${nw}% ${inDark}%;--spot:${spot.dark};${dz}}`
+    `--input:${h} ${nw}% ${inDark}%;--spot:${spot.dark};${dzDark}}`
   );
 }

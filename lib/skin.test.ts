@@ -62,6 +62,9 @@ const themeDestructive: Record<Theme, string> = {
   dark: themeTokens.dark["--destructive"],
 };
 
+/** theme.css's --destructive-foreground (no skin writes it): the text on a delete fill. */
+const WHITE_TRIPLET = "0 0% 100%";
+
 const hueOf = (triplet: string) => parseFloat(triplet);
 const hueDist = (a: number, b: number) => {
   const d = Math.abs(a - b) % 360;
@@ -102,6 +105,16 @@ function failures(hex: string): string[] {
       const dist = hueDist(hueOf(destructive), hexToHsl(hex).h);
       if (dist < 45) bad.push(`${hex} ${theme} destructive ${destructive} only ${dist}° from the band`);
     }
+    // The moved delete red is a glyph and a fill on THAT theme's surfaces: the trash
+    // icon, Ban / X, the save-failed mark and the error toast's rail (3:1, WCAG 1.4.11),
+    // and the white on the filled delete button (AA). One 44 % red served both themes
+    // until CQ-14 — right on a white card, 2.0-2.4:1 on the 5-13 % dark ones.
+    if (t["--destructive"]) {
+      for (const surface of ["--background", "--card", "--popover", "--muted"]) {
+        need(`${theme} destructive on ${surface}`, contrast(t["--destructive"], t[surface]), 3);
+      }
+      need(`${theme} white on the destructive fill`, contrast(WHITE_TRIPLET, t["--destructive"]), 4.5);
+    }
   }
   return bad;
 }
@@ -136,6 +149,41 @@ describe("skinCss() holds WCAG for every band preset, both themes", () => {
     expect(hueOf(skin.dark["--destructive"])).toBe(265);
   });
 
+  // CQ-14: the violet is one hue but TWO lightnesses. Light keeps 44 % (8:1 white on
+  // it, 7:1+ on the page); dark is lifted to 60 % — at 44 % it was 2.2:1 on the dark
+  // card, and the trash icons, Ban / X and the error toast's rail all but vanished.
+  it("the moved delete red is lighter in dark than in light, the same violet", () => {
+    const skin = parseSkin(skinCss("#a62a1c"));
+    expect(skin.light["--destructive"]).toBe("265 68% 44%");
+    expect(skin.dark["--destructive"]).toBe("265 68% 60%");
+    // the dark one clears the bar the old shared 44 % missed (it was 2.19 on the card)
+    expect(contrast(skin.dark["--destructive"], skin.dark["--card"])).toBeGreaterThanOrEqual(3.5);
+    expect(contrast("265 68% 44%", skin.dark["--card"])).toBeLessThan(3);
+  });
+
+  // Every preset whose skin moves the red (Seishin, Crimson, Sunset, Sakura …), and the
+  // whole colour wheel in the sweep below, are held by failures(): this names them so a
+  // preset change cannot quietly empty the check.
+  it("at least the red / orange / pink presets move --destructive, and are held to 3:1 per theme", () => {
+    const moved = BANDS.filter(([, hex]) => parseSkin(skinCss(hex)).dark["--destructive"]);
+    expect(moved.length).toBeGreaterThanOrEqual(3);
+    for (const [, hex] of moved) {
+      const skin = parseSkin(skinCss(hex));
+      for (const theme of ["light", "dark"] as const) {
+        for (const surface of ["--background", "--card", "--muted"]) {
+          expect(contrast(skin[theme]["--destructive"], skin[theme][surface])).toBeGreaterThanOrEqual(3);
+        }
+      }
+    }
+  });
+
+  it("the skin emits each theme's --destructive inside that theme's own block, and valid CSS", () => {
+    const css = skinCss("#a62a1c");
+    // exactly one --destructive per block, none dangling outside a block, each ends with ';}'
+    expect(css.match(/--destructive:/g)).toHaveLength(2);
+    expect(css).toMatch(/^:root\{[^}]*--destructive:265 68% 44%;\}\.dark\{[^}]*--destructive:265 68% 60%;\}$/);
+  });
+
   it("a blue band keeps the theme's own red", () => {
     expect(skinCss("#2563eb")).not.toContain("--destructive");
   });
@@ -150,7 +198,7 @@ describe("skinCss() holds WCAG for every band preset, both themes", () => {
         "--secondary:6 10% 91%;--muted:6 10% 91%;--border:6 10% 80%;--input:6 10% 54%;--spot:6 81% 45%;--destructive:265 68% 44%;}" +
         ".dark{--primary:6 71% 46%;--ring:6 71% 46%;--primary-foreground:0 0% 100%;--primary-ink:6 71% 60%;" +
         "--accent:6 26% 16%;--accent-foreground:0 0% 98%;--background:6 30% 5%;--card:6 24% 9%;--popover:6 24% 11%;" +
-        "--secondary:6 18% 13%;--muted:6 18% 13%;--border:6 18% 17%;--input:6 18% 43%;--spot:6 86% 50%;--destructive:265 68% 44%;}"
+        "--secondary:6 18% 13%;--muted:6 18% 13%;--border:6 18% 17%;--input:6 18% 43%;--spot:6 86% 50%;--destructive:265 68% 60%;}"
     );
   });
 });
