@@ -463,12 +463,14 @@ export function EventSummary({
         {/* The four times, flat ink: a 2 px foreground rule over each tile is the
             sheet's only "attitude", and it prints (spec §D.4). */}
         {/* 2 × 2 below sm: four across left ~50 px for a value, and a oneman's
-            "1:05:30" run time does not fit that. */}
-        <div className="grid grid-cols-2 gap-[3px] sm:grid-cols-4">
+            "1:05:30" run time does not fit that. The export is a fixed 600 px node
+            but sm: reads the SENDER'S window, so while capturing the sheet wears
+            its sm+ look outright — the same JPG from a phone and from a laptop. */}
+        <div className={`grid gap-[3px] ${isCapturing ? "grid-cols-4" : "grid-cols-2 sm:grid-cols-4"}`}>
           {sheetTiles.map(([label, value]) => (
             <div key={label} className="well min-w-0 px-3 py-2 shadow-[inset_0_2px_0_hsl(var(--foreground))]">
               <div className="truncate text-[12px] text-muted-foreground">{label}</div>
-              <div className="num truncate text-[20px] leading-tight sm:text-[26px]">{value}</div>
+              <div className={`num truncate leading-tight ${isCapturing ? "text-[26px]" : "text-[20px] sm:text-[26px]"}`}>{value}</div>
             </div>
           ))}
         </div>
@@ -629,7 +631,7 @@ export function EventSummary({
                               {formatClockOfDay(t.startSec)}–{formatClockOfDay(t.endSec)}
                             </span>
                           )}
-                          <span className="text-xs sm:text-sm">{it.title || "—"}</span>
+                          <span className={isCapturing ? "text-sm" : "text-xs sm:text-sm"}>{it.title || "—"}</span>
                           {/* Same treatment the Start–End cell gets: the Duration
                               and Running Time columns are dropped below sm, so on a
                               phone they'd otherwise exist nowhere at all. Suppressed

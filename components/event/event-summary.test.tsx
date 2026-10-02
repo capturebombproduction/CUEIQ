@@ -13,10 +13,25 @@ import type { EventRow, Group, Member, SetlistItem } from "@/lib/types";
 
 vi.mock("@/lib/supabase/client", () => ({ createClient: () => ({}) }));
 
-const captured = vi.hoisted(() => ({ text: [] as string[] }));
+const captured = vi.hoisted(() => ({
+  text: [] as string[],
+  // The classes the sheet wears at the instant html-to-image reads it.
+  classes: [] as { grid: string; tile: string; title: string }[],
+}));
 vi.mock("@/lib/export-image", () => ({
   captureElementToImage: async (el: HTMLElement) => {
     captured.text.push(el.textContent ?? "");
+    // the "ขึ้นเวที" tile of the four-times grid (the label also appears in the table)
+    const well = Array.from(el.querySelectorAll(".well")).find(
+      (w) => w.firstElementChild?.textContent === "ขึ้นเวที"
+    );
+    captured.classes.push({
+      grid: well?.parentElement?.className ?? "",
+      tile: well?.children[1]?.className ?? "",
+      title:
+        Array.from(el.querySelectorAll("span")).find((s) => s.textContent === "เพลง 1")
+          ?.className ?? "",
+    });
     return "downloaded" as const;
   },
 }));
@@ -222,5 +237,76 @@ describe("EventSummary — Live Mode when the hero already has it", () => {
     );
     expect(screen.queryByRole("link", { name: /Live Mode/ })).toBeNull();
     expect(screen.getByRole("button", { name: /บันทึกเป็นรูป/ })).toBeInTheDocument();
+  });
+});
+
+// 2026-10-02 (CQ-07): the exported sheet is a fixed 600 px wide, but its Tailwind
+// breakpoints (sm:) read the SENDER'S window, not the node. A sheet exported from a
+// phone came out 2 x 2 with 20 px values and 12 px song titles; the same sheet from
+// a laptop came out 4 across with 26 px values and 14 px titles. Same show, two
+// different images in the group chat. While capturing, the sheet wears the sm+ look.
+describe("EventSummary — the JPG looks the same whichever screen sent it", () => {
+  const song = {
+    id: "s1",
+    tenant_id: "t1",
+    event_id: "e1",
+    kind: "song",
+    title: "เพลง 1",
+    duration_seconds: 240,
+    buffer_before_seconds: 0,
+    buffer_after_seconds: 0,
+    mic_slots: [],
+    notes: null,
+    sort_order: 1,
+  } as SetlistItem;
+
+  const mount = () =>
+    render(
+      <EventSummary
+        event={{ ...event, show_start_time: "18:00:00" }}
+        schedule={[]}
+        setlist={[song]}
+        members={members}
+        showMic={false}
+        onNavigate={() => {}}
+        tenantId="t1"
+      />
+    );
+
+  beforeEach(() => {
+    captured.classes = [];
+  });
+
+  it("captures the four-across tiles with the 26 px values, not the phone's 2 x 2", async () => {
+    mount();
+    fireEvent.click(screen.getByRole("button", { name: /บันทึกเป็นรูป/ }));
+    await waitFor(() => expect(captured.classes).toHaveLength(1));
+    const { grid, tile } = captured.classes[0];
+    expect(grid.split(" ")).toContain("grid-cols-4");
+    expect(grid.split(" ")).not.toContain("grid-cols-2");
+    expect(tile.split(" ")).toContain("text-[26px]");
+    expect(tile.split(" ")).not.toContain("text-[20px]");
+  });
+
+  it("captures the song titles at 14 px, not the phone's 12 px", async () => {
+    mount();
+    fireEvent.click(screen.getByRole("button", { name: /บันทึกเป็นรูป/ }));
+    await waitFor(() => expect(captured.classes).toHaveLength(1));
+    const title = captured.classes[0].title.split(" ");
+    expect(title).toContain("text-sm");
+    expect(title).not.toContain("text-xs");
+  });
+
+  it("on screen the responsive classes are untouched", () => {
+    const { container } = mount();
+    const well = Array.from(container.querySelectorAll(".well")).find(
+      (w) => w.firstElementChild?.textContent === "ขึ้นเวที"
+    )!;
+    expect(well.parentElement!.className.split(" ")).toEqual(
+      expect.arrayContaining(["grid-cols-2", "sm:grid-cols-4"])
+    );
+    expect(well.children[1].className).toContain("text-[20px]");
+    expect(well.children[1].className).toContain("sm:text-[26px]");
+    expect(screen.getByText("เพลง 1").className).toBe("text-xs sm:text-sm");
   });
 });
