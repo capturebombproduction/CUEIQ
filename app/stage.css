@@ -268,8 +268,19 @@ html.reduce-motion .lit.sweep::after { display: none; }
 .seg > .th { font-family: var(--font-sans); font-size: 14px; font-weight: 600; letter-spacing: 0; text-transform: none; }
 .seg > [data-state=active], .seg > .on { background-color: hsl(var(--foreground)); color: hsl(var(--background)); }
 .seg.sm > * { height: 30px; }
+/* A touch screen gets the 44 px target (CQ-36): 38 px is a mouse's size, and the 3 px of padding round the
+   items is the container's, not theirs. Not .sm (a deliberate dense control) and not .quiet, Live's Manual | Auto,
+   which sits in a fixed 44 px status row at 38 px items (the row would overflow by 6 px). :where() keeps the
+   rule at the specificity of `.seg > *`, so an item that names its own height (a `[&>*]:h-11` utility, later in
+   the sheet) still wins. */
+@media (pointer:coarse) { .seg:where(:not(.sm):not(.quiet)) > * { height: 44px; } }
 .seg.sm.en > *, .seg.sm > .en { font-size: 13.5px; }
 .seg.quiet > [data-state=active], .seg.quiet > .on { background-color: hsl(var(--foreground) / .14); color: hsl(var(--foreground)); box-shadow: inset 0 -2px 0 hsl(var(--foreground) / .55); }
+/* The focus ring of the SELECTED item (CQ-51). tabs.tsx draws `ring-ring` (the band colour) inset over the item's
+   ink fill: Seishin red on the near-black selected fill is 2.8:1 in the light theme. A 2px page-colour band inside
+   the ring parts it from the fill, so the ring is read against the page, not the fill. Beats the
+   utility's `.x:focus-visible` on specificity (0,3,0 against 0,2,0). */
+.seg > [data-state=active]:focus-visible, .seg > .on:focus-visible { outline: none; box-shadow: inset 0 0 0 2px hsl(var(--ring)), inset 0 0 0 4px hsl(var(--background)); }
 
 /* ---------------- chips (ALWAYS icon + word) ---------------- */
 .chip { display: inline-flex; align-items: center; gap: 5px; height: 24px; padding: 0 8px 0 6px; border-radius: 2px; white-space: nowrap; line-height: 1;
@@ -313,9 +324,33 @@ html.reduce-motion .lit.sweep::after { display: none; }
 .hatch { background-image: repeating-linear-gradient(-45deg, hsl(var(--alarm-foreground)) 0 3px, hsl(var(--alarm)) 3px 6px); }
 
 /* ---------------- countdown: fitted to its column, never italic / glowing / ghost-digited ---------------- */
-.cd-wrap { container-type: inline-size; }
+/* Fitted to its column by container-query units (cqi). A declaration with cqi in it PARSES in every browser
+   (var() defers the check) and then becomes invalid at computed-value time where there is no such unit (Safari
+   < 16): the size is dropped, not the rule, so a plain fallback declaration written BEFORE it never gets a
+   look in and the numerals fell to the inherited ~16 px. So the cqi rule (and the container it measures) sit in
+   @supports (width: 1cqi), after a fallback that needs no container.
+
+   The fallback cannot know the column, so each surface NAMES it, in px, with two custom properties:
+     --cd-col  the width the numerals have. Default 100px: the break timer's box (practice/break-timer.tsx
+               puts .cd in a 100 px one), the one surface that is not a `.now` card, and so the smallest.
+     --cd-h    the height they have, the NOW card's box on the stage layout. Default: no limit.
+   The size is the least of --cd-max, --cd-col / --cd-em and --cd-h / .8 (the .cd line-height), the same three
+   limits the cq rule below reads off the container. It sizes a little UNDER, never over: a clipped or
+   overlapped clock reads as a wrong time. A browser with cq units renders the @supports rule, exactly as
+   before. `.now` is the Live card's column (components/live/now-card.tsx states its own on top of this; the
+   event Live Caller's NOW card, which has no such classes, gets this one): a single column of the page less
+   the gutters (16 + 16) and the card's padding (18 + 18), capped at 600 px (the Live page's 672 px, less
+   those); from md the Caller's grid gives NOW 1.35 of 2.35 columns (measured 380 px at 768, 410 at 820 and
+   510 from 1024 up, where the page stops growing at max-w-5xl), so 50vw - 64px, capped at 480 px, is under
+   it all the way. app/stage-css.test.tsx holds these to those measurements. */
 .cd { font-family: var(--font-num); font-variant-numeric: tabular-nums lining-nums; font-weight: 800; line-height: .8; letter-spacing: -.01em; text-align: center; white-space: nowrap;
-  font-size: min(var(--cd-max, 164px), calc(100cqi / var(--cd-em, 1.84))); }
+  font-size: min(var(--cd-max, 164px), calc(var(--cd-col, 100px) / var(--cd-em, 1.84)), calc(var(--cd-h, 9999px) / .8)); }
+.now { --cd-col: min(80vw, 100vw - 72px, 600px); }
+@media (min-width: 768px) { .now { --cd-col: min(50vw - 64px, 480px); } }
+@supports (width: 1cqi) {
+  .cd-wrap { container-type: inline-size; }
+  .cd { font-size: min(var(--cd-max, 164px), calc(100cqi / var(--cd-em, 1.84))); }
+}
 /* --cd-em = the widest string of that length, in em, plus ~2%. Measured in Chrome at
    Barlow Condensed 800 with the letter-spacing above: a digit is .51em, a colon .288,
    the small "+" .356. Lengths 8–10 are an hour or more over ("+1:00:00") and the
@@ -377,6 +412,10 @@ html.reduce-motion .next-invite::after { opacity: .9; }
                 radial-gradient(circle 7px at var(--notch-x) 100%, #0000 96%, #000) bottom / 100% 51% no-repeat;
           mask: radial-gradient(circle 7px at var(--notch-x) 0, #0000 96%, #000) top / 100% 51% no-repeat,
                 radial-gradient(circle 7px at var(--notch-x) 100%, #0000 96%, #000) bottom / 100% 51% no-repeat; }
+/* The mask above clips an OUTER outline away (CQ-49), so the ring is drawn INSIDE the card: a 2px outline at a -2px
+   offset (the card's outer 2px) over a 3px page-colour inset band, of which the outline covers 2px and 1px shows
+   between the ring and the card's face: the two tones every other chamfered control's ring uses. */
+.stub:focus-visible { outline: 2px solid hsl(var(--foreground)); outline-offset: -2px; box-shadow: inset 0 0 0 3px hsl(var(--background)); }
 .date-tile { width: 72px; flex: none; display: flex; flex-direction: column; align-items: center; justify-content: center; color: #fff;
   background: linear-gradient(hsl(0 0% 0% / .3), hsl(0 0% 0% / .3)), hsl(var(--band)); }      /* solid band block, darkened 30%: white holds on any group colour */
 .date-tile .eyebrow { color: hsl(0 0% 100% / .9); letter-spacing: .12em; }

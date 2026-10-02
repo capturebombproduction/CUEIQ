@@ -464,3 +464,141 @@ describe("NowCard · the strip sheds, in order, from its own width", () => {
     expect(decls(".zone-urgent .ztag", "(max-width:389.98px)")["font-size"]).toBeUndefined();
   });
 });
+
+// ── A LONG TITLE STEPS DOWN; THE CARD KEEPS ITS HEIGHT (CQ-11) ────────────────
+// "[SYSTEM_BOOT] SE (Overture)" read "[SYSTEM_BOOT] SE (Ov…" on a 390 phone: one `truncate` line
+// at a fixed 26 px (40 on the stage). The title now takes one of three sizes by how many glyphs it
+// has — a Thai tone mark or lower vowel is no glyph, it sits on its base. jsdom has no layout, so
+// what is pinned is the table, and the one invariant that matters: the LINE BOX is the same px at
+// every step. The title row is as tall as its h2, and this card is ONE height in every zone (the
+// NEXT card's mic grid must never slide under the dock). A real browser still has to measure that
+// the thresholds fit the real titles (review-shots/r15 shoot-real.mjs live-pre, MEASURE_JS: h2
+// scrollWidth <= clientWidth at 390 and 1180) - with a Thai-heavy title too: Kanit's base glyphs are
+// wider than Barlow Condensed's, so a 15-17 glyph Thai title may still be cut at the full size.
+// The step table and the glyph count are what change behaviour (red on the base); the line-box,
+// clip and no-row-change tests are REGRESSION GUARDS: the base passes them too, they keep the
+// step-down from costing the card a pixel.
+describe("NowCard · a long title steps down and the card keeps its height", () => {
+  const h2Of = (title: string, zone: LiveZone = "ok") => {
+    const { el, unmount } = card(zone, { title });
+    return { el, h2: within(el).getByRole("heading", { level: 2 }), unmount };
+  };
+  const tokens = (h2: HTMLElement) => h2.className.split(/\s+/);
+  /** `text-[22px]` / `stage:leading-[41.6px]` / `leading-[1.04]`: the number and its unit ("" = unitless) */
+  function size(h2: HTMLElement, prefix: "" | "stage:", prop: "text" | "leading") {
+    for (const t of tokens(h2)) {
+      const m = new RegExp(`^${prefix}${prop}-\\[([\\d.]+)(px)?\\]$`).exec(t);
+      if (m) return { n: parseFloat(m[1]), unit: m[2] ?? "" };
+    }
+    return null;
+  }
+  /** the line box in px as the browser would compute it: the size, and the leading (px, or x the size) */
+  function lineBox(h2: HTMLElement, stage: boolean) {
+    const fs = (stage && size(h2, "stage:", "text")) || size(h2, "", "text");
+    const lh = (stage && size(h2, "stage:", "leading")) || size(h2, "", "leading");
+    expect(fs, "no font size").not.toBeNull();
+    expect(lh, "no line height").not.toBeNull();
+    return Math.round((lh!.unit === "px" ? lh!.n : lh!.n * fs!.n) * 100) / 100;
+  }
+  const px = (h2: HTMLElement) => ({ phone: size(h2, "", "text")!.n, stage: size(h2, "stage:", "text")!.n });
+
+  it("up to 17 glyphs keeps the card's own 26 / 40 px; 18-22 steps down to 22 / 32; 23 and more to 19 / 28", () => {
+    for (const [n, want] of [
+      [1, { phone: 26, stage: 40 }],
+      [17, { phone: 26, stage: 40 }],
+      [18, { phone: 22, stage: 32 }],
+      [22, { phone: 22, stage: 32 }],
+      [23, { phone: 19, stage: 28 }],
+      [60, { phone: 19, stage: 28 }],
+    ] as const) {
+      const { h2, unmount } = h2Of("A".repeat(n));
+      expect(px(h2), `${n} glyphs`).toEqual(want);
+      unmount();
+    }
+  });
+
+  it("the real titles that were cut: 27 glyphs take the smallest step, 20 the middle one", () => {
+    const boot = h2Of("[SYSTEM_BOOT] SE (Overture)");
+    expect(px(boot.h2)).toEqual({ phone: 19, stage: 28 });
+    boot.unmount();
+    const mc = h2Of("MC HBD friend ขายของ");
+    expect(px(mc.h2)).toEqual({ phone: 22, stage: 32 });
+  });
+
+  it("a Thai tone mark or lower vowel is no glyph: 17 base letters with ten marks stay at full size", () => {
+    const marks = "้".repeat(10); // ไม้โท, on a base letter: takes no width
+    const { h2 } = h2Of("ก".repeat(17) + marks);
+    expect(px(h2)).toEqual({ phone: 26, stage: 40 });
+  });
+
+  it("guard: the line box is the SAME px at every step, on the phone (27.04) and on the stage (41.6)", () => {
+    for (const n of [5, 18, 30]) {
+      const { h2, unmount } = h2Of("A".repeat(n));
+      expect(lineBox(h2, false), `${n} glyphs, phone`).toBe(27.04);
+      expect(lineBox(h2, true), `${n} glyphs, stage`).toBe(41.6);
+      unmount();
+    }
+  });
+
+  it("guard: every step keeps the one-line clip and the room for Thai marks (and its cancelling margin)", () => {
+    for (const n of [5, 18, 30]) {
+      const { h2, unmount } = h2Of("A".repeat(n));
+      expect(h2, `${n}`).toHaveClass("truncate", "py-[.25em]", "-my-[.25em]", "min-w-0", "flex-1");
+      unmount();
+    }
+  });
+
+  it("guard: a long title changes no row: the same rows in every zone, the countdown in its fixed box, the strip untouched", () => {
+    const LONG = "[SYSTEM_BOOT] SE (Overture)";
+    for (const z of ["ok", "warn", "urgent", "over"] as const) {
+      const short = card(z);
+      const long = card(z, { title: LONG });
+      expect(shape(long.el), z).toEqual(shape(short.el));
+      expect(long.el.querySelector<HTMLElement>(".cd-wrap")!.style.height, z).toBe("131px");
+      // the strip is the container-driven ladder's: it never learns the title's length
+      expect(long.el.querySelector(".zhead")!.className, z).toBe(short.el.querySelector(".zhead")!.className);
+      short.unmount();
+      long.unmount();
+    }
+  });
+});
+
+// ── THE STAGE COUNTDOWN DOES NOT LIVE ON CONTAINER UNITS ALONE (CQ-13) ───────
+// `font-size: min(var(--cd-max), calc(100cqi / …))` PARSES everywhere (var() defers the check) and
+// is then invalid at computed-value time where there is no cqi (Safari < 16): the size is dropped
+// and the numerals fall to the inherited ~16 px. The stage override is `!important`, so it fails
+// the same way and no stylesheet fallback can sit under it. So every cq-unit override is gated on
+// support, and the other branch is app/stage.css's own `.cd` rule, which this card feeds with its
+// column (--cd-col) and its box's height (--cd-h) in the viewport's units. (app/stage-css.test.tsx
+// holds the stylesheet's half, compiles these very classes with Tailwind and checks them against
+// the columns and boxes a browser measured.)
+describe("NowCard · the stage countdown's cq overrides are gated on support, with a viewport fallback", () => {
+  const wrapperClasses = () => {
+    const { el } = card("ok");
+    return el.querySelector(".cd-wrap")!.parentElement!.className.split(/\s+/);
+  };
+
+  it("every override that uses cqi / cqb is a `stage:supports-[width:1cqi]:` one", () => {
+    // (the `width:1cqi` in a support condition is no cq unit in use)
+    const withCq = wrapperClasses().filter((t) => /cq[a-z]/.test(t.replace(/width:1cqi/g, "")));
+    expect(withCq.length).toBeGreaterThan(0);
+    for (const t of withCq) expect(t.startsWith("stage:supports-[width:1cqi]:"), t).toBe(true);
+  });
+
+  it("an engine without them is sized from the column and the box this card names, in no cq unit", () => {
+    const named = wrapperClasses().filter((t) => t.includes("--cd-col:") || t.includes("--cd-h:"));
+    // the phone's column, the landscape phone's, the stage's; and the stage's box height
+    expect(named).toHaveLength(4);
+    expect(named.some((t) => t.startsWith("[--cd-col:min(80vw,"))).toBe(true);
+    expect(named.some((t) => t.startsWith("[@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:[--cd-col:calc(50vw_"))).toBe(true);
+    expect(named).toContain("stage:[--cd-col:calc(100vw_-_760px)]");
+    expect(named).toContain("stage:[--cd-h:calc(100vh_-_600px)]");
+    for (const t of named) expect(t, t).not.toMatch(/cq/);
+    // no `@supports not` font-size class: that fallback is the stylesheet's now (it was width-only)
+    expect(wrapperClasses().filter((t) => t.includes("@supports_not_"))).toHaveLength(0);
+  });
+
+  it("the stage's 236 px cap is still set, whatever the engine", () => {
+    expect(wrapperClasses()).toContain("stage:[&_.cd]:![--cd-max:236px]");
+  });
+});

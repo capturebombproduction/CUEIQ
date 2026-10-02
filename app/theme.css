@@ -244,8 +244,8 @@
 }
 
 /* Print: a paper run sheet for show day. Force light (ink-friendly) regardless of
-   theme, hide on-screen-only controls, and keep rows/sections from splitting across
-   pages. Add `no-print` to anything that shouldn't appear on paper. Sitting above the
+   theme, hide on-screen-only controls, and keep rows from splitting across pages.
+   Add `no-print` to anything that shouldn't appear on paper. Sitting above the
    utilities (see the note at the top) changes nothing: each rule is !important, sets
    a token no utility sets, or is an element selector any class out-ranks anyway. */
 @media print {
@@ -334,11 +334,21 @@
     -webkit-print-color-adjust: exact;
     print-color-adjust: exact;
   }
+  /* A toast open at print time (Sonner mounts its list at the end of <body>, outside every
+     `no-print` wrapper) would be printed on the page. */
+  [data-sonner-toaster] {
+    display: none !important;
+  }
+  /* Rows and list items never split; a SECTION may (CQ-28). `section` was in this list, and a
+     Setlist taller than the space left on page 1 jumped whole to page 2 (page 1 40% blank, the
+     Lineup alone on page 3). What a section must not do is strand its heading at a page's foot. */
   table tr,
   li,
-  section,
   header {
     break-inside: avoid;
+  }
+  section > h3.eyebrow {
+    break-after: avoid;
   }
 }
 

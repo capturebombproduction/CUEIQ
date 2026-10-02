@@ -12,6 +12,30 @@ import type { SetlistKind } from "@/lib/types";
 const p2 = (n: number) => String(n).padStart(2, "0");
 
 /**
+ * The NOW title steps down with its length (CQ-11): one line, so a long title was cut
+ * ("[SYSTEM_BOOT] SE (Overture)" lost its "(Overture)" on a phone). Three sizes - the card's
+ * own 26 / 40 px (stage), then 22 / 32 and 19 / 28 - picked by how many glyphs the title has.
+ * The thresholds are what Barlow Condensed 800 gets into the title column (about 250 px on a
+ * 390 phone, about 370 px on the stage layout at 1180); tune them from a measurement, not by
+ * feel. Thai tone marks and lower vowels sit on a base glyph and take no width: not counted.
+ *
+ * THE LINE BOX IS THE SAME PX AT EVERY STEP (26 x 1.04 = 27.04, 40 x 1.04 = 41.6). The title
+ * row is as tall as its h2, and this card is ONE height in every zone (the NEXT card's mic
+ * grid must never slide under the dock): a smaller font on the card's `1.04` line-height
+ * would shrink the row by 3-10 px, so the smaller steps pin the line-height in px instead.
+ */
+const TITLE_STEP_MAX_GLYPHS = [17, 22] as const;
+const TITLE_SIZE = [
+  "text-[26px] leading-[1.04] stage:text-[40px]",
+  "text-[22px] leading-[27.04px] stage:text-[32px] stage:leading-[41.6px]",
+  "text-[19px] leading-[27.04px] stage:text-[28px] stage:leading-[41.6px]",
+] as const;
+function titleStep(title: string): 0 | 1 | 2 {
+  const glyphs = Array.from(title.replace(/\p{Mn}/gu, "")).length;
+  return glyphs <= TITLE_STEP_MAX_GLYPHS[0] ? 0 : glyphs <= TITLE_STEP_MAX_GLYPHS[1] ? 1 : 2;
+}
+
+/**
  * Live Mode's NOW card (FINAL-SPEC-v2 §G.10): ONE shape for all four zones, so the
  * card is the same height in every one of them and the NEXT card's mic grid can
  * never slide under the dock when the ladder steps.
@@ -144,7 +168,7 @@ export function NowCard({
         {/* py + matching -my: the clip (overflow: hidden) is the padding box, and at
             1.04 a Barlow-first line box ends inside Kanit's stacked tone marks and
             ุ / ู. The padding gives them room; the margin keeps the row's height. */}
-        <h2 className="disp min-w-0 flex-1 truncate py-[.25em] -my-[.25em] text-[26px] leading-[1.04] stage:text-[40px]">{title}</h2>
+        <h2 className={cn("disp min-w-0 flex-1 truncate py-[.25em] -my-[.25em]", TITLE_SIZE[titleStep(title)])}>{title}</h2>
         {zone !== "ok" && (
           <span className={cn("num shrink-0 text-[16px]", !over && "hidden [@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:inline")}>{pos}</span>
         )}
@@ -206,8 +230,23 @@ export function NowCard({
       {/* Phone: the countdown's own fixed height (max × .8). Stage: it fills what the
           column leaves and is fitted to BOTH the width (cqi) and that height (cqb), so
           a resume / fault / sync banner can shrink the numerals but never push the
-          fade row out of the card. Landscape phone: the 120 px cap in a 96 px box. */}
-      <div className="mt-2 [@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:mt-1 stage:mt-1 stage:grid stage:min-h-0 stage:flex-1 stage:[&_.cd-wrap]:!h-auto stage:[&_.cd-wrap]:[container-type:size] stage:[&_.cd]:![--cd-max:236px] stage:[&_.cd]:![font-size:min(var(--cd-max),calc(100cqi/var(--cd-em,1.84)),calc(100cqb/0.8))] [@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:[&_.cd-wrap]:!h-[96px] [@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:[&_.cd]:![--cd-max:120px]">
+          fade row out of the card. Landscape phone: the 120 px cap in a 96 px box.
+          The cq override is gated `supports-[width:1cqi]`: written bare, a browser without
+          container-query units (Safari < 16) drops it at computed-value time and the numerals
+          fall to the inherited ~16 px. There app/stage.css sizes `.cd` from two custom
+          properties this wrapper sets in the viewport's units (set on every layout, read
+          only by that fallback; app/stage-css.test.tsx holds them to what a browser measured):
+            --cd-col  the column. Phone: the page less its gutters and the card's padding, capped
+                      at the 672 px page. Landscape phone: half the viewport less the gutters,
+                      the gap and the padding. Stage: the viewport less 740 px (gutters, the other
+                      two columns, the padding), and 20 px of slack.
+            --cd-h    the box's height, stage only. The box is 100vh - 536 px (fade keys and the
+                      volume row in the card), 164 px at the stage's 700 px floor, and the
+                      digits are .8 of the font size (189 px at the 236 px cap): a width-only fit
+                      overlapped the fade row on a short stage. 64 px of slack more, for the iOS
+                      volume note or a banner, which this box then loses.
+          Both size a little under what the cq fit gives, never over. */}
+      <div className="mt-2 [@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:mt-1 stage:mt-1 stage:grid stage:min-h-0 stage:flex-1 stage:[&_.cd-wrap]:!h-auto stage:[&_.cd-wrap]:[container-type:size] stage:[&_.cd]:![--cd-max:236px] stage:supports-[width:1cqi]:[&_.cd]:![font-size:min(var(--cd-max),calc(100cqi/var(--cd-em,1.84)),calc(100cqb/0.8))] [--cd-col:min(80vw,100vw_-_72px,600px)] [@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:[--cd-col:calc(50vw_-_68px)] stage:[--cd-col:calc(100vw_-_760px)] stage:[--cd-h:calc(100vh_-_600px)] [@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:[&_.cd-wrap]:!h-[96px] [@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:[&_.cd]:![--cd-max:120px]">
         <Countdown seconds={Math.round(remaining)} max={164} />
       </div>
 
