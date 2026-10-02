@@ -1415,7 +1415,7 @@ describe("LiveMode · what a show needs stays where the show can reach it", () =
   const openTools = () => fireEvent.click(screen.getByRole("button", { name: "Live tools" }));
   const nowCard = () => screen.getByRole("heading", { level: 2 }).closest("[data-zone]") as HTMLElement;
   const READINESS = /^(เสียงในเครื่องนี้|กำลังโหลดเสียงลงเครื่อง)/;
-  const LANDSCAPE_PHONE = "[@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]";
+  const LANDSCAPE_PHONE = "[@media(orientation:landscape)_and_(max-height:599.98px)_and_(pointer:coarse)]";
 
   it("the landscape-phone layout is a touch screen's: a short laptop window keeps the fades on NOW", async () => {
     // Keyed on height alone, a 1366×768 laptop's Chrome (or the .exe on a 768 px
@@ -1762,6 +1762,15 @@ describe("LiveMode · round 15 seams", () => {
     expect(stepAside(tiles)).toBeGreaterThan(stepAside(label));
   });
 
+  it("under 700 px tall the SHOW slab steps aside whole: an empty 'SHOW' plate read as missing data", async () => {
+    // Measured: at 1133x680 (an iPad mini's Safari tab, now a stage) and 1366x620 the slab
+    // held only its label. Its totals are in the top bar; the plate goes with them.
+    await mountLive();
+    const slab = screen.getByText("Show", { selector: ".nlabel" }).closest("section") as HTMLElement;
+    expect(slab.className.split(/\s+/)).toContain("stage:[@media(max-height:699.98px)]:hidden");
+    expect(slab).toHaveClass("stage:flex"); // still the stage's from 700 px up
+  });
+
   it("CQ-20: the NOW card sheds its volume row first, then its cue note, so a banner never squeezes the numerals out", async () => {
     // The countdown box is what is left of the card after every other row: 265.6 px of rows
     // (Chromium, 1366 x 700: box 164.4 in a 430 px content box). The volume row is 10 + 24 of
@@ -1814,7 +1823,7 @@ describe("LiveMode · round 15 seams", () => {
     expect(row).not.toHaveClass("max-w-2xl");
     // the landscape phone's root is max-w-none, so its cards never matched the row
     // anyway: it keeps the 2xl it always had (only the portrait iPad moves)
-    expect(row).toHaveClass("[@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:max-w-2xl");
+    expect(row).toHaveClass("[@media(orientation:landscape)_and_(max-height:599.98px)_and_(pointer:coarse)]:max-w-2xl");
     // the cards: the root's 42rem less its 1rem gutters each side = 40rem
     expect(root()).toHaveClass("max-w-2xl", "px-4");
   });

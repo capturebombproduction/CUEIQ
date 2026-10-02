@@ -3407,7 +3407,7 @@ export function LiveMode({
       // cannot hold a status row AND the NOW card above the dock. (A grid would end
       // the sticky top bar at its own row; a flex container keeps it sticky.)
       className={cn(
-        "live-root relative mx-auto flex w-full max-w-2xl flex-col gap-2 px-4 pb-[calc(84px+max(12px,env(safe-area-inset-bottom)))] [@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:max-w-none [@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:flex-row [@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:flex-wrap [@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:content-start [@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:items-start [@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:gap-x-3 [@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:px-6 stage:h-[100dvh] stage:max-w-none stage:gap-0 stage:overflow-hidden stage:px-0 stage:pb-[calc(112px+env(safe-area-inset-bottom))] stage:pl-[env(safe-area-inset-left)] stage:pr-[env(safe-area-inset-right)]",
+        "live-root relative mx-auto flex w-full max-w-2xl flex-col gap-2 px-4 pb-[calc(84px+max(12px,env(safe-area-inset-bottom)))] [@media(orientation:landscape)_and_(max-height:599.98px)_and_(pointer:coarse)]:max-w-none [@media(orientation:landscape)_and_(max-height:599.98px)_and_(pointer:coarse)]:flex-row [@media(orientation:landscape)_and_(max-height:599.98px)_and_(pointer:coarse)]:flex-wrap [@media(orientation:landscape)_and_(max-height:599.98px)_and_(pointer:coarse)]:content-start [@media(orientation:landscape)_and_(max-height:599.98px)_and_(pointer:coarse)]:items-start [@media(orientation:landscape)_and_(max-height:599.98px)_and_(pointer:coarse)]:gap-x-3 [@media(orientation:landscape)_and_(max-height:599.98px)_and_(pointer:coarse)]:px-6 stage:h-[100dvh] stage:max-w-none stage:gap-0 stage:overflow-hidden stage:px-0 stage:pb-[calc(112px+env(safe-area-inset-bottom))] stage:pl-[env(safe-area-inset-left)] stage:pr-[env(safe-area-inset-right)]",
         zone === "over" && "zone-over"
       )}
       // ── WHAT THIS DEVICE THINKS IT IS, readable from outside the process ──────
@@ -3454,7 +3454,7 @@ export function LiveMode({
           strip, so the page-level copy stands down and can never push this screen
           into a scroll in exactly the airplane case. The back control is an <a>: the
           leave guard above intercepts a[href], so leaving a running show still asks. */}
-      <header className="live-top glass glass-top sticky top-0 z-40 -mx-4 shrink-0 pt-[env(safe-area-inset-top)] [@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:-mx-6 [@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:min-w-0 [@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:basis-[calc(100%+48px)] stage:mx-0">
+      <header className="live-top glass glass-top sticky top-0 z-40 -mx-4 shrink-0 pt-[env(safe-area-inset-top)] [@media(orientation:landscape)_and_(max-height:599.98px)_and_(pointer:coarse)]:-mx-6 [@media(orientation:landscape)_and_(max-height:599.98px)_and_(pointer:coarse)]:min-w-0 [@media(orientation:landscape)_and_(max-height:599.98px)_and_(pointer:coarse)]:basis-[calc(100%+48px)] stage:mx-0">
         <div className="flex h-[54px] items-center gap-1 px-1 stage:h-16 stage:gap-3 stage:pl-3 stage:pr-4">
           <Link
             href={`/events/${eventId}`}
@@ -3501,7 +3501,7 @@ export function LiveMode({
               upright keeps its own row). The landscape phone has no other place for
               the running totals, and an operator who cannot see them walks the show
               without noticing the accumulated clock. */}
-          <div className="hidden items-center gap-3 [@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:flex stage:flex stage:gap-5">
+          <div className="hidden items-center gap-3 [@media(orientation:landscape)_and_(max-height:599.98px)_and_(pointer:coarse)]:flex stage:flex stage:gap-5">
             <Stat label="ผ่านไป">{formatDuration(totalElapsed)}</Stat>
             <Stat label="เหลือทั้งโชว์">{formatDuration(showRemaining)}</Stat>
             <Stat label="คาดจบ" suppress>
@@ -3533,7 +3533,7 @@ export function LiveMode({
         {/* A phone held sideways has no 28 px to spare above the NOW card: there the
             sync line beside ON AIR already reads "ออฟไลน์ · โชว์เดินต่อ". The strip
             stays mounted, so the page-level copy still stands down. */}
-        <div className="[@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:hidden">
+        <div className="[@media(orientation:landscape)_and_(max-height:599.98px)_and_(pointer:coarse)]:hidden">
           <OfflineBanner placement="header" />
         </div>
       </header>
@@ -3546,7 +3546,7 @@ export function LiveMode({
         eventId={eventId}
         isController={isController}
         soundOutput={soundOutput}
-        className="stage:mx-5 stage:mb-2 [@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:order-1 [@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:basis-full"
+        className="stage:mx-5 stage:mb-2 [@media(orientation:landscape)_and_(max-height:599.98px)_and_(pointer:coarse)]:order-1 [@media(orientation:landscape)_and_(max-height:599.98px)_and_(pointer:coarse)]:basis-full"
       />
 
       {/* Audio needs a tap to (re)start — after a reload / autoplay block. The one
@@ -3555,7 +3555,7 @@ export function LiveMode({
         <button
           type="button"
           onClick={resumeAudio}
-          className="flex h-[52px] shrink-0 items-center justify-center gap-2 rounded-[2px] bg-warning px-4 font-semibold text-warning-foreground [@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:basis-full stage:mx-5 stage:mb-2"
+          className="flex h-[52px] shrink-0 items-center justify-center gap-2 rounded-[2px] bg-warning px-4 font-semibold text-warning-foreground [@media(orientation:landscape)_and_(max-height:599.98px)_and_(pointer:coarse)]:basis-full stage:mx-5 stage:mb-2"
         >
           <Volume2 aria-hidden className="size-5 shrink-0" /> แตะเพื่อเล่นเสียงต่อ (ตำแหน่งปัจจุบัน)
         </button>
@@ -3564,7 +3564,7 @@ export function LiveMode({
       {/* A real playback failure on this device — the countdown keeps running, so
           say WHY the PA is silent instead of leaving the operator guessing. */}
       {audioFault && (
-        <div className="flex shrink-0 items-center justify-between gap-2 rounded-[2px] bg-destructive/[.14] py-1 pl-3 pr-1 text-[13px] font-medium text-foreground [@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:basis-full stage:mx-5 stage:mb-2 [&_svg]:text-destructive">
+        <div className="flex shrink-0 items-center justify-between gap-2 rounded-[2px] bg-destructive/[.14] py-1 pl-3 pr-1 text-[13px] font-medium text-foreground [@media(orientation:landscape)_and_(max-height:599.98px)_and_(pointer:coarse)]:basis-full stage:mx-5 stage:mb-2 [&_svg]:text-destructive">
           <span className="flex min-w-0 items-center gap-1.5">
             <VolumeX aria-hidden className="size-4 shrink-0" />
             <span className="min-w-0">
@@ -3587,7 +3587,7 @@ export function LiveMode({
 
       {/* Realtime dropped mid-show — make it obvious; the local show keeps running */}
       {state.begun && !syncReady && (
-        <div className="flex shrink-0 items-center justify-center gap-2 rounded-[2px] bg-warning/[.16] px-3 py-2 text-[13px] font-medium text-warning-ink [@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:order-1 [@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:basis-full stage:mx-5 stage:mb-2">
+        <div className="flex shrink-0 items-center justify-center gap-2 rounded-[2px] bg-warning/[.16] px-3 py-2 text-[13px] font-medium text-warning-ink [@media(orientation:landscape)_and_(max-height:599.98px)_and_(pointer:coarse)]:order-1 [@media(orientation:landscape)_and_(max-height:599.98px)_and_(pointer:coarse)]:basis-full stage:mx-5 stage:mb-2">
           <span aria-hidden className="h-2 w-2 shrink-0 bg-warning" />
           การเชื่อมต่อหลุด — กำลังต่อใหม่ (โชว์ยังเดินต่อ)
         </div>
@@ -3599,7 +3599,7 @@ export function LiveMode({
           off, so the remote stays silent without muting the PA. A phone held
           sideways shows it under NOW | NEXT (one short scroll), never hides it:
           Live tools has no copy of the sound key, Manual | Auto or ขอควบคุม. */}
-      <div className="flex h-11 min-w-0 shrink-0 items-center gap-1.5 [@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:order-1 [@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:basis-full stage:h-[60px] stage:gap-2 stage:px-5 stage:pt-3">
+      <div className="flex h-11 min-w-0 shrink-0 items-center gap-1.5 [@media(orientation:landscape)_and_(max-height:599.98px)_and_(pointer:coarse)]:order-1 [@media(orientation:landscape)_and_(max-height:599.98px)_and_(pointer:coarse)]:basis-full stage:h-[60px] stage:gap-2 stage:px-5 stage:pt-3">
         <button
           type="button"
           data-testid="sound-output-toggle"
@@ -3765,7 +3765,7 @@ export function LiveMode({
       </div>
 
       {/* ── SHOW STRIP ── phone portrait only (stage carries it in the top bar). */}
-      <div className="grid shrink-0 grid-cols-3 gap-[2px] [@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:hidden stage:hidden">
+      <div className="grid shrink-0 grid-cols-3 gap-[2px] [@media(orientation:landscape)_and_(max-height:599.98px)_and_(pointer:coarse)]:hidden stage:hidden">
         <div className="slab min-w-0 px-3 py-1">
           <div className="truncate text-[11px] text-muted-foreground">ผ่านไป</div>
           <div className="num text-[25px] leading-[1.05]">{formatDuration(totalElapsed)}</div>
@@ -3796,7 +3796,7 @@ export function LiveMode({
           1060), and gives a running-order row 20 px over the 270 px it first had:
           the row with the NEXT chip keeps 68 px of title instead of 48, and in
           edit mode ~20 px between its marks and the ▲▼ keys instead of 0. */}
-      <div className="flex flex-col gap-2 [@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:contents stage:grid stage:min-h-0 stage:flex-1 stage:grid-cols-[minmax(0,1fr)_300px_clamp(290px,calc(40vw_-_150px),320px)] stage:grid-rows-[minmax(0,1fr)] stage:gap-4 stage:px-5 stage:pb-3 stage:pt-2">
+      <div className="flex flex-col gap-2 [@media(orientation:landscape)_and_(max-height:599.98px)_and_(pointer:coarse)]:contents stage:grid stage:min-h-0 stage:flex-1 stage:grid-cols-[minmax(0,1fr)_300px_clamp(290px,calc(40vw_-_150px),320px)] stage:grid-rows-[minmax(0,1fr)] stage:gap-4 stage:px-5 stage:pb-3 stage:pt-2">
         <NowCard
           zone={zone}
           blockSec={zoneBlock}
@@ -3857,7 +3857,7 @@ export function LiveMode({
         </NowCard>
 
         {/* NEXT (and, on stage, the SHOW totals under it) */}
-        <div className="flex min-w-0 flex-col gap-2 [@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:basis-[calc(50%-6px)] stage:min-h-0 stage:gap-3">
+        <div className="flex min-w-0 flex-col gap-2 [@media(orientation:landscape)_and_(max-height:599.98px)_and_(pointer:coarse)]:basis-[calc(50%-6px)] stage:min-h-0 stage:gap-3">
           <section className="slab shrink-0 px-4 pb-3 pt-2 stage:px-5 stage:pb-4 stage:pt-3.5">
             {next ? (
               <>
@@ -3920,7 +3920,11 @@ export function LiveMode({
             )}
           </section>
 
-          <section className="slab hidden min-h-0 flex-1 flex-col overflow-hidden px-5 pb-4 pt-3.5 stage:flex stage:[container-type:size]">
+          {/* Under 700 px tall (a 600-699 stage: a 768p laptop, an iPad mini's Safari tab) the
+              slab cannot hold even its two tiles and would stand as an empty "SHOW" plate,
+              which reads as missing data; the whole slab steps aside instead. The top bar
+              prints the same totals (ผ่านไป · เหลือทั้งโชว์ · คาดจบ). */}
+          <section className="slab hidden min-h-0 flex-1 flex-col overflow-hidden px-5 pb-4 pt-3.5 stage:flex stage:[container-type:size] stage:[@media(max-height:699.98px)]:hidden">
             <span className="nlabel [@container_(max-height:26px)]:hidden">Show</span>
             {/* The top bar already prints ผ่านไป, so when THIS SLAB is too short to show
                 the big copy and its two tiles unclipped (the NEXT card with six mics
@@ -3966,7 +3970,7 @@ export function LiveMode({
         {/* RUNNING ORDER (memoized — see upcomingRows) */}
         <section
           data-edit={orderEdit ? "on" : "off"}
-          className="group/ro [@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:order-2 [@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:basis-full stage:flex stage:min-h-0 stage:flex-col stage:rounded-[2px] stage:bg-card stage:p-2.5 stage:shadow-edge"
+          className="group/ro [@media(orientation:landscape)_and_(max-height:599.98px)_and_(pointer:coarse)]:order-2 [@media(orientation:landscape)_and_(max-height:599.98px)_and_(pointer:coarse)]:basis-full stage:flex stage:min-h-0 stage:flex-col stage:rounded-[2px] stage:bg-card stage:p-2.5 stage:shadow-edge"
         >
           <div className="hidden items-center gap-2 px-2 pb-1.5 pt-1 stage:flex">
             <h3 className="nlabel text-[19px]">Running Order</h3>
@@ -4001,11 +4005,11 @@ export function LiveMode({
           seconds={lastRun.seconds}
           at={lastRun.at}
           onClear={canEdit ? clearLastRun : null}
-          className="shrink-0 [@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:order-3 [@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:basis-full stage:hidden"
+          className="shrink-0 [@media(orientation:landscape)_and_(max-height:599.98px)_and_(pointer:coarse)]:order-3 [@media(orientation:landscape)_and_(max-height:599.98px)_and_(pointer:coarse)]:basis-full stage:hidden"
         />
       )}
 
-      <p className="px-1 text-center text-[11px] text-faint [@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:order-3 [@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:basis-full stage:hidden">
+      <p className="px-1 text-center text-[11px] text-faint [@media(orientation:landscape)_and_(max-height:599.98px)_and_(pointer:coarse)]:order-3 [@media(orientation:landscape)_and_(max-height:599.98px)_and_(pointer:coarse)]:basis-full stage:hidden">
         <CloudUpload aria-hidden className="mr-1 inline size-3" />
         ไฟล์เพลงเก็บออนไลน์แบบส่วนตัว (เฉพาะคนที่ล็อกอิน) — ทุกเครื่องเล่นได้ และลบได้
       </p>
@@ -4042,7 +4046,7 @@ export function LiveMode({
         {/* 40rem, not 2xl: the cards above are the root's 42rem less its 1rem gutters,
             and this row already sits inside the dock's own 1rem, so 2xl stood 16 px
             outside the cards on each side on a portrait iPad. */}
-        <div className="mx-auto flex max-w-[40rem] gap-2 [@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:max-w-2xl stage:mx-0 stage:max-w-none stage:flex-1 stage:gap-3">
+        <div className="mx-auto flex max-w-[40rem] gap-2 [@media(orientation:landscape)_and_(max-height:599.98px)_and_(pointer:coarse)]:max-w-2xl stage:mx-0 stage:max-w-none stage:flex-1 stage:gap-3">
           {state.begun ? (
             <Button
               variant="dock"
@@ -4287,7 +4291,7 @@ export function LiveMode({
           {/* Landscape phone only: the NOW card drops its fade row there (spec §G.10,
               "everything else in the tools sheet"). Same condition as the card's. */}
           {current && (currentAudioUrl || (isController && state.begun)) && (
-            <div className="mb-2.5 hidden grid-cols-[1.05fr_.72fr_1.25fr] gap-[3px] [@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:grid">
+            <div className="mb-2.5 hidden grid-cols-[1.05fr_.72fr_1.25fr] gap-[3px] [@media(orientation:landscape)_and_(max-height:599.98px)_and_(pointer:coarse)]:grid">
               {fadeKeys}
             </div>
           )}

@@ -244,7 +244,7 @@ html.reduce-motion .lit.sweep::after { display: none; }
 /* Not on the landscape phone (the media below): its strip already carries only tag + clock (201px needed in
    URGENT, 218+ there), so the approved 23px tag fits and keeps its size. Written as the complement of that media
    (a comma list) so no browser has to understand "not (a and b)". */
-@media (orientation:portrait), (min-height:699.99px), (pointer:fine) {
+@media (orientation:portrait), (min-height:599.99px), (pointer:fine) {
   @container (max-width: 313px) {
     .zone-urgent .ztag { font-size: 21px; padding: 0 11px 0 9px; margin-right: -4px; }
     .zone-urgent .zthr, .zone-urgent .zidx { margin-right: -4px; }
@@ -258,7 +258,7 @@ html.reduce-motion .lit.sweep::after { display: none; }
    fit, and .zend's overflow:hidden would then show a PARTIAL clock - a believable wrong time. The threshold goes
    (the index goes in now-card.tsx's class, the title row carries it); the caption row under the meter still says
    "เหลือไม่ถึง N" (zoneCaption). Same media as now-card.tsx's variant. */
-@media (orientation:landscape) and (max-height:699.98px) and (pointer:coarse) { .zthr { display: none; } }
+@media (orientation:landscape) and (max-height:599.98px) and (pointer:coarse) { .zthr { display: none; } }
 .zone-warn .cd, .zone-urgent .cd { color: hsl(var(--warning-ink)); }
 
 /* ---------------- glass: the app header + tab bar, or Live's top bar + dock. Nothing else. ---------------- */
@@ -445,7 +445,10 @@ html.reduce-motion .next-invite::after { opacity: .9; }
 
 /* ---------------- misc ---------------- */
 .mic { position: relative; overflow: hidden; border-radius: 2px; text-align: center; padding: 6px 2px 5px; background-color: hsl(var(--muted)); }
-.mic > i { position: absolute; inset: 0 0 auto 0; height: 4px; }      /* style="background: member.color" */
+/* 5px: the cap carries a 1px --border ring (mic-grid.tsx, so a pale or near-black member colour
+   keeps an edge), and 4px left only 2px of colour between it. The cap overlays the tile's 6px
+   top padding, so the tile is the same height. */
+.mic > i { position: absolute; inset: 0 0 auto 0; height: 5px; }      /* style="background: member.color" */
 .mic.off { opacity: .35; }
 .brand-mark { width: 30px; height: 30px; border-radius: 2px; display: grid; place-items: center; color: hsl(var(--primary-foreground)); background: hsl(var(--primary)); flex: none; }
 .mini { background: linear-gradient(90deg, hsl(var(--primary) / .32), hsl(var(--primary) / .06) 70%), hsl(var(--popover)); border-radius: 3px; overflow: hidden;

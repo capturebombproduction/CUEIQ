@@ -570,7 +570,7 @@ describe("EventLiveCaller — the JPG report stays flat and light (§D)", () => 
 // variants components/live/now-card.tsx uses there. jsdom has no layout: what is
 // pinned is the classes and the query; the harness measures the clock clearing the
 // dock at 844×390 and 667×375 (touch).
-const LANDSCAPE_PHONE = "[@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]";
+const LANDSCAPE_PHONE = "[@media(orientation:landscape)_and_(max-height:599.98px)_and_(pointer:coarse)]";
 
 describe("EventLiveCaller — the NOW card fits a landscape phone above the dock (CQ-22)", () => {
   const now = (container: HTMLElement) => container.querySelector(".now")!;

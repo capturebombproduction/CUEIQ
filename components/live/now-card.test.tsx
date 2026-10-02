@@ -8,7 +8,7 @@ import fs from "node:fs";
 import path from "node:path";
 import postcss, { type AtRule } from "postcss";
 import { render, screen, within, fireEvent } from "@testing-library/react";
-import { NowCard } from "./now-card";
+import { NowCard, fittedStep } from "./now-card";
 import type { LiveZone } from "@/lib/live-zone";
 
 // A 1:32 SE: WARN at <= 0:46, URGENT at <= 0:23 (lib/live-zone thresholds).
@@ -209,10 +209,10 @@ describe("NowCard · the cue note of the item ON NOW", () => {
 // ── THE LANDSCAPE-PHONE CARD IS A PHONE'S ───────────────────────────────────
 // The tight landscape card (no note row, no fade row — Live tools carries the fades
 // there) is built for a phone's 390 px height. Keyed on height alone it also caught
-// every mouse-driven window under 700 px tall that is not `stage:` — Chrome on a
+// every mouse-driven window under 600 px tall that is not `stage:` — Chrome on a
 // 1366×768 laptop, the .exe on a 768 px screen — whose NOW card then lost Auto Mute,
 // MC, Auto Loudness and the cue note. jsdom has no CSS: what is pinned is the query.
-const LANDSCAPE_PHONE = "[@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]";
+const LANDSCAPE_PHONE = "[@media(orientation:landscape)_and_(max-height:599.98px)_and_(pointer:coarse)]";
 
 describe("NowCard · the landscape-phone card is a touch screen's, never a short laptop window's", () => {
   const rulesIn = (el: HTMLElement) =>
@@ -295,7 +295,7 @@ describe("NowCard · the WARN / URGENT strip's position never wraps out of the s
   it("landscape phone: the threshold is dropped so the clock is never clipped; nowhere else", () => {
     // the very media query now-card.tsx's `${LANDSCAPE_PHONE}:` variant spells (`_` = space)
     const media = LANDSCAPE_PHONE.replace(/^\[@media/, "").replace(/\]$/, "").replace(/_/g, " ");
-    expect(media).toBe("(orientation:landscape) and (max-height:699.98px) and (pointer:coarse)");
+    expect(media).toBe("(orientation:landscape) and (max-height:599.98px) and (pointer:coarse)");
     expect(decls(".zthr", media).display).toBe("none");
     // portrait and stage keep the threshold: it is not hidden at the top level
     expect(decls(".zthr").display).toBeUndefined();
@@ -449,7 +449,7 @@ describe("NowCard · the strip sheds, in order, from its own width", () => {
     // its strip carries only tag + clock there (201 px needed in URGENT, 218+ available): it keeps the 23 px tag
     for (const orientation of ["portrait", "landscape"] as const)
       for (const pointer of ["fine", "coarse"] as const)
-        for (const height of [320, 375, 390, 699.98, 699.99, 700, 744, 900]) {
+        for (const height of [320, 375, 390, 599.98, 599.99, 600, 699, 744, 900]) {
           const env = { orientation, height, pointer };
           expect(matches(complement, env), JSON.stringify(env)).toBe(!matches(phone, env));
         }
@@ -563,6 +563,80 @@ describe("NowCard · a long title steps down and the card keeps its height", () 
   });
 });
 
+// ── …BUT ONLY WHEN IT DOES NOT FIT: THE TITLE IS MEASURED (round 15, after CQ-11) ──
+// The glyph count is only the FIRST render's guess. Stepping 18-22 glyph titles down on the
+// count alone cost "Kakumei Overture (SE)" its approved 40 px on a 1180 stage where it fits. In
+// the browser the title is measured once and takes the largest step that fits its column.
+// jsdom has no layout, so these hand the h2 a width and a font size: what a browser measures.
+describe("NowCard · the title takes the largest step that FITS its column", () => {
+  function withLayout(textW: number, boxW: number, fontPx: number, run: () => void) {
+    // jsdom defines these on Element.prototype: shadow them on HTMLElement.prototype, then delete
+    // the shadow (or put back an own one, should a jsdom version define it there).
+    const sw = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollWidth");
+    const cw = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientWidth");
+    const restore = (k: "scrollWidth" | "clientWidth", d: PropertyDescriptor | undefined) => {
+      if (d) Object.defineProperty(HTMLElement.prototype, k, d);
+      else delete (HTMLElement.prototype as unknown as Record<string, unknown>)[k];
+    };
+    const gcs = window.getComputedStyle;
+    Object.defineProperty(HTMLElement.prototype, "scrollWidth", { configurable: true, get() { return this.tagName === "H2" ? textW : 0; } });
+    Object.defineProperty(HTMLElement.prototype, "clientWidth", { configurable: true, get() { return this.tagName === "H2" ? boxW : 0; } });
+    window.getComputedStyle = ((el: Element, p?: string | null) => {
+      const cs = gcs.call(window, el, p);
+      return el.tagName === "H2" ? (new Proxy(cs, { get: (t, k) => (k === "fontSize" ? `${fontPx}px` : Reflect.get(t, k)) }) as CSSStyleDeclaration) : cs;
+    }) as typeof window.getComputedStyle;
+    try {
+      run();
+    } finally {
+      restore("scrollWidth", sw);
+      restore("clientWidth", cw);
+      window.getComputedStyle = gcs;
+    }
+  }
+  const sizeOf = (el: HTMLElement) => {
+    const h2 = within(el).getByRole("heading", { level: 2 });
+    return h2.className.match(/(?:^|\s)text-\[(\d+)px\]/)![1] + "/" + h2.className.match(/stage:text-\[(\d+)px\]/)![1];
+  };
+
+  it("fittedStep: one measurement at the current size says what every step needs", () => {
+    // phone table 26 / 22 / 19; stage 40 / 32 / 28
+    expect(fittedStep(240, 250, 26)).toBe(0); // fits at full size
+    expect(fittedStep(290, 250, 26)).toBe(1); // 290 x 22/26 = 245 fits
+    expect(fittedStep(320, 250, 26)).toBe(2); // 320 x 22/26 = 271; x 19/26 = 234
+    expect(fittedStep(1000, 250, 26)).toBe(2); // nothing fits: the smallest, still clipped
+    expect(fittedStep(220, 250, 22)).toBe(1); // measured at step 1: 220 x 26/22 = 260 is too wide, so it stays
+    expect(fittedStep(208, 250, 22)).toBe(0); // 208 x 26/22 = 245.8 fits at full size
+    expect(fittedStep(440, 400, 40)).toBe(1); // stage: 440 x 32/40 = 352
+    expect(fittedStep(390, 400, 32)).toBe(1); // measured at 32: 390 x 40/32 = 487 > 400, 390 fits
+    expect(fittedStep(0, 250, 26)).toBeNull(); // no layout (the server, jsdom, a hidden card)
+    expect(fittedStep(240, 250, 17)).toBeNull(); // a size the table does not know: keep what it has
+  });
+
+  it("a 21-glyph title that FITS keeps the approved full size (the glyph rule alone stepped it down)", () => {
+    withLayout(180, 250, 22, () => {
+      // the guess is step 1 (22 px); measured at 22, its text is 180 px -> 213 px at 26: it fits
+      const { el, unmount } = card("ok", { title: "Kakumei Overture (SE)" });
+      expect(sizeOf(el)).toBe("26/40");
+      unmount();
+    });
+  });
+
+  it("a short title that does NOT fit (wide Thai glyphs) steps down although its glyph count is small", () => {
+    withLayout(300, 250, 26, () => {
+      // the guess is step 0; measured at 26 the text is 300 px: 22 -> 254 still too wide, 19 -> 219 fits
+      const { el, unmount } = card("ok", { title: "หัวใจปฏิวัติร้อนแรง" });
+      expect(sizeOf(el)).toBe("19/28");
+      unmount();
+    });
+  });
+
+  it("guard: with no layout to measure, the glyph guess stands (the server render, and old tests above)", () => {
+    const { el, unmount } = card("ok", { title: "Kakumei Overture (SE)" });
+    expect(sizeOf(el)).toBe("22/32");
+    unmount();
+  });
+});
+
 // ── THE STAGE COUNTDOWN DOES NOT LIVE ON CONTAINER UNITS ALONE (CQ-13) ───────
 // `font-size: min(var(--cd-max), calc(100cqi / …))` PARSES everywhere (var() defers the check) and
 // is then invalid at computed-value time where there is no cqi (Safari < 16): the size is dropped
@@ -590,7 +664,7 @@ describe("NowCard · the stage countdown's cq overrides are gated on support, wi
     // the phone's column, the landscape phone's, the stage's; and the stage's box height
     expect(named).toHaveLength(4);
     expect(named.some((t) => t.startsWith("[--cd-col:min(80vw,"))).toBe(true);
-    expect(named.some((t) => t.startsWith("[@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:[--cd-col:calc(50vw_"))).toBe(true);
+    expect(named.some((t) => t.startsWith("[@media(orientation:landscape)_and_(max-height:599.98px)_and_(pointer:coarse)]:[--cd-col:calc(50vw_"))).toBe(true);
     expect(named).toContain("stage:[--cd-col:calc(100vw_-_760px)]");
     // max(48px, ...): 100vh - 600px is 0 at the stage's 600 px floor and the numerals would vanish (CQ-20)
     expect(named).toContain("stage:[--cd-h:max(48px,calc(100vh_-_600px))]");

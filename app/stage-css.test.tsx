@@ -51,7 +51,7 @@ const indexOfRule = (tree: Root, rule: Rule) => {
 };
 const CQ_UNIT = /\d(cqi|cqb|cqw|cqh|cqmin|cqmax)\b/;
 const SUPPORTS_CQ = "@supports(width:1cqi)";
-const LANDSCAPE_PHONE = "@media(orientation:landscape)and(max-height:699.98px)and(pointer:coarse)";
+const LANDSCAPE_PHONE = "@media(orientation:landscape)and(max-height:599.98px)and(pointer:coarse)";
 /** the `stage` screen exactly as tailwind.preset.ts spells it (the web and the .exe both load that one) */
 const stageRaw = (): string => (preset.theme!.extend!.screens as unknown as Record<string, { raw: string }>).stage.raw;
 
@@ -265,14 +265,14 @@ describe("the NOW card's classes · Tailwind turns them into supported / unsuppo
   }, 30_000);
 });
 
-// ── CQ-20 · the stage layout starts at 600 px for a mouse window, 700 for a touch screen ──────────
-// A maximised 768p laptop's Chrome (or the .exe on a 768 px screen) has ~620-700 px, and used to fall
-// out of the stage layout into a scrolling page. The stage fits in 600: the NOW card's countdown box
-// simply gets what is left. A touch screen of that height keeps the landscape-phone layout: that
-// query is `max-height: 699.98px` + `pointer: coarse` at ~40 sites (Live, the NOW card, the Caller,
-// stage.css), and an arbitrary @media variant is emitted AFTER the stage screen, so a device in both
-// would wear the phone's `display: contents` over the stage's grid.
-describe("tailwind.preset.ts · the stage screen starts at 600 px for a mouse and 700 for a touch screen (CQ-20)", () => {
+// ── CQ-20 · the stage layout starts at 600 px tall, for a mouse AND a touch screen ──────────────
+// A maximised 768p laptop's Chrome (or the .exe on a 768 px screen) has ~620-700 px, and so does an
+// iPad mini's Safari tab in landscape; both used to fall out of the stage layout. The stage fits in
+// 600: the NOW card's countdown box simply gets what is left. The landscape-phone layout's query
+// (`max-height: 599.98px` + `pointer: coarse`, in Live, the NOW card, the Caller and stage.css) must
+// stay BELOW the stage: an arbitrary @media variant is emitted AFTER the stage screen, so a device in
+// both would wear the phone's `display: contents` over the stage's grid.
+describe("tailwind.preset.ts · the stage screen starts at 600 px tall on any device (CQ-20)", () => {
   const ranges = () =>
     stageRaw()
       .split(",")
@@ -283,16 +283,13 @@ describe("tailwind.preset.ts · the stage screen starts at 600 px for a mouse an
         mouse: /\(pointer:\s*fine\)/.test(r),
       }));
 
-  it("700 px tall and up is the stage on any device; 600-699 px is the stage for a mouse only", () => {
-    expect(ranges()).toEqual([
-      { landscape: true, minWidth: 900, minHeight: 700, mouse: false },
-      { landscape: true, minWidth: 900, minHeight: 600, mouse: true },
-    ]);
+  it("600 px tall and up (900 wide, landscape) is the stage on any device, touch included", () => {
+    expect(ranges()).toEqual([{ landscape: true, minWidth: 900, minHeight: 600, mouse: false }]);
   });
 
   it("no touch screen is in the stage AND the landscape-phone layout: a range open to one starts above the phone's max-height", () => {
     const phoneMax = Number(/max-height:([\d.]+)px/.exec(LANDSCAPE_PHONE)![1]);
-    expect(phoneMax).toBe(699.98);
+    expect(phoneMax).toBe(599.98);
     expect(LANDSCAPE_PHONE).toContain("and(pointer:coarse)");
     for (const r of ranges().filter((x) => !x.mouse)) expect(r.minHeight).toBeGreaterThan(phoneMax);
   });
@@ -326,7 +323,7 @@ describe("the countdown fallback never sizes past the column or the box a browse
   it("the NOW card's phone, landscape-phone and stage columns are each at or under the measured one", () => {
     const tokens = nowWrapperTokens();
     const phone = tokenValue(tokens, "[--cd-col:");
-    const landscape = tokenValue(tokens, "[@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:[--cd-col:");
+    const landscape = tokenValue(tokens, "[@media(orientation:landscape)_and_(max-height:599.98px)_and_(pointer:coarse)]:[--cd-col:");
     const onStage = tokenValue(tokens, "stage:[--cd-col:");
     for (const [vw, col] of MEASURED.phone) expect(len(phone, vw), `phone ${vw}`).toBeLessThanOrEqual(col);
     for (const [vw, col] of MEASURED.landscapePhone) expect(len(landscape, vw), `landscape phone ${vw}`).toBeLessThanOrEqual(col);
