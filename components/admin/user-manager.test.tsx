@@ -70,4 +70,25 @@ describe("the users list", () => {
     expect(me.getByRole("button", { name: "แก้ไขสิทธิ์" })).toBeTruthy();
     expect(me.queryByRole("button", { name: "ลบบัญชี" })).toBeNull();
   });
+
+  // CQ-54: at 768 the name column is narrow, and the chips beside the name were
+  // shrink-0 on a no-wrap row — the master's name was cut to "Arch…" while the Bands
+  // cell next to it sat empty. The row wraps now: the chips drop below the name
+  // before the name is ever clipped. A class pin — jsdom has no layout, so "the name
+  // span's scrollWidth <= clientWidth at 768" stays the harness's to measure.
+  it("a name row wraps its chips under the name instead of clipping the name", () => {
+    render(
+      <ConfirmProvider>
+        <UserManager currentUserId="u-me" groups={[SEISHIN]} initialUsers={USERS} />
+      </ConfirmProvider>
+    );
+    const name = screen.getByText("Architect");
+    const row = name.parentElement as HTMLElement;
+    // the row that holds the name also holds the Master chip
+    expect(within(row).getByText("Master")).toBeTruthy();
+    const rowClasses = row.className.split(/\s+/);
+    expect(rowClasses).toEqual(expect.arrayContaining(["flex", "min-w-0", "flex-wrap"]));
+    // the name itself still truncates, but only once it fills a whole line
+    expect(name.className.split(/\s+/)).toEqual(expect.arrayContaining(["max-w-full", "truncate"]));
+  });
 });

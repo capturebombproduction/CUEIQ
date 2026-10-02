@@ -23,4 +23,13 @@ describe("login page — the page light (v3)", () => {
     expect(main.className.split(/\s+/)).toEqual(expect.arrayContaining(["relative", "isolate", "bg-background"]));
     expect(container.querySelector("form")).toBeTruthy();
   });
+
+  // CQ-59: held sideways (~390px tall) the 40px top/bottom padding pushed the sign-in
+  // button below the fold. A class pin — jsdom has no layout; the harness measures it.
+  it("drops its vertical padding on a short viewport", async () => {
+    const { container } = render(await LoginPage({ searchParams: Promise.resolve({}) }));
+    const c = container.querySelector("main")!.className.split(/\s+/);
+    expect(c).toContain("py-10");
+    expect(c).toContain("[@media(max-height:500px)]:py-3");
+  });
 });

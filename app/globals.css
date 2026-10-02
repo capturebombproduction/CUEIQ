@@ -32,3 +32,48 @@ body {
 .tabular-nums {
   font-variant-numeric: tabular-nums;
 }
+
+/* A row that scrolls sideways (the practice chip rows) without drawing its scrollbar.
+   postcss.config.mjs carries tailwindcss only — no autoprefixer — so the WebKit twin
+   is written out by hand: Safari before 18.2 ignores `scrollbar-width`, and a Tailwind
+   `[scrollbar-width:none]` has no way to add the pseudo-element.
+   WEB ONLY: desktop/src/index.css does not import this file (it shares theme.css and
+   stage.css), so a component the .exe renders keeps `[scrollbar-width:none]` beside
+   `no-scrollbar` — Electron's Chromium honours that one. Move these two rules into
+   stage.css and the second class can go (app/globals.css.test.ts follows the chain). */
+.no-scrollbar {
+  scrollbar-width: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+/* Keyboard focus (and scrollIntoView, and a #hash jump) stops at the edge of the
+   scrollport, which runs UNDER the fixed chrome: Tab down a long form and the focused
+   field slid fully behind the tab bar or the sticky save bar (WCAG 2.4.11). The root
+   scroller reserves the chrome's own tokens, so every page gets it without a rule of
+   its own: header row + the offline strip it grows by + the notch, and the tab bar +
+   home indicator. `--tabbar-h` is zeroed on <html> by the immersive screens, so Live
+   keeps no gap for a bar that is not drawn. */
+html {
+  scroll-padding-top: calc(var(--header-h) + var(--offline-strip-h, 0px) + env(safe-area-inset-top) + 8px);
+  scroll-padding-bottom: calc(var(--tabbar-h) + env(safe-area-inset-bottom) + 12px);
+}
+/* A page with a sticky save bar (the editors add `has-action-bar` to it) loses its
+   height again on top of that. Its own rule — a selector list with `:has()` in it
+   would be dropped whole by a browser that cannot parse it. */
+html:has(.has-action-bar) {
+  scroll-padding-bottom: calc(var(--tabbar-h) + env(safe-area-inset-bottom) + 12px + 76px);
+}
+/* lg: the (app) layout makes the header row 56px and drops the tab bar with
+   `lg:[--header-h:56px] lg:[--tabbar-h:0px]` on its own wrapper — below <html>, so
+   html still reads the phone tokens and the two have to be restated here. */
+@media (min-width: 1024px) {
+  html {
+    scroll-padding-top: calc(56px + var(--offline-strip-h, 0px) + env(safe-area-inset-top) + 8px);
+    scroll-padding-bottom: calc(env(safe-area-inset-bottom) + 12px);
+  }
+  html:has(.has-action-bar) {
+    scroll-padding-bottom: calc(env(safe-area-inset-bottom) + 12px + 76px);
+  }
+}

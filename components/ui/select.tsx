@@ -105,8 +105,10 @@ const SelectItem = React.forwardRef<
   <SelectPrimitive.Item
     ref={ref}
     className={cn(
-      // 44 px rows on touch widths, the denser 36 px from sm.
-      "relative flex min-h-11 w-full cursor-default select-none items-center rounded-[2px] py-2 pl-8 pr-2 text-base outline-none focus:bg-muted focus:text-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50 sm:min-h-9 sm:py-1.5 sm:text-sm",
+      // 44 px rows on touch widths, the denser 36 px from sm. `select-none` carries no
+      // -webkit- prefix here (no autoprefixer): Safari before 18.2 would let a long
+      // press select the label instead of choosing the row.
+      "relative flex min-h-11 w-full cursor-default select-none [-webkit-user-select:none] items-center rounded-[2px] py-2 pl-8 pr-2 text-base outline-none focus:bg-muted focus:text-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50 sm:min-h-9 sm:py-1.5 sm:text-sm",
       className
     )}
     {...props}

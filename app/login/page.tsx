@@ -13,7 +13,7 @@ export default async function LoginPage({
 }) {
   const { next } = await searchParams;
   return (
-    <main className="relative isolate flex min-h-[100dvh] flex-col items-center justify-center bg-background px-4 py-10">
+    <main className="relative isolate flex min-h-[100dvh] flex-col items-center justify-center bg-background px-4 py-10 [@media(max-height:500px)]:py-3">
       <StageLight />
       <div className="w-full max-w-sm">
         <LoginForm next={next} />

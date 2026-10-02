@@ -772,7 +772,7 @@ export function PracticePlayer({
                 role="group"
                 aria-label="ท่อนเพลง"
                 className={cn(
-                  "-mx-4 mt-4 flex overflow-x-auto px-4 [mask-image:linear-gradient(90deg,#000_85%,transparent)] [scrollbar-width:none]",
+                  "no-scrollbar -mx-4 mt-4 flex overflow-x-auto px-4 [scrollbar-width:none] [mask-image:linear-gradient(90deg,#000_85%,transparent)]",
                   canCurate && editMarkers ? "gap-2" : "gap-[3px]"
                 )}
               >
@@ -981,7 +981,7 @@ export function PracticePlayer({
                 <Button
                   variant={loopA != null ? "outline" : "secondary"}
                   size="sm"
-                  className="h-11 sm:h-9"
+                  className="h-11 [@media(pointer:fine)]:h-9"
                   onClick={setA}
                 >
                   <span className="en text-[14px]">Mark In</span>
@@ -990,7 +990,7 @@ export function PracticePlayer({
                 <Button
                   variant={loopB != null ? "outline" : "secondary"}
                   size="sm"
-                  className="h-11 sm:h-9"
+                  className="h-11 [@media(pointer:fine)]:h-9"
                   onClick={setB}
                 >
                   <span className="en text-[14px]">Mark Out</span>
@@ -999,7 +999,7 @@ export function PracticePlayer({
                 <Button
                   variant={loopOn ? "default" : "secondary"}
                   size="sm"
-                  className="h-11 sm:h-9"
+                  className="h-11 [@media(pointer:fine)]:h-9"
                   aria-pressed={loopOn}
                   disabled={loopA == null || loopB == null}
                   onClick={() => setLoopOn((v) => !v)}
@@ -1007,7 +1007,7 @@ export function PracticePlayer({
                   <Repeat className="h-4 w-4" /> {loopOn ? "กำลังวน" : "วน"}
                 </Button>
                 {(loopA != null || loopB != null) && (
-                  <Button variant="ghost" size="sm" className="h-11 sm:h-9" onClick={clearLoop}>
+                  <Button variant="ghost" size="sm" className="h-11 [@media(pointer:fine)]:h-9" onClick={clearLoop}>
                     ล้าง
                   </Button>
                 )}
@@ -1028,7 +1028,7 @@ export function PracticePlayer({
                         <Button
                           variant="ghost"
                           size="sm"
-                          className="h-11 sm:h-9 [&_svg]:text-destructive"
+                          className="h-11 [@media(pointer:fine)]:h-9 [&_svg]:text-destructive"
                           onClick={clearMarkers}
                         >
                           <Trash2 className="h-4 w-4" /> ล้างทั้งหมด
@@ -1037,7 +1037,7 @@ export function PracticePlayer({
                       <Button
                         variant="ghost"
                         size="sm"
-                        className="h-11 sm:h-9"
+                        className="h-11 [@media(pointer:fine)]:h-9"
                         aria-pressed={editMarkers}
                         onClick={() => setEditMarkers((v) => !v)}
                       >

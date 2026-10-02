@@ -94,4 +94,21 @@ describe("PracticeJournal — Black Stage", () => {
     mount([]);
     expect(await screen.findByText("body-unknown")).toBeTruthy();
   });
+
+  // CQ-62: no autoprefixer in this build, so a Tailwind `[scrollbar-width:none]` left
+  // Safari before 18.2 drawing a scrollbar under the category chips. `.no-scrollbar`
+  // (app/globals.css) carries both engines' rules — and `[scrollbar-width:none]` STAYS
+  // beside it, because the .exe does not import globals.css (it shares only theme.css +
+  // stage.css), so there the Tailwind class is the only thing hiding the bar.
+  // jsdom has no layout — a class pin.
+  it("the category chip row hides its scrollbar through .no-scrollbar (and keeps the .exe's own rule)", async () => {
+    h.attendance = [];
+    h.logs = [];
+    mount([]);
+    const row = await screen.findByRole("group", { name: "ประเภทบันทึก" });
+    const c = (row.getAttribute("class") ?? "").split(/\s+/);
+    expect(c).toContain("no-scrollbar");
+    expect(c).toContain("[scrollbar-width:none]");
+    expect(c).toContain("overflow-x-auto");
+  });
 });

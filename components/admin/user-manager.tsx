@@ -352,8 +352,11 @@ export function UserManager({
                   )}
                 >
                   <div className="min-w-0 flex-1">
-                    <div className="flex min-w-0 items-center gap-2">
-                      <span className="truncate text-[15px] font-semibold">
+                    {/* Wraps: with the chips pinned on the same line (shrink-0) a name
+                        in a narrow 1.2fr column was cut to "Arch…" while the Bands
+                        cell beside it sat empty. Now the chips drop under it first. */}
+                    <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+                      <span className="max-w-full truncate text-[15px] font-semibold">
                         {u.full_name || loginId || u.user_id}
                       </span>
                       {u.user_id === currentUserId && (

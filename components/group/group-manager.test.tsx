@@ -94,4 +94,28 @@ describe("Artists for an admin", () => {
     // An admin with no band of their own: no hero, every band reads the same.
     expect(document.querySelectorAll(".lit")).toHaveLength(0);
   });
+
+  // CQ-36: `h-11 sm:h-9` used 640px as a stand-in for "has a mouse", so a touch iPad got
+  // 36px skin buttons. The shrink keys on the pointer now. A class pin: jsdom has no
+  // layout, the real size is the 768 hasTouch harness's to measure.
+  it("the app-theme buttons are 44px for touch and shrink only for a fine pointer", () => {
+    render(
+      <ConfirmProvider>
+        <GroupManager
+          tenantId={T}
+          initialGroups={[{ ...HOSHI, skin: "#3b82f6" }, SEISHIN]}
+          initialMembers={MEMBERS}
+          perms={makePerms("admin")}
+        />
+      </ConfirmProvider>
+    );
+    const off = screen.getByRole("button", { name: "ปิด" }); // the band that has a skin
+    const on = screen.getByRole("button", { name: /ธีมแอปวง/ }); // the band that has none
+    for (const b of [off, on]) {
+      const c = b.className.split(/\s+/);
+      expect(c).toContain("h-11");
+      expect(c).toContain("[@media(pointer:fine)]:h-9");
+      expect(c).not.toContain("sm:h-9");
+    }
+  });
 });

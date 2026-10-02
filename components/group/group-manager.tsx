@@ -384,7 +384,7 @@ export function GroupManager({
                           <Button
                             variant="secondary"
                             size="sm"
-                            className="h-11 min-w-11 sm:h-9"
+                            className="h-11 min-w-11 [@media(pointer:fine)]:h-9"
                             onClick={() => {
                               setGroupLocal(g.id, { skin: null });
                               persistGroup(g.id, { skin: null });
@@ -397,7 +397,7 @@ export function GroupManager({
                         <Button
                           variant="secondary"
                           size="sm"
-                          className="h-11 sm:h-9"
+                          className="h-11 [@media(pointer:fine)]:h-9"
                           onClick={() => {
                             const hex = g.color ?? "#7c3aed";
                             setGroupLocal(g.id, { skin: hex });

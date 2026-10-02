@@ -256,7 +256,7 @@ export function DevInbox({
   return (
     <Tabs defaultValue="feedback" className="w-full">
       <div className="flex items-center justify-between gap-2">
-        <TabsList className="flex-1 sm:max-w-md [&>*]:h-11 sm:[&>*]:h-[38px]">
+        <TabsList className="flex-1 sm:max-w-md [&>*]:h-11 [@media(pointer:fine)]:[&>*]:h-[38px]">
           <TabsTrigger value="feedback">
             ฟีดแบค
             {openCount > 0 && <span className="num text-[15px]">{openCount}</span>}
@@ -350,7 +350,7 @@ export function DevInbox({
 
                 {/* The answer: on the right, in the band's colour. */}
                 {r.reply && (
-                  <div className="ml-auto max-w-[92%] rounded-[2px] bg-primary/[.12] px-3 py-2 shadow-[inset_0_0_0_1px_hsl(var(--primary)/.3)] sm:max-w-[80%]">
+                  <div className="ml-auto max-w-[92%] rounded-[2px] bg-primary/[.08] px-3 py-2 shadow-[inset_0_0_0_1px_hsl(var(--primary)/.3)] sm:max-w-[80%]">
                     <p className="mb-1 flex items-center gap-1.5 text-[12px] font-semibold text-primary-ink">
                       <CornerDownRight className="h-3.5 w-3.5" aria-hidden />
                       ตอบไปแล้ว
@@ -403,7 +403,7 @@ export function DevInbox({
             {noiseErrs.length > 0 && (
               <button
                 type="button"
-                className="min-h-11 underline-offset-2 hover:underline sm:min-h-0"
+                className="min-h-11 underline-offset-2 hover:underline [@media(pointer:fine)]:min-h-0"
                 onClick={() => setShowNoise((v) => !v)}
               >
                 {showNoise ? `ซ่อน noise (${noiseErrs.length})` : `+ noise ${noiseErrs.length}`}
@@ -412,12 +412,12 @@ export function DevInbox({
           </div>
           <div className="flex gap-2">
             {noiseErrs.length > 0 && (
-              <Button variant="secondary" size="sm" onClick={clearNoise} className="h-11 sm:h-9">
+              <Button variant="secondary" size="sm" onClick={clearNoise} className="h-11 [@media(pointer:fine)]:h-9">
                 <X aria-hidden /> ล้าง noise
               </Button>
             )}
             {errs.length > 0 && (
-              <Button variant="destructive-outline" size="sm" onClick={clearAll} className="h-11 sm:h-9">
+              <Button variant="destructive-outline" size="sm" onClick={clearAll} className="h-11 [@media(pointer:fine)]:h-9">
                 <Trash2 aria-hidden /> ล้างทั้งหมด
               </Button>
             )}
