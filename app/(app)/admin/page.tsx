@@ -167,9 +167,12 @@ export default async function AdminPage() {
         )}
       </section>
 
+      {/* The Inbox tile jumps here (#dev-inbox). app/globals.css already pads the root
+          scroller by the header + offline strip + notch, so scroll-mt is only breathing
+          room: a header-sized margin of its own stacks on that and lands ~60px low. */}
       <section
         id="dev-inbox"
-        className="scroll-mt-[calc(var(--header-h)+env(safe-area-inset-top)+16px)] space-y-3"
+        className="scroll-mt-2 space-y-3"
         aria-labelledby="admin-inbox"
       >
         <div>
