@@ -3912,7 +3912,7 @@ export function LiveMode({
                 740 px of an 820 px screen while the slab had room, and "/ 12:00"
                 (the planned total) is printed nowhere else on stage. The slab is a
                 size container: a flex-1 / min-h-0 cell of a column whose height is
-                definite on stage (root h-[100dvh] -> board flex-1 -> grid row
+                definite on stage (root 100dvh tall -> board flex-1 -> grid row
                 minmax(0,1fr)), so nothing sizes to its content and hiding the row
                 cannot move the container. A query reads the CONTENT box, which has
                 to hold 22 (label) + 8 + 54 (the row) + 12 + 62 (tiles) = 158 px
