@@ -1,4 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import fs from "node:fs";
+import path from "node:path";
 import { makeSupabaseFake, ok, fail, type SupabaseFake } from "@/test/fakes/supabase";
 import { makePerms } from "@/lib/permissions";
 import OverviewPage from "@/app/(app)/overview/page";
@@ -191,5 +193,33 @@ describe("OverviewPage — an empty read is still an empty board", () => {
     const events = board!.props!.events as { incomplete: number; copyrightPending: number }[];
     expect(events.every((e) => typeof e.incomplete === "number")).toBe(true);
     expect(events.every((e) => e.copyrightPending === 0)).toBe(true);
+  });
+});
+
+// CQ-37 — A PROP NOBODY PASSES IS A FIX THAT NEVER RUNS.
+//
+// OverviewClient sends the copyright chips to /events/<id> for label_staff (they cannot
+// open /library: it bounces them back to the Overview) — but only when it is TOLD the
+// viewer is staff. Its own test injects the prop by hand, so this is where the real
+// callers are held to passing it: the web page (entered the way Next does) and the
+// desktop page (a client component with no test harness, so its call site is read as text).
+describe("OverviewPage — tells the board whether the viewer is label staff (CQ-37)", () => {
+  it("passes isLabelStaff=true for a label_staff workspace", async () => {
+    (h.ws as { perms: unknown }).perms = makePerms("label_staff");
+    const board = findEl(await OverviewPage(), OverviewClient);
+    expect(board!.props!.isLabelStaff).toBe(true);
+  });
+
+  it("passes isLabelStaff=false for an admin — their chips still open the library", async () => {
+    const board = findEl(await OverviewPage(), OverviewClient);
+    expect(board!.props!.isLabelStaff).toBe(false);
+  });
+
+  it("the desktop overview passes it too, from the same role test", () => {
+    const src = fs.readFileSync(
+      path.resolve(__dirname, "../../../desktop/src/pages/overview.tsx"),
+      "utf8"
+    );
+    expect(src).toContain('isLabelStaff={ws.perms.tenantRole === "label_staff"}');
   });
 });

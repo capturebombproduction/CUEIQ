@@ -3,6 +3,7 @@ import { createClient as createServerClient } from "@/lib/supabase/server";
 import { createClient as createTokenClient } from "@supabase/supabase-js";
 import { createAdminClient, hasServiceRole } from "@/lib/supabase/admin";
 import { vapidConfigured, sendPush } from "@/lib/push";
+import { bkkTodayKey } from "@/lib/time";
 import {
   runOrderLinksFor,
   runOrderPushBody,
@@ -52,6 +53,53 @@ function json(req: Request, body: unknown, status = 200) {
 }
 
 const noOp = (req: Request) => json(req, { ok: true, sent: 0 });
+
+/**
+ * Where a song_pending approver acts on the song (CQ-37).
+ *
+ * The audience is every admin AND label_staff, but /library is closed to label_staff
+ * (canViewLibrary → false: app/(app)/library/page.tsx redirects to /dashboard, which
+ * lands on /overview) — so the one link "/library" sent staff through two redirects to
+ * the Overview, with nothing there that said which song or why. Staff review copyright
+ * from the event page instead (it carries the approver's triage and opens read-only for
+ * them), so they get an event that uses the song, and /overview when none is known.
+ * Never a dead link: whatever the lookup could not resolve degrades to /overview.
+ */
+function songPendingLink(role: string | null, eventId: string | null): string {
+  if (role !== "label_staff") return "/library";
+  return eventId ? `/events/${eventId}` : "/overview";
+}
+
+/** Which of the events that use a song to open: the soonest one still ahead (that is
+ *  where an unreviewed song costs something), else the most recent one that passed.
+ *  Stable for equal dates (smallest id), so the bell row and the push always agree.
+ *  A 「แม่แบบ」 template is never a destination: it is not a show, and the Overview
+ *  itself leaves templates out. */
+function songUseEvent(
+  uses: readonly { event_id: string; events: unknown }[],
+  today: string
+): string | null {
+  const rows = uses
+    .map((u) => {
+      // PostgREST hands a to-one embed back as an object (an array in some typings).
+      const ev = (Array.isArray(u.events) ? u.events[0] : u.events) as
+        | { event_date?: string | null; is_template?: boolean | null }
+        | null
+        | undefined;
+      return { id: u.event_id, date: ev?.event_date ?? null, template: ev?.is_template === true };
+    })
+    // The query already leaves templates out; this keeps the pick right if one slips by.
+    .filter((r) => !!r.id && !r.template);
+  const dated = rows.filter((r): r is typeof r & { date: string } => r.date !== null);
+  const ahead = dated
+    .filter((r) => r.date >= today)
+    .sort((a, b) => a.date.localeCompare(b.date) || a.id.localeCompare(b.id));
+  const behind = dated
+    .filter((r) => r.date < today)
+    .sort((a, b) => b.date.localeCompare(a.date) || a.id.localeCompare(b.id));
+  const undated = rows.filter((r) => r.date === null).sort((a, b) => a.id.localeCompare(b.id));
+  return (ahead[0] ?? behind[0] ?? undated[0])?.id ?? null;
+}
 
 export async function OPTIONS(req: Request) {
   return new NextResponse(null, { status: 204, headers: corsHeaders(req) });
@@ -284,6 +332,8 @@ export async function POST(req: Request) {
 
   // 4) Resolve recipient user ids.
   let recipientIds: string[] = [];
+  // tenant role per approver (approvers rule only) — see 4d.
+  const roleOf = new Map<string, string | null>();
   if (recipientRule === "submitter") {
     recipientIds = [submitterId];
   } else if (recipientRule === "all_tenant") {
@@ -299,6 +349,8 @@ export async function POST(req: Request) {
       .eq("tenant_id", tenantId)
       .in("role", ["admin", "label_staff"]);
     recipientIds = (data ?? []).map((r) => r.user_id as string);
+    // Kept for 4d: an approver's role decides which door the notification opens.
+    for (const r of data ?? []) roleOf.set(r.user_id as string, (r.role as string | null) ?? null);
   } else {
     const { data } = await admin
       .from("group_roles")
@@ -409,6 +461,29 @@ export async function POST(req: Request) {
     })) {
       linkFor.set(uid, dest);
     }
+  }
+  // 4d) song_pending only: the audience is admin + label_staff and "/library" opens for
+  // only one of them — resolve the destination per recipient (see songPendingLink).
+  // Best-effort like 4c: a failed lookup leaves staff on /overview, never on a dead link.
+  if (kind === "song_pending") {
+    let useEventId: string | null = null;
+    if (recipientIds.some((id) => roleOf.get(id) === "label_staff")) {
+      try {
+        const { data: uses } = await admin
+          .from("setlist_items")
+          .select("event_id, events!inner(event_date, is_template)")
+          .eq("tenant_id", tenantId)
+          .eq("song_id", String(meta.song_id))
+          .eq("events.is_template", false); // a 「แม่แบบ」 is not a show anyone runs
+        useEventId = songUseEvent(
+          (uses ?? []) as { event_id: string; events: unknown }[],
+          bkkTodayKey()
+        );
+      } catch {
+        useEventId = null;
+      }
+    }
+    for (const uid of recipientIds) linkFor.set(uid, songPendingLink(roleOf.get(uid) ?? null, useEventId));
   }
   const linkOf = (uid: string) => linkFor.get(uid) ?? link;
   // …and the body is resolved from that same link, never separately: a push that

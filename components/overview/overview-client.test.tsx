@@ -5,6 +5,7 @@
 // one tap from approval — inside a fifty-row list with nothing that said how many
 // were waiting. The daily cron reminds approvers about shows still ahead; it can
 // never help one whose date has passed. This chip is the other half.
+import type { ComponentProps } from "react";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, cleanup, within } from "@testing-library/react";
 import {
@@ -263,5 +264,365 @@ describe("the Today hero on a phone (CQ-12)", () => {
       "Seishin Kakumei · Bangkok Art and Culture Centre, Pathum Wan"
     );
     expectWraps(line);
+  });
+});
+
+// ===========================================================================
+// ROUND 15, WAVE 2 — the Overview's focus views, JPG, print and touch targets.
+// ===========================================================================
+const TODAY = "2026-10-02";
+
+function mountAt(
+  events: OverviewEvent[],
+  props: Partial<ComponentProps<typeof OverviewClient>> = {}
+) {
+  return render(
+    <OverviewClient
+      events={events}
+      bands={BANDS}
+      staffContacts={[]}
+      labelName="A Lot Of Tone"
+      canApproveEvents
+      isLabelWide
+      canOpenDetail
+      todayKey={TODAY}
+      {...props}
+    />
+  );
+}
+
+/** The off-screen block the JPG is captured from (client-only, aria-hidden). */
+const exportBlock = (c: HTMLElement) => c.querySelector<HTMLElement>("div.fixed[aria-hidden]")!;
+
+/** One activity table of the JPG ("(Stage)" / "(Photo)" / "(Booth)"). */
+function exportTable(c: HTMLElement, which: "Stage" | "Photo" | "Booth"): HTMLElement {
+  const h4 = Array.from(exportBlock(c).querySelectorAll("h4")).find((h) =>
+    h.textContent?.includes(`(${which})`)
+  );
+  expect(h4, `the JPG has no ${which} table`).toBeTruthy();
+  return h4!.parentElement as HTMLElement;
+}
+
+/** The board's own rows — not the JPG copy, not the closed Past fold. */
+const boardRows = (c: HTMLElement) =>
+  Array.from(c.querySelectorAll("li.stub")).filter((li) => !li.closest("details"));
+
+/** The number beside the board's heading ("Upcoming  4 งาน"). */
+function headingCount(): number {
+  const h = screen.getAllByRole("heading", { level: 2 })[0];
+  return Number(/(\d+)\s*งาน/.exec(h.parentElement!.textContent ?? "")![1]);
+}
+
+// CQ-31 — A FOCUS AND THE BAND PICKER MUST NOT DISAGREE.
+//
+// A focus ignores the band and date filters (it shows exactly what its count promises),
+// and switching one ON clears them. But the two selects set their filter WITHOUT leaving
+// the focus, so under the queue focus a band pick left the focus on and the board built
+// from one band — the heading and the chip still counting every band, over rows of one.
+describe("a focus and the band / day pickers agree (CQ-31)", () => {
+  const Q_SEISHIN = ev({ id: "q1", name: "Queue one", event_date: "2026-10-10", status: "pending_review" });
+  const Q_KOMA = ev({
+    id: "q2",
+    name: "Queue two",
+    group_id: KOMA,
+    group_name: "KŌMA",
+    event_date: "2026-10-10",
+    status: "pending_review",
+  });
+  const OK_SEISHIN = ev({ id: "a1", name: "Approved one", event_date: "2026-10-11" });
+  const OK_KOMA = ev({
+    id: "a2",
+    name: "Approved two",
+    group_id: KOMA,
+    group_name: "KŌMA",
+    event_date: "2026-10-12",
+  });
+  const ALL = [Q_SEISHIN, Q_KOMA, OK_SEISHIN, OK_KOMA];
+
+  it("picking a band under the queue focus leaves the focus, and the heading counts the rows shown", () => {
+    const { container } = mountAt(ALL);
+    fireEvent.click(screen.getByTestId("approval-queue-chip"));
+    expect(screen.getByTestId("approval-queue-chip")).toHaveAttribute("aria-pressed", "true");
+    expect(headingCount()).toBe(2);
+    expect(boardRows(container)).toHaveLength(2);
+
+    fireEvent.change(screen.getByLabelText("เลือกวง"), { target: { value: KOMA } });
+
+    // The focus is off — a focus and a band filter never both apply…
+    expect(screen.getByTestId("approval-queue-chip")).toHaveAttribute("aria-pressed", "false");
+    // …the board is that band's two upcoming shows, and the number over it is theirs.
+    const rows = boardRows(container);
+    expect(rows.map((r) => r.textContent).join(" | ")).toMatch(/Queue two.*Approved two/);
+    expect(rows.map((r) => r.textContent).join(" | ")).not.toContain("Queue one");
+    expect(headingCount()).toBe(rows.length);
+  });
+
+  it("picking a day under a focus leaves the focus too (it was a silent no-op)", () => {
+    const { container } = mountAt(ALL);
+    fireEvent.click(screen.getByTestId("approval-queue-chip"));
+    expect(screen.getByTestId("approval-queue-chip")).toHaveAttribute("aria-pressed", "true");
+
+    fireEvent.change(screen.getByLabelText("เลือกวัน"), { target: { value: "2026-10-11" } });
+
+    expect(screen.getByTestId("approval-queue-chip")).toHaveAttribute("aria-pressed", "false");
+    const rows = boardRows(container);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].textContent).toContain("Approved one");
+    expect(headingCount()).toBe(1);
+  });
+});
+
+// CQ-32 / CQ-33 — THE JPG CARRIES THE ACT TAG, AND ONE LONG NAME CANNOT PUSH IT OFF THE EDGE.
+//
+// "G-D!" is how the crew knows which unit HatoBito's 11:50 slot is. The board shows it as
+// a chip (ActNote); ExportActivityCol never read ev.notes, so the picture handed to the
+// crew left it out. And the export's `[&_td]:whitespace-nowrap` plus a fixed 820 px
+// capture meant one ~90-character show name pushed every time in its table past the edge.
+describe("the JPG export (CQ-32, CQ-33)", () => {
+  const GD = ev({
+    id: "gd",
+    name: "Idol Paradise",
+    event_date: "2026-10-10",
+    notes: "G-D!",
+    photo: "10:00",
+    photoEnd: "10:10",
+    booth: { start: "11:00", end: "11:30" },
+  });
+  const WORDY = ev({
+    id: "wordy",
+    name: "Another Show",
+    group_id: KOMA,
+    group_name: "KŌMA",
+    event_date: "2026-10-10",
+    notes: "this is a description, not an act name",
+    photo: "10:30",
+    photoEnd: "10:40",
+  });
+
+  it("puts the act tag in the Stage table, as the board shows it", () => {
+    const { container } = mountAt([GD, WORDY]);
+    expect(exportTable(container, "Stage").textContent).toContain("G-D!");
+  });
+
+  it("leaves it out of Photo and Booth, which stay clean on screen too", () => {
+    const { container } = mountAt([GD, WORDY]);
+    expect(exportTable(container, "Photo").textContent).not.toContain("G-D!");
+    expect(exportTable(container, "Booth").textContent).not.toContain("G-D!");
+  });
+
+  it("applies the board's own rule: a note too long to be a label is not printed", () => {
+    const { container } = mountAt([GD, WORDY]);
+    expect(exportBlock(container).textContent).not.toContain("this is a description");
+  });
+
+  // Geometry is not measurable in jsdom: this pins the class contract, and the real
+  // check (export node scrollWidth <= 820 with a ~90-char show name) is the harness.
+  it("wraps the name cell inside a capped width; only the time cell stays on one line", () => {
+    const { container } = mountAt([GD, WORDY]);
+    const table = exportTable(container, "Stage").querySelector("table")!;
+    expect(table.className).not.toContain("whitespace-nowrap");
+    const [nameTd, timeTd] = Array.from(table.querySelectorAll("tr")[0].querySelectorAll("td"));
+    expect(timeTd.className).toContain("whitespace-nowrap");
+    const wrap = nameTd.firstElementChild as HTMLElement;
+    expect(wrap.className).toContain("w-max");
+    expect(wrap.className).toContain("max-w-[34rem]");
+    expect(wrap.className).toContain("whitespace-normal");
+  });
+});
+
+// CQ-34 — A DEAD BUTTON SHOULD SAY WHAT WOULD WAKE IT.
+describe("'บันทึกเป็นรูป' when nothing is upcoming (CQ-34)", () => {
+  const PAST_SHOW = ev({ id: "p", name: "Vasa seitan", event_date: "2026-09-20" });
+  const NEXT_SHOW = ev({ id: "n", name: "Next show", event_date: "2026-10-10" });
+  const HINT = "เปิด PAST ด้านล่างเพื่อบันทึกเป็นรูป";
+  const exportButton = () => screen.getByRole("button", { name: "บันทึกเป็นรูป" });
+
+  it("explains itself while it is disabled because only the shut Past fold has shows", () => {
+    mountAt([PAST_SHOW]);
+    const btn = exportButton();
+    expect(btn).toBeDisabled();
+    const hint = screen.getByText(HINT);
+    expect(btn.getAttribute("aria-describedby")).toBe(hint.id);
+    expect(btn.getAttribute("title")).toContain("PAST");
+  });
+
+  it("drops the hint once Past is open, and the button works", () => {
+    const { container } = mountAt([PAST_SHOW]);
+    const details = container.querySelector("details")!;
+    details.open = true;
+    fireEvent(details, new Event("toggle"));
+    expect(screen.queryByText(HINT)).toBeNull();
+    expect(exportButton()).toBeEnabled();
+    expect(exportButton().getAttribute("aria-describedby")).toBeNull();
+  });
+
+  it("has no hint when something is upcoming, or when there is nothing at all to open", () => {
+    mountAt([PAST_SHOW, NEXT_SHOW]);
+    expect(screen.queryByText(HINT)).toBeNull();
+    cleanup();
+    mountAt([]);
+    expect(exportButton()).toBeDisabled();
+    expect(screen.queryByText(HINT)).toBeNull();
+  });
+});
+
+// CQ-35 — FESTIVALS THAT SHARE A LONG PREFIX MUST STILL TELL APART.
+describe("per-festival run-order controls (CQ-35)", () => {
+  const DAY1 = "Japan Expo Thailand 2026 — Idol Stage Day 1";
+  const DAY2 = "Japan Expo Thailand 2026 — Idol Stage Day 2";
+  const D1 = ev({ id: "d1", name: DAY1, event_date: "2026-10-10" });
+  const D2 = ev({ id: "d2", name: DAY2, event_date: "2026-10-11" });
+  const RUN = [`${DAY1}__2026-10-10`, `${DAY2}__2026-10-11`];
+
+  function weekView(events: OverviewEvent[]) {
+    const view = mountAt(events, { runOrderFestivals: RUN });
+    fireEvent.click(screen.getByRole("button", { name: "รายสัปดาห์" }));
+    return view;
+  }
+
+  it("names the festival in each link, so the two sets of links are not the same two links", () => {
+    weekView([D1, D2]);
+    expect(screen.getByRole("link", { name: /Running Order — .*Day 1/ })).toHaveAttribute(
+      "href",
+      "/events/d1/run-order?from=overview"
+    );
+    expect(screen.getByRole("link", { name: /Running Order — .*Day 2/ })).toHaveAttribute(
+      "href",
+      "/events/d2/run-order?from=overview"
+    );
+    expect(screen.getByRole("link", { name: /คุมคิว \(Live\) — .*Day 2/ })).toHaveAttribute(
+      "href",
+      "/events/d2/run-order/live?from=overview"
+    );
+  });
+
+  it("shows the festival's label on two lines with the full name as a tooltip, not cut at 160 px", () => {
+    weekView([D1, D2]);
+    const label = screen.getByTitle(DAY2);
+    expect(label.className).toContain("line-clamp-2");
+    expect(label.className).toContain("max-w-[14rem]");
+    expect(label.className).not.toMatch(/(^|\s)truncate(\s|$)/);
+    // …and no `block`, which would override the clamp's display (see CQ-12 above).
+    expect(label.className).not.toMatch(/(^|\s)block(\s|$)/);
+  });
+
+  it("keeps the plain names when there is only one festival to tell apart", () => {
+    weekView([D1]);
+    expect(screen.getByRole("link", { name: "Running Order" })).toBeTruthy();
+    expect(screen.getByRole("link", { name: /คุมคิว \(Live\)/ }).getAttribute("aria-label")).toBeNull();
+  });
+});
+
+// CQ-29 — PRINTING THE OVERVIEW PRINTS ITS CONTROLS.
+//
+// theme.css's print block hides `.no-print`; nothing on this screen used it. (The class
+// is the contract — what paper then looks like is the harness's page.pdf.)
+describe("print hides the controls (CQ-29)", () => {
+  it("marks the hero actions, the quick-filter tiles, the view switch and the pickers no-print", () => {
+    mountAt([
+      ev({ id: "a", event_date: "2026-10-10", status: "pending_review" }),
+      ev({ id: "b", event_date: "2026-10-11", group_id: KOMA, group_name: "KŌMA" }),
+    ]);
+    const noPrint = (el: HTMLElement | null) => expect(el?.className).toMatch(/(^|\s)no-print(\s|$)/);
+    noPrint(screen.getByRole("button", { name: "บันทึกเป็นรูป" }).parentElement);
+    noPrint(screen.getByRole("group", { name: "ตัวกรองด่วน" }));
+    noPrint(screen.getByRole("group", { name: "มุมมอง" }));
+    noPrint(screen.getByLabelText("เลือกวง").parentElement);
+  });
+
+  it("leaves the schedule itself printable", () => {
+    const { container } = mountAt([ev({ id: "a", name: "Printed show", event_date: "2026-10-10" })]);
+    const row = boardRows(container)[0];
+    expect(row.closest(".no-print")).toBeNull();
+  });
+});
+
+// CQ-36 — A TOUCH iPAD IS NOT A MOUSE.
+//
+// `sm:` (>= 640 px wide) was the proxy for "a pointer": a touch iPad, and a phone held
+// landscape, both clear it and got 36 px fields and 38 px tabs. The shrink now follows the
+// pointer. (Heights are measured in the harness at 768 with hasTouch; jsdom has no layout.)
+describe("touch targets shrink for a precise pointer, not for a wide screen (CQ-36)", () => {
+  const tokens = (el: Element) => el.className.split(/\s+/);
+
+  it("the band / day pickers are 44 px until the pointer is fine", () => {
+    mountAt([
+      ev({ id: "a", event_date: "2026-10-10" }),
+      ev({ id: "b", event_date: "2026-10-11", group_id: KOMA, group_name: "KŌMA" }),
+    ]);
+    for (const label of ["เลือกวง", "เลือกวัน"]) {
+      const t = tokens(screen.getByLabelText(label));
+      expect(t).toContain("h-11");
+      expect(t.some((c) => c.startsWith("[@media(pointer:fine)]:h-"))).toBe(true);
+      expect(t.some((c) => /^sm:h-/.test(c))).toBe(false);
+    }
+  });
+
+  it("the view switch keeps its 44 px tabs on touch at every width", () => {
+    mountAt([ev({ id: "a" })]);
+    const seg = tokens(screen.getByRole("group", { name: "มุมมอง" }));
+    expect(seg).toContain("[&>*]:h-11");
+    expect(seg).toContain("[@media(pointer:fine)]:[&>*]:h-[38px]");
+    expect(seg.some((c) => c.startsWith("sm:[&>*]:h-"))).toBe(false);
+  });
+
+  it("the inline photo-time fields are 44 px until the pointer is fine", () => {
+    mountAt([ev({ id: "a", event_date: "2026-10-10", canEditPhoto: true, photo: "10:00", photoEnd: "10:10" })]);
+    for (const label of ["เวลาเริ่มถ่ายรูป", "เวลาจบถ่ายรูป"]) {
+      const t = tokens(screen.getByLabelText(label));
+      expect(t).toContain("h-11");
+      expect(t).toContain("[@media(pointer:fine)]:h-9");
+      expect(t.some((c) => /^sm:h-/.test(c))).toBe(false);
+    }
+  });
+
+  it("the run-order buttons are 44 px until the pointer is fine", () => {
+    const NAME = "Idol Stage Day 1";
+    mountAt([ev({ id: "d1", name: NAME, event_date: "2026-10-10" })], {
+      runOrderFestivals: [`${NAME}__2026-10-10`],
+    });
+    fireEvent.click(screen.getByRole("button", { name: "รายสัปดาห์" }));
+    for (const name of ["Running Order", /คุมคิว \(Live\)/]) {
+      const t = tokens(screen.getByRole("link", { name }));
+      expect(t).toContain("h-11");
+      expect(t).toContain("[@media(pointer:fine)]:h-9");
+      expect(t.some((c) => /^sm:h-/.test(c))).toBe(false);
+    }
+  });
+
+  it("the to-do toggle under Photo is 44 px until the pointer is fine", () => {
+    mountAt([ev({ id: "a", event_date: "2026-10-10", canEditPhoto: true })]);
+    const toggle = screen.getByRole("button", { name: /ยังไม่กำหนดเวลาถ่ายรูป/ });
+    const t = tokens(toggle);
+    expect(t).toContain("min-h-11");
+    expect(t).toContain("[@media(pointer:fine)]:min-h-9");
+    expect(t.some((c) => /^sm:min-h-/.test(c))).toBe(false);
+  });
+});
+
+// CQ-37 — LABEL STAFF CANNOT OPEN /library.
+//
+// canViewLibrary is false for label_staff, so library/page.tsx sends them to /dashboard,
+// which lands on /overview: the copyright chip on the Overview reloaded the page they were
+// on. Their place to deal with a song is the show it sits in — the event page opens
+// read-only for them and carries the approver's copyright triage.
+describe("the copyright chips go where the viewer can act (CQ-37)", () => {
+  const PENDING = ev({ id: "r1", name: "Rights pending", event_date: "2026-10-10", copyrightPending: 2 });
+  const REJECTED = ev({ id: "r2", name: "Rights rejected", event_date: "2026-10-11", copyrightRejected: 1 });
+  const chip = (name: RegExp) => screen.getByRole("link", { name });
+
+  it("label staff: each chip opens the show", () => {
+    mountAt([PENDING, REJECTED], { isLabelStaff: true });
+    expect(chip(/รอตรวจลิขสิทธิ์/)).toHaveAttribute("href", "/events/r1");
+    expect(chip(/ลิขสิทธิ์ไม่ผ่าน/)).toHaveAttribute("href", "/events/r2");
+    expect(chip(/รอตรวจลิขสิทธิ์/).getAttribute("title")).toContain("ไปจัดการที่หน้างาน");
+    expect(chip(/ลิขสิทธิ์ไม่ผ่าน/).getAttribute("title")).toContain("ไปจัดการที่หน้างาน");
+  });
+
+  it("everyone else (admin, CEO, a band's Ar / member): the chips still open the library", () => {
+    mountAt([PENDING, REJECTED]);
+    expect(chip(/รอตรวจลิขสิทธิ์/)).toHaveAttribute("href", "/library");
+    expect(chip(/ลิขสิทธิ์ไม่ผ่าน/)).toHaveAttribute("href", "/library");
+    expect(chip(/รอตรวจลิขสิทธิ์/).getAttribute("title")).toContain("ไปจัดการที่คลังเพลง");
   });
 });

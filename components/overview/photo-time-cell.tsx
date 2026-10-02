@@ -8,6 +8,15 @@ import { noRowsMessage, wroteNothing } from "@/lib/write-guard";
 import { FIELD } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 
+// 44 px tall for a finger; the compact 36 px only under a precise pointer. NOT `sm:` for
+// the height — a touch iPad and a phone in landscape are both >= 640 px wide and used
+// to get the 36 px field (CQ-36). Width and type size stay on `sm:` as in <Input>:
+// they are about the room the row has, not about what is pressing it.
+const TIME_FIELD = cn(
+  FIELD,
+  "num h-11 w-[5.75rem] px-1.5 text-base sm:w-[5rem] sm:text-sm [@media(pointer:fine)]:h-9"
+);
+
 /**
  * Inline photo-time editor used on /overview. Lets an approver (label staff) or
  * the band's editor fill the "ถ่ายรูป" call-time window (start–end) for bands that
@@ -162,7 +171,7 @@ export function PhotoTimeCell({
         onChange={(e) => setStart(e.target.value)}
         onBlur={commit}
         aria-label="เวลาเริ่มถ่ายรูป"
-        className={cn(FIELD, "num h-11 w-[5.75rem] px-1.5 text-base sm:h-9 sm:w-[5rem] sm:text-sm")}
+        className={TIME_FIELD}
       />
       <span className="text-muted-foreground">–</span>
       <input
@@ -171,7 +180,7 @@ export function PhotoTimeCell({
         onChange={(e) => setEnd(e.target.value)}
         onBlur={commit}
         aria-label="เวลาจบถ่ายรูป"
-        className={cn(FIELD, "num h-11 w-[5.75rem] px-1.5 text-base sm:h-9 sm:w-[5rem] sm:text-sm")}
+        className={TIME_FIELD}
       />
       {busy && <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" aria-hidden />}
     </span>

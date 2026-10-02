@@ -48,3 +48,23 @@ describe("EventStatusActions dialog", () => {
     expect(desc.querySelector("svg")).not.toBeNull();
   });
 });
+
+// CQ-36 — the status chip is a ~24 px control from `sm` (the board turns into a dense
+// table there), and a touch iPad is `sm`. It keeps its look; an invisible ::after grows
+// the TAP area to ~44 px, the same trick the chips beside it use (HIT_44). jsdom has no
+// layout, so this pins the class contract — the 768-wide touch measurement is the harness's.
+describe("EventStatusActions trigger (CQ-36)", () => {
+  it("keeps a 44 px phone box and grows a ~44 px hit area from `sm`, where the chip shrinks", () => {
+    render(<EventStatusActions eventId="e1" initialStatus="pending_review" />);
+    const tokens = screen.getByTitle(/แตะเพื่อเปลี่ยนสถานะ/).className.split(/\s+/);
+    // The chip's own look is unchanged…
+    expect(tokens).toContain("min-h-11");
+    expect(tokens).toContain("sm:min-h-0");
+    // …and the pseudo-element sits above and below it, full width, like HIT_44.
+    expect(tokens).toContain("relative");
+    expect(tokens).toContain("sm:after:absolute");
+    expect(tokens).toContain("sm:after:-inset-y-2.5");
+    expect(tokens).toContain("sm:after:inset-x-0");
+    expect(tokens).toContain("sm:after:content-['']");
+  });
+});

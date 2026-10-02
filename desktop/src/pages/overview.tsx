@@ -523,6 +523,7 @@ export function Overview() {
           canApproveEvents={canApprove(ws.perms)}
           isLabelWide={isLabelWideUser(ws.perms)}
           canOpenDetail={canOpenEventDetail()}
+          isLabelStaff={ws.perms.tenantRole === "label_staff"}
           runOrderFestivals={data.runOrderFestivals}
         />
       )}

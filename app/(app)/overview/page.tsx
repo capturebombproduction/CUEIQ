@@ -513,6 +513,7 @@ export default async function OverviewPage() {
           canApproveEvents={canApproveEvents}
           isLabelWide={isLabelWideUser(ws.perms)}
           canOpenDetail={canOpenEventDetail()}
+          isLabelStaff={ws.perms.tenantRole === "label_staff"}
           runOrderFestivals={runOrderFestivals}
           todayKey={bkkTodayKey()}
         />

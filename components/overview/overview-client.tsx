@@ -326,13 +326,24 @@ function LiveLink({ ev }: { ev: OverviewEvent }) {
   );
 }
 
-// copyright-status chips that deep-link to the library.
+// Whether the viewer is label staff. Read by CopyrightBadges, four renderers down from
+// OverviewClient — a context for the same reason PhotoSaveContext is one.
+const LabelStaffContext = createContext(false);
+
+// copyright-status chips that deep-link to the library — except for label staff
+// (CQ-37). /library is closed to them (canViewLibrary is false → /dashboard →
+// /overview), so a chip pointing there only reloaded the page they were on. Their
+// place to deal with a song is the show it sits in: the event page opens read-only
+// for them and carries the approver's copyright triage.
 function CopyrightBadges({ ev }: { ev: OverviewEvent }) {
+  const isLabelStaff = useContext(LabelStaffContext);
+  const href = isLabelStaff ? `/events/${ev.id}` : "/library";
+  const where = isLabelStaff ? "ไปจัดการที่หน้างาน" : "ไปจัดการที่คลังเพลง";
   if (ev.copyrightRejected > 0) {
     return (
       <Link
-        href="/library"
-        title={`${ev.copyrightRejected} เพลงถูกปฏิเสธลิขสิทธิ์ — ไปจัดการที่คลังเพลง`}
+        href={href}
+        title={`${ev.copyrightRejected} เพลงถูกปฏิเสธลิขสิทธิ์ — ${where}`}
         className={cn("chip chip-danger", HIT_44)}
       >
         <ShieldAlert aria-hidden />
@@ -343,8 +354,8 @@ function CopyrightBadges({ ev }: { ev: OverviewEvent }) {
   if (ev.copyrightPending > 0) {
     return (
       <Link
-        href="/library"
-        title={`${ev.copyrightPending} เพลงรอตรวจลิขสิทธิ์ — ไปจัดการที่คลังเพลง`}
+        href={href}
+        title={`${ev.copyrightPending} เพลงรอตรวจลิขสิทธิ์ — ${where}`}
         className={cn("chip chip-warning", HIT_44)}
       >
         <Hourglass aria-hidden />
@@ -378,9 +389,15 @@ function ReadyBadge({ ev }: { ev: OverviewEvent }) {
 // (e.g. "G-D!" on HatoBito's 11:50 slot). Longer notes are descriptions, not labels,
 // so they're left out of the schedule rows to avoid clutter.
 const ACT_NOTE_MAX = 16;
-function ActNote({ ev }: { ev: OverviewEvent }) {
+/** The act tag to show for a row, or null when the note is absent or too long to be a
+ *  label. One rule for the board's chip AND the JPG's (CQ-32), so they cannot drift. */
+function actNoteText(ev: OverviewEvent): string | null {
   const note = ev.notes?.trim();
-  if (!note || note.length > ACT_NOTE_MAX) return null;
+  return note && note.length <= ACT_NOTE_MAX ? note : null;
+}
+function ActNote({ ev }: { ev: OverviewEvent }) {
+  const note = actNoteText(ev);
+  if (!note) return null;
   return (
     <span className="chip chip-neutral shrink-0 font-normal" title={note}>
       {note}
@@ -821,7 +838,7 @@ function ActivityTables({
                 type="button"
                 onClick={() => setShowPhotoTodo((v) => !v)}
                 aria-expanded={showPhotoTodo}
-                className="relative flex min-h-11 w-full items-center gap-1.5 bg-muted px-3 py-1.5 text-left text-[12.5px] font-semibold text-muted-foreground transition-colors duration-2 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring sm:min-h-9"
+                className="relative flex min-h-11 w-full items-center gap-1.5 bg-muted px-3 py-1.5 text-left text-[12.5px] font-semibold text-muted-foreground transition-colors duration-2 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring [@media(pointer:fine)]:min-h-9"
               >
                 {showPhotoTodo ? (
                   <ChevronUp className="h-4 w-4 shrink-0" aria-hidden />
@@ -934,20 +951,38 @@ function FestivalRunControls({
         const hasOrder = runOrderSet.has(key);
         return (
           <div key={key} className="flex flex-wrap items-center gap-1.5">
+            {/* Festivals that share a prefix ("… Day 1" / "… Day 2") must still tell
+                apart (CQ-35): two lines instead of a 160 px cut, the full name in the
+                tooltip, and — since the two links per festival would otherwise read as
+                the same two links — the name in each link's accessible name. */}
             {multi && (
-              <span className="max-w-[10rem] truncate text-[12.5px] text-muted-foreground">
+              <span
+                title={g.name}
+                className="line-clamp-2 max-w-[14rem] break-words text-[12.5px] text-muted-foreground"
+              >
                 {g.name}:
               </span>
             )}
             {hasOrder && (
-              <Button size="sm" asChild className="h-11 sm:h-9">
-                <Link href={`/events/${repId}/run-order/live?from=overview`}>
+              <Button size="sm" asChild className="h-11 [@media(pointer:fine)]:h-9">
+                <Link
+                  href={`/events/${repId}/run-order/live?from=overview`}
+                  aria-label={multi ? `คุมคิว (Live) — ${g.name}` : undefined}
+                >
                   <Radio aria-hidden /> คุมคิว (Live)
                 </Link>
               </Button>
             )}
-            <Button size="sm" variant="secondary" asChild className="h-11 sm:h-9">
-              <Link href={`/events/${repId}/run-order?from=overview`}>
+            <Button
+              size="sm"
+              variant="secondary"
+              asChild
+              className="h-11 [@media(pointer:fine)]:h-9"
+            >
+              <Link
+                href={`/events/${repId}/run-order?from=overview`}
+                aria-label={multi ? `Running Order — ${g.name}` : undefined}
+              >
                 <ListOrdered aria-hidden /> Running Order
               </Link>
             </Button>
@@ -961,6 +996,8 @@ function FestivalRunControls({
 // One activity column in the export image: a small "act → time" table sorted by the
 // caller. `secondary(ev)` appends the event name / date as a muted tag when they vary
 // within the group (so a band-spanning or multi-date group stays unambiguous).
+// `withNote` adds the act tag the board shows beside the name ("G-D!" on HatoBito's
+// slot) — only the Stage table passes it, as on screen (see ActIdentity `withBadges`).
 // EXPORT SURFACE: flat, upright, tokens only (no dark-mode variant, no .lit / .cut / slab).
 function ExportActivityCol({
   title,
@@ -968,11 +1005,13 @@ function ExportActivityCol({
   showBandColumn,
   secondary,
   timeOf,
+  withNote = false,
 }: {
   title: string;
   rows: OverviewEvent[];
   showBandColumn: boolean;
   secondary: (ev: OverviewEvent) => string;
+  withNote?: boolean;
   // ReactNode, not string: a band with more than one stage/booth slot renders each
   // on its own line inside the cell (see fmtSlots).
   timeOf: (ev: OverviewEvent) => ReactNode;
@@ -988,33 +1027,47 @@ function ExportActivityCol({
         /* Name + time packed to the LEFT (a trailing spacer eats the slack) so the
            time sits right next to the band — not flung to the far right edge of a
            full-width table, which made the eye travel across an empty gap. The time
-           still shares a column, so values stay vertically aligned row-to-row. */
-        <table className="w-full border-collapse text-sm [&_td]:whitespace-nowrap">
+           still shares a column, so values stay vertically aligned row-to-row.
+           Only the TIME cell is nowrap (CQ-33): the name cell used to be too, so one
+           ~90-character show name pushed every time in that table past the 820 px
+           capture edge. It grows to its natural width up to 34rem (w-max) and wraps
+           beyond that — the cap keeps a long name and its time inside the capture. */
+        <table className="w-full border-collapse text-sm">
           <tbody>
-            {rows.map((ev) => (
-              <tr key={ev.id} className="border-b last:border-0">
-                <td className="py-1.5 pr-4 font-medium">
-                  {showBandColumn ? (
-                    <span className="inline-flex items-center gap-1.5">
-                      <span
-                        className="inline-block h-2.5 w-2.5 rounded-full"
-                        style={{ background: ev.group_color || "var(--primary)" }}
-                      />
-                      {ev.group_name}
-                    </span>
-                  ) : (
-                    ev.name
-                  )}
-                  {secondary(ev) && (
-                    <span className="ml-1 font-normal text-muted-foreground">
-                      {secondary(ev)}
-                    </span>
-                  )}
-                </td>
-                <td className="py-1.5 tabular-nums">{timeOf(ev)}</td>
-                <td className="w-full" />
-              </tr>
-            ))}
+            {rows.map((ev) => {
+              const note = withNote ? actNoteText(ev) : null;
+              return (
+                <tr key={ev.id} className="border-b last:border-0">
+                  <td className="py-1.5 pr-4 font-medium">
+                    <div className="block w-max max-w-[34rem] whitespace-normal">
+                      {showBandColumn ? (
+                        <span className="inline-flex items-center gap-1.5">
+                          <span
+                            className="inline-block h-2.5 w-2.5 rounded-full"
+                            style={{ background: ev.group_color || "var(--primary)" }}
+                          />
+                          {ev.group_name}
+                        </span>
+                      ) : (
+                        ev.name
+                      )}
+                      {secondary(ev) && (
+                        <span className="ml-1 font-normal text-muted-foreground">
+                          {secondary(ev)}
+                        </span>
+                      )}
+                      {note && (
+                        <span className="ml-1.5 inline-block rounded-[2px] bg-muted px-1.5 py-0.5 align-middle text-[11px] font-normal text-muted-foreground">
+                          {note}
+                        </span>
+                      )}
+                    </div>
+                  </td>
+                  <td className="whitespace-nowrap py-1.5 tabular-nums">{timeOf(ev)}</td>
+                  <td className="w-full" />
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       )}
@@ -1105,14 +1158,16 @@ function ExportSchedule({
         showBandColumn={showBandColumn}
         secondary={secondary}
         timeOf={(ev) => fmtSlots(ev.stage, ev.stageMore)}
+        withNote
       />
       {/* Photo + Booth side by side; each hidden when empty so a stage-only show
           (e.g. WARUDO has no photo) doesn't print an empty "ถ่ายรูป · 0 —" table.
           Mirrors the on-screen ActivityTables.
-          Side by side only when both FIT: their rows never wrap (name + time stay on
-          one line), so in a fixed half-width grid a long show name (the "· name ·
-          date" tag of a mixed group) ran under the Booth column and off the image.
-          flex-wrap puts Booth under Photo instead, each then full width. */}
+          Side by side only when both FIT: in a fixed half-width grid a long show name
+          (the "· name · date" tag of a mixed group) ran under the Booth column and off
+          the image. The name cell wraps at 34rem now (CQ-33), but flex-wrap still puts
+          Booth under Photo when the two together are wider than the sheet, each then
+          full width. */}
       {(photoRows.length > 0 || boothRows.length > 0) && (
         <div className="flex flex-wrap gap-x-4 gap-y-2">
           {photoRows.length > 0 && (
@@ -1238,6 +1293,9 @@ function KpiTile({
   );
 }
 
+/** The hero's explanation for a disabled "บันทึกเป็นรูป" — wired to the button as its description. */
+const EXPORT_HINT_ID = "overview-export-hint";
+
 /**
  * The screen's one lit hero: what is on TODAY across the label (or this band), else
  * how far off the next show is. The approval queue — the nag approvers came for —
@@ -1248,11 +1306,14 @@ function TodayHero({
   events,
   canOpenDetail,
   actions,
+  actionsHint,
 }: {
   todayKey: string;
   events: OverviewEvent[];
   canOpenDetail: boolean;
   actions: ReactNode;
+  /** A muted line under the actions — why one of them is not available right now. */
+  actionsHint?: ReactNode;
 }) {
   const p = dateParts(todayKey);
   const todays = events
@@ -1340,7 +1401,13 @@ function TodayHero({
         <p className="mt-2.5 text-[13px] text-muted-foreground">ยังไม่มีงานที่จะถึงในตาราง</p>
       )}
 
-      {actions && <div className="mt-3.5 flex flex-wrap gap-2">{actions}</div>}
+      {/* no-print: buttons (and the line explaining a dead one) are no use on paper (CQ-29). */}
+      {actions && <div className="no-print mt-3.5 flex flex-wrap gap-2">{actions}</div>}
+      {actionsHint && (
+        <p id={EXPORT_HINT_ID} className="no-print mt-2 text-[12.5px] text-muted-foreground">
+          {actionsHint}
+        </p>
+      )}
     </section>
   );
 }
@@ -1353,6 +1420,7 @@ export function OverviewClient({
   canApproveEvents,
   isLabelWide,
   canOpenDetail,
+  isLabelStaff = false,
   runOrderFestivals = [],
   todayKey: todayProp,
 }: {
@@ -1363,6 +1431,10 @@ export function OverviewClient({
   canApproveEvents: boolean;
   isLabelWide: boolean; // show the view-only Live link (overview audience)
   canOpenDetail: boolean; // false for label_staff (overview-only); name is plain text
+  /** Label staff cannot open /library, so their copyright chips go to the show's own
+   *  page instead (CQ-37): pass `ws.perms.tenantRole === "label_staff"`. Optional so a
+   *  caller that omits it keeps the old /library link. */
+  isLabelStaff?: boolean;
   runOrderFestivals?: string[]; // "name__date" keys that already have a running order
   /** Bangkok "YYYY-MM-DD". The server passes its own so the HTML it renders and the
    *  client that hydrates it agree on which shows are past; defaults to now. */
@@ -1555,18 +1627,23 @@ export function OverviewClient({
   const showBandColumn = mode !== "band";
   const showRosters = mode === "band";
 
+  // A focus shows every band's rows, so the buckets must not prune to one band either
+  // (CQ-31): in รายวง mode bucketize builds one section per SELECTED band, and a band
+  // filter surviving under a focus hid rows the heading and the chip were counting.
+  // The selects clear the focus, so the two should never meet — this is the second lock.
+  const bucketBand = activeFocus ? "all" : bandFilter;
   const boardBuckets = useMemo(
     () =>
-      bucketize(upcoming, mode, bands, bandFilter, {
+      bucketize(upcoming, mode, bands, bucketBand, {
         // Empty band sections stay for their rosters — not under a focus, which is
         // a list of things to act on.
         keepEmptyBands: showRosters && !activeFocus,
       }),
-    [upcoming, mode, bands, bandFilter, showRosters, activeFocus]
+    [upcoming, mode, bands, bucketBand, showRosters, activeFocus]
   );
   const pastBuckets = useMemo(
-    () => bucketize(past, mode, bands, bandFilter, { keepEmptyBands: false, newestFirst: true }),
-    [past, mode, bands, bandFilter]
+    () => bucketize(past, mode, bands, bucketBand, { keepEmptyBands: false, newestFirst: true }),
+    [past, mode, bands, bucketBand]
   );
 
   // The JPG is what the staffer is looking at: the upcoming board, plus the past only
@@ -1574,8 +1651,8 @@ export function OverviewClient({
   // one section per band / show / period, as before the fold existed.
   const exportEvents = pastOpen ? filtered : upcoming;
   const exportBuckets = useMemo(
-    () => bucketize(exportEvents, mode, bands, bandFilter, { keepEmptyBands: false }),
-    [exportEvents, mode, bands, bandFilter]
+    () => bucketize(exportEvents, mode, bands, bucketBand, { keepEmptyBands: false }),
+    [exportEvents, mode, bands, bucketBand]
   );
 
   const bandFilterLabel =
@@ -1722,6 +1799,11 @@ export function OverviewClient({
     );
   };
 
+  // The export button is dead when nothing is upcoming and the fold is shut, yet the
+  // shows ARE on the page, one tap below — so say what to open (CQ-34). A `title`
+  // alone is invisible on touch.
+  const exportNeedsPast = !pastOpen && upcoming.length === 0 && past.length > 0;
+
   const boardHasRows = boardBuckets.some((b) => b.events.length > 0);
   const boardTitle = activeFocus
     ? FOCUS_TITLE[activeFocus]
@@ -1731,11 +1813,13 @@ export function OverviewClient({
 
   return (
     <PhotoSaveContext.Provider value={handlePhotoSaved}>
+    <LabelStaffContext.Provider value={isLabelStaff}>
     <div className="space-y-4">
       <TodayHero
         todayKey={todayKey}
         events={mergedEvents}
         canOpenDetail={canOpenDetail}
+        actionsHint={exportNeedsPast ? "เปิด PAST ด้านล่างเพื่อบันทึกเป็นรูป" : undefined}
         actions={
           <>
             {/* Only approvers see it, and only when something is actually waiting —
@@ -1761,7 +1845,12 @@ export function OverviewClient({
               variant="secondary"
               onClick={exportImage}
               disabled={exporting || exportEvents.length === 0}
-              title="บันทึกตารางงานเป็นรูปไปแจกให้สตาฟ/วง"
+              aria-describedby={exportNeedsPast ? EXPORT_HINT_ID : undefined}
+              title={
+                exportNeedsPast
+                  ? "ยังไม่มีงานที่จะถึง — เปิด PAST ด้านล่างเพื่อบันทึกงานที่ผ่านไปแล้วเป็นรูป"
+                  : "บันทึกตารางงานเป็นรูปไปแจกให้สตาฟ/วง"
+              }
               className="h-12 flex-1 px-3 sm:flex-none sm:px-6"
             >
               {exporting ? (
@@ -1775,7 +1864,7 @@ export function OverviewClient({
         }
       />
 
-      <div role="group" aria-label="ตัวกรองด่วน" className="grid grid-cols-3 gap-[2px]">
+      <div role="group" aria-label="ตัวกรองด่วน" className="no-print grid grid-cols-3 gap-[2px]">
         <KpiTile
           icon={CalendarDays}
           iconClass="text-primary-ink"
@@ -1810,7 +1899,7 @@ export function OverviewClient({
         <div
           role="group"
           aria-label="มุมมอง"
-          className="seg grid-flow-row grid-cols-3 sm:grid-flow-col sm:grid-cols-none [&>*]:h-11 sm:[&>*]:h-[38px]"
+          className="no-print seg grid-flow-row grid-cols-3 sm:grid-flow-col sm:grid-cols-none [&>*]:h-11 [@media(pointer:fine)]:[&>*]:h-[38px]"
         >
           {VIEW_MODES.map((m) => (
             <button
@@ -1828,13 +1917,21 @@ export function OverviewClient({
           ))}
         </div>
         {(availableDates.length > 1 || bands.length > 1) && (
-          <div className="flex flex-wrap gap-2">
+          <div className="no-print flex flex-wrap gap-2">
             {availableDates.length > 1 && (
               <select
                 value={dateFilter}
-                onChange={(e) => setDateFilter(e.target.value)}
+                onChange={(e) => {
+                  setDateFilter(e.target.value);
+                  // A focus ignores the day filter, so picking one under a focus did
+                  // nothing visible — leave the focus (CQ-31), as the band select does.
+                  setFocus(null);
+                }}
                 aria-label="เลือกวัน"
-                className={cn(FIELD, "h-11 min-w-0 flex-1 px-3 text-base sm:h-10 sm:flex-none sm:text-sm")}
+                className={cn(
+                  FIELD,
+                  "h-11 min-w-0 flex-1 px-3 text-base sm:flex-none sm:text-sm [@media(pointer:fine)]:h-10"
+                )}
                 title="กรองเฉพาะวันที่เลือก — ถ่ายรูปเฉพาะวันนั้น"
               >
                 <option value="all">ทุกวัน</option>
@@ -1848,9 +1945,18 @@ export function OverviewClient({
             {bands.length > 1 && (
               <select
                 value={bandFilter}
-                onChange={(e) => setBandFilter(e.target.value)}
+                onChange={(e) => {
+                  setBandFilter(e.target.value);
+                  // The mirror of toggleFocus clearing this filter: picking a band while
+                  // a focus is on would otherwise leave the heading and chip counting
+                  // every band over a board that shows one (CQ-31).
+                  setFocus(null);
+                }}
                 aria-label="เลือกวง"
-                className={cn(FIELD, "h-11 min-w-0 flex-1 px-3 text-base sm:h-10 sm:flex-none sm:text-sm")}
+                className={cn(
+                  FIELD,
+                  "h-11 min-w-0 flex-1 px-3 text-base sm:flex-none sm:text-sm [@media(pointer:fine)]:h-10"
+                )}
               >
                 <option value="all">ทุกวง</option>
                 {bands.map((b) => (
@@ -2031,6 +2137,7 @@ export function OverviewClient({
       </div>
       )}
     </div>
+    </LabelStaffContext.Provider>
     </PhotoSaveContext.Provider>
   );
 }

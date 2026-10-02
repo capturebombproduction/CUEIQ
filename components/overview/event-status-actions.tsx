@@ -89,9 +89,14 @@ export function EventStatusActions({
           onClick={() => setOpen(true)}
           title="แตะเพื่อเปลี่ยนสถานะ (อนุมัติ / ปฏิเสธ)"
           // A status chip you can tap: 44 px tall on a phone (the chip itself stays
-          // chip-sized inside it), back to the chip's own height under a pointer.
+          // chip-sized inside it), back to the chip's own height from `sm`, where the
+          // rows are a dense table. A touch iPad is also >= `sm`, so there an invisible
+          // ::after grows the hit box to ~44 px without growing the chip (the same
+          // trick as HIT_44 in overview-client.tsx). Phones keep min-h-11 alone: a
+          // second 10 px skirt on a button already 44 px tall would only start eating
+          // taps meant for the name link above it.
           // `relative` keeps it above a neighbouring link's enlarged tap box.
-          className="relative inline-flex min-h-11 items-center gap-1 rounded-[2px] transition-opacity duration-2 hover:opacity-80 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 sm:min-h-0"
+          className="relative inline-flex min-h-11 items-center gap-1 rounded-[2px] transition-opacity duration-2 hover:opacity-80 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 sm:min-h-0 sm:after:absolute sm:after:-inset-y-2.5 sm:after:inset-x-0 sm:after:content-['']"
         >
           <StatusBadge status={status} />
           <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" aria-hidden />

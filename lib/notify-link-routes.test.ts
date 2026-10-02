@@ -23,6 +23,7 @@
 import { describe, it, expect } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
+import { canViewLibrary, makePerms } from "@/lib/permissions";
 
 const repoRoot = path.resolve(__dirname, "..");
 const read = (p: string) => fs.readFileSync(path.join(repoRoot, p), "utf8");
@@ -64,6 +65,18 @@ function notifyLinkShapes(): string[] {
   expect(liveLink, "runOrderLiveLink no longer returns a single template literal").not.toBeNull();
 
   const shapes = new Set<string>([normalize(liveLink![1])]);
+
+  // songPendingLink() (CQ-37) hands each song_pending approver a destination THEY can
+  // open. It RETURNS its paths instead of assigning `link =`, so it is invisible to the
+  // scan below — read it here, like runOrderLiveLink, so a path it invents (or moves
+  // to) has to be routable in both apps too.
+  const songLink = /function songPendingLink\([^)]*\)[^{]*\{([\s\S]*?)\n\}/.exec(routeSrc);
+  expect(songLink, "songPendingLink is gone or is no longer a plain function").not.toBeNull();
+  const songPaths = [...songLink![1].matchAll(/`[^`]*`|"[^"]*"/g)]
+    .map((m) => m[0].slice(1, -1))
+    .filter((lit) => lit.startsWith("/"));
+  expect(songPaths.length, "songPendingLink returns no path literals").toBeGreaterThan(1);
+  for (const p of songPaths) shapes.add(normalize(p));
 
   const assignments = [...routeSrc.matchAll(/\blink = (`[^`]*`|"[^"]*"|[A-Za-z_$][\w$]*)/g)];
   expect(assignments.length, "no `link =` assignments found — did a route change shape?")
@@ -140,5 +153,33 @@ describe("notification links open a real page in BOTH apps", () => {
 
   it.each(shapes)("%s has a page in the web app", (link) => {
     expect(webRouteExists(link), `no app/(app) page.tsx for ${link}`).toBe(true);
+  });
+});
+
+// A destination existing is not the same as the RECIPIENT being allowed in. song_pending
+// goes to admin AND label_staff, and "/library" is a page label_staff are redirected away
+// from — so the route resolves the song_pending link per recipient (CQ-37; its behaviour
+// is held by app/api/notify/route.test.ts). This pins the premise: if label_staff ever
+// gains the library, the per-recipient branch is dead weight and should go.
+describe("why song_pending resolves its link per recipient", () => {
+  it("label_staff cannot open /library, and the page redirects them away", () => {
+    expect(canViewLibrary(makePerms("label_staff"))).toBe(false);
+    expect(canViewLibrary(makePerms("admin"))).toBe(true);
+    expect(read("app/(app)/library/page.tsx")).toMatch(
+      /if \(!canViewLibrary\(ws\.perms\)\) redirect\("\/dashboard"\)/
+    );
+  });
+
+  it("the route sends label_staff to an event page or /overview, never the library", () => {
+    const src = read("app/api/notify/route.ts");
+    const fn = /function songPendingLink\([^)]*\)[^{]*\{([\s\S]*?)\n\}/.exec(src)![1];
+    // The library is returned only for someone who is NOT label_staff…
+    const toLibrary = /role !== "label_staff"\) return "\/library";/.exec(fn);
+    expect(toLibrary, "the /library return is no longer guarded against label_staff").not.toBeNull();
+    // …and everything after it — what label_staff get — is an event page or /overview.
+    const staffBranch = fn.slice(toLibrary!.index + toLibrary![0].length);
+    expect(staffBranch).toContain("/events/");
+    expect(staffBranch).toContain("/overview");
+    expect(staffBranch).not.toContain("/library");
   });
 });
