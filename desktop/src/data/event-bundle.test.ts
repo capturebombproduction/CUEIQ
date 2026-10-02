@@ -54,6 +54,7 @@ vi.mock("~/data/mgmt-outbox", () => ({
 
 import {
   EVENT_BUNDLE_BATCH_TIMEOUT_MS,
+  EVENT_BUNDLE_CACHED_EVENT,
   EVENT_BUNDLE_SESSION_TIMEOUT_MS,
   EVENT_BUNDLE_TIMEOUT_MS,
   cachedCallTimes,
@@ -634,6 +635,49 @@ describe("warmEventBundle — one hung event must not stall the prepare run", ()
   });
 });
 
+// ── a bundle landing is announced (CQ-65: the ticket's นัด fills without a remount) ──
+//
+// The dashboard derives the ticket's call time from the cached bundles and used to
+// compute it once per list load. "เตรียมทุกงาน" warms the bundles while that page stays
+// mounted, so the cache filling had no way to reach the ticket: the cell stayed out
+// until the operator left and came back. A bundle written to the cache now says so.
+
+describe("loadEventBundle — announcing a bundle it just cached", () => {
+  /** Records, at the moment the event fires, whether the bundle is ALREADY readable —
+   *  an announcement ahead of the write would send the listener to an empty cache. */
+  const listen = () => {
+    const seen: { cachedWhenHeard: boolean }[] = [];
+    const onCached = () => seen.push({ cachedWhenHeard: isEventBundleCached(EVENT_ID) });
+    window.addEventListener(EVENT_BUNDLE_CACHED_EVENT, onCached);
+    return { seen, stop: () => window.removeEventListener(EVENT_BUNDLE_CACHED_EVENT, onCached) };
+  };
+
+  it("fires once, after the write, when the server bundle is written through", async () => {
+    const { seen, stop } = listen();
+    try {
+      await warmEventBundle(EVENT_ID);
+      expect(seen).toEqual([{ cachedWhenHeard: true }]);
+    } finally {
+      stop();
+    }
+  });
+
+  it("says nothing when it served the cache instead (offline, a refused read)", async () => {
+    seedBundleCache();
+    const { seen, stop } = listen();
+    try {
+      setOnline(false);
+      await loadEventBundle(EVENT_ID);
+      setOnline(true);
+      supa.setTable("setlist_items", { data: null, error: { message: "boom" }, status: 500 });
+      await loadEventBundle(EVENT_ID);
+      expect(seen).toEqual([]);
+    } finally {
+      stop();
+    }
+  });
+});
+
 // ── the other half: bounds that STACK on the way to a screen ──────────────────
 
 describe("loadEventsList — the second bound the dashboard pays", () => {
@@ -778,5 +822,66 @@ describe("cachedCallTimes — the call time from bundles already on the device",
     delete legacy.schedule;
     window.localStorage.setItem(rawKey("old"), JSON.stringify(legacy));
     expect(cachedCallTimes([listRow("old", FUTURE)])).toEqual({});
+  });
+
+  // CQ-65, the mixed cache. The ticket shows ONE show — the soonest dated one that is
+  // not past. A map made of whichever LATER shows happen to be cached used to reach
+  // it, and the ticket printed "นัด —" ("there is none") for a show whose schedule
+  // this device never read.
+  describe("when only some upcoming shows are cached", () => {
+    const LATER = "2099-02-01";
+    const TWO_ROWS: [string, string | null][] = [
+      ["on_location", "16:00:00"],
+      ["stage", "19:00:00"],
+    ];
+
+    it("is undefined when a LATER show is cached but the ticket's own show is not", () => {
+      seedSchedule("later", TWO_ROWS);
+      expect(cachedCallTimes([listRow("next", FUTURE), listRow("later", LATER)])).toBeUndefined();
+      // list order is not the ticket's order: it is the date that decides
+      expect(cachedCallTimes([listRow("later", LATER), listRow("next", FUTURE)])).toBeUndefined();
+    });
+
+    it("is a map once the ticket's own show is cached, even if every later one is not", () => {
+      seedSchedule("next", TWO_ROWS);
+      expect(cachedCallTimes([listRow("next", FUTURE), listRow("later", LATER)])).toEqual({
+        next: "16:00:00",
+      });
+    });
+
+    it("is still a map — 'read, no call' — for a cached ticket show with no call time", () => {
+      seedSchedule("next", [["stage", "19:00:00"]]);
+      expect(cachedCallTimes([listRow("next", FUTURE)])).toEqual({});
+      // a later show's call rides along, and the ticket's own cell says "—", honestly
+      seedSchedule("later", TWO_ROWS);
+      expect(cachedCallTimes([listRow("next", FUTURE), listRow("later", LATER)])).toEqual({
+        later: "16:00:00",
+      });
+    });
+
+    it("picks the ticket's show in events-list's own order: same day, earlier stage first", () => {
+      const day = [listRow("night", FUTURE, "21:00:00"), listRow("early", FUTURE, "19:00:00")];
+      // "early" is listed second but is on first — the ticket's show — and it is cached
+      seedSchedule("early", TWO_ROWS);
+      expect(cachedCallTimes(day)).toEqual({ early: "16:00:00" });
+      // flip it: only the late show is cached, and the ticket is still the early one
+      window.localStorage.clear();
+      seedSchedule("night", TWO_ROWS);
+      expect(cachedCallTimes(day)).toBeUndefined();
+    });
+
+    it("never takes a past or dateless show for the ticket's", () => {
+      seedSchedule("next", TWO_ROWS);
+      // neither the past show nor the dateless one is cached, and neither blocks the ticket
+      expect(
+        cachedCallTimes([listRow("gone", PAST), listRow("nodate", null), listRow("next", FUTURE)])
+      ).toEqual({ next: "16:00:00" });
+    });
+
+    it("treats a ticket bundle it cannot parse as unread, not as 'no call time'", () => {
+      window.localStorage.setItem(rawKey("next"), "{not json");
+      seedSchedule("later", TWO_ROWS);
+      expect(cachedCallTimes([listRow("next", FUTURE), listRow("later", LATER)])).toBeUndefined();
+    });
   });
 });

@@ -22,9 +22,9 @@ import { createClient } from "@/lib/supabase/client";
 import { isOffline } from "~/data/cache";
 import { useWorkspace } from "~/data/workspace-context";
 import { loadEventsList, type EventWithGroup } from "~/data/events-list";
-import { cachedCallTimes } from "~/data/event-bundle";
+import { EVENT_BUNDLE_CACHED_EVENT, cachedCallTimes } from "~/data/event-bundle";
 import { warmSongLibrary } from "~/data/song-library";
-import { WhatsNew } from "@/components/whats-new";
+import { WhatsNew, readerFor } from "@/components/whats-new";
 import { PageTitle } from "@/components/page-title";
 
 export function Dashboard() {
@@ -92,8 +92,33 @@ export function Dashboard() {
   }, [tenantId, mayCreate]);
 
   // The Next Show ticket's "นัด", from the bundles already on this device (the
-  // list cache carries no schedules). undefined = none cached → the cell is left out.
-  const callTimes = useMemo(() => (events ? cachedCallTimes(events) : undefined), [events]);
+  // list cache carries no schedules). undefined = the ticket's own show is not cached
+  // → unknown, and the cell is left out.
+  //
+  // The cache fills while this page stays up: "เตรียมทุกงาน" warms the bundles one by
+  // one, and the ticket's show may be among the last — so a bundle landing (or the
+  // window coming back, or the network returning: the same triggers EventsList's
+  // readiness badges re-read on) bumps `cacheTick` and the lookup runs again.
+  const [cacheTick, setCacheTick] = useState(0);
+  useEffect(() => {
+    const bump = () => setCacheTick((n) => n + 1);
+    const onVisible = () => {
+      if (document.visibilityState === "visible") bump();
+    };
+    window.addEventListener(EVENT_BUNDLE_CACHED_EVENT, bump);
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("online", bump);
+    return () => {
+      window.removeEventListener(EVENT_BUNDLE_CACHED_EVENT, bump);
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("online", bump);
+    };
+  }, []);
+  const callTimes = useMemo(
+    () => (events ? cachedCallTimes(events) : undefined),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- cacheTick re-reads the cache
+    [events, cacheTick]
+  );
 
   if (!ws?.membership || !ws.tenant) {
     return (
@@ -122,8 +147,12 @@ export function Dashboard() {
     month: "short",
     timeZone: "Asia/Bangkok",
   }).format(new Date());
-  // Same card as the web dashboard (components/whats-new.tsx), under the ticket.
-  const whatsNew = <WhatsNew canEdit={editableGroupIds.length > 0} />;
+  // Same card as the web dashboard (components/whats-new.tsx), under the ticket — told
+  // WHO is reading, from the account's own rules, so an admin is not pointed at the
+  // banner's "ซ้อมตามเซ็ต" button (their second button is Live Mode) nor label staff at
+  // the Library / practice room they do not have. `canEdit` is this page's own answer
+  // (the bands this account may edit), as on the web dashboard.
+  const whatsNew = <WhatsNew reader={readerFor(ws.perms, editableGroupIds.length > 0)} />;
 
   return (
     // data-cueiq-events: how many shows this account can actually see right now.

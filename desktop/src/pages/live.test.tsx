@@ -277,6 +277,24 @@ describe("desktop Show Runner — the readiness card never pushes the stage boar
     expect(card).toHaveClass("stage:shrink-0", "stage:overflow-y-auto");
     expect(Array.from(card.classList).some((c) => /^stage:max-h-\[\d+dvh\]$/.test(c))).toBe(true);
   });
+
+  // CQ-20 (desktop part). Below `stage` the card has no row to share: it sits in flow
+  // over Live Mode, and an opened one — a long list of missing files, the usual state at
+  // call time — pushed the board a screen down. Capped (and scrolling inside itself)
+  // there too; `stage:max-h-[30dvh]` still takes over at stage size. Layout: jsdom
+  // cannot show that the card really stops at 40 % of the window — that wants a real
+  // window below the stage breakpoint.
+  it("below stage the card is capped at 40dvh and scrolls inside itself", async () => {
+    renderLive();
+    await screen.findByTestId("live-mode");
+    const card = screen.getByTestId("readiness-card").parentElement as HTMLElement;
+    expect(card).toHaveClass("max-h-[40dvh]", "overflow-y-auto");
+    // one unprefixed cap only, and the stage one still overrides it
+    expect(Array.from(card.classList).filter((c) => c.startsWith("max-h-"))).toEqual(["max-h-[40dvh]"]);
+    expect(card).toHaveClass("stage:max-h-[30dvh]");
+    // the card stays hidden when it has nothing to say
+    expect(card).toHaveClass("empty:hidden");
+  });
 });
 
 describe("desktop Show Runner — a band that may not open this show", () => {

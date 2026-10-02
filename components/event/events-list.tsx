@@ -73,6 +73,32 @@ function daysUntil(dateStr: string): number {
   return Math.round((d.getTime() - today.getTime()) / 86400000);
 }
 
+/** What the "upcoming" order reads off a show. */
+type UpcomingKey = { event_date: string | null; show_start_time: string | null };
+
+/** The order "Upcoming" is listed in: soonest date first, then by start time so
+ *  same-day shows run in order. A show with no date sorts last. Exported so the one
+ *  caller that has to agree with it (the desktop's call-time lookup, which must read
+ *  the SAME show the ticket prints) uses this instead of a second copy of the sort. */
+export function compareUpcoming(a: UpcomingKey, b: UpcomingKey): number {
+  const d = (a.event_date ?? "9999").localeCompare(b.event_date ?? "9999");
+  return d !== 0
+    ? d
+    : (a.show_start_time ?? "99:99:99").localeCompare(b.show_start_time ?? "99:99:99");
+}
+
+/** The show the Next Show ticket is about: the soonest DATED show that is not past.
+ *  EventsList derives its own `nextShow` from the same filter and the same order
+ *  (compareUpcoming), minus the search box — the ticket is hidden while one is typed. */
+export function nextTicketShow<T extends UpcomingKey>(
+  events: readonly T[],
+  today: string = todayKey()
+): T | undefined {
+  return events
+    .filter((e) => !!e.event_date && e.event_date >= today)
+    .sort(compareUpcoming)[0];
+}
+
 /** Per-device offline readiness for one event: audio bytes + whether this event's
  *  management bundle (คิวโชว์ / ตาราง / ไมค์ / ไลน์อัพ) is cached on the device. */
 type EventReadiness = {
@@ -337,13 +363,8 @@ export function EventsList({
     const today = todayKey();
     const up = matched
       .filter((e) => !e.event_date || e.event_date >= today)
-      .sort((a, b) => {
-        // soonest date first, then by start time so same-day shows run in order
-        const d = (a.event_date ?? "9999").localeCompare(b.event_date ?? "9999");
-        return d !== 0
-          ? d
-          : (a.show_start_time ?? "99:99:99").localeCompare(b.show_start_time ?? "99:99:99");
-      });
+      // soonest date first, then by start time so same-day shows run in order
+      .sort(compareUpcoming);
     const pa = matched
       .filter((e) => e.event_date && e.event_date < today)
       .sort((a, b) => {

@@ -7,6 +7,7 @@
 import { createClient } from "@/lib/supabase/client";
 import { applyPendingChildren, materializeEventRow } from "@/lib/mgmt-outbox";
 import { callTimeOf } from "@/lib/next-show";
+import { nextTicketShow } from "@/components/event/events-list";
 import { bkkTodayKey } from "@/lib/time";
 import { hasCache, isOffline, readCache, readCacheKeys, writeCache } from "~/data/cache";
 import { hasLiveSession } from "@/lib/auth-session";
@@ -315,6 +316,7 @@ export async function loadEventBundleStatus(eventId: string): Promise<EventBundl
     role: (membershipRes.data?.role as Role) ?? null,
   };
   writeCache(cacheKey, bundle);
+  announceBundleCached();
   // Cache the SERVER truth, then overlay pending local edits on top for display.
   return { bundle: (await withPendingOverlay(bundle, eventId)).bundle, unreachable: false };
 }
@@ -324,6 +326,20 @@ export async function loadEventBundleStatus(eventId: string): Promise<EventBundl
  *  does care, and calls loadEventBundleStatus directly. */
 export async function loadEventBundle(eventId: string): Promise<EventBundle | null> {
   return (await loadEventBundleStatus(eventId)).bundle;
+}
+
+/** Fired on `window` each time a bundle is written to the read-cache, so a screen that
+ *  derived something from the cached bundles (the dashboard's ticket "นัด") can
+ *  re-read without a remount — its own "เตรียมทุกงาน" fills the cache while it stays
+ *  mounted. Mirrors MGMT_OUTBOX_EVENT. */
+export const EVENT_BUNDLE_CACHED_EVENT = "cueiq:event-bundle-cached";
+
+function announceBundleCached(): void {
+  try {
+    window.dispatchEvent(new Event(EVENT_BUNDLE_CACHED_EVENT));
+  } catch {
+    /* non-DOM context */
+  }
 }
 
 /** Does THIS device hold `eventId`'s bundle, i.e. can the show be OPENED with no net? */
@@ -340,12 +356,16 @@ export function isEventBundleCached(eventId: string): boolean {
  * "นัด —" for every show. A bundle on disk does carry them (`schedule`), and is
  * there for exactly the shows the operator prepared for the venue.
  *
- * `undefined` — NOT `{}` — when no upcoming show has a cached bundle: nothing was
- * read, so the call time is unknown and the ticket leaves the cell out
- * (events-list's `callTimes` prop says why the two differ). A show whose bundle is
- * cached but has no call time is simply absent from the map, as on the web. Only
- * dated, not-yet-past shows are parsed — the ticket shows one of them, and a
- * bundle is the heaviest thing in the read-cache.
+ * `undefined` — NOT `{}` — unless the bundle of the show the TICKET is about is on
+ * this device: that show is the soonest dated one that is not past, picked with
+ * events-list's own order (nextTicketShow), and it is the only one whose call time
+ * the ticket prints. A device that holds a LATER show's bundle but not that one does
+ * not know the ticket's call time, and a map without it would make the ticket say
+ * "นัด —" — "there is none" — about a show whose schedule it never read. `undefined`
+ * is how events-list's `callTimes` prop says "unknown" and leaves the cell out.
+ * Once the ticket's bundle is read, a show whose cached schedule has no call time is
+ * simply absent from the map, as on the web. Only dated, not-yet-past shows are
+ * parsed — a bundle is the heaviest thing in the read-cache.
  *
  * The stage anchor is the list row's show_start_time, as on the web (the list is
  * newer than the bundle when a stage time was just edited).
@@ -354,17 +374,18 @@ export function cachedCallTimes(
   events: { id: string; event_date: string | null; show_start_time: string | null }[]
 ): Record<string, string> | undefined {
   const today = bkkTodayKey();
+  const ticketId = nextTicketShow(events, today)?.id;
   const out: Record<string, string> = {};
-  let anyCached = false;
+  let ticketRead = false;
   for (const e of events) {
     if (!e.event_date || e.event_date < today) continue;
     const bundle = readCache<EventBundle>(bundleKey(e.id));
     if (!bundle) continue;
-    anyCached = true;
+    if (e.id === ticketId) ticketRead = true;
     const call = callTimeOf(bundle.schedule ?? [], e.show_start_time);
     if (call) out[e.id] = call;
   }
-  return anyCached ? out : undefined;
+  return ticketRead ? out : undefined;
 }
 
 /**

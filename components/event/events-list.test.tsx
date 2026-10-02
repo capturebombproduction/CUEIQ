@@ -16,7 +16,7 @@ vi.mock("next/navigation", () => ({
   useSearchParams: () => new URLSearchParams(),
 }));
 
-import { EventsList } from "./events-list";
+import { EventsList, compareUpcoming, nextTicketShow } from "./events-list";
 
 const ev = (id: string, name: string, event_date: string) =>
   ({
@@ -443,5 +443,88 @@ describe("EventsList — the ticket's นัด cell says what is known (CQ-65)"
     expect(ticket.getByTestId("next-show-times").textContent).toBe("ขึ้นเวที 13:20");
     // the primary bar before ขึ้นเวที moved with the label, not with a fixed index
     expect(ticket.getByText("ขึ้นเวที").querySelector("i")).not.toBeNull();
+  });
+});
+
+// CQ-65 (mixed cache): the desktop looks the ticket's call time up in the bundles it
+// has cached, and must look up the show the ticket PRINTS — so it asks for it by the
+// list's own ordering instead of a copy of the sort that could drift.
+describe("nextTicketShow / compareUpcoming — the one show the ticket is about", () => {
+  const TODAY = "2026-09-28";
+  const row = (id: string, event_date: string | null, show_start_time: string | null = null) => ({
+    id,
+    event_date,
+    show_start_time,
+  });
+
+  it("orders soonest date first, then start time, and a dateless show last", () => {
+    const rows = [
+      row("nodate", null),
+      row("late", "2026-10-05", "21:00:00"),
+      row("untimed", "2026-10-05"),
+      row("early", "2026-10-05", "13:00:00"),
+      row("sooner", "2026-10-02", "23:00:00"),
+    ];
+    expect([...rows].sort(compareUpcoming).map((r) => r.id)).toEqual([
+      "sooner",
+      "early",
+      "late",
+      "untimed",
+      "nodate",
+    ]);
+  });
+
+  it("is the soonest dated show that is not past — today counts", () => {
+    expect(
+      nextTicketShow(
+        [row("past", "2026-09-27"), row("nodate", null), row("later", "2026-10-09"), row("today", TODAY)],
+        TODAY
+      )?.id
+    ).toBe("today");
+  });
+
+  it("on one day it is the earlier stage time, wherever the list puts it", () => {
+    expect(
+      nextTicketShow([row("night", "2026-10-05", "21:00:00"), row("early", "2026-10-05", "13:00:00")], TODAY)?.id
+    ).toBe("early");
+  });
+
+  it("a tie goes to the one listed first (the sort is stable), as in the list", () => {
+    expect(
+      nextTicketShow([row("a", "2026-10-05", "13:00:00"), row("b", "2026-10-05", "13:00:00")], TODAY)?.id
+    ).toBe("a");
+  });
+
+  it("is undefined with nothing coming, and leaves the caller's array in its order", () => {
+    expect(nextTicketShow([], TODAY)).toBeUndefined();
+    expect(nextTicketShow([row("past", "2026-01-01"), row("nodate", null)], TODAY)).toBeUndefined();
+    const rows = [row("b", "2026-10-09"), row("a", "2026-10-05")];
+    nextTicketShow(rows, TODAY);
+    expect(rows.map((r) => r.id)).toEqual(["b", "a"]);
+  });
+
+  it("defaults to today's Bangkok date", () => {
+    // the file pins the clock to 2026-09-28
+    expect(nextTicketShow([row("yesterday", "2026-09-27"), row("today", TODAY)])?.id).toBe("today");
+  });
+
+  it("agrees with the ticket EventsList actually prints", () => {
+    const list = [
+      { ...ev("n", "งานดึก", "2026-10-05"), show_start_time: "21:00:00" },
+      { ...ev("p", "งานที่ผ่านไป", "2026-09-01"), show_start_time: "10:00:00" },
+      { ...ev("d", "งานไม่มีวัน", null as unknown as string) },
+      { ...ev("e", "งานเช้า", "2026-10-05"), show_start_time: "13:00:00" },
+      { ...ev("l", "งานไกล", "2026-11-01"), show_start_time: "09:00:00" },
+    ];
+    render(
+      <ConfirmProvider>
+        <EventsList events={list} editableGroupIds={[]} />
+      </ConfirmProvider>
+    );
+    const ticket = screen.getByRole("region", { name: "Next show" });
+    const picked = nextTicketShow(list);
+    expect(picked?.id).toBe("e");
+    expect(ticket).toHaveTextContent(picked!.name);
+    expect(ticket).not.toHaveTextContent("งานดึก");
   });
 });

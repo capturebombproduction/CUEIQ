@@ -88,7 +88,11 @@ export function LivePage() {
           the check prints a green "พร้อมโชว์ออฟไลน์" over a track that plays nothing.
           Round 10 built that guard and never passed this prop. */}
       {/* Its own gutter now that <main> has none; `empty:hidden` when it has nothing to say. */}
-      <div className="px-4 pt-3 empty:hidden stage:max-h-[30dvh] stage:shrink-0 stage:overflow-y-auto stage:px-5">
+      {/* Below `stage` the card is in flow with no row to share, so an opened one (a
+          long list of missing files) pushed Live Mode a screen down; capped here at
+          40dvh, scrolling inside itself. At `stage` the 30dvh cap on this same element
+          takes over (it wins: variants come after the plain utility). */}
+      <div className="px-4 pt-3 empty:hidden max-h-[40dvh] overflow-y-auto stage:max-h-[30dvh] stage:shrink-0 stage:overflow-y-auto stage:px-5">
         <ShowReadinessCheck
           eventId={event.id}
           targets={audioTargets}
