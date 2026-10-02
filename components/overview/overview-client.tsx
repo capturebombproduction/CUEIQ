@@ -1306,14 +1306,14 @@ function TodayHero({
                   <Link
                     href={`/events/${ev.id}`}
                     // ::after covers the whole row: the row is the tap target.
-                    className="block truncate text-[14px] font-semibold after:absolute after:inset-0 after:content-[''] hover:text-primary-ink hover:underline"
+                    className="line-clamp-2 break-words text-[14px] font-semibold after:absolute after:inset-0 after:content-[''] hover:text-primary-ink hover:underline"
                   >
                     {ev.name}
                   </Link>
                 ) : (
-                  <span className="block truncate text-[14px] font-semibold">{ev.name}</span>
+                  <span className="line-clamp-2 break-words text-[14px] font-semibold">{ev.name}</span>
                 )}
-                <span className="block truncate text-[12px] text-muted-foreground">
+                <span className="line-clamp-2 text-[12px] text-muted-foreground">
                   {[ev.group_name, ev.venue].filter(Boolean).join(" · ")}
                 </span>
               </div>

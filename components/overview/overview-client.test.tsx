@@ -195,3 +195,73 @@ describe("the approval queue chip", () => {
     expect(body.getAllByText(/Vasa seitan/).length).toBeGreaterThan(0);
   });
 });
+
+// CQ-12 — THE TODAY HERO MUST NOT CUT THE SHOW'S NAME.
+//
+// Seishin's real 10-03 show, "Welcome to friendverse", is pending_review — the widest
+// status badge. The badge is shrink-0 (86-120px of a 326px row at 390), so it leaves
+// the name roughly 106px at 390 and 76px at 360, and a single-line `truncate` cut the
+// name and the venue to a few letters on the one screen the band opens before a show.
+// The name and the venue line now wrap onto a second line instead.
+//
+// The geometry itself cannot be measured in jsdom (no layout engine) — the real-browser
+// check is the harness at 360/390/430. What jsdom CAN guard is the class contract, and
+// there is one trap worth pinning: Tailwind emits `.block` AFTER `.line-clamp-2`, so a
+// stray `block` silently replaces the clamp's display:-webkit-box with display:block and
+// the clamp stops clamping — with no error anywhere.
+describe("the Today hero on a phone (CQ-12)", () => {
+  const FRIENDVERSE = ev({
+    id: "friendverse",
+    name: "Welcome to friendverse",
+    event_date: "2026-10-03",
+    status: "pending_review",
+    venue: "Bangkok Art and Culture Centre, Pathum Wan",
+  });
+
+  function hero(canOpenDetail: boolean) {
+    const { container } = render(
+      <OverviewClient
+        events={[FRIENDVERSE]}
+        bands={BANDS}
+        staffContacts={[]}
+        labelName="A Lot Of Tone"
+        canApproveEvents
+        isLabelWide
+        canOpenDetail={canOpenDetail}
+        todayKey="2026-10-03"
+      />
+    );
+    const section = container.querySelector('section[aria-label="วันนี้"]');
+    expect(section).not.toBeNull();
+    return within(section as HTMLElement);
+  }
+
+  function expectWraps(el: HTMLElement) {
+    expect(el.className).toContain("line-clamp-2");
+    // Not one cut line…
+    expect(el.className).not.toMatch(/(^|\s)truncate(\s|$)/);
+    // …and no `block` to override the clamp's display (see the note above).
+    expect(el.className).not.toMatch(/(^|\s)block(\s|$)/);
+  }
+
+  it("lets the show name wrap to a second line instead of cutting it (tappable row)", () => {
+    const name = hero(true).getByText("Welcome to friendverse");
+    expect(name.tagName).toBe("A");
+    expectWraps(name);
+    expect(name.className).toContain("break-words");
+  });
+
+  it("does the same when the row is not a link", () => {
+    const name = hero(false).getByText("Welcome to friendverse");
+    expect(name.tagName).toBe("SPAN");
+    expectWraps(name);
+    expect(name.className).toContain("break-words");
+  });
+
+  it("lets the band · venue line wrap too", () => {
+    const line = hero(true).getByText(
+      "Seishin Kakumei · Bangkok Art and Culture Centre, Pathum Wan"
+    );
+    expectWraps(line);
+  });
+});
