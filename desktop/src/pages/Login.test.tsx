@@ -1,7 +1,7 @@
 // The desktop sign-in screen, against the web one (FINAL-SPEC-v3 §G.9): the same
 // LoginForm slab on the dark stage — and, since v3, under the same page light.
 import { describe, it, expect } from "vitest";
-import { render } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { Login } from "./Login";
 
@@ -22,5 +22,16 @@ describe("desktop Login — the page light", () => {
     expect(screenEl.className.split(/\s+/)).toEqual(expect.arrayContaining(["relative", "isolate", "bg-background"]));
     // the self-test's sign-in still finds its form
     expect(document.getElementById("loginId")).toBeTruthy();
+  });
+
+  it("offers the shared Quick Show door under the slab", () => {
+    render(
+      <MemoryRouter>
+        <Login />
+      </MemoryRouter>
+    );
+    const door = screen.getByTestId("quick-show-link");
+    expect(door.getAttribute("href")).toBe("/my-show");
+    expect(door.closest('[data-cueiq-screen="login"]')).not.toBeNull();
   });
 });

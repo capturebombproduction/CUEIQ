@@ -38,6 +38,10 @@ body {
   color: hsl(var(--foreground));
   font-family: var(--font-sans);
   font-feature-settings: "rlig" 1, "calt" 1;
+  /* The web's <body className="… antialiased"> (app/layout.tsx): without it light text
+     on the dark stage renders a touch heavier here than in the browser (macOS). */
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
   margin: 0;
 }
 

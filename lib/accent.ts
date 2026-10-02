@@ -31,12 +31,19 @@ export const ACCENT_PRESETS: AccentPreset[] = [
 
 export const DEFAULT_ACCENT_HEX = ACCENT_PRESETS[0].hex;
 
-/** Inject / replace the live skin <style>. */
+/** Inject / replace the live skin <style>. The skin's :root / .dark rules tie the app
+ *  stylesheet's tokens on specificity, so it has to come LAST in <head> to win — an
+ *  element that already exists is moved there too (a no-op when it is already last),
+ *  not just reused where it happens to sit: the desktop's early copy used to sit
+ *  before Vite's <link>, and a colour picked after a restart was written into it and
+ *  still lost. */
 function injectSkinCss(css: string) {
   let el = document.getElementById(SKIN_STYLE_ID) as HTMLStyleElement | null;
   if (!el) {
     el = document.createElement("style");
     el.id = SKIN_STYLE_ID;
+  }
+  if (el.parentNode !== document.head || el !== document.head.lastElementChild) {
     document.head.appendChild(el);
   }
   el.textContent = css;

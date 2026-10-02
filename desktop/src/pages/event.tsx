@@ -6,16 +6,18 @@
 // actually goes to the venue, which is exactly where the run sheet is needed.
 import { useEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { ArrowLeft, Pencil, Play, AlertTriangle } from "lucide-react";
+import { ArrowLeft, Pencil, AlertTriangle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { EventWorkspace } from "@/components/event/event-workspace";
 import { ApprovalControl } from "@/components/event/approval-control";
+import { EventApproveButton } from "@/components/event/event-approve-button";
 import { ExportButton } from "@/components/event/export-button";
 import { EventCopyrightPanel } from "@/components/event/event-copyright-panel";
 import { EventHero } from "@/components/event/event-hero";
 import { EventMoreMenu } from "@/components/event/event-more-menu";
 import { ShareButton } from "@/components/event/share-button";
 import { RefreshButton } from "@/components/refresh-button";
+import { BandSkin } from "@/components/band-skin";
 import type { RunSeqLive } from "@/components/event/event-live-caller";
 import { createClient } from "@/lib/supabase/client";
 import { canApprove, canEditGroup, canLiveEdit, canViewGroup } from "@/lib/permissions";
@@ -26,6 +28,7 @@ import { callTimeOf, showTimesLabel } from "@/lib/next-show";
 import { loadEventBundle, loadEventBundleStatus, type EventBundle } from "~/data/event-bundle";
 import { isOffline, readCache, writeCache } from "~/data/cache";
 import { hasLiveSession } from "@/lib/auth-session";
+import { QuickShowLink } from "~/components/quick-show-link";
 import { onRouterRefresh } from "~/shims/next-navigation";
 import { useWorkspace } from "~/data/workspace-context";
 
@@ -61,21 +64,8 @@ function EventUnreachable({ onRetry }: { onRetry: () => void }) {
           </Link>
         </Button>
       </div>
-      {/* Same Quick Show entry as the boot + shell fallbacks (see ~/pages/Login). */}
-      <Link
-        to="/my-show"
-        className="group flex items-center gap-3 rounded-xl border-2 border-primary/40 bg-primary/5 px-4 py-3 shadow-sm transition-colors hover:border-primary/70 hover:bg-primary/10"
-      >
-        <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-primary/15 text-primary transition-colors group-hover:bg-primary/25">
-          <Play className="h-5 w-5" />
-        </span>
-        <span className="min-w-0">
-          <span className="block text-sm font-bold text-primary">Quick Show</span>
-          <span className="block text-xs text-muted-foreground">
-            โหมดโชว์เดี่ยว — เปิดเพลง+จับเวลาจากเครื่องนี้ ไม่ต้องเข้าสู่ระบบ
-          </span>
-        </span>
-      </Link>
+      {/* Same Quick Show entry as the sign-in, boot + shell fallback screens. */}
+      <QuickShowLink />
     </div>
   );
 }
@@ -282,6 +272,9 @@ export function EventPage() {
 
   return (
     <div className="space-y-3">
+      {/* The show's band colour, as the web page wears it (overrides the device's own
+          accent while on this band's pages). First child, like the web's. */}
+      <BandSkin hex={event.group?.skin} />
       {/* The same hero as the web event page. The header's inline nav is the way
           back to Events here (no "← All Events" row — spec §G.3). The desktop is the
           copy that goes to the VENUE, so the ⋯ keeps Excel (from the bundle on
@@ -295,11 +288,23 @@ export function EventPage() {
         // button opens the Training list here — labelled ห้องซ้อม, for where it goes.
         practiceRoomHref={null}
         statusActions={
-          <ApprovalControl
-            eventId={event.id}
-            status={event.status as GroupStatus}
-            canResubmit={canResubmit}
-          />
+          <>
+            {/* อนุมัติ / ปฏิเสธ for an approver, on a show waiting for one — the daily
+                reminder lands here, and the Overview pill is not the only place. Its
+                router.refresh() goes through the shim to this page's re-read above. */}
+            {ws && canApprove(ws.perms) && (
+              <EventApproveButton
+                eventId={event.id}
+                eventName={event.name}
+                status={event.status as GroupStatus}
+              />
+            )}
+            <ApprovalControl
+              eventId={event.id}
+              status={event.status as GroupStatus}
+              canResubmit={canResubmit}
+            />
+          </>
         }
         more={
           <EventMoreMenu eventName={event.name}>

@@ -2,6 +2,7 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import { HashRouter } from "react-router-dom";
 import { Toaster } from "@/components/ui/sonner";
+import { StageLight } from "@/components/stage-light";
 import { createClient } from "@/lib/supabase/client";
 import { configureAudioTransport } from "@/lib/audio-remote";
 import {
@@ -81,24 +82,29 @@ class AppErrorBoundary extends React.Component<
     if (!error) return this.props.children;
     return (
       // data-cueiq-screen — see the note on App.tsx's BootScreen.
+      // The Black Stage in plain markup (the sign-in screen's wrapper, a slab, the
+      // Button primitive's own classes written out): this screen is built out of
+      // elements and classes only, so whatever threw cannot be in it. StageLight is a
+      // bare <div> — and the only light in the document, the crashed tree is gone.
       <div
         data-cueiq-screen="app-error"
-        className="grid min-h-screen place-items-center bg-muted/30 p-4"
+        className="relative isolate grid min-h-screen place-items-center bg-background p-4"
       >
-        <div className="w-full max-w-md space-y-4 text-center">
+        <StageLight />
+        <div className="slab w-full max-w-md space-y-4 rounded-[3px] p-6 text-center">
           <h1 className="text-xl font-bold text-destructive">แอปทำงานผิดพลาด</h1>
           <p className="text-sm text-muted-foreground">
             กด “โหลดใหม่” เพื่อเริ่มหน้าจอใหม่ ถ้ายังไม่หาย เปิด Quick Show
             เพื่อคุมโชว์ต่อจากไฟล์ในเครื่องนี้ (ไม่ต้องใช้เน็ต)
           </p>
-          <pre className="max-h-40 overflow-auto rounded-md border bg-background p-3 text-left text-xs text-muted-foreground">
+          <pre className="max-h-40 overflow-auto rounded-[2px] bg-muted p-3 text-left text-xs text-muted-foreground">
             {String(error.message || error)}
           </pre>
           <div className="flex items-center justify-center gap-2">
             <button
               type="button"
               onClick={() => window.location.reload()}
-              className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90"
+              className="inline-flex h-11 items-center justify-center gap-2 whitespace-nowrap rounded-[3px] bg-primary px-4 text-[15px] font-semibold text-primary-foreground transition-colors hover:bg-primary/[.92] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
             >
               โหลดใหม่
             </button>
@@ -108,7 +114,7 @@ class AppErrorBoundary extends React.Component<
                 window.location.hash = "#/my-show";
                 window.location.reload();
               }}
-              className="inline-flex h-10 items-center justify-center gap-2 rounded-md border border-input bg-background px-4 py-2 text-sm font-medium transition-colors hover:bg-accent hover:text-accent-foreground"
+              className="inline-flex h-11 items-center justify-center gap-2 whitespace-nowrap rounded-[3px] bg-transparent px-4 text-[15px] font-semibold shadow-[inset_0_0_0_1.5px_hsl(var(--input))] transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
             >
               Quick Show
             </button>

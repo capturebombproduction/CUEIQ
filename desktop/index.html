@@ -10,8 +10,18 @@
         if (localStorage.getItem("cueiq:theme") === "light")
           document.documentElement.classList.remove("dark");
       } catch (e) {}
+    </script>
+  </head>
+  <body>
+    <script>
       // Pre-paint accent skin: re-inject the per-device brand color the AccentPicker
       // saved (mirrors app/layout.tsx on web) so the chosen color survives a restart.
+      // It sits at the top of <body>, NOT in <head> with the theme script above: the
+      // skin's :root/.dark rules tie the app stylesheet's tokens, so the later one in
+      // the document wins, and Vite puts the app's <link> at the END of <head> — a
+      // head script appended the skin BEFORE it and the saved colour lost on every
+      // restart. From <body>, head.appendChild lands it after that link
+      // (desktop/src/index-html.test.ts).
       try {
         var a = JSON.parse(localStorage.getItem("cueiq:accent") || "null");
         if (a && a.css) {
@@ -22,8 +32,6 @@
         }
       } catch (e) {}
     </script>
-  </head>
-  <body>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

@@ -1414,7 +1414,7 @@ export function MyShow() {
     // data-cueiq-screen — see the note on App.tsx's BootScreen. Quick Show is the
     // break-glass runner every other screen's fallback link points at, so the
     // packaged self-test checks it can be reached with no account and no network.
-    <div data-cueiq-screen="quick-show" className="min-h-screen bg-muted/30">
+    <div data-cueiq-screen="quick-show" className="min-h-screen bg-background">
       <div className="mx-auto max-w-2xl space-y-4 p-4 sm:p-6 lg:max-w-5xl">
         <input
           ref={addInputRef}
@@ -1446,7 +1446,7 @@ export function MyShow() {
         </div>
 
         {/* top bar — wall clock (mirrors Live Mode) */}
-        <div className="flex items-center justify-between gap-3 rounded-xl border bg-card px-4 py-3">
+        <div className="flex items-center justify-between gap-3 slab rounded-[3px] px-4 py-3">
           <div className="flex min-w-0 flex-1 items-center gap-2 font-medium">
             <Radio
               className={cn(
@@ -1479,7 +1479,7 @@ export function MyShow() {
           <button
             type="button"
             onClick={() => addInputRef.current?.click()}
-            className="w-full rounded-xl border border-dashed py-14 text-center text-sm text-muted-foreground hover:bg-muted/40"
+            className="w-full rounded-[3px] border border-dashed py-14 text-center text-sm text-muted-foreground hover:bg-muted/40"
           >
             <FolderOpen className="mx-auto mb-2 h-7 w-7" />
             แตะเพื่อเลือกไฟล์เพลงจากเครื่องนี้ (เลือกได้หลายไฟล์)
@@ -1611,7 +1611,7 @@ export function MyShow() {
 
             <div className="mt-4 space-y-4 lg:col-span-2 lg:mt-0">
             {/* next item — what's coming, at a glance (mirrors Live Mode's panel) */}
-            <div className="rounded-xl border bg-card p-4">
+            <div className="slab rounded-[3px] p-4">
               <p className="mb-1.5 flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
                 <SkipForward className="h-3.5 w-3.5" /> รายการถัดไป
                 {next && (
@@ -1651,18 +1651,18 @@ export function MyShow() {
 
             {/* stats */}
             <div className="grid grid-cols-2 gap-3">
-              <div className="rounded-xl border bg-card p-4 text-center">
+              <div className="slab rounded-[3px] p-4 text-center">
                 <p className="text-xs text-muted-foreground">เวลาสะสม (Accumulated)</p>
                 <p className="text-2xl font-bold tabular-nums">{formatDuration(totalElapsed)}</p>
               </div>
-              <div className="rounded-xl border bg-card p-4 text-center">
+              <div className="slab rounded-[3px] p-4 text-center">
                 <p className="text-xs text-muted-foreground">รวมตามแผน</p>
                 <p className="text-2xl font-bold tabular-nums">{formatDuration(plannedTotal)}</p>
               </div>
             </div>
 
             {/* show controls */}
-            <div className="rounded-xl border bg-card p-3">
+            <div className="slab rounded-[3px] p-3">
               <div className="mb-2 grid grid-cols-2 gap-2">
                 <Button
                   variant={state.mode === "manual" ? "default" : "outline"}
@@ -1858,7 +1858,7 @@ export function MyShow() {
                 </div>
               </div>
 
-              <div className="rounded-xl border bg-card">
+              <div className="slab rounded-[3px]">
                 {items.map((it, i) => {
                   const isCurrent = i === state.currentIndex;
                   const isPlayingThis = playingId === it.id && audioPlaying;
@@ -2079,7 +2079,7 @@ export function MyShow() {
 
             {/* last saved run */}
             {lastRun && (
-              <div className="flex items-center justify-between gap-2 rounded-xl border bg-card px-4 py-3">
+              <div className="flex items-center justify-between gap-2 slab rounded-[3px] px-4 py-3">
                 <div className="min-w-0">
                   <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
                     <Timer className="h-3.5 w-3.5" /> เวลาโชว์ล่าสุด (บันทึกไว้)

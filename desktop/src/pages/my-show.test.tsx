@@ -382,7 +382,7 @@ describe("Quick Show — the running order and the clock", () => {
     // accumulated-time tile shows 1:30 too, which is why this is scoped)
     const lastRunPanel = screen
       .getByRole("button", { name: TH.clearLastRun })
-      .closest(".rounded-xl") as HTMLElement;
+      .closest(".slab") as HTMLElement;
     expect(within(lastRunPanel).getByText("1:30")).toBeInTheDocument();
     expect(media.callsFor(primary).filter((c) => c.type === "pause").length).toBeGreaterThan(0);
   });
@@ -414,6 +414,33 @@ describe("Quick Show — the running order and the clock", () => {
 // ─────────────────────────────────────────────────────────────────────────────
 // 2. Crash/resume — the divergence this round fixed
 // ─────────────────────────────────────────────────────────────────────────────
+
+// The break-glass runner was the one screen still in the pre-redesign look: a tinted
+// page (bg-muted/30) and rounded-xl bordered cards. Black Stage: the page is
+// bg-background and every card is a slab (square, hairline ring) like the web's.
+// The data-cueiq-screen marker stays — the packaged app's self-test reads it.
+describe("Quick Show — the Black Stage look", () => {
+  it("stands on bg-background, and its cards are slabs", async () => {
+    const { container } = await boot(threeUp());
+    const root = container.querySelector('[data-cueiq-screen="quick-show"]')!;
+    const cls = root.className.split(/\s+/);
+    expect(cls).toContain("bg-background");
+    expect(cls).not.toContain("bg-muted/30");
+    expect(container.querySelectorAll(".rounded-xl")).toHaveLength(0);
+    // wall-clock bar, next-up, the two stat tiles, the show controls, the setlist
+    expect(container.querySelectorAll(".slab").length).toBeGreaterThanOrEqual(6);
+  });
+
+  it("the empty state is a square dashed drop target, not a rounded-xl box", async () => {
+    const { container } = await boot([]);
+    const drop = screen.getByText(/แตะเพื่อเลือกไฟล์เพลงจากเครื่องนี้/).closest("button")!;
+    expect(drop.className).toContain("border-dashed");
+    expect(drop.className).not.toContain("rounded-xl");
+    expect(container.querySelector('[data-cueiq-screen="quick-show"]')!.className).toContain(
+      "bg-background"
+    );
+  });
+});
 
 describe("Quick Show — restore after a relaunch", () => {
   it("a show that already ended does not re-arm the display blocker", async () => {

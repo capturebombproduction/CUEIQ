@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, act } from "@testing-library/react";
+import { render, screen, act, within } from "@testing-library/react";
 import { MemoryRouter, Outlet } from "react-router-dom";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -221,6 +221,47 @@ describe("desktop auth gate — a network that never answers", () => {
       vi.advanceTimersByTime(5000);
     });
     expect(screen.getByTestId("page-login")).toBeInTheDocument();
+  });
+});
+
+// The boot screen is what a venue network that is joined but black-holed leaves on
+// screen for up to 5 s, so it is the first thing the Black Stage look has to reach:
+// it used to be a flat tinted page with the pre-redesign Quick Show card. Same
+// wrapper as the sign-in screen (desktop/src/pages/Login.test.tsx) and the SAME
+// Quick Show door, one component now (~/components/quick-show-link.tsx).
+describe("desktop auth gate — the boot screen wears the stage", () => {
+  it("is the sign-in screen's wrapper: bg-background, ONE light as its first element, the wordmark", async () => {
+    auth.getSession.mockReturnValue(new Promise(() => {}));
+    render(
+      <MemoryRouter initialEntries={["/"]}>
+        <App />
+      </MemoryRouter>
+    );
+    const boot = document.querySelector('[data-cueiq-screen="boot"]')!;
+    expect(boot).not.toBeNull();
+    const cls = boot.className.split(/\s+/);
+    expect(cls).toEqual(expect.arrayContaining(["relative", "isolate", "bg-background"]));
+    expect(cls).not.toContain("bg-muted/30");
+    const lights = document.querySelectorAll(".spotlight");
+    expect(lights).toHaveLength(1);
+    expect(boot.firstElementChild).toBe(lights[0]);
+    expect(boot.querySelector("h1")?.textContent).toBe("CueIQ");
+    // still the two ways out, and still the words the self-test's neighbours rely on
+    expect(screen.getByText("กำลังโหลด…")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /ลองใหม่/ })).toBeInTheDocument();
+  });
+
+  it("offers the shared Quick Show door", async () => {
+    auth.getSession.mockReturnValue(new Promise(() => {}));
+    render(
+      <MemoryRouter initialEntries={["/"]}>
+        <App />
+      </MemoryRouter>
+    );
+    const boot = document.querySelector('[data-cueiq-screen="boot"]')!;
+    const door = within(boot as HTMLElement).getByTestId("quick-show-link");
+    expect(door.getAttribute("href")).toBe("/my-show");
+    expect(door.className).toContain("rounded-[3px]");
   });
 });
 

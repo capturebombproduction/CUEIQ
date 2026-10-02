@@ -179,6 +179,45 @@ describe("desktop Shell — the page light", () => {
   });
 });
 
+// A desktop window narrower than ~830 px: the nav row scrolls sideways, and a classic
+// 15 px scrollbar (Windows draws one; macOS overlay scrollbars hide) appeared INSIDE
+// the 56 px header — the pills sat 7 px high and the bar painted across them. The
+// scroller hides its bar, and Quick Show sits OUTSIDE it as a sibling that never
+// shrinks, so a narrow window scrolls the destinations and keeps Quick Show in reach.
+// jsdom does not lay anything out: this pins the classes, and the measurement (scroller
+// 44 px tall, pill centre on the header's centre at 800 and 683 px) is the browser
+// harness's job.
+describe("desktop Shell — the header's nav scroller in a narrow window", () => {
+  const scroller = () =>
+    within(screen.getByRole("banner")).getByRole("navigation", { name: "เมนูหลัก" }).parentElement!;
+
+  it("scrolls sideways with its scrollbar hidden, in both engines' spellings", async () => {
+    await at("/dashboard");
+    const cls = scroller().className.split(/\s+/);
+    expect(cls).toContain("overflow-x-auto");
+    expect(cls).toContain("[scrollbar-width:none]");
+    expect(cls).toContain("[&::-webkit-scrollbar]:hidden");
+    // still the row's flexible part: it is what gives way when the window narrows
+    expect(cls).toEqual(expect.arrayContaining(["min-w-0", "flex-1"]));
+  });
+
+  it("keeps Quick Show out of the scroller, as a sibling that never shrinks", async () => {
+    await at("/dashboard");
+    const link = within(screen.getByRole("banner")).getByRole("link", { name: /Quick Show/ });
+    expect(scroller().contains(link)).toBe(false);
+    expect(link.parentElement).toBe(scroller().parentElement);
+    expect(link.className.split(/\s+/)).toContain("shrink-0");
+    expect(scroller().nextElementSibling).toBe(link);
+  });
+
+  it("does not pin a min-width on the header row — the window itself decides", async () => {
+    await at("/dashboard");
+    const row = screen.getByRole("banner").firstElementChild!;
+    expect(row.className).not.toMatch(/min-w-\[/);
+    expect(scroller().className).not.toMatch(/(^|\s)min-w-\[/);
+  });
+});
+
 // The Event page's tab row sticks at var(--header-h) under this header. The theme's
 // 52px is the PHONE header; the desktop's row is h-14 (56px), so without its own
 // value the tabs slid 4px under the glass — and the frame is where the web declares

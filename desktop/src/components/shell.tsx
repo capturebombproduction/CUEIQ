@@ -22,6 +22,7 @@ import { IMMERSIVE_MAIN_CLASS } from "@/components/app-main";
 import { accountLine } from "@/lib/role-label";
 import { canEditAnyGroup } from "@/lib/permissions";
 import { MgmtSyncStatus } from "~/components/mgmt-sync-status";
+import { QuickShowLink } from "~/components/quick-show-link";
 import { useWorkspace } from "~/data/workspace-context";
 
 /** Escape hatch shown while the workspace is loading and when it failed to load.
@@ -35,40 +36,32 @@ function ShellFallback({ failed, onRetry }: { failed: boolean; onRetry: () => vo
     // round's sharpest distinction: "shell" means the offline cache was honoured and
     // the app is usable, "shell-fallback" means signed in and showing nothing. They
     // are one Thai word apart on screen and a whole show apart in practice.
+    // The sign-in screen's wrapper (relative isolate + bg-background + the page light
+    // as the first element — see ~/pages/Login and App.tsx's BootScreen).
     <div
       data-cueiq-screen="shell-fallback"
       data-cueiq-failed={failed ? "1" : "0"}
-      className="grid min-h-screen place-items-center bg-background p-4"
+      className="relative isolate grid min-h-screen place-items-center bg-background p-4"
     >
+      <StageLight />
       <SkinRefresher />
-      <div className="w-full max-w-sm space-y-6">
-        <div className="text-center">
-          <h1 className="text-3xl font-bold tracking-tight text-primary">CueIQ</h1>
-          <p className="mt-1 text-sm text-muted-foreground">
+      <div className="w-full max-w-sm space-y-3">
+        <div className="slab rounded-[3px] p-6 text-center">
+          <h1 className="flex justify-center">
+            <HeaderBrand />
+          </h1>
+          <p className="mt-3 text-[14px] text-muted-foreground">
             {failed ? "โหลดข้อมูลไม่สำเร็จ — อาจออฟไลน์อยู่หรือเน็ตมีปัญหา" : "กำลังโหลด…"}
           </p>
-        </div>
-        <div className="flex justify-center gap-2">
-          <Button variant="outline" size="sm" onClick={onRetry}>
-            ลองใหม่
-          </Button>
-          {failed && <SignOutButton />}
+          <div className="mt-5 flex justify-center gap-2">
+            <Button variant="outline" size="sm" onClick={onRetry}>
+              ลองใหม่
+            </Button>
+            {failed && <SignOutButton />}
+          </div>
         </div>
         {/* Same Quick Show entry as the login + boot screens (see ~/pages/Login). */}
-        <Link
-          to="/my-show"
-          className="group flex items-center gap-3 rounded-xl border-2 border-primary/40 bg-primary/5 px-4 py-3 shadow-sm transition-colors hover:border-primary/70 hover:bg-primary/10"
-        >
-          <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-primary/15 text-primary transition-colors group-hover:bg-primary/25">
-            <Play className="h-5 w-5" />
-          </span>
-          <span className="min-w-0">
-            <span className="block text-sm font-bold text-primary">Quick Show</span>
-            <span className="block text-xs text-muted-foreground">
-              โหมดโชว์เดี่ยว — เปิดเพลง+จับเวลาจากเครื่องนี้ ไม่ต้องเข้าสู่ระบบ
-            </span>
-          </span>
-        </Link>
+        <QuickShowLink />
       </div>
     </div>
   );
@@ -138,18 +131,24 @@ export function Shell() {
                   <HeaderBrand />
                 </Link>
                 {/* The desktop has no tab bar, so the nav is inline at every width
-                    and scrolls sideways in a narrow window. */}
-                <div className="flex min-w-0 flex-1 items-center gap-2 overflow-x-auto py-1">
+                    and scrolls sideways in a narrow window — with its scrollbar
+                    hidden: a classic 15px bar inside the 56px header pushed the pills
+                    7px up and painted across them (Windows; overlay bars hide
+                    themselves). py-1 stays: the pills' 44px hit area reaches 4px past
+                    them and the scroller would clip it. */}
+                <div className="flex min-w-0 flex-1 items-center gap-2 overflow-x-auto py-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
                   <MainNav perms={ws.perms} />
-                  {/* QUICK SHOW — the local standalone runner; also reachable when logged in */}
-                  <Link
-                    to="/my-show"
-                    className="caps flex h-9 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-[2px] px-3 text-[14px] leading-none text-primary-ink shadow-[inset_0_0_0_1.5px_hsl(var(--primary)/.5)] transition-colors duration-2 hover:bg-primary/10"
-                    title="Quick Show — โหมดโชว์เดี่ยว เปิดเพลง+จับเวลาจากไฟล์ในเครื่องนี้ (ออฟไลน์ 100%)"
-                  >
-                    <Play className="h-3.5 w-3.5" aria-hidden /> Quick Show
-                  </Link>
                 </div>
+                {/* QUICK SHOW — the local standalone runner; also reachable when logged
+                    in. A sibling of the scroller, not inside it, so a narrow window
+                    scrolls the destinations and never carries this one off screen. */}
+                <Link
+                  to="/my-show"
+                  className="caps flex h-9 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-[2px] px-3 text-[14px] leading-none text-primary-ink shadow-[inset_0_0_0_1.5px_hsl(var(--primary)/.5)] transition-colors duration-2 hover:bg-primary/10"
+                  title="Quick Show — โหมดโชว์เดี่ยว เปิดเพลง+จับเวลาจากไฟล์ในเครื่องนี้ (ออฟไลน์ 100%)"
+                >
+                  <Play className="h-3.5 w-3.5" aria-hidden /> Quick Show
+                </Link>
                 <MgmtSyncStatus />
                 <AccountButton name={name} />
               </div>

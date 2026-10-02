@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
-import { Routes, Route, Navigate, useLocation, Link } from "react-router-dom";
-import { Play } from "lucide-react";
+import { Routes, Route, Navigate, useLocation } from "react-router-dom";
 import type { Session } from "@supabase/supabase-js";
 import { createClient } from "@/lib/supabase/client";
 import { RefreshButton } from "@/components/refresh-button";
+import { HeaderBrand } from "@/components/header-brand";
+import { StageLight } from "@/components/stage-light";
 import { Login } from "~/pages/Login";
 import { Dashboard } from "~/pages/dashboard";
 import { EventPage } from "~/pages/event";
@@ -22,6 +23,7 @@ import { Admin } from "~/pages/admin";
 import { Feedback } from "~/pages/feedback";
 import { MyShow } from "~/pages/my-show";
 import { Shell } from "~/components/shell";
+import { QuickShowLink } from "~/components/quick-show-link";
 import { WorkspaceProvider } from "~/data/workspace-context";
 import { clearCache } from "~/data/cache";
 import { clearMgmtOutbox } from "~/data/mgmt-outbox";
@@ -113,33 +115,26 @@ function BootScreen() {
     // "กำลังโหลด…" in it. Matching display text would pin CI to copy AND push Thai
     // through a workflow file; this is one stable token per screen. See
     // desktop/electron/main.cjs's smoke block and desktop/scripts/run-smoke.mjs.
+    // The sign-in screen's wrapper (relative isolate + bg-background + the page light
+    // as the first element — see ~/pages/Login), so the screens a bad venue network
+    // leaves up the longest wear the same stage instead of a flat tinted page.
     <div
       data-cueiq-screen="boot"
-      className="grid min-h-screen place-items-center bg-muted/30 p-4"
+      className="relative isolate grid min-h-screen place-items-center bg-background p-4"
     >
-      <div className="w-full max-w-sm space-y-6">
-        <div className="text-center">
-          <h1 className="text-3xl font-bold tracking-tight text-primary">CueIQ</h1>
-          <p className="mt-1 text-sm text-muted-foreground">กำลังโหลด…</p>
-        </div>
-        <div className="flex justify-center">
-          <RefreshButton label="ลองใหม่" />
+      <StageLight />
+      <div className="w-full max-w-sm space-y-3">
+        <div className="slab rounded-[3px] p-6 text-center">
+          <h1 className="flex justify-center">
+            <HeaderBrand />
+          </h1>
+          <p className="mt-3 text-[14px] text-muted-foreground">กำลังโหลด…</p>
+          <div className="mt-5 flex justify-center">
+            <RefreshButton label="ลองใหม่" />
+          </div>
         </div>
         {/* Same Quick Show entry as the login screen (see ~/pages/Login). */}
-        <Link
-          to="/my-show"
-          className="group flex items-center gap-3 rounded-xl border-2 border-primary/40 bg-primary/5 px-4 py-3 shadow-sm transition-colors hover:border-primary/70 hover:bg-primary/10"
-        >
-          <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-primary/15 text-primary transition-colors group-hover:bg-primary/25">
-            <Play className="h-5 w-5" />
-          </span>
-          <span className="min-w-0">
-            <span className="block text-sm font-bold text-primary">Quick Show</span>
-            <span className="block text-xs text-muted-foreground">
-              โหมดโชว์เดี่ยว — เปิดเพลง+จับเวลาจากเครื่องนี้ ไม่ต้องเข้าสู่ระบบ
-            </span>
-          </span>
-        </Link>
+        <QuickShowLink />
       </div>
     </div>
   );

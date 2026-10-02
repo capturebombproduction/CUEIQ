@@ -1332,7 +1332,10 @@ async function createWindow() {
   const win = new BrowserWindow({
     width: 1280,
     height: 860,
-    backgroundColor: "#0b1220", // matches the dark theme so there's no white flash
+    // The Black Stage page colour (hsl(243 30% 5%) = theme.css's dark --background), so
+    // there is no flash of another colour before the first paint — this used to be the
+    // old navy #0b1220, which the redesign left behind.
+    backgroundColor: "#090911",
     show: !SMOKE,
     webPreferences: {
       preload: path.join(__dirname, "preload.cjs"),
