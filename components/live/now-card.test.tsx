@@ -4,6 +4,9 @@
 // when there is no note, a countdown with its fixed box, a meter, the labels. A zone
 // that added or dropped a row would let the NEXT card's mic grid slide under the dock.
 import { describe, it, expect } from "vitest";
+import fs from "node:fs";
+import path from "node:path";
+import postcss, { type AtRule } from "postcss";
 import { render, screen, within, fireEvent } from "@testing-library/react";
 import { NowCard } from "./now-card";
 import type { LiveZone } from "@/lib/live-zone";
@@ -230,5 +233,101 @@ describe("NowCard · the landscape-phone card is a touch screen's, never a short
   it("the fade row leaves the card only on that touch screen", () => {
     const { el } = card("ok");
     expect(within(el).getByTestId("fade-row").parentElement).toHaveClass(`${LANDSCAPE_PHONE}:hidden`);
+  });
+});
+
+// ── THE STRIP'S "01 / 16" NEVER WRAPS OUT OF THE STRIP (CQ-03) ───────────────
+// The strip is a fixed-height flex row: .ztag is `flex: none`, .zend is nowrap, and
+// `.zidx` / `.zthr` were neither — so in URGENT at 360 / 375 (a 23 px tag) and in
+// WARN / URGENT on a landscape phone (a 32 px strip in a half-width card) the index
+// was the only thing allowed to shrink, collapsed to its min-content ("01 /") and
+// wrapped onto 2-3 lines OUT of the strip. Four layers, each pinned here:
+//   1. the index and the threshold can neither wrap nor shrink;
+//   2. portrait under 390 px, URGENT's tag + gap give back ~17 px so the clock clears
+//      the 18 px chamfer (380-382 was still 1-3 px short with a 380 breakpoint);
+//   3. on the landscape phone the strip does not carry the index at all in WARN /
+//      URGENT — the title row does, as it already does in overtime;
+//   4. …nor the threshold: with the index gone, tag + threshold + clock still do not
+//      fit ~218 px at 568-650, and the clock's `overflow: hidden` would then show a
+//      PARTIAL time ("จบ 21:45:3"). The caption row still says "เหลือไม่ถึง N".
+// jsdom has no layout: what is pinned is the rules and the classes, never a measurement.
+// The harness must measure 360-389 portrait and 568-844 landscape, and its pass
+// condition is `zend.scrollWidth <= zend.clientWidth` (the clock is NOT clipped) —
+// `zend.right <= zhead.right - 18` alone is true by construction under overflow:hidden.
+describe("NowCard · the WARN / URGENT strip's position never wraps out of the strip", () => {
+  const stage = postcss.parse(fs.readFileSync(path.resolve(__dirname, "../../app/stage.css"), "utf8"));
+  const flat = (v: string) => v.replace(/\s+/g, " ").trim();
+  /** declarations of every rule for `selector` inside the given at-rule params ("" = top level) */
+  function decls(selector: string, media = ""): Record<string, string> {
+    const out: Record<string, string> = {};
+    stage.walkRules((rule) => {
+      if (!rule.selectors.map((s) => s.trim()).includes(selector)) return;
+      const parent = rule.parent as AtRule | undefined;
+      const at = parent?.type === "atrule" ? parent.params : "";
+      if (at !== media) return;
+      rule.walkDecls((d) => void (out[d.prop] = flat(d.value)));
+    });
+    return out;
+  }
+
+  it("the index and the threshold cannot wrap or shrink; the clock may clip before anything wraps", () => {
+    for (const sel of [".zidx", ".zthr"]) {
+      expect(decls(sel)["white-space"], sel).toBe("nowrap");
+      expect(decls(sel).flex, sel).toBe("none");
+    }
+    expect(decls(".zend")["min-width"]).toBe("0");
+    expect(decls(".zend").overflow).toBe("hidden");
+  });
+
+  it("portrait under 390 px: URGENT's tag and gap give back room so the clock clears the chamfer", () => {
+    const media = "(max-width:389.98px)";
+    expect(decls(".zone-urgent .zhead", media).gap).toBe("5px");
+    const tag = decls(".zone-urgent .ztag", media);
+    expect(tag["font-size"]).toBe("21px");
+    expect(tag.padding).toBe("0 11px 0 9px");
+    // …and only there: at 390+ the approved URGENT tag is untouched
+    expect(decls(".zone-urgent .ztag")["font-size"]).toBe("23px");
+    expect(decls(".zone-urgent .zhead").gap).toBeUndefined();
+  });
+
+  it("landscape phone: the threshold is dropped so the clock is never clipped; nowhere else", () => {
+    // the very media query now-card.tsx's `${LANDSCAPE_PHONE}:` variant spells (`_` = space)
+    const media = LANDSCAPE_PHONE.replace(/^\[@media/, "").replace(/\]$/, "").replace(/_/g, " ");
+    expect(media).toBe("(orientation:landscape) and (max-height:699.98px) and (pointer:coarse)");
+    expect(decls(".zthr", media).display).toBe("none");
+    // portrait and stage keep the threshold: it is not hidden at the top level
+    expect(decls(".zthr").display).toBeUndefined();
+  });
+
+  /** the position, as the title row carries it */
+  const titleRowPos = (el: HTMLElement) =>
+    Array.from(el.querySelector("h2")!.parentElement!.children).find((c) => c.textContent === "02 / 16") as
+      | HTMLElement
+      | undefined;
+  const stripIdx = (el: HTMLElement) => el.querySelector<HTMLElement>(".zhead .zidx");
+
+  it("WARN / URGENT on a landscape phone: the strip drops the index, the title row shows it", () => {
+    for (const z of ["warn", "urgent"] as const) {
+      const { el, unmount } = card(z);
+      expect(stripIdx(el), z).toHaveClass(`${LANDSCAPE_PHONE}:hidden`);
+      const pos = titleRowPos(el);
+      expect(pos, `${z}: no position in the title row`).toBeDefined();
+      // hidden everywhere except that touch screen — portrait and stage keep it in the strip
+      expect(pos, z).toHaveClass("hidden", `${LANDSCAPE_PHONE}:inline`);
+      unmount();
+    }
+  });
+
+  it("OK keeps its strip exactly as approved; overtime's title row shows it everywhere", () => {
+    const ok = card("ok");
+    expect(stripIdx(ok.el)).not.toHaveClass(`${LANDSCAPE_PHONE}:hidden`);
+    expect(titleRowPos(ok.el)).toBeUndefined();
+    ok.unmount();
+
+    const over = card("over");
+    expect(stripIdx(over.el)).toBeNull(); // the hazard band has no index of its own
+    const pos = titleRowPos(over.el);
+    expect(pos).toBeDefined();
+    expect(pos).not.toHaveClass("hidden");
   });
 });

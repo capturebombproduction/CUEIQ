@@ -123,7 +123,17 @@ export function NowCard({
               <span className="zthr text-[20px]">≤{formatDuration(t.urgent)}</span>
             </>
           )}
-          <span className="num zidx text-[16px]">{pos}</span>
+          {/* Landscape phone, WARN / URGENT: the strip (32 px, in a half-width card) has no room for
+              the index beside a tag, a threshold and the clock, so the title row carries it instead
+              (as it does in overtime) and the strip drops it. Never for OK, whose strip fits. */}
+          <span
+            className={cn(
+              "num zidx text-[16px]",
+              zone !== "ok" && "[@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:hidden"
+            )}
+          >
+            {pos}
+          </span>
           <span className="zend">
             จบ<b suppressHydrationWarning>{endClock}</b>
           </span>
@@ -135,7 +145,9 @@ export function NowCard({
             1.04 a Barlow-first line box ends inside Kanit's stacked tone marks and
             ุ / ู. The padding gives them room; the margin keeps the row's height. */}
         <h2 className="disp min-w-0 flex-1 truncate py-[.25em] -my-[.25em] text-[26px] leading-[1.04] stage:text-[40px]">{title}</h2>
-        {over && <span className="num shrink-0 text-[16px]">{pos}</span>}
+        {zone !== "ok" && (
+          <span className={cn("num shrink-0 text-[16px]", !over && "hidden [@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:inline")}>{pos}</span>
+        )}
         {kind && (
           <KindChip
             kind={kind}

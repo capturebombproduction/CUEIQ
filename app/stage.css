@@ -192,9 +192,12 @@ html.reduce-motion .lit.sweep::after { display: none; }
   font-family: var(--font-display-x); font-style: italic; font-weight: 800; font-size: 21px; line-height: 1; letter-spacing: .04em; text-transform: uppercase; font-synthesis: none;
   background: hsl(var(--primary)); color: hsl(var(--primary-foreground)); clip-path: polygon(7px 0, 100% 0, calc(100% - 7px) 100%, 0 100%); }
 .ztag svg { width: 17px; height: 17px; flex: none; }
-.zidx { color: hsl(var(--muted-foreground)); }
-.zthr { font-family: var(--font-num); font-variant-numeric: tabular-nums; font-weight: 800; }
-.zend { margin-left: auto; font-size: 12px; color: hsl(var(--muted-foreground)); white-space: nowrap; }
+/* The strip is ONE fixed-height row: nothing in it may wrap or be the item that shrinks. .zidx / .zthr were
+   neither nowrap nor flex:none, so in URGENT (23px tag) at 360 / 375 the index collapsed to its min-content
+   ("01 /") and wrapped out of the strip. The clock is the safety net: it clips before anything wraps. */
+.zidx { color: hsl(var(--muted-foreground)); white-space: nowrap; flex: none; }
+.zthr { font-family: var(--font-num); font-variant-numeric: tabular-nums; font-weight: 800; white-space: nowrap; flex: none; }
+.zend { margin-left: auto; font-size: 12px; color: hsl(var(--muted-foreground)); white-space: nowrap; min-width: 0; overflow: hidden; }
 .zend b { font: 700 16px/1 var(--font-num); font-variant-numeric: tabular-nums; color: hsl(var(--foreground)); margin-left: 3px; }
 /* WARN = frame step: tinted strip, solid tag, 4px amber key + rails; the card stays dark. */
 .now.zone-warn   { --lit: var(--warning); --key-w: 4px; --rail: 4px; --glow-k: .62; }   /* amber glow at .62 */
@@ -215,6 +218,14 @@ html.reduce-motion .lit.sweep::after { display: none; }
   background: repeating-linear-gradient(-55deg, transparent 0 9px, hsl(var(--warning-foreground) / .14) 9px 18px), hsl(var(--warning)); }
 .zone-urgent .ztag { background: hsl(var(--warning-foreground)); color: hsl(var(--warning)); font-size: 23px; }
 .zone-urgent .zidx, .zone-urgent .zend, .zone-urgent .zend b, .zone-urgent .zthr { color: hsl(var(--warning-foreground)); }
+/* A 360 - 389 phone: nowrap alone would push the clock into the 18px chamfer. URGENT's bigger tag and its gaps
+   give back ~17px, so "จบ" still clears the cut (at 380-382 the clock was still 1-3px short). Colours, the tag and
+   the ladder are unchanged, and 390+ keeps the approved 23px tag. */
+@media (max-width:389.98px) { .zone-urgent .zhead { gap: 5px; } .zone-urgent .ztag { font-size: 21px; padding: 0 11px 0 9px; } }
+/* A landscape phone's strip is 32px in a half-width card (~218px of content): tag + threshold + clock do not all
+   fit, and .zend's overflow:hidden would then show a PARTIAL clock - a believable wrong time. The threshold goes;
+   the caption row under the meter still says "เหลือไม่ถึง N" (zoneCaption). Same media as now-card.tsx's variant. */
+@media (orientation:landscape) and (max-height:699.98px) and (pointer:coarse) { .zthr { display: none; } }
 .zone-warn .cd, .zone-urgent .cd { color: hsl(var(--warning-ink)); }
 
 /* ---------------- glass: the app header + tab bar, or Live's top bar + dock. Nothing else. ---------------- */
