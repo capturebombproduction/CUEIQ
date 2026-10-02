@@ -30,7 +30,10 @@
 /* ================= keyframes (referenced by name from classes + tailwind.preset.ts) ================= */
 @keyframes onair { 0%, 49% { opacity: 1; } 50%, 100% { opacity: .25; } }
 @keyframes ring-pulse { 0% { opacity: 0; transform: scaleY(.96); } 35% { opacity: 1; } 100% { opacity: 0; transform: scaleY(1.06); } }
-@keyframes next-invite { 0%, 100% { opacity: .2; } 50% { opacity: 1; } }
+/* CQ-61: ONE six-second run = five 1.2 s pulses (peaks at 10 / 30 / 50 / 70 %; the fifth rises only to .9), then it
+   rests at .9, the state reduced motion shows all the time. An infinite tween held the compositor at ~60 frames a
+   second for as long as the show stayed in overtime. The ring's rule below fills forwards and rests at .9 itself. */
+@keyframes next-invite { 0%, 20%, 40%, 60%, 80% { opacity: .2; } 10%, 30%, 50%, 70% { opacity: 1; } 90%, 100% { opacity: .9; } }
 @keyframes slam { 0% { opacity: 0; transform: translateX(-28px) skewX(-14deg) scale(1.12); } 60% { opacity: 1; } 100% { opacity: 1; transform: none; } }
 @keyframes sweep { 0% { transform: translateX(-140%) skewX(-20deg); } 100% { transform: translateX(380%) skewX(-20deg); } }
 @keyframes slam-y { from { transform: scaleY(0); } to { transform: scaleY(1); } }
@@ -229,11 +232,15 @@ html.reduce-motion .lit.sweep::after { display: none; }
      2. the threshold "≤0:23" goes                (needs 287 URGENT / 282 WARN → below 291 / 286): the tag says
         WARN / URGENT and the caption under the meter says "เหลือไม่ถึง N"
      3. last resort, the index "01 / 16" goes       (needs 236 URGENT / 232 WARN → below 240 / 236)
+   OK carries only tag + index + clock (62 + 45 + 74 + two 9px gaps = 199), so its one step is the index, below 203. It is
+   keyed to [data-zone=ok] (NowCard's section) so it can never reach WARN / URGENT / overtime; without it a stage window
+   900-908px wide cut the OK clock, because .zend is overflow: hidden.
    A container query cannot style its own container, so the give-back's gaps are -4px margins on the items (9 → 5). */
 @container (max-width: 291px) { .zone-urgent .zthr { display: none; } }
 @container (max-width: 286px) { .zone-warn .zthr { display: none; } }
 @container (max-width: 240px) { .zone-urgent .zidx { display: none; } }
 @container (max-width: 236px) { .zone-warn .zidx { display: none; } }
+@container (max-width: 203px) { .now[data-zone=ok] .zidx { display: none; } }
 /* Not on the landscape phone (the media below): its strip already carries only tag + clock (201px needed in
    URGENT, 218+ there), so the approved 23px tag fits and keeps its size. Written as the complement of that media
    (a comma list) so no browser has to understand "not (a and b)". */
@@ -259,6 +266,10 @@ html.reduce-motion .lit.sweep::after { display: none; }
 @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) { .glass { background-color: hsl(var(--background) / .97); } }
 .glass-top    { box-shadow: inset 0 -1px 0 hsl(var(--foreground) / .08); }
 .glass-bottom { box-shadow: inset 0 1px 0 hsl(var(--foreground) / .08); }
+/* CQ-52: the phone's bottom TAB BAR (a nav; Live's dock is a div and keeps the header's alpha) is more opaque than the
+   header. It sits over page content that can be bright (the Summary's map), where .7 let the map through and the inactive
+   labels fell to ~3:1. Only --glass-a is set, so .glass's own background rule and its no-backdrop-filter fallback still apply. */
+nav.glass-bottom { --glass-a: var(--tabbar-glass-a); }
 
 /* ---------------- segmented ---------------- */
 .seg { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; padding: 3px; border-radius: 3px; background-color: hsl(var(--muted)); box-shadow: inset 0 0 0 1px hsl(var(--border)); }
@@ -388,8 +399,8 @@ html.reduce-motion .lit.sweep::after { display: none; }
 .zone-over.live-root::after { content: ""; position: fixed; inset: 0; z-index: 60; pointer-events: none; box-shadow: inset 0 0 0 3px hsl(var(--alarm)); }  /* screen edge */
 .next-invite { position: relative; }
 /* The invite ring sits INSIDE the chamfer (inset 5px, clipped by the same polygon). */
-.next-invite::after { content: ""; position: absolute; inset: 5px; border: 2.5px solid hsl(var(--primary-foreground)); opacity: .2; pointer-events: none;
-  clip-path: polygon(0 0, calc(100% - 9px) 0, 100% 9px, 100% 100%, 9px 100%, 0 calc(100% - 9px)); animation: next-invite 1.2s var(--ease-in-out) infinite; }
+.next-invite::after { content: ""; position: absolute; inset: 5px; border: 2.5px solid hsl(var(--primary-foreground)); opacity: .9; pointer-events: none;
+  clip-path: polygon(0 0, calc(100% - 9px) 0, 100% 9px, 100% 100%, 9px 100%, 0 calc(100% - 9px)); animation: next-invite 6s var(--ease-in-out) 1 forwards; }
 html.reduce-motion .next-invite::after { opacity: .9; }
 @media (prefers-reduced-motion: reduce) { .next-invite::after { opacity: .9; } }   /* ring still there, static */
 
@@ -421,7 +432,7 @@ html.reduce-motion .next-invite::after { opacity: .9; }
 .date-tile .eyebrow { color: hsl(0 0% 100% / .9); letter-spacing: .12em; }
 
 /* ---------------- tab bar ---------------- */
-.tab { position: relative; display: flex; flex-direction: column; align-items: center; justify-content: flex-start; gap: 4px; padding-top: 9px; color: hsl(var(--faint-foreground)); }
+.tab { position: relative; display: flex; flex-direction: column; align-items: center; justify-content: flex-start; gap: 4px; padding-top: 9px; color: hsl(var(--muted-foreground)); }   /* CQ-52: inactive labels ≥ 4.5:1 on the bar's glass */
 .tab .ico { position: relative; display: grid; place-items: center; height: 26px; }
 .tab[aria-current=page] { color: hsl(var(--foreground)); }
 .tab[aria-current=page] .ico { color: hsl(var(--primary-ink)); }

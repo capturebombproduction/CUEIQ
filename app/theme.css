@@ -109,6 +109,7 @@
   --edge-a: 0.9;                       /* lit-hero outline (light: an ink outline) */
   --urgent-wash-a: 0.24;               /* Live URGENT face wash */
   --glass-a: 0.86;
+  --tabbar-glass-a: 0.9;               /* the BOTTOM tab bar only: it sits over page content that can be bright (the Summary's map) */
   --scrim: 240 30% 3%;
   --scrim-a: 0.5;
 
@@ -182,7 +183,8 @@
   --glow-a: 0.52;
   --edge-a: 0.12;
   --urgent-wash-a: 0.2;
-  --glass-a: 0.7;                      /* .84 → .70: the light shows through the header and the tab bar */
+  --glass-a: 0.7;                      /* .84 → .70: the light shows through the header (the bottom bar has its own, below) */
+  --tabbar-glass-a: 0.84;              /* the bottom bar only: .70 let a bright map through (inactive labels ~3:1); .84 holds ≥ 4.5:1 */
   --scrim-a: 0.74;
 }
 
@@ -240,6 +242,7 @@
   --edge-a: 0;
   --urgent-wash-a: 0;
   --glass-a: 1;
+  --tabbar-glass-a: 1;
   --scrim-a: 0;
 }
 
@@ -301,6 +304,7 @@
     --edge-a: 0;
     --urgent-wash-a: 0;
     --glass-a: 1;
+    --tabbar-glass-a: 1;
     --scrim-a: 0;
   }
   body {

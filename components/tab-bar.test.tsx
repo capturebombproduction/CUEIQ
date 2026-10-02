@@ -3,6 +3,8 @@
 // them: the right three tabs per role, the right one lit, More opening the sheet,
 // the dot, and the screens where there must be no bar at all.
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import fs from "node:fs";
+import path from "node:path";
 import { render, screen, within, act, fireEvent } from "@testing-library/react";
 import { makePerms, type Perms } from "@/lib/permissions";
 import { makeSupabaseFake, ok, type SupabaseFake } from "@/test/fakes/supabase";
@@ -100,6 +102,23 @@ describe("TabBar — three tabs + More, by who is holding the phone", () => {
     const cls = bar().className.split(/\s+/);
     for (const c of ["glass", "glass-bottom", "fixed", "bottom-0", "lg:hidden", "pb-[env(safe-area-inset-bottom)]"]) {
       expect(cls).toContain(c);
+    }
+  });
+
+  // CQ-52: the bottom bar alone gets a more opaque glass (it sits over a bright map on the Summary). The rule
+  // lives in stage.css, keyed to the bar's element; what jsdom can hold is that it REACHES this nav and not
+  // Live's dock or the header, which share the glass classes. (stage-css-w3.test.tsx holds the alpha and the
+  // contrast; a real browser has to look at the map under the bar.)
+  it("its heavier glass reaches this nav, and not Live's dock or the header", async () => {
+    await mount();
+    const css = fs.readFileSync(path.join(__dirname, "../app/stage.css"), "utf8");
+    const selector = /^([^\s/*][^{\n]*?)\s*\{\s*--glass-a:\s*var\(--tabbar-glass-a\)/m.exec(css)?.[1];
+    expect(selector, "no stage.css rule sets --glass-a from --tabbar-glass-a").toBeTruthy();
+    expect(bar().matches(selector!)).toBe(true);
+    for (const cls of ["dock glass glass-bottom", "no-print glass glass-top"]) {
+      const other = document.createElement(cls.includes("dock") ? "div" : "header");
+      other.className = cls;
+      expect(other.matches(selector!), cls).toBe(false);
     }
   });
 });
