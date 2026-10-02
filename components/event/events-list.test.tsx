@@ -5,7 +5,7 @@
 // A fold that hid a search result would be the "exists but invisible" defect
 // this project has already paid for four times.
 import { describe, it, expect, vi, beforeAll, afterAll } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, within } from "@testing-library/react";
 import type { EventRow } from "@/lib/types";
 import { ConfirmProvider } from "@/components/ui/confirm-dialog";
 
@@ -331,5 +331,117 @@ describe("EventsList — the ticket's own stub does not repeat its deadline", ()
     fireEvent.change(screen.getByPlaceholderText(/ค้นหางาน/), { target: { value: "โชว์ที่จะถึง" } });
     expect(screen.queryByRole("region", { name: "Next show" })).toBeNull();
     expect(stubOf(container, "up").textContent).toContain("เหลือ 2 วัน");
+  });
+});
+
+// CQ-56 (round 15). On a touch screen an editor's past row reserves 108 px for the
+// always-showing copy/delete buttons, and the name sat in a single-line `truncate`
+// in what was left — about ten characters. It wraps onto a second line now.
+//
+// Geometry cannot be measured in jsdom (no layout engine); the real-browser check
+// is the harness at 360/390 as an admin. What jsdom guards is the class contract,
+// including the trap that Tailwind emits `.block` AFTER `.line-clamp-2`: a stray
+// `block` replaces the clamp's display and it silently stops clamping.
+describe("EventsList — a past row's show name wraps instead of being cut (CQ-56)", () => {
+  const LONG = "Bangkok Idol Festival 2026";
+
+  it.each([
+    ["an editor (copy/delete buttons reserve the row's right edge)", ["g1"]],
+    ["a viewer", []],
+  ])("for %s", (_who, editable) => {
+    render(
+      <ConfirmProvider>
+        <EventsList events={[ev("p", LONG, "2026-09-20")]} editableGroupIds={editable} />
+      </ConfirmProvider>
+    );
+    const name = screen.getByRole("heading", { name: LONG });
+    expect(name.className).toContain("line-clamp-2");
+    expect(name.className).toContain("break-words");
+    expect(name.className).not.toMatch(/(^|\s)truncate(\s|$)/);
+    expect(name.className).not.toMatch(/(^|\s)block(\s|$)/);
+  });
+});
+
+// CQ-57 (round 15). The ticket's second button said "ซ้อมตามเซ็ต" — the word for the
+// band's ROOM — even when the band has none and the link falls back to the Training
+// list. The event page's hero already says "ห้องซ้อม" then (components/event/event-hero.tsx).
+describe("EventsList — the ticket's practice button names what it opens (CQ-57)", () => {
+  const next = ev("up", "โชว์ที่จะถึง", "2026-10-05");
+  const mountPractice = (practiceRoomByGroup?: Record<string, string>) =>
+    render(
+      <ConfirmProvider>
+        <EventsList
+          events={[next]}
+          editableGroupIds={[]}
+          canRunLive={false}
+          practiceRoomByGroup={practiceRoomByGroup}
+        />
+      </ConfirmProvider>
+    );
+
+  it("with no room for the band it says ห้องซ้อม and opens the Training list", () => {
+    mountPractice();
+    const link = screen.getByRole("link", { name: "ห้องซ้อม" });
+    expect(link.getAttribute("href")).toBe("/practice");
+    expect(screen.queryByText("ซ้อมตามเซ็ต")).toBeNull();
+  });
+
+  it("a room that belongs to another band does not count as this band's", () => {
+    mountPractice({ g2: "room-2" });
+    const link = screen.getByRole("link", { name: "ห้องซ้อม" });
+    expect(link.getAttribute("href")).toBe("/practice");
+  });
+
+  it("with the band's room it says ซ้อมตามเซ็ต and opens that room", () => {
+    mountPractice({ g1: "room-1" });
+    const link = screen.getByRole("link", { name: "ซ้อมตามเซ็ต" });
+    expect(link.getAttribute("href")).toBe("/events/room-1/practice");
+    expect(screen.queryByRole("link", { name: "ห้องซ้อม" })).toBeNull();
+  });
+});
+
+// CQ-65 (round 15). The desktop dashboard passes no callTimes (its list cache has no
+// schedules), and the ticket printed "นัด —" for every show — which reads as "this
+// show has no call time" when the truth is "this device does not know". Absent
+// callTimes now leaves the cell out; a map (even an empty one) means it was read.
+describe("EventsList — the ticket's นัด cell says what is known (CQ-65)", () => {
+  const next = { ...ev("up", "โชว์ที่จะถึง", "2026-10-05"), show_start_time: "13:20:00" };
+  const mountTicket = (callTimes?: Record<string, string>) => {
+    render(
+      <ConfirmProvider>
+        <EventsList events={[next]} editableGroupIds={[]} callTimes={callTimes} />
+      </ConfirmProvider>
+    );
+    return within(screen.getByRole("region", { name: "Next show" }));
+  };
+
+  it("leaves the นัด cell out when no callTimes were given — unknown is not 'none'", () => {
+    const ticket = mountTicket();
+    expect(ticket.queryByText("นัด")).toBeNull();
+    // the other two cells stay, on a two-column grid so they do not leave a hole
+    expect(ticket.getByText("ขึ้นเวที")).toBeTruthy();
+    expect(ticket.getByText("13:20")).toBeTruthy();
+    expect(ticket.getByText("Hard Out")).toBeTruthy();
+    expect(ticket.getByText("ขึ้นเวที").closest(".grid")!.className).toContain("grid-cols-2");
+    expect(ticket.getByText("ขึ้นเวที").closest(".grid")!.className).not.toContain("grid-cols-3");
+  });
+
+  it("prints the call time when the schedules were read", () => {
+    const ticket = mountTicket({ up: "11:20:00" });
+    const cell = ticket.getByText("นัด").parentElement!;
+    expect(cell.textContent).toContain("11:20");
+    expect(ticket.getByText("นัด").closest(".grid")!.className).toContain("grid-cols-3");
+  });
+
+  it("an empty map still shows the cell, as — : it was read and this show has no call", () => {
+    const ticket = mountTicket({});
+    expect(ticket.getByText("นัด").parentElement!.textContent).toBe("นัด—");
+  });
+
+  it("keeps the screen-reader line either way, and the stage cell keeps its marker", () => {
+    const ticket = mountTicket();
+    expect(ticket.getByTestId("next-show-times").textContent).toBe("ขึ้นเวที 13:20");
+    // the primary bar before ขึ้นเวที moved with the label, not with a fixed index
+    expect(ticket.getByText("ขึ้นเวที").querySelector("i")).not.toBeNull();
   });
 });

@@ -232,7 +232,11 @@ function PastRow({
         <div className="eyebrow mt-[3px] text-[10px] text-faint">{dp?.mon ?? ""}</div>
       </div>
       <div className="min-w-0 flex-1">
-        <h3 className="truncate text-[14px] font-medium group-hover:text-primary-ink">{ev.name}</h3>
+        {/* Two lines, not one cut line: an editor on a touch screen gives 108 px of the
+            row to the always-showing copy/delete buttons, and on a phone a single-line
+            `truncate` left the name about ten characters. No `block` here — it would
+            replace the clamp's display and stop it clamping (see overview-client.test.tsx). */}
+        <h3 className="line-clamp-2 break-words text-[14px] font-medium group-hover:text-primary-ink">{ev.name}</h3>
         {(ev.groups?.name || ev.venue) && (
           <p className="truncate text-[12px] text-faint">
             {[ev.groups?.name, ev.venue].filter(Boolean).join(" · ")}
@@ -279,9 +283,12 @@ export function EventsList({
   events: EventWithGroup[];
   /** Group ids the user may edit — drives the per-card duplicate button. */
   editableGroupIds: string[];
-  /** Each upcoming show's call time (its earliest timed schedule row). Optional:
-   *  the desktop dashboard reads its list from an offline cache without schedules,
-   *  and its banner then says the stage time alone, as it always did. */
+  /** Each upcoming show's call time (its earliest timed schedule row). Optional,
+   *  and the difference matters: absent means the caller could not read schedules
+   *  (the desktop with no cached bundle), so the call time is UNKNOWN — the banner
+   *  says the stage time alone and the ticket leaves its "นัด" cell out. A map
+   *  (even `{}`) means the schedules were read, so a show missing from it has no
+   *  call time and its cell says "—". */
   callTimes?: Record<string, string>;
   /** canLiveEdit (admin). Anyone may RUN Live Mode to rehearse timing, but only
    *  an admin edits it live (reorder, files, "จบโชว์"), and the one real at-show
@@ -543,13 +550,20 @@ export function EventsList({
   // A call that IS the stage time is said once (showTimesLabel does the same).
   const nextCall = nextCallRaw && nextCallRaw !== nextStage ? nextCallRaw : null;
   const nextHardOut = shortClock(nextShow?.hard_out_time) || null;
+  // The ticket's stub cells. "นัด" only when the caller read schedules (see its cell).
+  const timeCells: [label: string, value: string | null][] = [
+    ...(callTimes ? [["นัด", nextCall] as [string, string | null]] : []),
+    ["ขึ้นเวที", nextStage],
+    ["Hard Out", nextHardOut],
+  ];
   // canLiveEdit (admin), no band practice (label staff), or the show's own day →
   // Live Mode; otherwise the band practises the set (see the prop notes above).
   const liveLeads = canRunLive || !canPractice || (days ?? 1) <= 0;
-  const practiceHref =
-    nextShow?.group_id && practiceRoomByGroup?.[nextShow.group_id]
-      ? `/events/${practiceRoomByGroup[nextShow.group_id]}/practice`
-      : "/practice";
+  // "ซ้อมตามเซ็ต" is the word for the band's ROOM; with none known the button opens
+  // the Training list and says "ห้องซ้อม" — what the event page's hero does
+  // (components/event/event-hero.tsx), so the same button never lies in one place.
+  const practiceRoom = nextShow?.group_id ? practiceRoomByGroup?.[nextShow.group_id] : undefined;
+  const practiceHref = practiceRoom ? `/events/${practiceRoom}/practice` : "/practice";
   // Desktop only (`native`): one tap to pull every upcoming show onto this machine.
   const prepareBtn =
     notReadyIds.length > 0 || bulk ? (
@@ -670,17 +684,16 @@ export function EventsList({
           </div>
           <div className="perf" aria-hidden />
           <div className="flex h-[126px] flex-col px-4 pt-2.5">
-            <div className="grid grid-cols-3 gap-3">
-              {(
-                [
-                  ["นัด", nextCall],
-                  ["ขึ้นเวที", nextStage],
-                  ["Hard Out", nextHardOut],
-                ] as const
-              ).map(([label, value], i) => (
-                <div key={label} className="min-w-0" aria-hidden={i < 2 || undefined}>
+            {/* No callTimes prop at all = the caller has no schedules to read (the
+                desktop with nothing cached), so the call time is UNKNOWN — and an
+                "นัด —" would say "there is none". Its cell is left out, and the other
+                two keep their places on a two-column grid. An empty map is different:
+                every schedule was read and this show has no call. */}
+            <div className={cn("grid gap-3", callTimes ? "grid-cols-3" : "grid-cols-2")}>
+              {timeCells.map(([label, value]) => (
+                <div key={label} className="min-w-0" aria-hidden={label !== "Hard Out" || undefined}>
                   <div className="flex items-center gap-1.5 text-[12px] leading-none text-muted-foreground">
-                    {i === 1 && <i className="h-[11px] w-[3px] bg-primary" />}
+                    {label === "ขึ้นเวที" && <i className="h-[11px] w-[3px] bg-primary" />}
                     {label}
                   </div>
                   <div className="num mt-[3px] text-[30px] leading-none">{value ?? "—"}</div>
@@ -699,7 +712,7 @@ export function EventsList({
                 <Button asChild className="px-2">
                   <Link href={practiceHref}>
                     <Headphones aria-hidden />
-                    ซ้อมตามเซ็ต
+                    {practiceRoom ? "ซ้อมตามเซ็ต" : "ห้องซ้อม"}
                   </Link>
                 </Button>
               )}

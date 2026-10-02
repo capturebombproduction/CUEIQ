@@ -56,6 +56,7 @@ import {
   EVENT_BUNDLE_BATCH_TIMEOUT_MS,
   EVENT_BUNDLE_SESSION_TIMEOUT_MS,
   EVENT_BUNDLE_TIMEOUT_MS,
+  cachedCallTimes,
   isEventBundleCached,
   loadEventBundle,
   loadEventBundleStatus,
@@ -694,5 +695,88 @@ describe("loadEventsList — the second bound the dashboard pays", () => {
     expect(rows[0].name).toBe("fresh show");
     const stored = JSON.parse(window.localStorage.getItem(listKey) ?? "null");
     expect(stored[0].name).toBe("fresh show");
+  });
+});
+
+// ── the Next Show ticket's "นัด" (CQ-65) ──────────────────────────────────────
+//
+// The dashboard's events-list cache carries no schedules, so the desktop ticket
+// printed "นัด —" for every show. A bundle on disk does carry them, and cachedCallTimes
+// reads the call time out of those. Far-future / far-past dates keep the "upcoming"
+// cut independent of the day this runs (bkkTodayKey() is the real clock here).
+
+describe("cachedCallTimes — the call time from bundles already on the device", () => {
+  const FUTURE = "2099-01-01";
+  const PAST = "2000-01-01";
+  const listRow = (id: string, event_date: string | null, show_start_time: string | null = "19:00:00") => ({
+    id,
+    event_date,
+    show_start_time,
+  });
+  /** A cached bundle whose schedule is `rows` ([kind, start_time]). */
+  const seedSchedule = (id: string, rows: [string, string | null][]) => {
+    const b = cachedBundle(id);
+    window.localStorage.setItem(
+      rawKey(id),
+      JSON.stringify({
+        ...b,
+        schedule: rows.map(([kind, start_time], i) => ({ id: `s${i}`, event_id: id, kind, start_time })),
+      })
+    );
+  };
+
+  it("reads the earliest timed row before the stage out of the cached schedule", () => {
+    seedSchedule("up", [
+      ["on_location", "16:00:00"],
+      ["stage", "19:00:00"],
+    ]);
+    expect(cachedCallTimes([listRow("up", FUTURE)])).toEqual({ up: "16:00:00" });
+  });
+
+  it("is undefined — unknown, not 'none' — when no upcoming show has a cached bundle", () => {
+    expect(cachedCallTimes([listRow("up", FUTURE), listRow("up2", FUTURE)])).toBeUndefined();
+    expect(cachedCallTimes([])).toBeUndefined();
+  });
+
+  it("leaves out a show whose cached schedule has no call time, instead of inventing one", () => {
+    seedSchedule("a", [["stage", "19:00:00"]]);
+    seedSchedule("b", [
+      ["on_location", "15:00:00"],
+      ["stage", "19:00:00"],
+    ]);
+    // a: only the stage row → no call (the call IS the stage). b: 15:00.
+    expect(cachedCallTimes([listRow("a", FUTURE), listRow("b", FUTURE)])).toEqual({ b: "15:00:00" });
+    // a cached bundle with no timed rows at all is still "read", so {} and not undefined
+    seedSchedule("c", [["other", null]]);
+    expect(cachedCallTimes([listRow("c", FUTURE)])).toEqual({});
+  });
+
+  it("anchors on the list row's stage time, like the web dashboard (it is the fresher one)", () => {
+    // The bundle's rows say 16:00 + 19:00. The list row was edited to a 15:00 stage,
+    // which puts 16:00 AFTER the set — no call time at all.
+    seedSchedule("up", [
+      ["on_location", "16:00:00"],
+      ["stage", "19:00:00"],
+    ]);
+    expect(cachedCallTimes([listRow("up", FUTURE, "15:00:00")])).toEqual({});
+  });
+
+  it("does not parse past or dateless shows — the ticket is about one that is coming", () => {
+    seedSchedule("gone", [
+      ["on_location", "16:00:00"],
+      ["stage", "19:00:00"],
+    ]);
+    seedSchedule("nodate", [
+      ["on_location", "16:00:00"],
+      ["stage", "19:00:00"],
+    ]);
+    expect(cachedCallTimes([listRow("gone", PAST), listRow("nodate", null)])).toBeUndefined();
+  });
+
+  it("survives a cached bundle with no schedule array (an older cache)", () => {
+    const legacy: Record<string, unknown> = { ...cachedBundle("old") };
+    delete legacy.schedule;
+    window.localStorage.setItem(rawKey("old"), JSON.stringify(legacy));
+    expect(cachedCallTimes([listRow("old", FUTURE)])).toEqual({});
   });
 });

@@ -6,6 +6,8 @@
 // songs borrowed from a cached sibling bundle of the same band when available).
 import { createClient } from "@/lib/supabase/client";
 import { applyPendingChildren, materializeEventRow } from "@/lib/mgmt-outbox";
+import { callTimeOf } from "@/lib/next-show";
+import { bkkTodayKey } from "@/lib/time";
 import { hasCache, isOffline, readCache, readCacheKeys, writeCache } from "~/data/cache";
 import { hasLiveSession } from "@/lib/auth-session";
 import { listMgmtConflicts, pendingMgmtOps } from "~/data/mgmt-outbox";
@@ -327,6 +329,42 @@ export async function loadEventBundle(eventId: string): Promise<EventBundle | nu
 /** Does THIS device hold `eventId`'s bundle, i.e. can the show be OPENED with no net? */
 export function isEventBundleCached(eventId: string): boolean {
   return hasCache(bundleKey(eventId));
+}
+
+/**
+ * Each upcoming show's call time, read from the bundles this device already holds —
+ * what the web dashboard gets from one schedule_items query (lib/next-show.ts
+ * callTimeByEvent), for the Next Show ticket's "นัด" cell.
+ *
+ * The events-list cache carries no schedules, so the desktop ticket used to print
+ * "นัด —" for every show. A bundle on disk does carry them (`schedule`), and is
+ * there for exactly the shows the operator prepared for the venue.
+ *
+ * `undefined` — NOT `{}` — when no upcoming show has a cached bundle: nothing was
+ * read, so the call time is unknown and the ticket leaves the cell out
+ * (events-list's `callTimes` prop says why the two differ). A show whose bundle is
+ * cached but has no call time is simply absent from the map, as on the web. Only
+ * dated, not-yet-past shows are parsed — the ticket shows one of them, and a
+ * bundle is the heaviest thing in the read-cache.
+ *
+ * The stage anchor is the list row's show_start_time, as on the web (the list is
+ * newer than the bundle when a stage time was just edited).
+ */
+export function cachedCallTimes(
+  events: { id: string; event_date: string | null; show_start_time: string | null }[]
+): Record<string, string> | undefined {
+  const today = bkkTodayKey();
+  const out: Record<string, string> = {};
+  let anyCached = false;
+  for (const e of events) {
+    if (!e.event_date || e.event_date < today) continue;
+    const bundle = readCache<EventBundle>(bundleKey(e.id));
+    if (!bundle) continue;
+    anyCached = true;
+    const call = callTimeOf(bundle.schedule ?? [], e.show_start_time);
+    if (call) out[e.id] = call;
+  }
+  return anyCached ? out : undefined;
 }
 
 /**
