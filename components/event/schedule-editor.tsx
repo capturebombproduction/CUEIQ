@@ -510,7 +510,7 @@ export function ScheduleEditor({
               </Select>
             </div>
 
-            <div className="order-4 col-span-2 space-y-1 sm:order-none sm:col-span-3">
+            <div className="order-4 col-span-2 space-y-1 sm:order-none sm:col-span-2 lg:col-span-3">
               <Label className="text-[13px] font-medium text-muted-foreground">Label</Label>
               <Input
                 value={it.label ?? ""}
@@ -523,7 +523,7 @@ export function ScheduleEditor({
               />
             </div>
 
-            <div className="order-2 space-y-1 sm:order-none sm:col-span-2">
+            <div className="order-2 min-w-0 space-y-1 sm:order-none sm:col-span-2">
               <Label className="text-[13px] font-medium text-muted-foreground">Start</Label>
               <Input
                 type="time"
@@ -537,7 +537,7 @@ export function ScheduleEditor({
               />
             </div>
 
-            <div className="order-3 space-y-1 sm:order-none sm:col-span-2">
+            <div className="order-3 min-w-0 space-y-1 sm:order-none sm:col-span-2">
               <Label className="text-[13px] font-medium text-muted-foreground">End</Label>
               <Input
                 type="time"
@@ -551,7 +551,7 @@ export function ScheduleEditor({
               />
             </div>
 
-            <div className={`order-6 flex shrink-0 items-end justify-end gap-1 sm:order-none sm:col-span-2 ${showExtra(it) ? "col-span-2" : "col-span-1"}`}>
+            <div className={`order-6 flex shrink-0 items-end justify-end [justify-content:safe_flex-end] gap-1 sm:order-none sm:col-span-3 lg:col-span-2 ${showExtra(it) ? "col-span-2" : "col-span-1"}`}>
               {editable && (
                 <>
                   {/* Touch can't start an HTML5 drag, so these are the ONLY way to
@@ -562,7 +562,14 @@ export function ScheduleEditor({
                       iPad in portrait, which is worse than what this replaced. The
                       grip only appears where there is a mouse to use it with
                       ((hover: hover) — was lg:, which still drew it, dead, on an
-                      iPad in landscape). */}
+                      iPad in landscape).
+                      Width: three of these are 140px. At 2/12 the cell is 86-128px
+                      from 640 to 892px, and justify-end spilled the rest LEFT over
+                      the End field — a tap on its clock icon hit ▲ and reordered the
+                      call sheet. So the cell is 3/12 until lg (Label gives the
+                      column up; lg+ is unchanged), and `safe` sends any overflow
+                      right, never over a field. justify-end stays as the fallback
+                      for an engine that drops the `safe` keyword. */}
                   <Button
                     type="button"
                     variant="ghost"

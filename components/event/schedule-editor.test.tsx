@@ -214,3 +214,63 @@ describe("ScheduleEditor · what a member reads", () => {
     expect(lines[2]).toMatch(/รับของ/); // no time: kept, at the end
   });
 });
+
+// Review 2026-10-02 (CQ-02): on an iPad in portrait (640-892px) the three 44px reorder /
+// delete buttons are 140px wide and the actions cell was 2/12 of the row — 86-128px — so
+// with justify-end the overflow spilled LEFT over the End time field, and a tap on its
+// clock icon landed on the ▲ button: it reordered the call sheet the crew reads, and saved.
+// Measured in Chrome at 744 / 768 / 810 / 820 / 834: hit="เลื่อนขึ้น" on every one.
+// jsdom has no layout, so what is pinned here is the ARITHMETIC that fixed it — the cell
+// is 3/12 between sm and lg, the Label field gave the column up, and the row still adds
+// to 12 on both sides of lg. The pixel claim (the hit test, the 1024-1280 desktop widths)
+// is a real-browser measurement: review-shots/r15/tablet-portrait/p-sched3.js.
+describe("ScheduleEditor · the reorder buttons stay off the End field (iPad portrait)", () => {
+  // The col-span a cell gets in a tier: Tailwind is mobile-first, so the widest
+  // breakpoint at or below the tier that names a span wins.
+  const span = (el: Element, tier: "sm" | "lg") => {
+    const tokens = el.className.split(/\s+/);
+    const pick = (bp: string) => {
+      const m = tokens.map((t) => t.match(new RegExp(`^${bp}:col-span-(\\d+)$`))).find(Boolean);
+      return m ? Number(m[1]) : null;
+    };
+    const n = (tier === "lg" ? pick("lg") : null) ?? pick("sm");
+    if (n == null) throw new Error(`no ${tier} col-span on "${el.className}"`);
+    return n;
+  };
+
+  function firstRow() {
+    mount([row("a", { kind: "stage", label: "Stage Round 1", start_time: "14:30:00", end_time: "15:30:00" })]);
+    const cell = (el: Element) => el.closest("div.space-y-1")!;
+    const [start, end] = Array.from(document.querySelectorAll("input[type=time]"));
+    return {
+      type: cell(screen.getByRole("combobox")),
+      label: cell(screen.getByDisplayValue("Stage Round 1")),
+      start: cell(start),
+      end: cell(end),
+      actions: screen.getByRole("button", { name: "เลื่อนขึ้น" }).parentElement!,
+    };
+  }
+
+  it("gives the actions cell 3/12 between sm and lg, and the row still adds to 12 on both sides", () => {
+    const r = firstRow();
+    const sum = (tier: "sm" | "lg") =>
+      span(r.type, tier) + span(r.label, tier) + span(r.start, tier) + span(r.end, tier) + span(r.actions, tier);
+    // 3 x 44px buttons + 2 gaps = 140px. A 2/12 cell is 86-128px from 640 to 892px.
+    expect(span(r.actions, "sm")).toBeGreaterThanOrEqual(3);
+    expect(sum("sm")).toBe(12);
+    // From lg up nothing moved: Label 3, actions 2, exactly the approved desktop row.
+    expect(span(r.label, "lg")).toBe(3);
+    expect(span(r.actions, "lg")).toBe(2);
+    expect(sum("lg")).toBe(12);
+  });
+
+  it("if the buttons still do not fit, they overflow RIGHT (safe), never left over End", () => {
+    const r = firstRow();
+    // `justify-end` stays as the fallback for an engine that drops the `safe` keyword.
+    expect(r.actions.className).toContain("justify-end");
+    expect(r.actions.className).toContain("[justify-content:safe_flex-end]");
+    // A time input has an intrinsic width; without this a narrow cell is sized by it.
+    expect(r.start.className.split(" ")).toContain("min-w-0");
+    expect(r.end.className.split(" ")).toContain("min-w-0");
+  });
+});
