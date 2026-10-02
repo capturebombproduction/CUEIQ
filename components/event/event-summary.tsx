@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState, useSyncExternalStore } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import Link from "next/link";
 import { toast } from "sonner";
 import {
@@ -17,6 +17,7 @@ import {
   Mic,
   OctagonAlert,
   WifiOff,
+  Map as MapIcon,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -60,6 +61,9 @@ import { type RunSeqLive } from "@/components/event/event-live-caller";
 // white 192 px box (the desktop app's main use is a venue with no signal), so it is
 // mounted only while the device is online. The server has no network state, so it
 // renders as online and a device that is offline corrects itself on hydration.
+// Online, it is still not fetched on open: Google's map pulls in its own scripts and
+// tiles for a block most readers scroll past, so it waits for a tap (CQ-30, พี่
+// approved 2026-10-02).
 function subscribeOnline(onChange: () => void) {
   window.addEventListener("online", onChange);
   window.addEventListener("offline", onChange);
@@ -202,7 +206,16 @@ export function EventSummary({
   const [exporting, setExporting] = useState(false);
   const [isCapturing, setIsCapturing] = useState(false);
   const [exportedAt, setExportedAt] = useState<Date | null>(null);
+  const [mapLoaded, setMapLoaded] = useState(false);
+  const mapFrame = useRef<HTMLIFrameElement>(null);
   const online = useSyncExternalStore(subscribeOnline, isOnline, assumeOnline);
+  // The button that was tapped is gone once the frame stands in its place; hand the
+  // focus to the frame so a keyboard user is not dropped back at the top of the page.
+  // Fires on the tap only — a remount after a JPG export or a dropped network does
+  // not steal it.
+  useEffect(() => {
+    if (mapLoaded) mapFrame.current?.focus();
+  }, [mapLoaded]);
 
   const showStartSec = parseClockToSeconds(event.show_start_time);
   const hardOutSec = parseClockToSeconds(event.hard_out_time);
@@ -302,7 +315,7 @@ export function EventSummary({
     if (!el) return;
     setExporting(true);
     setExportedAt(new Date());
-    setIsCapturing(true); // swap iframe → static map
+    setIsCapturing(true); // the map block (frame or tap-to-load placeholder) is not drawn
     await new Promise((r) => setTimeout(r, 120)); // wait for re-render
     try {
       const filename = `${safeFileStem(event.name, "summary")}.jpg`;
@@ -531,14 +544,32 @@ export function EventSummary({
           )}
           {mapQuery && !isCapturing &&
             (online ? (
+              // One 192 px box either way, so the page does not jump when the tap
+              // swaps the placeholder for the frame. Neither is ever on the JPG
+              // (!isCapturing above) or on paper (no-print).
               <div className="no-print overflow-hidden rounded-[2px] border">
-                <iframe
-                  title="map"
-                  src={mapsEmbedUrl(mapQuery)}
-                  className="h-48 w-full"
-                  loading="lazy"
-                  referrerPolicy="no-referrer-when-downgrade"
-                />
+                {mapLoaded ? (
+                  <iframe
+                    ref={mapFrame}
+                    title="map"
+                    src={mapsEmbedUrl(mapQuery)}
+                    className="h-48 w-full"
+                    loading="lazy"
+                    referrerPolicy="no-referrer-when-downgrade"
+                  />
+                ) : (
+                  <div className="flex h-48 w-full flex-col items-center justify-center gap-3 bg-muted text-muted-foreground">
+                    <MapIcon aria-hidden className="h-8 w-8" />
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="bg-background"
+                      onClick={() => setMapLoaded(true)}
+                    >
+                      แตะเพื่อโหลดแผนที่
+                    </Button>
+                  </div>
+                )}
               </div>
             ) : (
               // Offline the frame would be a blank white box. The View Map link above

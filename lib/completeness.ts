@@ -108,8 +108,16 @@ export function eventCompleteness(args: {
 
   const schedHas = (kind: ScheduleKind) =>
     schedule.some((s) => s.kind === kind && filled(s.start_time));
-  for (const r of REQUIRED_SCHEDULE)
+  for (const r of REQUIRED_SCHEDULE) {
+    // A filled "เวลาเริ่มโชว์" IS the stage time: the summary sheet, the JPG and the
+    // Excel all print events.show_start_time as the ขึ้นเวที slot when no stage row
+    // repeats it, so demanding a second copy of the same clock asked for something
+    // the show already has (CQ-27, พี่ approved 2026-10-02). It is still required in
+    // its own right above — a blank start time still reports show_start_time, and
+    // reports the stage as well when there is no stage row to stand in for it.
+    if (r.kind === "stage" && filled(event.show_start_time)) continue;
     if (!schedHas(r.kind)) missing.push({ key: `sched_${r.kind}`, label: r.label });
+  }
   if (modules.booth && !schedHas("booth"))
     missing.push({ key: "sched_booth", label: "เวลาบูธ/แฟนไซน์ (Booth)" });
 

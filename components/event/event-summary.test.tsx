@@ -21,12 +21,16 @@ const captured = vi.hoisted(() => ({
   // (rows also carry data-over-hard-out, so the badge is whatever is not a <tr>).
   filenames: [] as string[],
   overBadge: [] as (string | null)[],
+  // How many map frames were in the tree at capture (a cross-origin frame is a
+  // blank box in the image).
+  frames: [] as number[],
 }));
 vi.mock("@/lib/export-image", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/export-image")>()),
   captureElementToImage: async (el: HTMLElement, opts: { filename: string }) => {
     captured.text.push(el.textContent ?? "");
     captured.filenames.push(opts.filename);
+    captured.frames.push(el.querySelectorAll("iframe").length);
     captured.overBadge.push(el.querySelector(":not(tr)[data-over-hard-out]")?.textContent ?? null);
     // the "ขึ้นเวที" tile of the four-times grid (the label also appears in the table)
     const well = Array.from(el.querySelectorAll(".well")).find(
@@ -432,17 +436,79 @@ describe("EventSummary — the embedded map needs a network (CQ-30)", () => {
     delete (navigator as unknown as Record<string, unknown>).onLine;
   });
 
-  it("online: the map frame is there and the offline note is not", () => {
+  const tapToLoad = () => screen.queryByRole("button", { name: "แตะเพื่อโหลดแผนที่" });
+
+  // Online the frame still waits for a tap — Google's map costs scripts and tiles for
+  // a block most readers scroll past.
+  it("online: a tap-to-load placeholder, no frame fetched yet and no offline note", () => {
     setOnline(true);
     const { container } = mountSheet(withMap, []);
-    expect(container.querySelector("iframe")).not.toBeNull();
+    expect(container.querySelector("iframe")).toBeNull();
+    expect(tapToLoad()).not.toBeNull();
     expect(screen.queryByText("แผนที่ต้องใช้อินเทอร์เน็ต")).toBeNull();
+  });
+
+  it("the placeholder is the frame's 192 px box with a muted map icon, and View Map stays", () => {
+    setOnline(true);
+    mountSheet(withMap, []);
+    const box = tapToLoad()!.parentElement!;
+    expect(box.className.split(" ")).toEqual(expect.arrayContaining(["h-48", "w-full", "bg-muted"]));
+    expect(box.className).toContain("text-muted-foreground");
+    expect(box.querySelector("svg")).not.toBeNull();
+    expect(screen.getByRole("link", { name: /View Map/ })).toHaveAttribute("href", withMap.map_url);
+  });
+
+  it("a tap mounts the frame in the same box and the placeholder goes", () => {
+    setOnline(true);
+    const { container } = mountSheet(withMap, []);
+    const wrapper = tapToLoad()!.parentElement!.parentElement!;
+    fireEvent.click(tapToLoad()!);
+    const frame = container.querySelector("iframe")!;
+    expect(frame).not.toBeNull();
+    expect(frame.getAttribute("src")).toContain("output=embed");
+    expect(frame.getAttribute("src")).toContain(encodeURIComponent("Impact Arena"));
+    expect(frame.className.split(" ")).toEqual(expect.arrayContaining(["h-48", "w-full"]));
+    expect(frame.parentElement).toBe(wrapper); // same wrapper: nothing around it moved
+    expect(tapToLoad()).toBeNull();
+    expect(document.activeElement).toBe(frame); // the tapped button is gone — focus follows
+    expect(screen.getByRole("link", { name: /View Map/ })).toBeInTheDocument();
+  });
+
+  it("neither the placeholder nor the frame is printed", () => {
+    setOnline(true);
+    const { container } = mountSheet(withMap, []);
+    expect(tapToLoad()!.closest(".no-print")).not.toBeNull();
+    fireEvent.click(tapToLoad()!);
+    expect(container.querySelector("iframe")!.closest(".no-print")).not.toBeNull();
+  });
+
+  // The JPG is drawn from the live tree: a frame there is a blank box in the image,
+  // and the placeholder is a button that means nothing on a picture.
+  it.each([
+    ["before a tap", false],
+    ["after a tap", true],
+  ])("the JPG carries no map block %s — no frame, no placeholder", async (_when, tapped) => {
+    setOnline(true);
+    captured.text = [];
+    captured.frames = [];
+    const { container } = mountSheet(withMap, []);
+    if (tapped) fireEvent.click(tapToLoad()!);
+    fireEvent.click(exportButton());
+    await waitFor(() => expect(captured.frames).toHaveLength(1));
+    expect(captured.frames[0]).toBe(0);
+    expect(captured.text[0]).not.toContain("แตะเพื่อโหลดแผนที่");
+    expect(captured.text[0]).not.toContain("View Map");
+    // …and the screen is back to what it was once the capture is over
+    await waitFor(() => expect(exportButton()).not.toBeDisabled());
+    expect(container.querySelector("iframe") !== null).toBe(tapped);
+    expect(tapToLoad() !== null).toBe(!tapped);
   });
 
   it("offline: no iframe, a muted one-line note instead, and View Map stays", () => {
     setOnline(false);
     const { container } = mountSheet(withMap, []);
     expect(container.querySelector("iframe")).toBeNull();
+    expect(tapToLoad()).toBeNull(); // nothing to tap — a tap could not load anything
     const note = screen.getByText("แผนที่ต้องใช้อินเทอร์เน็ต");
     expect(note.className).toContain("text-muted-foreground");
     expect(note.querySelector("svg")).not.toBeNull(); // icon + words
@@ -450,17 +516,33 @@ describe("EventSummary — the embedded map needs a network (CQ-30)", () => {
     expect(link).toHaveAttribute("href", withMap.map_url);
   });
 
-  it("follows the network: the frame appears when it comes back and goes when it drops", () => {
+  it("follows the network: the placeholder appears when it comes back, the frame only after a tap", () => {
     setOnline(false);
     const { container } = mountSheet(withMap, []);
     expect(container.querySelector("iframe")).toBeNull();
     setOnline(true);
     act(() => void window.dispatchEvent(new Event("online")));
-    expect(container.querySelector("iframe")).not.toBeNull();
+    expect(container.querySelector("iframe")).toBeNull(); // not fetched without a tap
+    expect(tapToLoad()).not.toBeNull();
     expect(screen.queryByText("แผนที่ต้องใช้อินเทอร์เน็ต")).toBeNull();
+    fireEvent.click(tapToLoad()!);
+    expect(container.querySelector("iframe")).not.toBeNull();
     setOnline(false);
     act(() => void window.dispatchEvent(new Event("offline")));
     expect(container.querySelector("iframe")).toBeNull();
+    expect(tapToLoad()).toBeNull();
     expect(screen.getByText("แผนที่ต้องใช้อินเทอร์เน็ต")).toBeInTheDocument();
+    // The tap already happened: when the signal is back the frame returns on its own.
+    setOnline(true);
+    act(() => void window.dispatchEvent(new Event("online")));
+    expect(container.querySelector("iframe")).not.toBeNull();
+    expect(tapToLoad()).toBeNull();
+  });
+
+  it("a show with no venue and no name has no map block at all", () => {
+    setOnline(true);
+    const { container } = mountSheet({ venue: null, name: "" }, []);
+    expect(container.querySelector("iframe")).toBeNull();
+    expect(tapToLoad()).toBeNull();
   });
 });

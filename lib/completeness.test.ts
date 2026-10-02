@@ -89,7 +89,7 @@ describe("required event fields", () => {
 
 describe("schedule call-times", () => {
   it("flags any missing required call-time", () => {
-    for (const kind of ["on_location", "dressing_room", "stb", "stage"] as const) {
+    for (const kind of ["on_location", "dressing_room", "stb"] as const) {
       const a = completeIdol();
       a.schedule = a.schedule.filter((s) => s.kind !== kind);
       expect(keys(a)).toContain(`sched_${kind}`);
@@ -98,14 +98,63 @@ describe("schedule call-times", () => {
   it("a call-time row with a blank time does not count as filled", () => {
     const a = completeIdol();
     a.schedule = a.schedule.map((s) =>
-      s.kind === "stage" ? { ...s, start_time: "" } : s
+      s.kind === "stb" ? { ...s, start_time: "" } : s
     );
-    expect(keys(a)).toContain("sched_stage");
+    expect(keys(a)).toContain("sched_stb");
   });
   it("requires booth only for module types that have it (idol yes)", () => {
     const a = completeIdol();
     a.schedule = a.schedule.filter((s) => s.kind !== "booth");
     expect(keys(a)).toContain("sched_booth");
+  });
+});
+
+// CQ-27: the summary sheet prints events.show_start_time as the ขึ้นเวที slot, so a
+// filled start time already IS the stage time — a second "Stage" schedule row was
+// the same clock typed twice.
+describe("the stage time (CQ-27)", () => {
+  it("a filled เวลาเริ่มโชว์ stands in for the Stage row — no row needed", () => {
+    const a = completeIdol();
+    a.schedule = a.schedule.filter((s) => s.kind !== "stage");
+    const r = eventCompleteness(a);
+    expect(r.missing).toEqual([]);
+    expect(r.complete).toBe(true);
+  });
+  it("…and so does a Stage row left with a blank time", () => {
+    const a = completeIdol();
+    a.schedule = a.schedule.map((s) =>
+      s.kind === "stage" ? { ...s, start_time: "" } : s
+    );
+    expect(keys(a)).not.toContain("sched_stage");
+    expect(eventCompleteness(a).complete).toBe(true);
+  });
+  it("with no start time and no Stage row both are still asked for", () => {
+    const a = completeIdol();
+    a.event.show_start_time = "";
+    a.schedule = a.schedule.filter((s) => s.kind !== "stage");
+    expect(keys(a)).toEqual(expect.arrayContaining(["show_start_time", "sched_stage"]));
+    expect(eventCompleteness(a).complete).toBe(false);
+  });
+  it("a whitespace-only start time is not a stage time", () => {
+    const a = completeIdol();
+    a.event.show_start_time = "   ";
+    a.schedule = a.schedule.filter((s) => s.kind !== "stage");
+    expect(keys(a)).toContain("sched_stage");
+  });
+  it("a Stage row alone does not stand in for the start time (one-way)", () => {
+    const a = completeIdol();
+    a.event.show_start_time = "";
+    const r = keys(a);
+    expect(r).toContain("show_start_time");
+    expect(r).not.toContain("sched_stage");
+  });
+  it("only the stage is covered — the other call times are still asked for", () => {
+    const a = completeIdol();
+    a.schedule = [];
+    expect(keys(a)).toEqual(
+      expect.arrayContaining(["sched_on_location", "sched_dressing_room", "sched_stb", "sched_booth"])
+    );
+    expect(keys(a)).not.toContain("sched_stage");
   });
 });
 
