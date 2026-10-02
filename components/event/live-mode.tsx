@@ -3343,8 +3343,9 @@ export function LiveMode({
   // The one-tap fades. Rendered in the NOW card, and again in Live tools for the
   // landscape phone only, where the card has no room for them (CSS picks one; the
   // keys carry no test id, so nothing that counts ids sees two). Stage text is 14 px
-  // until the window is 1060 px wide, then 16: "Auto Loudness" at 16 px needs ~122 px
-  // of its grid track, and a 1024 px iPad's NOW column used to give it 115.
+  // until the window is 1060 px wide, then 16: "Auto Loudness" needs ~123 px of its
+  // grid track at 14 px and ~136 px at 16 px; a 1024 px iPad's NOW column used to give
+  // it 115 (fixed 300 + 320 side columns) and gives it ~127 now (290 px running order).
   const fadeKeys = (
     <>
       <Button
@@ -3779,9 +3780,13 @@ export function LiveMode({
           chip and a 48 px length) is ~260 px wide for a 12:00 block, so a narrower
           card spills the length over the running order. The running order gives
           the ground instead: 320 px from 1175 px up (the approved widths on both
-          iPads), easing to 270 px at 1050 px and below, which hands NOW the ~50 px
-          its title and fade keys were short of at 1024. */}
-      <div className="flex flex-col gap-2 [@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:contents stage:grid stage:min-h-0 stage:flex-1 stage:grid-cols-[minmax(0,1fr)_300px_clamp(270px,calc(40vw_-_150px),320px)] stage:grid-rows-[minmax(0,1fr)] stage:gap-4 stage:px-5 stage:pb-3 stage:pt-2">
+          iPads), easing to 290 px at 1100 px and below. That hands NOW 30 of the ~50
+          px its title and fade keys were short of at 1024 (362 px: "Auto Loudness"
+          needs ~123 px of its ~127 px track at 14 px, ~136 of 142 at 16 px from
+          1060), and gives a running-order row 20 px over the 270 px it first had:
+          the row with the NEXT chip keeps 68 px of title instead of 48, and in
+          edit mode ~20 px between its marks and the ▲▼ keys instead of 0. */}
+      <div className="flex flex-col gap-2 [@media(orientation:landscape)_and_(max-height:699.98px)_and_(pointer:coarse)]:contents stage:grid stage:min-h-0 stage:flex-1 stage:grid-cols-[minmax(0,1fr)_300px_clamp(290px,calc(40vw_-_150px),320px)] stage:grid-rows-[minmax(0,1fr)] stage:gap-4 stage:px-5 stage:pb-3 stage:pt-2">
         <NowCard
           zone={zone}
           blockSec={zoneBlock}
@@ -3897,12 +3902,24 @@ export function LiveMode({
             )}
           </section>
 
-          <section className="slab hidden min-h-0 flex-1 flex-col overflow-hidden px-5 pb-4 pt-3.5 stage:flex">
+          <section className="slab hidden min-h-0 flex-1 flex-col overflow-hidden px-5 pb-4 pt-3.5 stage:flex stage:[container-type:size]">
             <span className="nlabel">Show</span>
-            {/* The top bar already prints ผ่านไป, so on a window under 800 px tall (the
-                NEXT card with six mics and a note leaves this slab ~138 of the ~188 px
-                it needs) this big copy steps aside and both tiles keep their values. */}
-            <div className="mt-2 flex items-baseline gap-2 [@media(max-height:799.98px)]:hidden">
+            {/* The top bar already prints ผ่านไป, so when THIS SLAB is too short to show
+                the big copy and its two tiles unclipped (the NEXT card with six mics
+                and a note leaves it ~138 of the ~188 px it needs), the copy steps
+                aside and both tiles keep their values. The slab asks, not the window:
+                a viewport rule also hid the row on an iPad whose Safari toolbar leaves
+                740 px of an 820 px screen while the slab had room, and "/ 12:00"
+                (the planned total) is printed nowhere else on stage. The slab is a
+                size container: a flex-1 / min-h-0 cell of a column whose height is
+                definite on stage (root h-[100dvh] -> board flex-1 -> grid row
+                minmax(0,1fr)), so nothing sizes to its content and hiding the row
+                cannot move the container. A query reads the CONTENT box, which has
+                to hold 22 (label) + 8 + 54 (the row) + 12 + 62 (tiles) = 158 px
+                (188 with the slab's 30 px of padding, as measured); 162 is that plus
+                4 px. Without the row the tiles need 96 (126). No container queries
+                (Safari < 16) = the row always shows, as before the viewport rule. */}
+            <div className="mt-2 flex items-baseline gap-2 [@container_(max-height:162px)]:hidden">
               <span className="num text-[50px] font-extrabold leading-none">{formatDuration(totalElapsed)}</span>
               <span className="num text-[24px] text-faint">/ {formatDuration(plannedTotal)}</span>
             </div>

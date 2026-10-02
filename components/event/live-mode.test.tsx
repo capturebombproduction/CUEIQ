@@ -1550,30 +1550,54 @@ describe("LiveMode · round 15 seams", () => {
   const nextCard = () => screen.getByText("Next", { selector: ".nlabel" }).closest("section") as HTMLElement;
   const order = () => screen.getByRole("heading", { name: "Running Order" }).closest("section") as HTMLElement;
 
-  it("CQ-15: NEXT holds 300 px, the running order gives ground below 1175 px, and the fade keys are 14 px until the window is 1060 wide", async () => {
+  it("CQ-15: NEXT holds 300 px, the running order gives ground below 1175 px (never under 290), and the fade keys are 14 px until the window is 1060 wide", async () => {
     await mountLive();
     await startShowFromUi();
     const board = nowCard().parentElement as HTMLElement;
-    expect(board).toHaveClass("stage:grid-cols-[minmax(0,1fr)_300px_clamp(270px,calc(40vw_-_150px),320px)]");
+    expect(board).toHaveClass("stage:grid-cols-[minmax(0,1fr)_300px_clamp(290px,calc(40vw_-_150px),320px)]");
+    // the 270 px floor left the row with the NEXT chip 48 px of title and, in edit mode,
+    // 0 px between its marks and the ▲▼ keys (measured at 1024)
+    expect(board.className).not.toContain("clamp(270px");
     // NEXT never shrinks: its label row (NEXT, the index, a kind chip, a 48 px length)
     // is ~260 px for a 12:00 block, and a 250 px card spilled the length over the
     // running order at 1024 -> 1194 (measured: the first CQ-15 cut did exactly that)
     expect(board.className).not.toMatch(/clamp\(250px/);
     expect(board.className).not.toContain("24vw");
     // the running order: the approved 320 px from 1175 px up (both iPads, 1180 and 1194,
-    // keep their layout), 270 px at the narrow end. Evaluate the formula it carries.
+    // keep their layout), 290 px at the narrow end. Evaluate the formula it carries.
     const m = /_clamp\((\d+)px,calc\((\d+)vw_-_(\d+)px\),(\d+)px\)\]/.exec(board.className);
     expect(m).not.toBeNull();
     const [lo, vw, off, hi] = m!.slice(1).map(Number);
     const ro = (w: number) => Math.min(hi, Math.max(lo, (vw / 100) * w - off));
-    expect(ro(1024)).toBe(270);
-    expect(ro(1050)).toBe(270);
+    expect(ro(1024)).toBe(290);
+    expect(ro(1050)).toBe(290);
+    expect(ro(1100)).toBe(290); // where 40vw - 150 takes over from the floor
+    expect(ro(1133)).toBeCloseTo(303.2, 5); // the mini's landscape width: not the floor's business
     expect(ro(1175)).toBe(320);
     expect(ro(1180)).toBe(320);
     expect(ro(1194)).toBe(320);
     expect(ro(1366)).toBe(320);
     // monotonic: the running order never gets narrower as the window grows
     for (let w = 900; w < 1400; w += 10) expect(ro(w + 10)).toBeGreaterThanOrEqual(ro(w));
+    // …and the floor costs NOW nothing it cannot spare. NOW is what the two side columns
+    // leave: the window less the board's 20 px side padding and two 16 px gaps (72),
+    // NEXT's 300 and the order. Its fade keys sit in the card's inner width (24 px of
+    // padding a side) in a 1.05fr / .72fr / 1.25fr row with two 3 px gaps, and "Auto
+    // Loudness" is the widest: measured 123.4 px at 14 px (Barlow Condensed 800, icon,
+    // gap, padding) and 136.4 px at 16 px. Evaluated here for every window from 1024
+    // (the narrowest iPad) with 3 px to spare.
+    const now = (w: number) => w - 72 - 300 - ro(w);
+    const autoLoudness = (w: number) => (1.25 / (1.05 + 0.72 + 1.25)) * (now(w) - 48 - 6);
+    const need = (w: number) => (w < 1060 ? 123.4 : 136.4);
+    expect(now(1024)).toBe(362);
+    for (let w = 1024; w <= 1400; w++) expect(autoLoudness(w), `${w} px`).toBeGreaterThanOrEqual(need(w) + 3);
+    // the running-order row at 1024 (inner width = the column less 40 px of padding):
+    // the NEXT row's title = column - 222 (was 48 px at 270); in edit mode the row's
+    // body is column - 196 wide and its marks (the chip, a gap and the 36 px length)
+    // need 80, so what is left before the ▲▼ keys is column - 270 once the 6 px gap
+    // is counted (was -0.1 px at 270: touching)
+    expect(ro(1024) - 222).toBeGreaterThanOrEqual(68);
+    expect(ro(1024) - 270).toBeGreaterThanOrEqual(19);
     // the old fixed pair is gone, or NOW would still get only the leftover at 1024
     expect(board.className).not.toContain("_300px_320px");
     for (const name of ["Auto Mute", "MC", "Auto Loudness"]) {
@@ -1655,16 +1679,47 @@ describe("LiveMode · round 15 seams", () => {
     });
   });
 
-  it("CQ-19: under 800 px tall the SHOW slab drops its duplicate elapsed row, and both tiles stay", async () => {
+  it("CQ-19: the SHOW slab is a size container and drops its duplicate elapsed row only when IT is too short; both tiles stay", async () => {
     await mountLive();
     const slab = screen.getByText("Show", { selector: ".nlabel" }).closest("section") as HTMLElement;
     // the top bar prints ผ่านไป; this is the 50 px copy of it beside the planned total
     const elapsed = slab.querySelector(".items-baseline") as HTMLElement;
     expect(elapsed).not.toBeNull();
-    expect(elapsed).toHaveClass("[@media(max-height:799.98px)]:hidden");
+    // the slab asks, not the window: a viewport rule hid the row on an 820 px iPad whose
+    // Safari toolbar leaves 740, while the slab had room ("/ 12:00" is nowhere else)
+    expect(elapsed.className).not.toContain("@media");
+    expect(elapsed.className).not.toContain("799.98");
+    // stage only: below it the slab is display:none and nothing is contained
+    expect(slab).toHaveClass("hidden", "stage:flex", "stage:[container-type:size]");
+    expect(slab.className).not.toMatch(/(^|\s)\[container-type:size\]/);
+    // the threshold derives from the slab's content. A query reads the CONTENT box
+    // (the slab's 14 + 16 px of padding are outside it), and what has to fit is the
+    // label (22) + 8 + the row (54: the 50 px numerals baseline-aligned with the
+    // 24 px / 36 px-line total) + 12 + the tiles (62.1 = 12 + 16.5 + 33.6): 158.1,
+    // measured as a 188.1 px slab. A few px over, never under, and not far over.
+    // (matched with plain string tests, never a literal shaped like the variant: Tailwind
+    // scans components/** including this file, and a regex literal that looked like an
+    // arbitrary variant was compiled into an invalid at-rule in the shipped web + .exe CSS)
+    const rule = Array.from(elapsed.classList).find((c) => c.startsWith("[") && c.includes("container_") && c.includes("max-height") && c.endsWith(":hidden"));
+    expect(rule, "the row hides on a container query").toBeDefined();
+    const threshold = Number(/max-height:([\d.]+)px/.exec(rule!)![1]);
+    const needed = 22 + 8 + 54 + 12 + 62.1;
+    expect(threshold).toBeGreaterThanOrEqual(needed + 2);
+    expect(threshold).toBeLessThanOrEqual(needed + 8);
+    // the tiles alone: 22 + 12 + 62.1 = 96.1 (126.1 with the padding) — they never hide
     const tiles = Array.from(slab.querySelectorAll(".well"));
     expect(tiles).toHaveLength(2);
     for (const t of tiles) expect(t.className).not.toContain("max-height");
+    // nothing sizes to the slab's content (a size container ignores it): flex-1 / min-h-0
+    // in a column that stretches over a grid row of minmax(0,1fr), on a board that is
+    // flex-1 / min-h-0 in a root with a definite stage height
+    expect(slab).toHaveClass("min-h-0", "flex-1", "overflow-hidden");
+    const column = slab.parentElement as HTMLElement;
+    expect(column).toHaveClass("flex-col", "stage:min-h-0");
+    const board = column.parentElement as HTMLElement;
+    expect(board).toHaveClass("stage:grid", "stage:grid-rows-[minmax(0,1fr)]", "stage:min-h-0", "stage:flex-1");
+    expect(board.parentElement).toBe(root());
+    expect(root()).toHaveClass("stage:h-[100dvh]");
   });
 
   it("CQ-21: the dock's key row is as wide as the cards above it, not the 2xl a portrait iPad overshoots", async () => {
