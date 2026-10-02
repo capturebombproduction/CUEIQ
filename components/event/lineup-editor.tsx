@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Users, CheckCheck, X } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
@@ -20,6 +20,7 @@ export function LineupEditor({
   members,
   initialLineup,
   eventName,
+  onChange,
 }: {
   eventId: string;
   tenantId: string;
@@ -27,10 +28,34 @@ export function LineupEditor({
   members: Member[];
   initialLineup: string[];
   eventName?: string;
+  /** Tells the page who is in the lineup NOW, every time this editor's own list
+   *  moves: the optimistic edit and, if its write is refused, the rollback. The
+   *  Mics tab reads who is performing from the page, not from in here — it used to
+   *  read the lineup the page LOADED with, so a member taken off here still held a
+   *  mic there (EventWorkspace keeps the one live copy). */
+  onChange?: (lineup: string[]) => void;
 }) {
   const [lineup, setLineup] = useState<Set<string>>(new Set(initialLineup));
   const supabase = createClient();
   const confirm = useConfirm();
+
+  // Every move of the list goes through here, so the page can never be told less
+  // than the screen shows. (The parent's setter is called out here, not inside a
+  // state updater.) A write that settles after this editor was replaced — the page
+  // re-seeds a hidden Lineup panel when the server's list changes — must not speak
+  // for it any more: its late rollback would put the page back on a list the new
+  // panel was never given.
+  const alive = useRef(true);
+  useEffect(() => {
+    alive.current = true;
+    return () => {
+      alive.current = false;
+    };
+  }, []);
+  function commit(next: Set<string>) {
+    setLineup(next);
+    if (alive.current) onChange?.([...next]);
+  }
 
   // ⭐#1 step 5: a write that failed on a DEAD NETWORK queues the whole post-edit
   // member set as one offline snapshot and returns true — keep the optimistic
@@ -59,7 +84,7 @@ export function LineupEditor({
     const wasIn = next.has(memberId);
     if (wasIn) next.delete(memberId);
     else next.add(memberId);
-    setLineup(next);
+    commit(next);
     const { error } = wasIn
       ? await supabase
           .from("event_members")
@@ -72,14 +97,14 @@ export function LineupEditor({
     if (error) {
       if (await queueOffline(next, lineup, error.message)) return;
       toast.error("บันทึกไม่สำเร็จ", { description: error.message });
-      setLineup(new Set(lineup)); // roll back
+      commit(new Set(lineup)); // roll back
     }
   }
 
   async function selectAll() {
     if (!editable) return;
     const prev = new Set(lineup);
-    setLineup(new Set(members.map((m) => m.id)));
+    commit(new Set(members.map((m) => m.id)));
     const rows = members
       .filter((m) => !prev.has(m.id))
       .map((m) => ({ tenant_id: tenantId, event_id: eventId, member_id: m.id }));
@@ -90,7 +115,7 @@ export function LineupEditor({
     if (error) {
       if (await queueOffline(new Set(members.map((m) => m.id)), prev, error.message)) return;
       toast.error("เลือกทั้งหมดไม่สำเร็จ", { description: error.message });
-      setLineup(prev);
+      commit(prev);
     }
   }
 
@@ -104,7 +129,7 @@ export function LineupEditor({
     });
     if (!ok) return;
     const prev = new Set(lineup);
-    setLineup(new Set());
+    commit(new Set());
     const { error } = await supabase
       .from("event_members")
       .delete()
@@ -112,7 +137,7 @@ export function LineupEditor({
     if (error) {
       if (await queueOffline(new Set(), prev, error.message)) return;
       toast.error("ล้างไม่สำเร็จ", { description: error.message });
-      setLineup(prev);
+      commit(prev);
     }
   }
 

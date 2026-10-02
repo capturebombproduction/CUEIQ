@@ -211,6 +211,17 @@ export function EventWorkspace({
     event.is_template,
     event.event_date,
   ]);
+
+  // WHO IS PERFORMING, kept once for every tab that reads it. The Lineup editor saves
+  // through its own state and the Mics tab (and the Summary) used to read the
+  // `lineup` prop — the list the page LOADED with — so after an Ar took a sick
+  // member off the lineup, Mics still showed that member on a mic, and the first
+  // เพิ่มไมค์ seeded the show's own map with them on it (per-event rows win on the
+  // Summary, the readiness gate, the Excel sheet and the JPG). The Lineup editor
+  // reports every move of its list here (onChange); the seeds effect below takes the
+  // server's list back when it changes.
+  const [liveLineup, setLiveLineup] = useState<string[]>(lineup);
+
   // remember the tab in the URL so a reload returns here (not back to Summary).
   // Web: the route is a real path, so the hash is a free slot (#setlist).
   // Desktop (HashRouter): the WHOLE route lives in the hash (#/events/<id>) —
@@ -271,23 +282,30 @@ export function EventWorkspace({
   const [seedRev, setSeedRev] = useState<Record<string, number>>({});
   useEffect(() => {
     const stale: string[] = [];
+    let lineupMoved = false;
     for (const [tab, fingerprint] of Object.entries(seeds)) {
       if (tab === view) continue; // active tab: the user's state wins, never remount
       const before = seededWith.current[tab];
       seededWith.current[tab] = fingerprint;
+      // The live lineup follows the server on exactly the terms the Lineup panel is
+      // re-seeded on (same fingerprint, same "not while it is the active tab"), so
+      // the panel and the tabs that read its list never disagree. Opened or not: an
+      // unopened panel has no edits of its own to protect.
+      if (tab === "lineup" && before !== undefined && before !== fingerprint) lineupMoved = true;
       // An unopened tab isn't mounted — it seeds from whatever props are current
       // when it first opens, so tracking the fingerprint is all it needs.
       if (opened.has(tab) && before !== undefined && before !== fingerprint) {
         stale.push(tab);
       }
     }
+    if (lineupMoved) setLiveLineup(lineup);
     if (!stale.length) return;
     setSeedRev((prev) => {
       const next = { ...prev };
       for (const tab of stale) next[tab] = (prev[tab] ?? 0) + 1;
       return next;
     });
-  }, [seeds, view, opened]);
+  }, [seeds, view, opened, lineup]);
   const seedKey = (tab: string) => seedRev[tab] ?? 0;
 
   // True from a left-button press on the Summary segment until its click (or until
@@ -514,7 +532,7 @@ export function EventWorkspace({
             members={members}
             showMic={modules.micMap}
             onNavigate={changeView}
-            lineup={lineup}
+            lineup={liveLineup}
             completeness={completeness}
             editable={editable}
             canRunLive={canRunLive}
@@ -580,8 +598,9 @@ export function EventWorkspace({
             tenantId={tenantId}
             editable={editable}
             members={members}
-            initialLineup={lineup}
+            initialLineup={liveLineup}
             eventName={event.name}
+            onChange={setLiveLineup}
           />
         </TabsContent>
 
@@ -599,7 +618,7 @@ export function EventWorkspace({
               editable={editable}
               initialMics={micMap}
               members={members}
-              lineup={lineup}
+              lineup={liveLineup}
               setlist={setlist}
               eventName={event.name}
             />

@@ -73,7 +73,9 @@ export function MicMapEditor({
   editable: boolean;
   initialMics: MicAssignment[];
   members: Member[];
-  /** member ids performing at THIS event; empty = nobody picked = the whole band. */
+  /** member ids performing at THIS event; empty = nobody picked = the whole band.
+   *  The LIVE list (EventWorkspace keeps it current as the Lineup tab is edited),
+   *  not the one the page loaded with. */
   lineup?: string[];
   setlist: SetlistItem[];
   eventName?: string;
@@ -189,7 +191,11 @@ export function MicMapEditor({
 
   /**
    * The first เพิ่มไมค์ on a show whose tab is showing the members' standing mics
-   * (no per-event rows). Per-event rows win on every surface the moment one exists —
+   * (no per-event rows). It is handed the very list the tiles were drawn from — the
+   * mics `onScreen` — and never works out its own, so the rows it writes are exactly
+   * the people the tab showed, from the page's LIVE lineup (a member taken off the
+   * Lineup tab a moment ago is not on a mic here).
+   * Per-event rows win on every surface the moment one exists —
    * Summary, Lineup, the readiness gate, the Excel sheet, this tab — so inserting only
    * the new empty mic would silently swap the band's mics for one blank one. Seed the
    * show's own map with what was on screen (one row per standing mic, a shared mic as
@@ -199,10 +205,10 @@ export function MicMapEditor({
    * still showing the standing mics. The write asks for its rows back and a reply with
    * none is "ยังไม่ได้บันทึก", never a success (lib/write-guard.ts).
    */
-  async function seedFromStanding() {
-    const nextNum = Math.max(...standing.map((s) => s.num)) + 1;
+  async function seedFromStanding(onScreen: typeof standing) {
+    const nextNum = Math.max(...onScreen.map((s) => s.num)) + 1;
     const wanted = [
-      ...standing.flatMap((s) =>
+      ...onScreen.flatMap((s) =>
         s.labels.map((label, i) => ({ mic_number: s.num, holder_name: label, order_index: i + 1 }))
       ),
       { mic_number: nextNum, holder_name: "", order_index: 1 },
@@ -238,7 +244,7 @@ export function MicMapEditor({
     setInserting(true);
     try {
       if (standing.length > 0) {
-        await seedFromStanding();
+        await seedFromStanding(standing);
         return;
       }
       const nextNum = groups.length ? Math.max(...groups.map((g) => g.num)) + 1 : 1;

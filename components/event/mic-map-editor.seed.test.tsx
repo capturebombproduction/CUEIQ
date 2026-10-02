@@ -132,6 +132,45 @@ describe("MicMapEditor · the first add seeds the show's map from the standing m
     expect((inserts()[0].values as { mic_number: number }[]).map((r) => r.mic_number)).toEqual([2, 5, 6]);
   });
 
+  // The lineup the editor is handed is the page's LIVE one (EventWorkspace keeps it
+  // current as the Lineup tab is edited), so it changes while this editor stays
+  // mounted — and what the first add seeds must be the tiles on screen NOW, not the
+  // ones it mounted with. (event-workspace.lineup-live.test.tsx walks the whole path.)
+  it("seeds the tiles on screen now when the lineup it is handed changes under it", async () => {
+    const tree = (lineup: string[]) => (
+      <ConfirmProvider>
+        <MicMapEditor
+          eventId="e1"
+          tenantId="t1"
+          editable
+          initialMics={[]}
+          members={three()}
+          lineup={lineup}
+          setlist={[]}
+          eventName="งานทดสอบ"
+        />
+      </ConfirmProvider>
+    );
+    const { container, rerender } = render(tree(["m1", "m2", "m3"]));
+    expect(standingTiles(container)).toHaveLength(3);
+
+    rerender(tree(["m1", "m3"])); // m2 taken off the lineup elsewhere on the page
+    expect(standingTiles(container)).toHaveLength(2);
+
+    fireEvent.click(screen.getByRole("button", { name: ADD }));
+    await waitFor(() => expect(micInputs()).toEqual([1, 3, 4]));
+    expect(
+      (inserts()[0].values as { mic_number: number; holder_name: string }[]).map((r) => [
+        r.mic_number,
+        r.holder_name,
+      ])
+    ).toEqual([
+      [1, "นิค1"],
+      [3, "นิค3"],
+      [4, ""],
+    ]);
+  });
+
   it("keeps a shared mic as ONE mic with its holders in rotation order", async () => {
     mount({ members: [member(1), member(2, { mic_number: 1 }), member(3)] });
     fireEvent.click(screen.getByRole("button", { name: ADD }));
