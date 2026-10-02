@@ -362,6 +362,50 @@ describe("EventsList — a past row's show name wraps instead of being cut (CQ-5
   });
 });
 
+// CQ-55 (round 15, approved by the owner). A stub's title sat in a one-line `truncate`
+// at every width, so on a tablet or the desktop app (1280) a long festival name was cut
+// with the rest of the card empty. From sm up it may take two lines; a phone keeps the
+// single line (the stub list there is capped to fit above the tab bar, spec §J), and the
+// full name is on hover either way. The stub has no fixed height — the card grows with
+// its content and the grid row stretches its neighbours — so a second line cannot clip
+// the date tile, the venue or the corner buttons.
+//
+// jsdom has no layout engine; this guards the class contract, including the trap that
+// `block` would replace the clamp's display and stop it clamping. The geometry is the
+// lead's real-browser measurement (sm / lg / 1280, a name long enough to need two lines).
+describe("EventsList — a long stub title takes two lines from sm up (CQ-55)", () => {
+  const LONG = "Bangkok Idol Festival 2026 Grand Finale and Closing Ceremony";
+  const mountStub = (editable: string[]) => {
+    const { container } = render(
+      <ConfirmProvider>
+        <EventsList
+          events={[ev("next", "โชว์ที่จะถึง", "2026-10-05"), ev("long", LONG, "2026-10-20")]}
+          editableGroupIds={editable}
+        />
+      </ConfirmProvider>
+    );
+    return container.querySelector<HTMLAnchorElement>('a.stub[href="/events/long"]')!.querySelector("h3")!;
+  };
+
+  it.each([
+    ["an editor", ["g1"]],
+    ["a viewer", []],
+  ])("clamps to two lines from sm up and stays one line on a phone, for %s", (_who, editable) => {
+    const name = mountStub(editable);
+    // phone: the single-line cut stays
+    expect(name.className).toMatch(/(^|\s)truncate(\s|$)/);
+    // sm and up: the nowrap is undone, two lines, and a long unbroken word may break
+    expect(name.className).toMatch(/(^|\s)sm:whitespace-normal(\s|$)/);
+    expect(name.className).toMatch(/(^|\s)sm:line-clamp-2(\s|$)/);
+    expect(name.className).toContain("sm:[overflow-wrap:anywhere]");
+    expect(name.className).not.toMatch(/(^|\s)(sm:)?block(\s|$)/);
+  });
+
+  it("carries the full name on hover", () => {
+    expect(mountStub([]).getAttribute("title")).toBe(LONG);
+  });
+});
+
 // CQ-57 (round 15). The ticket's second button said "ซ้อมตามเซ็ต" — the word for the
 // band's ROOM — even when the band has none and the link falls back to the Training
 // list. The event page's hero already says "ห้องซ้อม" then (components/event/event-hero.tsx).

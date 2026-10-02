@@ -207,7 +207,10 @@ function EventStub({
           <span className="min-w-0 truncate">{ev.groups?.name ?? "—"}</span>
           <StatusBadge status={ev.status as GroupStatus} className="ml-auto shrink-0" />
         </div>
-        <h3 className="mt-[4px] truncate text-[15px] font-semibold leading-snug group-hover:text-primary-ink">
+        <h3
+          title={ev.name}
+          className="mt-[4px] truncate text-[15px] font-semibold leading-snug group-hover:text-primary-ink sm:whitespace-normal sm:line-clamp-2 sm:[overflow-wrap:anywhere]"
+        >
           {ev.name}
         </h3>
         {(time || ev.venue) && (
