@@ -772,7 +772,7 @@ export function PracticePlayer({
                 role="group"
                 aria-label="ท่อนเพลง"
                 className={cn(
-                  "no-scrollbar -mx-4 mt-4 flex overflow-x-auto px-4 [scrollbar-width:none] [mask-image:linear-gradient(90deg,#000_85%,transparent)]",
+                  "no-scrollbar -mx-4 mt-4 flex overflow-x-auto px-4 [mask-image:linear-gradient(90deg,#000_85%,transparent)]",
                   canCurate && editMarkers ? "gap-2" : "gap-[3px]"
                 )}
               >

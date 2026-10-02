@@ -33,21 +33,6 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
-/* A row that scrolls sideways (the practice chip rows) without drawing its scrollbar.
-   postcss.config.mjs carries tailwindcss only — no autoprefixer — so the WebKit twin
-   is written out by hand: Safari before 18.2 ignores `scrollbar-width`, and a Tailwind
-   `[scrollbar-width:none]` has no way to add the pseudo-element.
-   WEB ONLY: desktop/src/index.css does not import this file (it shares theme.css and
-   stage.css), so a component the .exe renders keeps `[scrollbar-width:none]` beside
-   `no-scrollbar` — Electron's Chromium honours that one. Move these two rules into
-   stage.css and the second class can go (app/globals.css.test.ts follows the chain). */
-.no-scrollbar {
-  scrollbar-width: none;
-}
-.no-scrollbar::-webkit-scrollbar {
-  display: none;
-}
-
 /* Keyboard focus (and scrollIntoView, and a #hash jump) stops at the edge of the
    scrollport, which runs UNDER the fixed chrome: Tab down a long form and the focused
    field slid fully behind the tab bar or the sticky save bar (WCAG 2.4.11). The root

@@ -497,7 +497,7 @@ export function PracticeJournal({
           <div
             role="group"
             aria-label="ประเภทบันทึก"
-            className="no-scrollbar -mx-4 flex gap-1.5 overflow-x-auto px-4 [scrollbar-width:none]"
+            className="no-scrollbar -mx-4 flex gap-1.5 overflow-x-auto px-4"
           >
             {CATEGORIES.map((c) => (
               <button

@@ -1,11 +1,9 @@
-// app/globals.css — the two global rules this file owns after round 15:
+// app/globals.css + the shared .no-scrollbar rule, after round 15:
 //  • .no-scrollbar: a sideways chip row that does not draw its scrollbar. The build
 //    has no autoprefixer, so the ::-webkit-scrollbar twin has to be written by hand
-//    (Safari before 18.2 ignores `scrollbar-width`).
-//    This file is WEB ONLY — the .exe's desktop/src/index.css imports theme.css and
-//    stage.css, never globals.css — so a component the .exe renders must keep
-//    Tailwind's `[scrollbar-width:none]` beside `no-scrollbar` until the two rules
-//    move to a shared sheet (the last describe follows the .exe's import chain).
+//    (Safari before 18.2 ignores `scrollbar-width`). It lives in app/stage.css, which
+//    the web AND the .exe load (desktop/src/index.css never imports globals.css) —
+//    the last describe follows the .exe's import chain to prove it.
 //  • scroll-padding on <html>: keyboard focus must stop in the visible band between
 //    the sticky header and the tab bar / sticky save bar, never fully under them.
 // jsdom has no layout, so these pin the RULES (the tokens they use, the order of
@@ -36,10 +34,25 @@ function decls(selector: string, inAtRule?: string): Record<string, string> {
   return out;
 }
 
-describe("globals.css — .no-scrollbar", () => {
+describe("stage.css — .no-scrollbar", () => {
+  const stageFile = path.resolve(__dirname, "stage.css");
+  const stage = postcss.parse(fs.readFileSync(stageFile, "utf8"), { from: stageFile });
+  const stageDecls = (selector: string) => {
+    const out: Record<string, string> = {};
+    stage.walkRules((rule) => {
+      if (rule.selector.replace(/\s+/g, " ").trim() !== selector || rule.parent?.type === "atrule") return;
+      rule.walkDecls((d) => {
+        out[d.prop] = d.value.replace(/\s+/g, " ");
+      });
+    });
+    return out;
+  };
   it("hides the scrollbar in both engines: scrollbar-width AND the ::-webkit-scrollbar twin", () => {
-    expect(decls(".no-scrollbar")["scrollbar-width"]).toBe("none");
-    expect(decls(".no-scrollbar::-webkit-scrollbar")["display"]).toBe("none");
+    expect(stageDecls(".no-scrollbar")["scrollbar-width"]).toBe("none");
+    expect(stageDecls(".no-scrollbar::-webkit-scrollbar")["display"]).toBe("none");
+  });
+  it("is not ALSO in globals.css (one definition, the shared one)", () => {
+    expect(decls(".no-scrollbar")).toEqual({});
   });
 });
 
@@ -129,9 +142,9 @@ describe("`no-scrollbar` in a component the .exe renders", () => {
   });
 
   it("is either defined in the CSS the .exe loads, or sits beside [scrollbar-width:none]", () => {
-    // Today the class lives in globals.css only; Electron's Chromium honours the
-    // Tailwind class, so each use keeps it. Move `.no-scrollbar` into stage.css and
-    // this passes without it.
+    // The class lives in stage.css, which the .exe loads; if it ever moves back into a
+    // web-only sheet, every use must carry Tailwind's [scrollbar-width:none] again.
+    expect(desktopCss).toMatch(/\.no-scrollbar\b/);
     if (/\.no-scrollbar\b/.test(desktopCss)) return;
     for (const u of usages) {
       expect(u.classes, `${u.file}: the .exe would draw this row's scrollbar`).toContain("[scrollbar-width:none]");

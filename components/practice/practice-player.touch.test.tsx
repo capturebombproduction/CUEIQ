@@ -4,7 +4,7 @@
 //    a touch iPad (768+) got 36px loop / marker buttons. The shrink now keys on the
 //    pointer: only a fine pointer gets the dense 36px.
 //  • CQ-62: the section-chip row hides its scrollbar through `.no-scrollbar`
-//    (globals.css), which carries the ::-webkit-scrollbar twin a Tailwind
+//    (stage.css — the web and the .exe both load it), which carries the ::-webkit-scrollbar twin a Tailwind
 //    `[scrollbar-width:none]` cannot. jsdom has no layout: these are class pins, and
 //    the real-browser size check is the 768 hasTouch harness.
 import { describe, it, expect, vi, beforeEach } from "vitest";
@@ -144,16 +144,16 @@ describe("PracticePlayer — touch sizes (CQ-36)", () => {
 });
 
 describe("PracticePlayer — the section-chip row's scrollbar (CQ-62)", () => {
-  it("hides it through .no-scrollbar and keeps [scrollbar-width:none] for the .exe", async () => {
+  it("hides it through .no-scrollbar alone (stage.css reaches the .exe too)", async () => {
     await withSong();
     const row = within(screen.getByRole("region", { name: "Now playing" })).getByRole("group", {
       name: "ท่อนเพลง",
     });
     const c = classes(row);
     expect(c).toContain("no-scrollbar");
-    // the .exe's CSS is theme.css + stage.css only — it never loads globals.css, so
-    // without the Tailwind class its Chromium would draw the bar (see globals.css.test.ts)
-    expect(c).toContain("[scrollbar-width:none]");
+    // one rule, in the shared sheet (see app/globals.css.test.ts, which follows the
+    // .exe's import chain) — the bare Tailwind property is no longer needed beside it
+    expect(c).not.toContain("[scrollbar-width:none]");
     // it still scrolls sideways — only the bar is hidden
     expect(c).toContain("overflow-x-auto");
   });

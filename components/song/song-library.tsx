@@ -1578,7 +1578,7 @@ export function SongLibrary({
 
       {/* Filter chips (44 px). Scrolls sideways inside its own row on a narrow
           phone; the page itself never does. */}
-      <div className="no-scrollbar -mx-4 flex items-center gap-1.5 overflow-x-auto px-4 pb-0.5 [scrollbar-width:none] md:mx-0 md:px-0">
+      <div className="no-scrollbar -mx-4 flex items-center gap-1.5 overflow-x-auto px-4 pb-0.5 md:mx-0 md:px-0">
         <FilterChip
           on={copyFilter === "all" && !audioOnly}
           onClick={() => {

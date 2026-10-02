@@ -418,3 +418,10 @@ input[type=range]:focus-visible { outline: 2px solid hsl(var(--ring)); outline-o
    into it. Titles in a capture use .poster, numerals .num. */
 .export-light :is(.h1, .h2, .title-slab, .hero-num, .ztag, .nlabel) { font-style: normal; }
 .export-light .title-slab { background: none; color: inherit; padding: 0; }
+
+/* ---------------- a row that scrolls sideways without drawing its scrollbar ---------------- */
+/* Here, not in globals.css: desktop/src/index.css loads theme.css + stage.css only, and the
+   practice room and the library reach the .exe too. postcss.config.mjs has no autoprefixer,
+   so the WebKit twin is written by hand (Safari before 18.2 ignores scrollbar-width). */
+.no-scrollbar { scrollbar-width: none; }
+.no-scrollbar::-webkit-scrollbar { display: none; }
