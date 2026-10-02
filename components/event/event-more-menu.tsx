@@ -65,7 +65,7 @@ export function EventMoreMenu({
           </Button>
         </DialogTrigger>
         <DialogContent>
-          <DialogHeader>
+          <DialogHeader className="min-w-0">
             <DialogTitle>More</DialogTitle>
             <DialogDescription className="truncate">
               {eventName ? `${eventName} — ` : ""}แก้ไข แชร์ และส่งออก
