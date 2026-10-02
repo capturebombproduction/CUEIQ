@@ -20,10 +20,23 @@ const Table = React.forwardRef<
   HTMLTableElement,
   React.HTMLAttributes<HTMLTableElement>
 >(({ className, ...props }, ref) => (
-  <div className="relative w-full overflow-auto rounded-[2px] bg-card shadow-edge">
+  // overflow-x-auto below md, overflow-x-clip from md. ANY overflow other than
+  // visible / clip makes this box the scroll container of everything sticky inside
+  // it, and it never scrolls vertically — so the header below never stuck to the
+  // page. `clip` clips sideways without becoming a scroll container (overflow-y
+  // stays visible), like <main>'s own overflow-x-clip. The price: from md a table
+  // wider than its slab is cut, not scrolled, so every table on this primitive (the
+  // Library, the Event summary's setlist) has to fit at 768. Where `clip` is not
+  // supported (Safari < 16) the base overflow-x-auto stands and the header just
+  // stays put, as it did.
+  <div className="relative w-full overflow-x-auto rounded-[2px] bg-card shadow-edge md:overflow-x-clip">
+    {/* border-separate + spacing 0 draws the same lines as the collapsed model (every
+        line is a bottom border on a cell) but keeps the header's underline attached
+        to the header once it sticks: collapsed borders belong to the table, stay put
+        and let the rows slide under a header with no line below it. */}
     <table
       ref={ref}
-      className={cn("w-full caption-bottom text-sm", className)}
+      className={cn("w-full caption-bottom border-separate border-spacing-0 text-sm", className)}
       {...props}
     />
   </div>
@@ -34,10 +47,13 @@ const TableHeader = React.forwardRef<
   HTMLTableSectionElement,
   React.HTMLAttributes<HTMLTableSectionElement>
 >(({ className, ...props }, ref) => (
+  // Sticks UNDER the fixed app header (the Event page's tab row uses the same offset),
+  // not at the viewport's top edge where the header would cover it. Solid bg-card, not
+  // /95: rows scroll under it and 5 % of a bright cover tile still ghosts through.
   <thead
     ref={ref}
     className={cn(
-      "sticky top-0 z-10 bg-card/95 [&_tr]:h-10 [&_th]:border-b [&_th]:border-border [&_tr]:hover:bg-transparent",
+      "sticky top-[calc(var(--header-h)+var(--offline-strip-h,0px)+env(safe-area-inset-top))] z-10 bg-card [&_tr]:h-10 [&_th]:border-b [&_th]:border-border [&_tr]:hover:bg-transparent",
       className
     )}
     {...props}

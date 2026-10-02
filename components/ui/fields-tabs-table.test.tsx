@@ -72,7 +72,7 @@ describe("Table", () => {
   // the rail a shadow on a CELL. Measured on the compiled CSS, not the class strings:
   // a class that reads right can still compile to a selector that never matches
   // (`data-[current=true]:[&>td:first-child]` puts the attribute on the cell).
-  async function mountWithCss() {
+  async function compileTableCss() {
     const { default: postcss } = await import("postcss");
     const { default: tailwind } = await import("tailwindcss");
     const { default: loadConfig } = await import("tailwindcss/loadConfig");
@@ -82,8 +82,11 @@ describe("Table", () => {
     const css = await postcss([
       tailwind({ ...config, content: [path.join(root, "components/ui/table.tsx")] }),
     ]).process("@tailwind utilities;", { from: undefined });
+    return css.css;
+  }
+  async function mountWithCss() {
     const style = document.createElement("style");
-    style.textContent = css.css;
+    style.textContent = await compileTableCss();
     document.head.appendChild(style);
     render(
       <Table>
@@ -170,5 +173,69 @@ describe("Table", () => {
     } finally {
       cleanupCss();
     }
+  });
+
+  // CQ-41. The slab wrapper was `overflow-auto`: any overflow but visible / clip makes a
+  // box the scroll container for the sticky elements inside it, and this one never
+  // scrolls vertically — so the header's `sticky top-0` never stuck to the page.
+  // jsdom has no layout: this pins the classes and that they COMPILE (the sticky itself
+  // was measured in a real browser — a stuck header at the header's bottom edge).
+  describe("sticky header (CQ-41)", () => {
+    const flat = (css: string) => css.replace(/\s+/g, " ");
+    const mountBare = () =>
+      render(
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Title</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            <TableRow>
+              <TableCell>Kakumei</TableCell>
+            </TableRow>
+          </TableBody>
+        </Table>
+      );
+
+    it("the slab scrolls sideways below md and only CLIPS from md, so it is not a scroll container there", async () => {
+      mountBare();
+      const wrap = screen.getByRole("table").parentElement!;
+      expect(classes(wrap)).toEqual(expect.arrayContaining(["overflow-x-auto", "md:overflow-x-clip"]));
+      // the bare `overflow-auto` is what made it a scroll container at every width
+      expect(classes(wrap)).not.toContain("overflow-auto");
+      expect(classes(wrap).filter((k) => /overflow-y/.test(k))).toEqual([]);
+
+      const css = flat(await compileTableCss());
+      expect(css).toMatch(/@media \(min-width: 768px\) \{[^@]*\.md\\:overflow-x-clip \{ overflow-x: clip;? \}/);
+    });
+
+    it("the header sticks UNDER the fixed app header, not at the viewport's top edge", async () => {
+      mountBare();
+      const thead = screen.getByRole("table").querySelector("thead")!;
+      expect(classes(thead)).toContain("sticky");
+      expect(classes(thead)).not.toContain("top-0");
+      // the same offset the Event page's tab row uses (strip height included)
+      const css = flat(await compileTableCss());
+      expect(css).toContain(
+        "top: calc(var(--header-h) + var(--offline-strip-h,0px) + env(safe-area-inset-top))"
+      );
+    });
+
+    it("the stuck header is opaque — rows slide under it", () => {
+      mountBare();
+      const thead = screen.getByRole("table").querySelector("thead")!;
+      expect(classes(thead)).toContain("bg-card");
+      expect(classes(thead).some((k) => /^bg-card\//.test(k))).toBe(false);
+    });
+
+    it("lines are drawn in the separated border model, so the header's underline travels with it", async () => {
+      mountBare();
+      expect(classes(screen.getByRole("table"))).toEqual(
+        expect.arrayContaining(["border-separate", "border-spacing-0"])
+      );
+      const css = flat(await compileTableCss());
+      expect(css).toMatch(/\.border-separate \{ border-collapse: separate;? \}/);
+    });
   });
 });

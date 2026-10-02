@@ -1578,7 +1578,7 @@ export function SongLibrary({
 
       {/* Filter chips (44 px). Scrolls sideways inside its own row on a narrow
           phone; the page itself never does. */}
-      <div className="-mx-4 flex items-center gap-1.5 overflow-x-auto px-4 pb-0.5 [scrollbar-width:none] md:mx-0 md:px-0">
+      <div className="no-scrollbar -mx-4 flex items-center gap-1.5 overflow-x-auto px-4 pb-0.5 md:mx-0 md:px-0">
         <FilterChip
           on={copyFilter === "all" && !audioOnly}
           onClick={() => {
@@ -1714,12 +1714,20 @@ export function SongLibrary({
             <TableHeader>
               <TableRow>
                 <TableHead>Song</TableHead>
-                <TableHead className="w-24 text-right">Length</TableHead>
-                <TableHead className="w-[10rem]">Audio</TableHead>
+                {/* Length and Audio are narrower below lg: their content (a time, one
+                    or two badges, nowrap) is well under the lg widths, and the room goes
+                    to the Song column — 144 px of it at 768 made every title wrap per
+                    word. A column never goes below its content, so nothing is cut. */}
+                <TableHead className="w-20 text-right lg:w-24">Length</TableHead>
+                <TableHead className="w-32 lg:w-[10rem]">Audio</TableHead>
                 <TableHead className="hidden w-24 lg:table-cell">Language</TableHead>
                 <TableHead className="hidden w-28 xl:table-cell">Category</TableHead>
                 <TableHead className="w-32">Rights</TableHead>
-                {groups.length > 1 && <TableHead className="w-36">Band</TableHead>}
+                {/* Band is its own column from lg only. At 768-1023 a label admin's
+                    row (Song + Length + Audio + Rights + ▶ + manage) already takes the
+                    whole slab, and the table scrolled sideways with the edit / delete
+                    keys off-screen — below lg the band is a meta line under the title. */}
+                {groups.length > 1 && <TableHead className="hidden w-36 lg:table-cell">Band</TableHead>}
                 <TableHead className="w-14">
                   <span className="sr-only">ตัวอย่าง</span>
                 </TableHead>
@@ -1770,10 +1778,26 @@ export function SongLibrary({
                               {song.notes}
                             </div>
                           )}
+                          {/* the file name is an unbreakable string: as the cell's
+                              min-content it held the Song column ~330 px wide and pushed
+                              the table past the slab at tablet widths (CQ-39). break-all
+                              lets it wrap; two lines at most, the full name on hover. */}
                           {song.file_name && (
-                            <div className="flex items-center gap-1 text-xs text-muted-foreground">
-                              <FileAudio className="h-3 w-3" aria-hidden />
-                              {song.file_name}
+                            <div className="flex items-start gap-1 text-xs text-muted-foreground">
+                              <FileAudio className="mt-0.5 h-3 w-3 shrink-0" aria-hidden />
+                              <span className="line-clamp-2 min-w-0 break-all" title={song.file_name}>
+                                {song.file_name}
+                              </span>
+                            </div>
+                          )}
+                          {groups.length > 1 && band && (
+                            <div className="flex items-center gap-1.5 text-xs text-muted-foreground lg:hidden">
+                              <span
+                                aria-hidden
+                                className="h-2 w-2 shrink-0 rounded-[1px] bg-muted-foreground"
+                                style={band.color ? { background: band.color } : undefined}
+                              />
+                              <span className="min-w-0 break-words">{band.name}</span>
                             </div>
                           )}
                         </div>
@@ -1800,7 +1824,7 @@ export function SongLibrary({
                     </TableCell>
                     <TableCell>{copyrightControl(song)}</TableCell>
                     {groups.length > 1 && (
-                      <TableCell className="text-muted-foreground">
+                      <TableCell className="hidden text-muted-foreground lg:table-cell">
                         {band ? (
                           <span className="flex items-center gap-2">
                             <span
@@ -1866,10 +1890,22 @@ export function SongLibrary({
                       >
                         {song.title}
                       </span>
+                      {/* `block truncate`, never `flex`: text-overflow does not apply to
+                          flex items, so on a 360 px phone "174 BPM" was cut mid-glyph with
+                          no ellipsis. The separators carry their own margin for the same
+                          reason (no flex gap); it tightens under 380 px so the common
+                          length · language · BPM line still fits whole on a 360 px row. */}
                       {meta.length > 0 && (
-                        <span className="mt-[3px] flex items-center gap-1.5 truncate text-[12.5px] text-muted-foreground">
+                        <span className="mt-[3px] block truncate text-[12.5px] text-muted-foreground">
                           {meta.flatMap((p, i) =>
-                            i === 0 ? [p] : [<span key={`dot-${i}`} aria-hidden>·</span>, p]
+                            i === 0
+                              ? [p]
+                              : [
+                                  <span key={`dot-${i}`} aria-hidden className="mx-1.5 [@media(max-width:380px)]:mx-1">
+                                    ·
+                                  </span>,
+                                  p,
+                                ]
                           )}
                         </span>
                       )}

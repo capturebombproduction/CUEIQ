@@ -3,6 +3,8 @@
 // delete now live), the 44 px ▶, the filter chips that replaced two dropdowns,
 // and a row that survives a cached song with no rights field at all.
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import fs from "node:fs";
+import path from "node:path";
 import { render, screen, fireEvent, within } from "@testing-library/react";
 import { ConfirmProvider } from "@/components/ui/confirm-dialog";
 import { makePerms, type Perms } from "@/lib/permissions";
@@ -185,5 +187,105 @@ describe("SongLibrary — Black Stage layout", () => {
     expect(within(row).getByRole("button", { name: "ลบเพลง Akai Hana" })).toBeTruthy();
     fireEvent.click(within(row).getByRole("button", { name: "Akai Hana" }));
     expect(within(screen.getByRole("dialog")).getByRole("heading", { name: "Akai Hana" })).toBeTruthy();
+  });
+});
+
+// Round 15 (CQ-39 / CQ-40 / CQ-62). jsdom has no layout, so these pin the classes that
+// make the layout work; the pixel proof is a real-browser measurement (the harness's
+// lib-overflow probe at 768 / 810 / 820 / 834 / 844 and ev_libmeta at 360).
+describe("SongLibrary — tablet table, phone meta line, chip row", () => {
+  const FILE = "Seishin_Kakumei_FINAL_master_v3_2026-09-30_mix.mp3";
+  const twoBands = [
+    { id: "g1", tenant_id: "t1", name: "Seishin Kakumei", color: "#a62a1c" } as Group,
+    { id: "g2", tenant_id: "t1", name: "Capture Bomb" } as Group,
+  ];
+  const mountBands = (songs: Song[], bands: Group[], perms: Perms) =>
+    render(
+      <ConfirmProvider>
+        <SongLibrary tenantId="t1" groups={bands} initialSongs={songs} perms={perms} />
+      </ConfirmProvider>
+    );
+  const cls = (el: Element) => el.className.split(/\s+/);
+
+  // CQ-39: a label admin's table (Song + Length + Audio + Rights + ▶ + manage + Band)
+  // was ~886 px wide at 768, so edit / delete sat off-screen in a hint-less scroller.
+  it("the Band column is lg-and-up only: below lg it is a meta line under the title", () => {
+    mountBands(
+      [song("s1", "Akai Hana", { group_id: "g2", file_name: FILE })],
+      twoBands,
+      makePerms("admin")
+    );
+    const head = screen.getByRole("columnheader", { name: "Band" });
+    expect(cls(head)).toEqual(expect.arrayContaining(["hidden", "lg:table-cell"]));
+
+    const row = screen.getAllByRole("row")[1];
+    const cells = within(row).getAllByRole("cell");
+    // the Band cell is the one holding the band name and nothing else
+    const bandCell = cells.find((c) => c.textContent === "Capture Bomb")!;
+    expect(cls(bandCell)).toEqual(expect.arrayContaining(["hidden", "lg:table-cell"]));
+
+    // the same name, as a muted line in the Song cell, shown only below lg
+    const meta = within(cells[0]).getByText("Capture Bomb").parentElement!;
+    expect(cls(meta)).toContain("lg:hidden");
+    expect(cls(meta)).not.toContain("hidden");
+    expect(cls(meta)).toContain("text-muted-foreground");
+  });
+
+  it("a one-band library has neither a Band column nor the meta line", () => {
+    mountBands([song("s1", "Akai Hana")], [twoBands[0]], makePerms("admin"));
+    expect(screen.queryByRole("columnheader", { name: "Band" })).toBeNull();
+    const row = screen.getAllByRole("row")[1];
+    expect(within(row).queryByText("Seishin Kakumei")).toBeNull();
+  });
+
+  it("the file name wraps anywhere instead of holding the Song column open", () => {
+    mountBands([song("s1", "Akai Hana", { file_name: FILE })], twoBands, makePerms("admin"));
+    const name = within(screen.getAllByRole("row")[1]).getByText(FILE);
+    expect(cls(name)).toEqual(expect.arrayContaining(["min-w-0", "break-all"]));
+    // two lines at most, the whole name on hover
+    expect(cls(name)).toContain("line-clamp-2");
+    expect(name.getAttribute("title")).toBe(FILE);
+  });
+
+  it("Length and Audio are narrower below lg, so the Song column keeps its room", () => {
+    mountBands([song("s1", "Akai Hana")], twoBands, makePerms("admin"));
+    expect(cls(screen.getByRole("columnheader", { name: "Length" }))).toEqual(
+      expect.arrayContaining(["w-20", "lg:w-24"])
+    );
+    expect(cls(screen.getByRole("columnheader", { name: "Audio" }))).toEqual(
+      expect.arrayContaining(["w-32", "lg:w-[10rem]"])
+    );
+  });
+
+  // CQ-40: text-overflow does not apply to flex items, so the phone meta line (a `flex`
+  // with `truncate`) hard-clipped "174 BPM" to "174 BP" at 360 with no ellipsis.
+  it("the phone meta line is a block that truncates — never a flex row", () => {
+    mount([song("s1", "Seishin Kakumei", { language: "jp", bpm: 174 })]);
+    const row = phoneList().children[0] as HTMLElement;
+    const meta = [...row.querySelectorAll("span.truncate")].find((el) => /BPM/.test(el.textContent ?? ""))!;
+    expect(meta).toBeTruthy();
+    expect(cls(meta)).toEqual(expect.arrayContaining(["block", "truncate"]));
+    expect(cls(meta)).not.toContain("flex");
+    // the separators carry their own margin now (there is no flex gap), tighter under 380 px
+    const dots = [...meta.querySelectorAll("span[aria-hidden]")];
+    expect(dots).toHaveLength(2);
+    for (const dot of dots) {
+      expect(dot.textContent).toBe("·");
+      expect(cls(dot)).toEqual(expect.arrayContaining(["mx-1.5", "[@media(max-width:380px)]:mx-1"]));
+    }
+    // length · language · BPM still read in order
+    expect(meta.textContent).toBe("3:48·ญี่ปุ่น·174 BPM");
+  });
+
+  // CQ-62: no autoprefixer, so `[scrollbar-width:none]` alone leaves chip-row scrollbars
+  // on Mac Safari < 18.2. `.no-scrollbar` (app/globals.css) carries both rules.
+  it("the chip row hides its scrollbar with .no-scrollbar, not the bare arbitrary property", () => {
+    mount([song("s1", "Akai Hana")]);
+    const chips = screen.getByRole("button", { name: "ทั้งหมด" }).parentElement!;
+    expect(cls(chips)).toContain("no-scrollbar");
+    expect(cls(chips)).toContain("overflow-x-auto");
+    expect(cls(chips)).not.toContain("[scrollbar-width:none]");
+    const src = fs.readFileSync(path.resolve(__dirname, "song-library.tsx"), "utf8");
+    expect(src).not.toContain("[scrollbar-width:none]");
   });
 });
