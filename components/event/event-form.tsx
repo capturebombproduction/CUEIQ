@@ -4,6 +4,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { saveEventWrite } from "@/lib/mgmt-write";
+import { useHoldBottomSlot } from "@/lib/bottom-slot";
 import { createClient } from "@/lib/supabase/client";
 import { useConfirm } from "@/components/ui/confirm-dialog";
 import {
@@ -76,6 +77,10 @@ export function EventForm({
 }) {
   const router = useRouter();
   const confirm = useConfirm();
+  // The sticky save bar at the bottom floats on the push nudge's pixels and is
+  // always rendered, so the form holds the slot for as long as it is mounted (the
+  // nudge waits — hidden, not dismissed — instead of covering ยกเลิก / บันทึก).
+  useHoldBottomSlot();
   const [name, setName] = useState(event?.name ?? "");
   const [groupId, setGroupId] = useState(
     event?.group_id ?? defaultGroupId ?? groups[0]?.id ?? ""

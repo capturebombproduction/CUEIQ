@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button";
 import { EventSummary } from "@/components/event/event-summary";
 import { useLeaveGuard } from "@/components/event/use-leave-guard";
 import { commitFocusedField, unsavedWork } from "@/lib/dirty-guard";
+import { useHoldBottomSlot } from "@/lib/bottom-slot";
 import { bkkTodayKey } from "@/lib/time";
 import { type RunSeqLive } from "@/components/event/event-live-caller";
 
@@ -551,6 +552,7 @@ export function EventWorkspace({
               editable={editable}
               initialMics={micMap}
               members={members}
+              lineup={lineup}
               setlist={setlist}
               eventName={event.name}
             />
@@ -565,15 +567,42 @@ export function EventWorkspace({
           on first paint the bar sat over their first setlist row (§J). The way back
           to the run sheet is the Summary segment, always in the sticky row above. */}
       {editable && view !== "summary" && (
-        <div className="no-print sticky bottom-[calc(var(--tabbar-h)+env(safe-area-inset-bottom)+8px)] z-30 mt-2 flex items-center justify-end gap-2 rounded-[3px] bg-card p-2 shadow-float lg:bottom-4">
-          <Button type="button" variant="secondary" onClick={() => changeView("summary")}>
-            <ClipboardList aria-hidden /> ดูสรุปงาน
-          </Button>
-          <Button type="button" onClick={confirmSaved} disabled={saving}>
-            <Check aria-hidden /> บันทึก / อัปเดต
-          </Button>
-        </div>
+        <SaveBar
+          saving={saving}
+          onSummary={() => changeView("summary")}
+          onSave={confirmSaved}
+        />
       )}
+    </div>
+  );
+}
+
+/** The sticky save bar. Its own component only so it can HOLD the bottom slot
+ *  (lib/bottom-slot.ts) for exactly as long as it is on screen: it floats on the
+ *  same pixels as the push nudge, and the nudge (z-50, outside <main>) used to
+ *  cover ดูสรุปงาน / บันทึก on every width. The nudge now waits — hidden, not
+ *  dismissed — and shows on the next page that has no bar.
+ *
+ *  Kept BELOW the workspace on purpose: lib/stage-wash.test.ts reads this file
+ *  for the FIRST sticky className and expects it to be the tab strip's. */
+function SaveBar({
+  saving,
+  onSummary,
+  onSave,
+}: {
+  saving: boolean;
+  onSummary: () => void;
+  onSave: () => void;
+}) {
+  useHoldBottomSlot();
+  return (
+    <div className="no-print sticky bottom-[calc(var(--tabbar-h)+env(safe-area-inset-bottom)+8px)] z-30 mt-2 flex items-center justify-end gap-2 rounded-[3px] bg-card p-2 shadow-float lg:bottom-4">
+      <Button type="button" variant="secondary" onClick={onSummary}>
+        <ClipboardList aria-hidden /> ดูสรุปงาน
+      </Button>
+      <Button type="button" onClick={onSave} disabled={saving}>
+        <Check aria-hidden /> บันทึก / อัปเดต
+      </Button>
     </div>
   );
 }

@@ -104,9 +104,10 @@ export function PushNudge({
   const [busy, setBusy] = useState(false);
   // Read with the rest of the platform probes, after mount (never during render).
   const [inApp, setInApp] = useState(false);
-  // The Library preview player pins itself to the SAME slot (lib/bottom-slot.ts).
-  // While it is up, the question waits — hidden, not answered: nothing is
-  // remembered, and it comes back the moment the player closes.
+  // The Library preview player and the event editors' sticky save bars pin
+  // themselves to the SAME slot (lib/bottom-slot.ts). While one is up, the question
+  // waits — hidden, not answered: nothing is remembered, and it comes back the
+  // moment the player closes or on the next page that has no save bar.
   const slotTaken = useBottomSlotTaken();
 
   useEffect(() => {

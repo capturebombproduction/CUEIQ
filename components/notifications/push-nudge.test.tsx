@@ -33,9 +33,31 @@ vi.mock("@/lib/platform", () => ({
   isStandalone: () => device.standalone,
   isInAppBrowser: () => device.inApp,
 }));
+const router = vi.hoisted(() => ({
+  push: () => {},
+  refresh: () => {},
+  replace: () => {},
+  back: () => {},
+}));
+vi.mock("next/navigation", () => ({
+  useRouter: () => router,
+  usePathname: () => "/events/e1",
+  useSearchParams: () => new URLSearchParams(),
+}));
+// The editors are code-split and talk to Supabase; this file is about the slot the
+// workspace's SAVE BAR occupies, not about what is inside the tabs.
+vi.mock("@/components/event/setlist-builder", () => ({ SetlistBuilder: () => null }));
+vi.mock("@/components/event/schedule-editor", () => ({ ScheduleEditor: () => null }));
+vi.mock("@/components/event/mic-map-editor", () => ({ MicMapEditor: () => null }));
+vi.mock("@/components/event/lineup-editor", () => ({ LineupEditor: () => null }));
 
 import { PushNudge } from "@/components/notifications/push-nudge";
 import { LibraryMiniPlayer } from "@/components/song/library-mini-player";
+import { EventWorkspace } from "@/components/event/event-workspace";
+import { EventForm } from "@/components/event/event-form";
+import { ConfirmProvider } from "@/components/ui/confirm-dialog";
+import type { CompletenessResult } from "@/lib/completeness";
+import type { EventRow, Group } from "@/lib/types";
 
 const ME = "11111111-1111-4111-8111-111111111111";
 const TENANT = "22222222-2222-4222-8222-222222222222";
@@ -276,6 +298,106 @@ describe("PushNudge", () => {
 
     rerender(<PushNudge userId={ME} tenantId={TENANT} />);
     // hidden, not answered: nothing was remembered, so it is asked now
+    expect(screen.getByTestId("push-nudge")).toBeInTheDocument();
+    expect(localStorage.getItem(DISMISS_KEY)).toBeNull();
+  });
+});
+
+// CQ-05 (round 15). The event editors' sticky save bar sits on the SAME pixels as
+// the nudge — identical bottom calc, the nudge right-aligned over the bar's
+// right-aligned buttons — and the nudge is z-50 outside <main> while the bar is
+// z-30 inside it, so on every width from a 360px phone to a 1440px desktop the
+// nudge covered ดูสรุปงาน / บันทึก. The save bars now HOLD the slot like the
+// Library player does: the nudge waits, is not marked dismissed, and is shown on
+// the next page that has no bar.
+describe("PushNudge · the event editors' save bars hold the same slot", () => {
+  const group = { id: "g1", tenant_id: "t1", name: "วงทดสอบ" } as Group;
+  const event = {
+    id: "e1",
+    tenant_id: "t1",
+    group_id: "g1",
+    name: "งานทดสอบ",
+    event_date: "2026-12-01",
+    event_type: "idol",
+    status: "in_progress",
+    is_template: false,
+    group,
+  } as unknown as EventRow & { group: Group | null };
+
+  const workspace = (editable: boolean) => (
+    <EventWorkspace
+      event={event}
+      eventId="e1"
+      tenantId="t1"
+      editable={editable}
+      completeness={{ complete: false, missing: [] } as unknown as CompletenessResult}
+      eventType="idol"
+      showStartTime={null}
+      hardOutTime={null}
+      schedule={[]}
+      setlist={[]}
+      micMap={[]}
+      members={[]}
+      songs={[]}
+      lineup={[]}
+    />
+  );
+
+  afterEach(() => {
+    window.location.hash = "";
+  });
+
+  it("waits while the workspace's save bar is up, and comes back on the Summary", async () => {
+    window.location.hash = "#setlist";
+    render(
+      <>
+        <PushNudge userId={ME} tenantId={TENANT} />
+        {workspace(true)}
+      </>
+    );
+    expect(screen.getByRole("button", { name: /บันทึก \/ อัปเดต/ })).toBeInTheDocument();
+    await elapse();
+    // the save bar's buttons are the ones on screen
+    expect(screen.queryByTestId("push-nudge")).toBeNull();
+
+    // the Summary has no save bar — the question was only waiting, not answered
+    fireEvent.click(screen.getByRole("tab", { name: "Summary" }));
+    await flush();
+    expect(screen.queryByRole("button", { name: /บันทึก \/ อัปเดต/ })).toBeNull();
+    expect(screen.getByTestId("push-nudge")).toBeInTheDocument();
+    expect(localStorage.getItem(DISMISS_KEY)).toBeNull();
+  });
+
+  it("is not held off by a read-only viewer, who has no save bar", async () => {
+    window.location.hash = "#setlist";
+    render(
+      <>
+        <PushNudge userId={ME} tenantId={TENANT} />
+        {workspace(false)}
+      </>
+    );
+    expect(screen.queryByRole("button", { name: /บันทึก \/ อัปเดต/ })).toBeNull();
+    await elapse();
+    expect(screen.getByTestId("push-nudge")).toBeInTheDocument();
+  });
+
+  it("waits while the event form's save bar is up, and comes back once it is gone", async () => {
+    const form = (
+      <ConfirmProvider>
+        <EventForm mode="create" tenantId={TENANT} groups={[group]} />
+      </ConfirmProvider>
+    );
+    const { rerender } = render(
+      <>
+        <PushNudge userId={ME} tenantId={TENANT} />
+        {form}
+      </>
+    );
+    expect(screen.getByRole("button", { name: "สร้างงาน" })).toBeInTheDocument();
+    await elapse();
+    expect(screen.queryByTestId("push-nudge")).toBeNull();
+
+    rerender(<PushNudge userId={ME} tenantId={TENANT} />);
     expect(screen.getByTestId("push-nudge")).toBeInTheDocument();
     expect(localStorage.getItem(DISMISS_KEY)).toBeNull();
   });

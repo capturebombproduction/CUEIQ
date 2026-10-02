@@ -19,7 +19,41 @@ import {
 } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { MicTile } from "@/components/event/mic-grid";
+import { lineupStatus, memberLabel } from "@/lib/lineup";
 import type { Member, MicAssignment, SetlistItem } from "@/lib/types";
+
+/** One mic tile as the Mic Map draws it for a member to read (spec §G.3). */
+const MIC_TILE_CLS = "py-2 [&_.num]:text-[28px] [&_.truncate]:text-[14px]";
+
+/**
+ * The mics the band actually uses when nobody has set any for THIS show: each
+ * performing member's own standing `mic_number`. Zero per-event rows is the normal
+ * case (40 of 41 production events, and the real 2026-10-03 show), and the Summary,
+ * the Lineup, the readiness gate and the Excel sheet all already count the members'
+ * numbers — this tab alone read "no mics". Same rule, same order and same labels as
+ * lib/export-excel.ts micBaseRows([], performingMembers(…)); re-stated here rather
+ * than imported because export-excel pulls the whole xlsx library, which this tab's
+ * chunk must not carry. mic-map-editor.test.tsx pins the two together.
+ */
+function standingMics(
+  members: Member[],
+  lineup: string[]
+): { num: number; name: string; color: string | null }[] {
+  const byMic = new Map<number, Member[]>();
+  for (const m of lineupStatus(members, lineup).present) {
+    if (m.mic_number == null) continue;
+    const arr = byMic.get(m.mic_number) ?? [];
+    arr.push(m);
+    byMic.set(m.mic_number, arr);
+  }
+  return Array.from(byMic.entries())
+    .sort((a, b) => a[0] - b[0])
+    .map(([num, holders]) => ({
+      num,
+      name: holders.map(memberLabel).join(", "),
+      color: holders[0].color,
+    }));
+}
 
 export function MicMapEditor({
   eventId,
@@ -27,6 +61,7 @@ export function MicMapEditor({
   editable,
   initialMics,
   members,
+  lineup = [],
   setlist,
   eventName,
 }: {
@@ -35,6 +70,8 @@ export function MicMapEditor({
   editable: boolean;
   initialMics: MicAssignment[];
   members: Member[];
+  /** member ids performing at THIS event; empty = nobody picked = the whole band. */
+  lineup?: string[];
   setlist: SetlistItem[];
   eventName?: string;
 }) {
@@ -389,6 +426,9 @@ export function MicMapEditor({
   }
 
   const songsWithMics = setlist.filter((s) => (s.mic_slots?.length ?? 0) > 0);
+  // Only consulted while this show has no mics of its own; the moment an editor
+  // adds one, the show's own map takes over (as it does on the Excel sheet).
+  const standing = groups.length === 0 ? standingMics(members, lineup) : [];
 
   return (
     <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
@@ -410,10 +450,32 @@ export function MicMapEditor({
             </datalist>
           )}
 
-          {groups.length === 0 && (
+          {/* "No row for this show" is not "no mics": the members' own numbers are the
+              plan until someone adjusts it for this show. Read-only here — adjusting
+              is เพิ่มไมค์ below. */}
+          {groups.length === 0 && standing.length === 0 && (
             <p className="rounded-[2px] border border-dashed py-8 text-center text-sm text-muted-foreground">
               ยังไม่มีการกำหนดไมค์
             </p>
+          )}
+
+          {standing.length > 0 && (
+            <>
+              <div className="grid grid-cols-3 gap-[3px]">
+                {standing.map((s) => (
+                  <MicTile
+                    key={s.num}
+                    mic={s.num}
+                    name={s.name || "—"}
+                    color={s.color}
+                    className={MIC_TILE_CLS}
+                  />
+                ))}
+              </div>
+              <p className="text-[12.5px] text-muted-foreground">
+                ไมค์ประจำตัวสมาชิก (ยังไม่ได้ปรับเฉพาะงานนี้)
+              </p>
+            </>
           )}
 
           {/* A member reads who is on which mic: one tile per mic, number over the
@@ -429,7 +491,7 @@ export function MicMapEditor({
                     mic={g.num}
                     name={holders.join(" / ") || "—"}
                     color={first?.color ?? null}
-                    className="py-2 [&_.num]:text-[28px] [&_.truncate]:text-[14px]"
+                    className={MIC_TILE_CLS}
                   />
                 );
               })}
@@ -572,7 +634,7 @@ export function MicMapEditor({
         <CardContent>
           {songsWithMics.length === 0 ? (
             <p className="rounded-[2px] border border-dashed py-8 text-center text-sm text-muted-foreground">
-              ยังไม่ได้กำหนดไมค์ในเซ็ตลิสต์ — ตั้งค่าได้ที่แท็บ Setlist
+              ไม่มีการสลับไมค์รายเพลง — ใช้ไมค์ตาม Mic Map
             </p>
           ) : (
             <div className="stack">
