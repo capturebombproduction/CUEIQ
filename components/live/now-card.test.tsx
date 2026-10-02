@@ -241,35 +241,48 @@ describe("NowCard · the landscape-phone card is a touch screen's, never a short
 // `.zidx` / `.zthr` were neither — so in URGENT at 360 / 375 (a 23 px tag) and in
 // WARN / URGENT on a landscape phone (a 32 px strip in a half-width card) the index
 // was the only thing allowed to shrink, collapsed to its min-content ("01 /") and
-// wrapped onto 2-3 lines OUT of the strip. Four layers, each pinned here:
+// wrapped onto 2-3 lines OUT of the strip. Layers, each pinned here:
 //   1. the index and the threshold can neither wrap nor shrink;
-//   2. portrait under 390 px, URGENT's tag + gap give back ~17 px so the clock clears
-//      the 18 px chamfer (380-382 was still 1-3 px short with a 380 breakpoint);
+//   2. the strip sheds what does not fit from ITS OWN width (the next describe) —
+//      the card is 308 px wide on a 1000 px iPad as much as on a 340 px phone;
 //   3. on the landscape phone the strip does not carry the index at all in WARN /
 //      URGENT — the title row does, as it already does in overtime;
 //   4. …nor the threshold: with the index gone, tag + threshold + clock still do not
 //      fit ~218 px at 568-650, and the clock's `overflow: hidden` would then show a
 //      PARTIAL time ("จบ 21:45:3"). The caption row still says "เหลือไม่ถึง N".
 // jsdom has no layout: what is pinned is the rules and the classes, never a measurement.
-// The harness must measure 360-389 portrait and 568-844 landscape, and its pass
-// condition is `zend.scrollWidth <= zend.clientWidth` (the clock is NOT clipped) —
+// The harness (review-shots/r15/_measure/now-strip2) must measure 320-430 portrait,
+// 568-844 landscape and the 1000-1440 stage layout, and its pass condition is
+// `zend.scrollWidth <= zend.clientWidth` (the clock is NOT clipped) —
 // `zend.right <= zhead.right - 18` alone is true by construction under overflow:hidden.
-describe("NowCard · the WARN / URGENT strip's position never wraps out of the strip", () => {
-  const stage = postcss.parse(fs.readFileSync(path.resolve(__dirname, "../../app/stage.css"), "utf8"));
-  const flat = (v: string) => v.replace(/\s+/g, " ").trim();
-  /** declarations of every rule for `selector` inside the given at-rule params ("" = top level) */
-  function decls(selector: string, media = ""): Record<string, string> {
-    const out: Record<string, string> = {};
-    stage.walkRules((rule) => {
-      if (!rule.selectors.map((s) => s.trim()).includes(selector)) return;
-      const parent = rule.parent as AtRule | undefined;
-      const at = parent?.type === "atrule" ? parent.params : "";
-      if (at !== media) return;
-      rule.walkDecls((d) => void (out[d.prop] = flat(d.value)));
-    });
-    return out;
-  }
+const stage = postcss.parse(fs.readFileSync(path.resolve(__dirname, "../../app/stage.css"), "utf8"));
+const flat = (v: string) => v.replace(/\s+/g, " ").trim();
+const norm = (v: string) => v.replace(/\s+/g, "");
+/** the at-rules a rule sits in, outermost first */
+const ancestors = (rule: postcss.Rule): AtRule[] => {
+  const out: AtRule[] = [];
+  for (let p = rule.parent; p && p.type === "atrule"; p = p.parent) out.unshift(p as AtRule);
+  return out;
+};
+/** the ancestry as one whitespace-free string: "@media(...)>@container(...)" ("" = top level) */
+const chainOf = (rule: postcss.Rule) => ancestors(rule).map((a) => norm(`@${a.name}${a.params}`)).join(">");
+function rulesFor(selector: string, chain = ""): postcss.Rule[] {
+  const out: postcss.Rule[] = [];
+  stage.walkRules((rule) => {
+    if (rule.selectors.map((x) => x.trim()).includes(selector) && chainOf(rule) === chain) out.push(rule);
+  });
+  return out;
+}
+/** declarations of every rule for `selector` inside `chain` ("" = top level) */
+function declsAt(selector: string, chain = ""): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const rule of rulesFor(selector, chain)) rule.walkDecls((d) => void (out[d.prop] = flat(d.value)));
+  return out;
+}
+/** declarations of every rule for `selector` inside one media query ("" = top level) */
+const decls = (selector: string, media = "") => declsAt(selector, media ? norm(`@media${media}`) : "");
 
+describe("NowCard · the WARN / URGENT strip's position never wraps out of the strip", () => {
   it("the index and the threshold cannot wrap or shrink; the clock may clip before anything wraps", () => {
     for (const sel of [".zidx", ".zthr"]) {
       expect(decls(sel)["white-space"], sel).toBe("nowrap");
@@ -277,17 +290,6 @@ describe("NowCard · the WARN / URGENT strip's position never wraps out of the s
     }
     expect(decls(".zend")["min-width"]).toBe("0");
     expect(decls(".zend").overflow).toBe("hidden");
-  });
-
-  it("portrait under 390 px: URGENT's tag and gap give back room so the clock clears the chamfer", () => {
-    const media = "(max-width:389.98px)";
-    expect(decls(".zone-urgent .zhead", media).gap).toBe("5px");
-    const tag = decls(".zone-urgent .ztag", media);
-    expect(tag["font-size"]).toBe("21px");
-    expect(tag.padding).toBe("0 11px 0 9px");
-    // …and only there: at 390+ the approved URGENT tag is untouched
-    expect(decls(".zone-urgent .ztag")["font-size"]).toBe("23px");
-    expect(decls(".zone-urgent .zhead").gap).toBeUndefined();
   });
 
   it("landscape phone: the threshold is dropped so the clock is never clipped; nowhere else", () => {
@@ -329,5 +331,136 @@ describe("NowCard · the WARN / URGENT strip's position never wraps out of the s
     const pos = titleRowPos(over.el);
     expect(pos).toBeDefined();
     expect(pos).not.toHaveClass("hidden");
+  });
+});
+
+// ── THE STRIP SHEDS FROM ITS OWN WIDTH, NOT THE VIEWPORT'S (r15) ──────────────
+// The clock ("จบ 17:45:30") is the one thing the strip may never cut: a clipped clock reads
+// as a believable WRONG time. The old give-back was keyed to the VIEWPORT (< 390 px), but
+// the strip's width is the CARD's: in the stage layout (landscape iPad, 1000-1059 px) the
+// card is 308-367 px on a wide viewport, and the clock was clipped ("จบ 17:4") there, and
+// at 340 px in WARN as well. So `.zhead` is a size container and the strip drops, in this
+// order and only below the width where the next step is needed, +4 px of margin:
+//   1. URGENT's tag + gaps give back ~22 px  2. the threshold "≤0:23" goes  3. the index goes
+// Widths measured in a real browser, Barlow Condensed + Kanit loaded
+// (review-shots/r15/_measure/now-strip2/before|after): the row's items, in px.
+describe("NowCard · the strip sheds, in order, from its own width", () => {
+  const W = { tagWarn: 94.8, tagUrgent: 117.83, tagUrgentGiven: 106.77, thrWarn: 41.02, thrUrgent: 45.58, idx: 44.92, clock: 73.89 };
+  // content-box widths the row needs (the query sees the strip MINUS its --pad both sides)
+  const NEED = {
+    urgentFull: W.tagUrgent + W.thrUrgent + W.idx + W.clock + 3 * 9, // 309.22
+    urgentGiven: W.tagUrgentGiven + W.thrUrgent + W.idx + W.clock + 3 * 5, // 287.16
+    urgentNoThr: W.tagUrgentGiven + W.idx + W.clock + 2 * 5, // 235.58
+    warnFull: W.tagWarn + W.thrWarn + W.idx + W.clock + 3 * 9, // 281.63
+    warnNoThr: W.tagWarn + W.idx + W.clock + 2 * 9, // 231.61
+  };
+  const MARGIN: [number, number] = [3, 6]; // "~4 px" — a threshold is the need plus this
+
+  /** the max-width of the one @container rule that applies `prop: value` to `selector` */
+  function containerMax(selector: string, prop: string, value: string): number {
+    const hits: number[] = [];
+    stage.walkAtRules("container", (at) => {
+      at.walkRules((rule) => {
+        if (!rule.selectors.map((x) => x.trim()).includes(selector)) return;
+        rule.walkDecls(prop, (d) => {
+          if (flat(d.value) === value) hits.push(parseFloat(/max-width:\s*([\d.]+)px/.exec(at.params)![1]));
+        });
+      });
+    });
+    expect(hits, `${selector} { ${prop}: ${value} } in exactly one @container`).toHaveLength(1);
+    return hits[0];
+  }
+  const T = {
+    giveBack: () => containerMax(".zone-urgent .ztag", "font-size", "21px"),
+    urgentThr: () => containerMax(".zone-urgent .zthr", "display", "none"),
+    warnThr: () => containerMax(".zone-warn .zthr", "display", "none"),
+    urgentIdx: () => containerMax(".zone-urgent .zidx", "display", "none"),
+    warnIdx: () => containerMax(".zone-warn .zidx", "display", "none"),
+  };
+  const margin = (threshold: number, need: number) => threshold - need;
+  /** the give-back rule, found by what it does (a 21 px URGENT tag inside a container query) */
+  function giveBackRule(): postcss.Rule {
+    const hits: postcss.Rule[] = [];
+    stage.walkRules((rule) => {
+      if (!rule.selectors.map((x) => x.trim()).includes(".zone-urgent .ztag")) return;
+      if (!ancestors(rule).some((a) => a.name === "container")) return;
+      rule.walkDecls("font-size", (d) => void (flat(d.value) === "21px" && hits.push(rule)));
+    });
+    expect(hits, "one @container rule gives URGENT's tag back").toHaveLength(1);
+    return hits[0];
+  }
+
+  it(".zhead is a size container, so the strip can decide from its own width", () => {
+    expect(decls(".zhead")["container-type"]).toBe("inline-size");
+  });
+
+  it("each step sits at what it needs + ~4 px of margin, and the ladder goes tag, threshold, index", () => {
+    const rows: [string, number, number][] = [
+      ["URGENT tag gives back", T.giveBack(), NEED.urgentFull],
+      ["URGENT drops the threshold", T.urgentThr(), NEED.urgentGiven],
+      ["URGENT drops the index", T.urgentIdx(), NEED.urgentNoThr],
+      ["WARN drops the threshold", T.warnThr(), NEED.warnFull],
+      ["WARN drops the index", T.warnIdx(), NEED.warnNoThr],
+    ];
+    for (const [what, threshold, need] of rows) {
+      expect(margin(threshold, need), `${what}: ${threshold} vs needs ${need.toFixed(2)}`).toBeGreaterThanOrEqual(MARGIN[0]);
+      expect(margin(threshold, need), `${what}: ${threshold} vs needs ${need.toFixed(2)}`).toBeLessThanOrEqual(MARGIN[1]);
+    }
+    // the order a strip loses things as it narrows: URGENT tag → threshold → index (last resort)
+    expect(T.giveBack()).toBeGreaterThan(T.urgentThr());
+    expect(T.urgentThr()).toBeGreaterThan(T.urgentIdx());
+    expect(T.warnThr()).toBeGreaterThan(T.warnIdx());
+  });
+
+  it("the give-back is the same 21 px tag with 5 px gaps (a container cannot style itself, so margins)", () => {
+    const chain = chainOf(giveBackRule());
+    const tag = declsAt(".zone-urgent .ztag", chain);
+    expect(tag["font-size"]).toBe("21px");
+    expect(tag.padding).toBe("0 11px 0 9px");
+    // 9 px (the base gap) − 4 px = the 5 px the approved give-back used between items
+    for (const sel of [".zone-urgent .ztag", ".zone-urgent .zthr", ".zone-urgent .zidx"]) {
+      expect(declsAt(sel, chain)["margin-right"], sel).toBe("-4px");
+    }
+    expect(decls(".zhead").gap).toBe("9px");
+    // …and at 390+ the approved URGENT tag is untouched
+    expect(decls(".zone-urgent .ztag")["font-size"]).toBe("23px");
+  });
+
+  /** tiny media-query evaluator: orientation / pointer / min- and max-height, "and" and "," only */
+  type Env = { orientation: "portrait" | "landscape"; height: number; pointer: "fine" | "coarse" };
+  function matches(list: string, env: Env): boolean {
+    return list.split(",").some((q) =>
+      q.split(/\band\b/).every((feature) => {
+        const m = /^\s*\((orientation|pointer|max-height|min-height):\s*([^)]+)\)\s*$/.exec(feature);
+        if (!m) throw new Error(`media feature the test does not understand: ${feature}`);
+        const [, k, v] = m;
+        if (k === "orientation") return env.orientation === v;
+        if (k === "pointer") return env.pointer === v;
+        return k === "max-height" ? env.height <= parseFloat(v) : env.height >= parseFloat(v);
+      })
+    );
+  }
+
+  it("never on the landscape phone: the give-back's media is the exact complement of that phone", () => {
+    const phone = LANDSCAPE_PHONE.replace(/^\[@media/, "").replace(/\]$/, "").replace(/_/g, " ");
+    const media = ancestors(giveBackRule()).find((a) => a.name === "media");
+    expect(media, "the give-back sits inside a @media").toBeDefined();
+    const complement = flat(media!.params);
+    // its strip carries only tag + clock there (201 px needed in URGENT, 218+ available): it keeps the 23 px tag
+    for (const orientation of ["portrait", "landscape"] as const)
+      for (const pointer of ["fine", "coarse"] as const)
+        for (const height of [320, 375, 390, 699.98, 699.99, 700, 744, 900]) {
+          const env = { orientation, height, pointer };
+          expect(matches(complement, env), JSON.stringify(env)).toBe(!matches(phone, env));
+        }
+  });
+
+  it("Safari < 16 (no container queries) keeps the old viewport rule, and only there", () => {
+    const fallback = "@supportsnot(container-type:inline-size)>@media(max-width:389.98px)"; // (chains are whitespace-free)
+    expect(declsAt(".zone-urgent .zhead", fallback).gap).toBe("5px");
+    expect(declsAt(".zone-urgent .ztag", fallback)["font-size"]).toBe("21px");
+    // a browser that has containers must decide by the strip, never by the viewport as well
+    expect(decls(".zone-urgent .zhead", "(max-width:389.98px)").gap).toBeUndefined();
+    expect(decls(".zone-urgent .ztag", "(max-width:389.98px)")["font-size"]).toBeUndefined();
   });
 });

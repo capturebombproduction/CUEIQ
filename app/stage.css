@@ -186,7 +186,8 @@ html.reduce-motion .lit.sweep::after { display: none; }
    Zones restyle through element-scoped variables, never !important descendant overrides. */
 .now { --pad: 18px; padding-inline: var(--pad); }           /* stage: className "stage:[--pad:24px]" */
 .now.alarm-plate { --pad: 34px; }                             /* phone: plate is full-bleed (-mx-4), content stays on 16 + 18 */
-.zhead { height: 40px; margin: 0 calc(-1 * var(--pad, 18px)); padding: 0 var(--pad, 18px); display: flex; align-items: center; gap: 9px; position: relative; }
+.zhead { height: 40px; margin: 0 calc(-1 * var(--pad, 18px)); padding: 0 var(--pad, 18px); display: flex; align-items: center; gap: 9px; position: relative;
+  container-type: inline-size; }   /* the strip decides what to drop from ITS OWN width — see the ladder below */
 .zhead.hazard-band { padding: 0; }
 .ztag { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 14px 0 11px; flex: none;
   font-family: var(--font-display-x); font-style: italic; font-weight: 800; font-size: 21px; line-height: 1; letter-spacing: .04em; text-transform: uppercase; font-synthesis: none;
@@ -218,13 +219,38 @@ html.reduce-motion .lit.sweep::after { display: none; }
   background: repeating-linear-gradient(-55deg, transparent 0 9px, hsl(var(--warning-foreground) / .14) 9px 18px), hsl(var(--warning)); }
 .zone-urgent .ztag { background: hsl(var(--warning-foreground)); color: hsl(var(--warning)); font-size: 23px; }
 .zone-urgent .zidx, .zone-urgent .zend, .zone-urgent .zend b, .zone-urgent .zthr { color: hsl(var(--warning-foreground)); }
-/* A 360 - 389 phone: nowrap alone would push the clock into the 18px chamfer. URGENT's bigger tag and its gaps
-   give back ~17px, so "จบ" still clears the cut (at 380-382 the clock was still 1-3px short). Colours, the tag and
-   the ladder are unchanged, and 390+ keeps the approved 23px tag. */
-@media (max-width:389.98px) { .zone-urgent .zhead { gap: 5px; } .zone-urgent .ztag { font-size: 21px; padding: 0 11px 0 9px; } }
+/* THE STRIP DEGRADES ON ITS OWN WIDTH, NOT THE VIEWPORT'S. The card is 308 px wide on a 1000 px iPad (the stage
+   layout's 3 columns) and on a 340 px phone alike; a viewport media query only ever fixed the phone. `.zhead` is a
+   size container, so these rules see its CONTENT box (strip minus --pad both sides, so the same numbers hold at
+   --pad 18 and 24). Widths measured with Barlow Condensed + Kanit loaded (review-shots/r15/_measure/now-strip2), each
+   threshold = what the step needs + 4px of margin. The clock ("จบ 17:45:30", 74px) is what must never be cut, so
+   the strip sheds, in this order, only below the width where the next step is actually needed:
+     1. URGENT's tag and gaps give back ~22px      (full ladder needs 309 → below 313)
+     2. the threshold "≤0:23" goes                (needs 287 URGENT / 282 WARN → below 291 / 286): the tag says
+        WARN / URGENT and the caption under the meter says "เหลือไม่ถึง N"
+     3. last resort, the index "01 / 16" goes       (needs 236 URGENT / 232 WARN → below 240 / 236)
+   A container query cannot style its own container, so the give-back's gaps are -4px margins on the items (9 → 5). */
+@container (max-width: 291px) { .zone-urgent .zthr { display: none; } }
+@container (max-width: 286px) { .zone-warn .zthr { display: none; } }
+@container (max-width: 240px) { .zone-urgent .zidx { display: none; } }
+@container (max-width: 236px) { .zone-warn .zidx { display: none; } }
+/* Not on the landscape phone (the media below): its strip already carries only tag + clock (201px needed in
+   URGENT, 218+ there), so the approved 23px tag fits and keeps its size. Written as the complement of that media
+   (a comma list) so no browser has to understand "not (a and b)". */
+@media (orientation:portrait), (min-height:699.99px), (pointer:fine) {
+  @container (max-width: 313px) {
+    .zone-urgent .ztag { font-size: 21px; padding: 0 11px 0 9px; margin-right: -4px; }
+    .zone-urgent .zthr, .zone-urgent .zidx { margin-right: -4px; }
+  }
+}
+/* Safari < 16 has no container queries: the pre-ladder rule, keyed to a phone's viewport, is all it gets. */
+@supports not (container-type: inline-size) {
+  @media (max-width:389.98px) { .zone-urgent .zhead { gap: 5px; } .zone-urgent .ztag { font-size: 21px; padding: 0 11px 0 9px; } }
+}
 /* A landscape phone's strip is 32px in a half-width card (~218px of content): tag + threshold + clock do not all
-   fit, and .zend's overflow:hidden would then show a PARTIAL clock - a believable wrong time. The threshold goes;
-   the caption row under the meter still says "เหลือไม่ถึง N" (zoneCaption). Same media as now-card.tsx's variant. */
+   fit, and .zend's overflow:hidden would then show a PARTIAL clock - a believable wrong time. The threshold goes
+   (the index goes in now-card.tsx's class, the title row carries it); the caption row under the meter still says
+   "เหลือไม่ถึง N" (zoneCaption). Same media as now-card.tsx's variant. */
 @media (orientation:landscape) and (max-height:699.98px) and (pointer:coarse) { .zthr { display: none; } }
 .zone-warn .cd, .zone-urgent .cd { color: hsl(var(--warning-ink)); }
 
