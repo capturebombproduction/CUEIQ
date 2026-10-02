@@ -274,3 +274,48 @@ describe("ScheduleEditor · the reorder buttons stay off the End field (iPad por
     expect(r.end.className.split(" ")).toContain("min-w-0");
   });
 });
+
+// Review 2026-10-02 (CQ-50): the row's controls had no accessible name — the trash button
+// was an icon with nothing, the Type select and the five fields sat under Labels that were
+// never bound to them. A screen reader (and a role query) saw "button", "combobox", "edit".
+describe("ScheduleEditor · every row control has a name", () => {
+  const two = () =>
+    mount([
+      row("a", { kind: "stage", label: "Stage Round 1", start_time: "14:30:00", end_time: "15:30:00", sort_order: 1 }),
+      row("b", { kind: "other", label: "รับของ", sort_order: 2 }),
+    ]);
+
+  it("names the delete button on every row", () => {
+    two();
+    expect(screen.getAllByRole("button", { name: "ลบรายการนี้" })).toHaveLength(2);
+  });
+
+  it("binds each Label to its own row's field", () => {
+    two();
+    expect(screen.getAllByRole("combobox", { name: "Type" })).toHaveLength(2);
+    expect(screen.getAllByLabelText("Label")).toHaveLength(2);
+    expect(screen.getAllByLabelText("Start")).toHaveLength(2);
+    expect(screen.getAllByLabelText("End")).toHaveLength(2);
+    expect(screen.getAllByLabelText("Location")).toHaveLength(2);
+    expect(screen.getAllByLabelText("Notes")).toHaveLength(2);
+  });
+
+  it("the label of row 1 reaches row 1's field, not row 2's", () => {
+    two();
+    expect(screen.getAllByLabelText("Label").map((el) => (el as HTMLInputElement).value)).toEqual([
+      "Stage Round 1",
+      "รับของ",
+    ]);
+    expect(screen.getAllByLabelText("Start").map((el) => (el as HTMLInputElement).value)).toEqual([
+      "14:30",
+      "",
+    ]);
+  });
+
+  it("keys the ids by row, so no two fields share one", () => {
+    two();
+    const ids = Array.from(document.querySelectorAll("[id^='sc-']")).map((el) => el.id);
+    expect(ids).toHaveLength(2 * 6);
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+});

@@ -113,7 +113,7 @@ describe("SetlistBuilder — fill-to-fit beside the run-time badge", () => {
 // is never folded. The look was checked in a real browser at 390px.
 describe("SetlistBuilder — folding the timing tweaks on a phone", () => {
   const overlapBoxes = () =>
-    screen.getAllByText("เล่นซ้อน (วิ · เริ่มก่อนเพลงก่อนจบ)").map((l) => l.closest("div.space-y-1")!);
+    screen.getAllByText("เล่นซ้อน (วิ)").map((l) => l.closest("div.space-y-1")!);
   const isFolded = (el: Element) => el.className.split(" ").includes("hidden");
 
   it("keeps them open on a row that uses them, folds them on one that does not", () => {
@@ -129,7 +129,7 @@ describe("SetlistBuilder — folding the timing tweaks on a phone", () => {
 // Review 2026-09-28, round two.
 describe("SetlistBuilder — review fixes", () => {
   const overlapBoxes = () =>
-    screen.getAllByText("เล่นซ้อน (วิ · เริ่มก่อนเพลงก่อนจบ)").map((l) => l.closest("div.space-y-1")!);
+    screen.getAllByText("เล่นซ้อน (วิ)").map((l) => l.closest("div.space-y-1")!);
 
   it("clearing a buffer to 0 does not fold the timing fields away mid-edit", () => {
     const items = set(118);

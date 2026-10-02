@@ -254,6 +254,55 @@ describe("EventWorkspace · hands the Mics tab the lineup", () => {
   });
 });
 
+// CQ-50 (round 15): the editor's icon-only buttons and its number field had no accessible
+// name — the trash buttons were an icon and nothing. Each is named, with the mic's own
+// number where several of them sit on one screen.
+describe("MicMapEditor · every control has a name", () => {
+  const rotation = (): MicAssignment[] => [
+    assignment(1, "นิค1"),
+    { ...assignment(1, "นิค2"), id: "a1b", order_index: 2 },
+    assignment(4, "แขก"),
+  ];
+
+  it("names each mic's number field and delete button by the mic", () => {
+    mount({ editable: true, initialMics: rotation() });
+    expect(screen.getByRole("spinbutton", { name: "หมายเลขไมค์ 1" })).toHaveValue(1);
+    expect(screen.getByRole("spinbutton", { name: "หมายเลขไมค์ 4" })).toHaveValue(4);
+    expect(screen.getByRole("button", { name: "ลบไมค์ 1" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "ลบไมค์ 4" })).toBeInTheDocument();
+  });
+
+  it("names each holder's remove button by who it removes and from which mic", () => {
+    mount({ editable: true, initialMics: rotation() });
+    expect(screen.getByRole("button", { name: "เอา นิค1 ออกจากไมค์ 1" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "เอา นิค2 ออกจากไมค์ 1" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "เอา แขก ออกจากไมค์ 4" })).toBeInTheDocument();
+  });
+
+  it("names the reorder buttons of a rotation, and the holder fields", () => {
+    mount({ editable: true, initialMics: rotation() });
+    expect(screen.getAllByRole("button", { name: "เลื่อนขึ้น" })).toHaveLength(2);
+    expect(screen.getAllByRole("button", { name: "เลื่อนลง" })).toHaveLength(2);
+    // (a field with a datalist is a combobox to assistive tech)
+    expect(screen.getByRole("combobox", { name: "ผู้ถือไมค์ 1 คนที่ 1" })).toHaveValue("นิค1");
+    expect(screen.getByRole("combobox", { name: "ผู้ถือไมค์ 1 คนที่ 2" })).toHaveValue("นิค2");
+    expect(screen.getByRole("combobox", { name: "ผู้ถือไมค์ 4" })).toHaveValue("แขก");
+  });
+
+  it("falls back to a word for a holder with no name yet", () => {
+    mount({ editable: true, initialMics: [assignment(2, "")] });
+    expect(screen.getByRole("button", { name: "เอา ผู้ถือ ออกจากไมค์ 2" })).toBeInTheDocument();
+  });
+
+  it("leaves no icon-only button in the editor without a name", () => {
+    const { container } = mount({ editable: true, initialMics: rotation() });
+    const unnamed = [...container.querySelectorAll("button")].filter(
+      (b) => !(b.getAttribute("aria-label") || b.textContent?.trim())
+    );
+    expect(unnamed).toEqual([]);
+  });
+});
+
 describe("MicMapEditor · the per-song panel", () => {
   it("does not read as 'no mics' when no song swaps a mic", () => {
     mount({ members: sevenMembers() });

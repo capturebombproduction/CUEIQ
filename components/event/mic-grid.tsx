@@ -17,7 +17,11 @@ export interface MicTileProps {
 export function MicTile({ mic, name, color, off, className }: MicTileProps) {
   return (
     <div className={cn("mic", off && "off", className)} data-off={off ? "" : undefined}>
-      {color ? <i aria-hidden style={{ background: color }} /> : null}
+      {/* The inset hairline keeps a pale (#efefef) or near-black (#434343) member colour
+          from vanishing into the tile and the card around it. */}
+      {color ? (
+        <i aria-hidden style={{ background: color, boxShadow: "inset 0 0 0 1px hsl(var(--border))" }} />
+      ) : null}
       <div className="num text-[21px] leading-[1.1]">{mic}</div>
       {name ? (
         <div className="truncate px-0.5 text-[11px] leading-tight text-muted-foreground">{name}</div>

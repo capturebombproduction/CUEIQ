@@ -478,7 +478,7 @@ export function ScheduleEditor({
               From sm up the order and layout are exactly what they were. */}
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-12">
             <div className="order-1 col-span-2 space-y-1 sm:order-none sm:col-span-3">
-              <Label className="text-[13px] font-medium text-muted-foreground">Type</Label>
+              <Label htmlFor={`sc-${it.id}-kind`} className="text-[13px] font-medium text-muted-foreground">Type</Label>
               <Select
                 value={it.kind}
                 disabled={!editable}
@@ -497,7 +497,7 @@ export function ScheduleEditor({
                   persist(it.id, { kind: next });
                 }}
               >
-                <SelectTrigger>
+                <SelectTrigger id={`sc-${it.id}-kind`}>
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -511,8 +511,9 @@ export function ScheduleEditor({
             </div>
 
             <div className="order-4 col-span-2 space-y-1 sm:order-none sm:col-span-2 lg:col-span-3">
-              <Label className="text-[13px] font-medium text-muted-foreground">Label</Label>
+              <Label htmlFor={`sc-${it.id}-label`} className="text-[13px] font-medium text-muted-foreground">Label</Label>
               <Input
+                id={`sc-${it.id}-label`}
                 value={it.label ?? ""}
                 disabled={!editable}
                 placeholder="e.g. Stage Round 1"
@@ -524,8 +525,9 @@ export function ScheduleEditor({
             </div>
 
             <div className="order-2 min-w-0 space-y-1 sm:order-none sm:col-span-2">
-              <Label className="text-[13px] font-medium text-muted-foreground">Start</Label>
+              <Label htmlFor={`sc-${it.id}-start`} className="text-[13px] font-medium text-muted-foreground">Start</Label>
               <Input
+                id={`sc-${it.id}-start`}
                 type="time"
                 className="num"
                 value={it.start_time?.slice(0, 5) ?? ""}
@@ -538,8 +540,9 @@ export function ScheduleEditor({
             </div>
 
             <div className="order-3 min-w-0 space-y-1 sm:order-none sm:col-span-2">
-              <Label className="text-[13px] font-medium text-muted-foreground">End</Label>
+              <Label htmlFor={`sc-${it.id}-end`} className="text-[13px] font-medium text-muted-foreground">End</Label>
               <Input
+                id={`sc-${it.id}-end`}
                 type="time"
                 className="num"
                 value={it.end_time?.slice(0, 5) ?? ""}
@@ -610,6 +613,7 @@ export function ScheduleEditor({
                     variant="ghost"
                     size="icon"
                     className="shrink-0 text-destructive hover:text-destructive"
+                    aria-label="ลบรายการนี้"
                     onClick={() => removeItem(it.id)}
                   >
                     <Trash2 className="h-4 w-4" />
@@ -628,8 +632,9 @@ export function ScheduleEditor({
               </button>
             )}
             <div className={`order-7 col-span-2 space-y-1 sm:order-none sm:col-span-6 ${showExtra(it) ? "" : "hidden sm:block"}`}>
-              <Label className="text-[13px] font-medium text-muted-foreground">Location</Label>
+              <Label htmlFor={`sc-${it.id}-location`} className="text-[13px] font-medium text-muted-foreground">Location</Label>
               <Input
+                id={`sc-${it.id}-location`}
                 value={it.location ?? ""}
                 disabled={!editable}
                 placeholder="e.g. Main Stage"
@@ -640,8 +645,9 @@ export function ScheduleEditor({
               />
             </div>
             <div className={`order-8 col-span-2 space-y-1 sm:order-none sm:col-span-6 ${showExtra(it) ? "" : "hidden sm:block"}`}>
-              <Label className="text-[13px] font-medium text-muted-foreground">Notes</Label>
+              <Label htmlFor={`sc-${it.id}-notes`} className="text-[13px] font-medium text-muted-foreground">Notes</Label>
               <Input
+                id={`sc-${it.id}-notes`}
                 value={it.notes ?? ""}
                 disabled={!editable}
                 onChange={(e) => setLocal(it.id, { notes: e.target.value })}

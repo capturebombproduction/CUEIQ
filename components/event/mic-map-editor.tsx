@@ -38,7 +38,7 @@ const MIC_TILE_CLS = "py-2 [&_.num]:text-[28px] [&_.truncate]:text-[14px]";
 function standingMics(
   members: Member[],
   lineup: string[]
-): { num: number; name: string; color: string | null }[] {
+): { num: number; name: string; labels: string[]; color: string | null }[] {
   const byMic = new Map<number, Member[]>();
   for (const m of lineupStatus(members, lineup).present) {
     if (m.mic_number == null) continue;
@@ -51,6 +51,9 @@ function standingMics(
     .map(([num, holders]) => ({
       num,
       name: holders.map(memberLabel).join(", "),
+      // one label per holder, in rotation order: what the first add seeds the show's own
+      // map with (a shared mic is that many rows on one number, as the editor stores it)
+      labels: holders.map(memberLabel),
       color: holders[0].color,
     }));
 }
@@ -101,6 +104,11 @@ export function MicMapEditor({
         holders: holders.sort((a, b) => a.order_index - b.order_index),
       }));
   }, [mics]);
+
+  // Only consulted while this show has no mics of its own; the moment an editor
+  // adds one, the show's own map takes over (as it does on the Excel sheet) — which
+  // is why that first add seeds the map from these (seedFromStanding below).
+  const standing = groups.length === 0 ? standingMics(members, lineup) : [];
 
   // ⭐#1 step 5: a write that failed on a DEAD NETWORK queues the whole post-edit
   // mic map as one offline snapshot and returns true — keep the optimistic state.
@@ -179,6 +187,46 @@ export function MicMapEditor({
     };
   }
 
+  /**
+   * The first เพิ่มไมค์ on a show whose tab is showing the members' standing mics
+   * (no per-event rows). Per-event rows win on every surface the moment one exists —
+   * Summary, Lineup, the readiness gate, the Excel sheet, this tab — so inserting only
+   * the new empty mic would silently swap the band's mics for one blank one. Seed the
+   * show's own map with what was on screen (one row per standing mic, a shared mic as
+   * one row per holder in rotation order), then the new mic after them.
+   *
+   * ONE insert, so it is all-or-nothing: a failure leaves the tab exactly as it was,
+   * still showing the standing mics. The write asks for its rows back and a reply with
+   * none is "ยังไม่ได้บันทึก", never a success (lib/write-guard.ts).
+   */
+  async function seedFromStanding() {
+    const nextNum = Math.max(...standing.map((s) => s.num)) + 1;
+    const wanted = [
+      ...standing.flatMap((s) =>
+        s.labels.map((label, i) => ({ mic_number: s.num, holder_name: label, order_index: i + 1 }))
+      ),
+      { mic_number: nextNum, holder_name: "", order_index: 1 },
+    ];
+    const { data, error } = await supabase
+      .from("mic_assignments")
+      .insert(wanted.map((r) => ({ tenant_id: tenantId, event_id: eventId, ...r })))
+      .select("*");
+    if (error || !data) {
+      const locals = wanted.map((r) => mintLocalMic(r.mic_number, r.holder_name, r.order_index));
+      if (await queueOffline([...mics, ...locals], error?.message)) {
+        setMics((prev) => [...prev, ...locals]);
+        return;
+      }
+      toast.error("เพิ่มไมค์ไม่สำเร็จ", { description: error?.message });
+      return;
+    }
+    if (wroteNothing(data)) {
+      toast.error("ยังไม่ได้บันทึก", { description: await noRowsMessage() });
+      return;
+    }
+    setMics((prev) => [...prev, ...(data as MicAssignment[])]);
+  }
+
   async function addMic() {
     if (insertingRef.current) {
       toast.info("กำลังเพิ่มไมค์ก่อนหน้า — รอสักครู่แล้วกดใหม่", {
@@ -189,6 +237,10 @@ export function MicMapEditor({
     insertingRef.current = true;
     setInserting(true);
     try {
+      if (standing.length > 0) {
+        await seedFromStanding();
+        return;
+      }
       const nextNum = groups.length ? Math.max(...groups.map((g) => g.num)) + 1 : 1;
       const { data, error } = await supabase
         .from("mic_assignments")
@@ -426,9 +478,6 @@ export function MicMapEditor({
   }
 
   const songsWithMics = setlist.filter((s) => (s.mic_slots?.length ?? 0) > 0);
-  // Only consulted while this show has no mics of its own; the moment an editor
-  // adds one, the show's own map takes over (as it does on the Excel sheet).
-  const standing = groups.length === 0 ? standingMics(members, lineup) : [];
 
   return (
     <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
@@ -508,6 +557,7 @@ export function MicMapEditor({
                   min={1}
                   defaultValue={g.num}
                   disabled={!editable}
+                  aria-label={`หมายเลขไมค์ ${g.num}`}
                   className="num w-16 text-[18px]"
                   onBlur={(e) => {
                     if (!changeMicNumber(g.num, Number(e.target.value))) {
@@ -527,6 +577,7 @@ export function MicMapEditor({
                     variant="ghost"
                     size="icon"
                     className="ml-auto text-destructive hover:text-destructive"
+                    aria-label={`ลบไมค์ ${g.num}`}
                     onClick={() => removeMic(g.num)}
                   >
                     <Trash2 className="h-4 w-4" />
@@ -546,6 +597,11 @@ export function MicMapEditor({
                       list="member-names"
                       value={h.holder_name}
                       disabled={!editable}
+                      aria-label={
+                        g.holders.length > 1
+                          ? `ผู้ถือไมค์ ${g.num} คนที่ ${i + 1}`
+                          : `ผู้ถือไมค์ ${g.num}`
+                      }
                       placeholder="ชื่อสมาชิก"
                       onChange={(e) =>
                         setMics((prev) =>
@@ -570,6 +626,7 @@ export function MicMapEditor({
                               size="icon"
                               onClick={() => moveHolder(g.num, i, -1)}
                               disabled={i === 0}
+                              aria-label="เลื่อนขึ้น"
                             >
                               <ChevronUp className="h-4 w-4" />
                             </Button>
@@ -579,6 +636,7 @@ export function MicMapEditor({
                               size="icon"
                               onClick={() => moveHolder(g.num, i, 1)}
                               disabled={i === g.holders.length - 1}
+                              aria-label="เลื่อนลง"
                             >
                               <ChevronDown className="h-4 w-4" />
                             </Button>
@@ -589,6 +647,7 @@ export function MicMapEditor({
                           variant="ghost"
                           size="icon"
                           className="text-destructive hover:text-destructive"
+                          aria-label={`เอา ${h.holder_name || "ผู้ถือ"} ออกจากไมค์ ${g.num}`}
                           onClick={() => removeHolder(h.id)}
                         >
                           <Trash2 className="h-4 w-4" />

@@ -75,10 +75,13 @@ const KIND_KEYS = Object.keys(SETLIST_KIND_LABELS) as SetlistKind[];
 
 // ---- m:ss duration field with its own text buffer --------------------------
 function DurationField({
+  id,
   seconds,
   disabled,
   onCommit,
 }: {
+  /** so a <Label htmlFor> can name the field */
+  id?: string;
   seconds: number;
   disabled?: boolean;
   onCommit: (s: number) => void;
@@ -89,6 +92,7 @@ function DurationField({
   }, [seconds]);
   return (
     <Input
+      id={id}
       value={text}
       disabled={disabled}
       // NOT inputMode="numeric": iOS renders that as a bare 0-9 keypad with no
@@ -125,11 +129,16 @@ function DurationField({
  * here and only a COMPLETE number is propagated; blur normalizes and commits.
  */
 function OverlapInput({
+  id,
+  title,
   seconds,
   disabled,
   onChange,
   onCommit,
 }: {
+  /** so a <Label htmlFor> can name the field */
+  id?: string;
+  title?: string;
   seconds: number;
   disabled?: boolean;
   onChange: (s: number) => void;
@@ -147,6 +156,8 @@ function OverlapInput({
   };
   return (
     <Input
+      id={id}
+      title={title}
       type="text"
       inputMode="text"
       placeholder="เช่น -5"
@@ -1393,7 +1404,7 @@ export function SetlistBuilder({
               <span className="chip chip-alarm">
                 <OctagonAlert aria-hidden /> เกิน Hard Out +{formatDuration(timing.overBy)}
               </span>
-            ) : (
+            ) : items.length > 0 ? (
               <span className="flex items-center gap-1.5 text-[13px] text-success-ink">
                 <Check aria-hidden className="h-[15px] w-[15px]" /> อยู่ในเวลา · เหลือ{" "}
                 <span className="num text-[16px]">
@@ -1401,7 +1412,7 @@ export function SetlistBuilder({
                 </span>{" "}
                 ก่อน Hard Out
               </span>
-            )}
+            ) : null /* an empty set is not "in time" — nothing to be on time with */}
             {/* The same "เวลาที่เหลือ" the last row has, put where the mismatch is
                 SHOWN. Measured 2026-09-28: in 10 of Seishin Kakumei's 25 shows the
                 closing row (ถ่ายรูป / MC) was filled to the second — so the button
@@ -1604,7 +1615,7 @@ export function SetlistBuilder({
                     disabled={!rowEditable}
                     onValueChange={(v) => update(it.id, { kind: v as SetlistKind })}
                   >
-                    <SelectTrigger className="gap-1 pl-3 pr-2">
+                    <SelectTrigger className="gap-1 pl-3 pr-2" aria-label="ประเภทรายการ">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
@@ -1627,6 +1638,7 @@ export function SetlistBuilder({
                     className="min-w-0 flex-1"
                     value={it.title}
                     disabled={!rowEditable}
+                    aria-label="ชื่อเพลง / หัวข้อ"
                     placeholder="ชื่อเพลง / หัวข้อ"
                     onChange={(e) => setLocal(it.id, { title: e.target.value })}
                     onBlur={(e) => persist(it.id, { title: e.target.value })}
@@ -1655,6 +1667,7 @@ export function SetlistBuilder({
                       size="icon"
                       onClick={() => move(idx, -1)}
                       disabled={idx === 0}
+                      aria-label="เลื่อนขึ้น"
                     >
                       <ChevronUp className="h-4 w-4" />
                     </Button>
@@ -1664,6 +1677,7 @@ export function SetlistBuilder({
                       size="icon"
                       onClick={() => move(idx, 1)}
                       disabled={idx === items.length - 1}
+                      aria-label="เลื่อนลง"
                     >
                       <ChevronDown className="h-4 w-4" />
                     </Button>
@@ -1672,6 +1686,7 @@ export function SetlistBuilder({
                       variant="ghost"
                       size="icon"
                       title="ก๊อปรายการนี้"
+                      aria-label="ก๊อปรายการนี้"
                       disabled={inserting}
                       onClick={() => duplicateItem(it)}
                     >
@@ -1682,6 +1697,7 @@ export function SetlistBuilder({
                       variant="ghost"
                       size="icon"
                       className="text-destructive hover:text-destructive"
+                      aria-label="ลบรายการนี้"
                       onClick={() => removeItem(it.id)}
                     >
                       <Trash2 className="h-4 w-4" />
@@ -1714,10 +1730,14 @@ export function SetlistBuilder({
                   one button until a row uses them. From sm up nothing moves. */}
               <div className="mt-2 grid grid-cols-2 gap-2 pl-8 sm:grid-cols-12">
                 <div className="order-1 space-y-1 sm:order-none sm:col-span-2">
-                  <Label className="text-[13px] font-medium text-muted-foreground">
+                  <Label
+                    htmlFor={`sl-${it.id}-dur`}
+                    className="text-[13px] font-medium text-muted-foreground"
+                  >
                     ความยาว (m:ss)
                   </Label>
                   <DurationField
+                    id={`sl-${it.id}-dur`}
                     seconds={it.duration_seconds}
                     disabled={!rowEditable}
                     onCommit={(s) => update(it.id, { duration_seconds: s })}
@@ -1765,14 +1785,23 @@ export function SetlistBuilder({
                   </button>
                 )}
                 <div className={`order-4 space-y-1 sm:order-none sm:col-span-2 ${showTiming(it) ? "" : "hidden sm:block"}`}>
-                  <Label className="text-[13px] font-medium text-muted-foreground">
-                    เล่นซ้อน (วิ · เริ่มก่อนเพลงก่อนจบ)
+                  {/* The words "เริ่มก่อนเพลงก่อนจบ" used to be in this label; at sm–lg the
+                      cell is 105–130px, the label needed ~180px and wrapped to two lines,
+                      dropping its input ~24–31px below the other three (CQ-42). The label
+                      is short now and the explanation rides on the field's title. */}
+                  <Label
+                    htmlFor={`sl-${it.id}-overlap`}
+                    className="text-[13px] font-medium text-muted-foreground"
+                  >
+                    เล่นซ้อน (วิ)
                   </Label>
                   {/* type="number" made this unreachable on iOS, whose numeric keypad
                       has no minus key: an iPad user could only type positives, which
                       Math.min(0, …) silently flattened to 0 — the overlap looked
                       accepted and simply never happened. See OverlapInput. */}
                   <OverlapInput
+                    id={`sl-${it.id}-overlap`}
+                    title="เริ่มก่อนเพลงก่อนหน้าจบกี่วินาที (ติดลบ เช่น -5)"
                     seconds={it.buffer_before_seconds}
                     disabled={!rowEditable}
                     onChange={(s) => setLocal(it.id, { buffer_before_seconds: s })}
@@ -1780,10 +1809,14 @@ export function SetlistBuilder({
                   />
                 </div>
                 <div className={`order-5 space-y-1 sm:order-none sm:col-span-2 ${showTiming(it) ? "" : "hidden sm:block"}`}>
-                  <Label className="text-[13px] font-medium text-muted-foreground">
+                  <Label
+                    htmlFor={`sl-${it.id}-after`}
+                    className="text-[13px] font-medium text-muted-foreground"
+                  >
                     เผื่อเวลาหลัง (วิ)
                   </Label>
                   <Input
+                    id={`sl-${it.id}-after`}
                     type="number"
                     min={0}
                     className="num"
@@ -1818,6 +1851,7 @@ export function SetlistBuilder({
                   <Input
                     value={it.notes ?? ""}
                     disabled={!rowEditable}
+                    aria-label="โน้ต"
                     placeholder="โน้ต (เช่น โปรย confetti, เปลี่ยนชุด)"
                     onChange={(e) => setLocal(it.id, { notes: e.target.value })}
                     onBlur={(e) =>

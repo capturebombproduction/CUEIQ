@@ -180,7 +180,13 @@ export function LineupEditor({
               <span
                 className="num grid h-9 w-9 flex-none place-items-center rounded-[2px] bg-muted text-[15px]"
                 style={{
-                  boxShadow: `0 0 0 2px hsl(var(--card)), 0 0 0 4px ${m.color ?? "hsl(var(--border))"}`,
+                  // The third shadow is a neutral hairline just outside the member's
+                  // colour: a pale colour (#efefef, #ffff00) on a light card or a
+                  // near-black one (#434343) on a dark card is otherwise no edge at all.
+                  // (No colour → the ring is already the border colour.)
+                  boxShadow: `0 0 0 2px hsl(var(--card)), 0 0 0 4px ${m.color ?? "hsl(var(--border))"}${
+                    m.color ? ", 0 0 0 5px hsl(var(--border))" : ""
+                  }`,
                 }}
               >
                 {m.mic_number ?? "—"}
