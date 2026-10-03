@@ -715,18 +715,30 @@ export function PracticePlayer({
         style={{ "--cut": "22px" } as CSSProperties}
       >
         <div className="flex items-center gap-3.5">
-          {/* band cover: the fill under a soft white top highlight (spec v3 §G.6 —
-              v2's hard 60° wedge is gone with the rest of the wedge language) */}
-          <span
-            aria-hidden
-            className="grid h-[84px] w-[84px] flex-none place-items-center rounded-[2px] text-primary-foreground"
-            style={{
-              background:
-                "radial-gradient(120% 80% at 50% 0%, hsl(0 0% 100% / .24), transparent 64%), hsl(var(--primary))",
-            }}
-          >
-            <AudioLines className="h-[38px] w-[38px]" strokeWidth={2.4} />
-          </span>
+          {current?.cover ? (
+            // the song's own cover (songs.cover, 0044) — a 192 px data URL, so 84 px
+            // stays sharp on a 2x screen
+            // eslint-disable-next-line @next/next/no-img-element -- data-URL thumbnail: next/image adds nothing
+            <img
+              src={current.cover}
+              alt=""
+              aria-hidden
+              className="h-[84px] w-[84px] flex-none rounded-[2px] bg-muted object-cover"
+            />
+          ) : (
+            /* band cover: the fill under a soft white top highlight (spec v3 §G.6 —
+               v2's hard 60° wedge is gone with the rest of the wedge language) */
+            <span
+              aria-hidden
+              className="grid h-[84px] w-[84px] flex-none place-items-center rounded-[2px] text-primary-foreground"
+              style={{
+                background:
+                  "radial-gradient(120% 80% at 50% 0%, hsl(0 0% 100% / .24), transparent 64%), hsl(var(--primary))",
+              }}
+            >
+              <AudioLines className="h-[38px] w-[38px]" strokeWidth={2.4} />
+            </span>
+          )}
           <div className="min-w-0 flex-1">
             <div className="eyebrow key">Now Playing</div>
             {/* .95 leading is Barlow's; a Thai title needs room for its tone marks,

@@ -137,6 +137,20 @@ describe("PracticePlayer — the Now Playing hero", () => {
     expect(hero().textContent).toMatch(/ห้องซ้อม — RED REVOLUTION · 2 \/ 3/);
   });
 
+  it("wears the song's own cover when it has one, else the band tile", async () => {
+    const COVER = "data:image/webp;base64,UklGRg==";
+    songs[1].cover = COVER;
+    try {
+      mount();
+      await pick("Seishin Kakumei", "a.wav");
+      expect(hero().querySelector("img")).toBeNull();
+      await pick("Neon Samurai", "b.wav");
+      await waitFor(() => expect(hero().querySelector("img")?.getAttribute("src")).toBe(COVER));
+    } finally {
+      delete songs[1].cover;
+    }
+  });
+
   it("⏭ loads the next song on the list, and is off on the last one", async () => {
     mount();
     await pick("Neon Samurai", "b.wav");
