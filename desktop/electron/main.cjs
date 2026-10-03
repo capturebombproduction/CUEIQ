@@ -1483,6 +1483,22 @@ async function driveLiveScenario(win) {
     // One device, no peer, and the only question is whether sound comes out.
     // The seeding happened before this function opened the live page (see the
     // caller) because the restore is a mount effect.
+    // The planted file has to have reached the player first. Live restores it in a mount
+    // effect that can finish after the channel settles, and a START pressed before it runs
+    // the show without sound (88ddee9's CI: the strip never read a level, the element sat
+    // at 0:00 with its file loaded - "not playing" for a race in the test, not the app).
+    smokeAt("live:audible:waiting-for-the-file");
+    {
+      const deadline = Date.now() + 20_000;
+      for (;;) {
+        const held = await win.webContents.executeJavaScript(
+          `document.querySelector('[data-cueiq-live]')?.getAttribute('data-cueiq-live-held') ?? null`
+        );
+        if (held === "1") break;
+        if (Date.now() >= deadline) throw new Error(`the planted file never reached the player (held=${held})`);
+        await new Promise((r) => setTimeout(r, 250));
+      }
+    }
     smokeAt("live:audible:starting");
     // ⚠️ userGesture: true. Chromium's autoplay policy blocks audible playback
     // until the page has been activated by a user, and a scripted `.click()` is
@@ -1531,6 +1547,12 @@ async function driveLiveScenario(win) {
     // the switch changes the board, never the sound (measureTheSound below still has to hear
     // the tone running, after both switches).
     smokeAt("live:audible:console");
+    // The runner's screen may be small (a 1024 x 768 CI desktop clamps the 1280 x 860 window),
+    // and on a short stage CONSOLE's bottom panel - the ANALYZER - steps aside by design, so
+    // the step zooms the page out to give it a desktop's height, and puts the zoom back after.
+    // Layout only: the players and the show never notice a zoom.
+    const zoomBefore = win.webContents.getZoomFactor();
+    win.webContents.setZoomFactor(0.8);
     const switched = await win.webContents.executeJavaScript(
       `(() => { const b = document.querySelector('[data-testid=live-view-console]');
         if (!b) return 'no STAGE | CONSOLE switch'; b.click(); return 'clicked'; })()`
@@ -1548,8 +1570,11 @@ async function driveLiveScenario(win) {
             // K-weighting run live by Chromium's own IIR filters. The app prints a real minus (−).
             const m = document.querySelector('[data-testid=console-lufs-momentary]');
             const lufs = m && /[0-9]/.test(m.textContent) ? m.textContent.replace("−", "-") : null;
-            if (!c) return { present: false, lufs, alarm: alarm ? alarm.dataset.kind : null };
-            return { present: true, ready: c.dataset.ready || null, db: c.dataset.db || null, lufs, alarm: alarm ? alarm.dataset.kind : null };
+            // where it was read: the viewport, and whether the ANALYZER's panel was on screen at all
+            const panel = document.querySelector('[data-testid=console-panel]');
+            const view = { w: innerWidth, h: innerHeight, panel: panel ? (panel.checkVisibility ? panel.checkVisibility() : true) : null };
+            if (!c) return { present: false, lufs, view, alarm: alarm ? alarm.dataset.kind : null };
+            return { present: true, ready: c.dataset.ready || null, db: c.dataset.db || null, lufs, view, alarm: alarm ? alarm.dataset.kind : null };
           })())`)
         );
         consoleReading.switched = switched;
@@ -1578,6 +1603,7 @@ async function driveLiveScenario(win) {
           return 'still on CONSOLE'; })()`
       );
     }
+    win.webContents.setZoomFactor(zoomBefore);
     smokeAt("live:audible:listening");
     const deadline = Date.now() + 15_000;
     let heard = null;

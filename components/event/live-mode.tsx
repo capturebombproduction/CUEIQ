@@ -3579,6 +3579,9 @@ export function LiveMode({
       data-cueiq-live-sound={soundOutput ? "1" : "0"}
       data-cueiq-live-sync={syncStatus}
       data-cueiq-live-settled={syncSettled ? "1" : "0"}
+      // held - the cued item's file is on this device (a player can start it). The desktop smoke's
+      // audible scenario waits for it before START: pressed earlier, the show runs without sound.
+      data-cueiq-live-held={current && audioUrls[current.id] ? "1" : "0"}
     >
       {/* The page light (v3 Stage Wash). This immersive screen has no app frame, so
           it hangs its own — HERE, inside the root, because `zone-over` on the root

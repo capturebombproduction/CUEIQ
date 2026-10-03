@@ -862,7 +862,9 @@ async function runAudibleScenario(s) {
   if (!signal?.present) problems.push("the Signal strip was not on the Live screen of the desktop app");
   else {
     if (signal.ready !== "1") problems.push("the Signal strip's tap never started (its AudioContext did not run)");
-    if (!(Number(signal.db) > -30)) problems.push(`the Signal strip read ${signal.db} dB while a -6 dBFS tone played`);
+    // a reading, then its level: Number(null) is 0, which is "> -30" - a strip that never read
+    // anything passed this line until 2026-10-04 (88ddee9's CI showed db: null on a green run)
+    if (signal.db == null || !(Number(signal.db) > -30)) problems.push(`the Signal strip read ${signal.db} dB while a -6 dBFS tone played`);
   }
   if (signal?.alarm) problems.push(`a Signal alarm (${signal.alarm}) was up while the tone audibly played`);
   // CONSOLE's PLAYBACK channel, read the same way after switching to it mid-tone (main.cjs
@@ -872,9 +874,13 @@ async function runAudibleScenario(s) {
   if (!board?.present) problems.push(`the CONSOLE board never showed (${board?.switched ?? "no reading"})`);
   else {
     if (board.ready !== "1") problems.push("CONSOLE's meters never started");
-    if (!(Number(board.db) > -30)) problems.push(`CONSOLE's PLAYBACK channel read ${board.db} dB while a -6 dBFS tone played`);
+    if (board.db == null || !(Number(board.db) > -30)) problems.push(`CONSOLE's PLAYBACK channel read ${board.db} dB while a -6 dBFS tone played`);
     // the analysis graph (K-weighted, after the fader): a 0.5 sine on both sides is about −7 LUFS
-    if (!(Number(board.lufs) > -30)) problems.push(`CONSOLE's ANALYZER read ${board.lufs} LUFS momentary while a -6 dBFS tone played`);
+    if (board.lufs == null || !(Number(board.lufs) > -30)) {
+      problems.push(
+        `CONSOLE's ANALYZER read ${board.lufs} LUFS momentary while a -6 dBFS tone played (viewport ${JSON.stringify(board.view ?? null)})`
+      );
+    }
     if (board.alarm) problems.push(`a Signal alarm (${board.alarm}) was up on CONSOLE while the tone audibly played`);
     if (board.back !== "stage") problems.push(`switching back from CONSOLE to STAGE failed (${board.back})`);
   }
