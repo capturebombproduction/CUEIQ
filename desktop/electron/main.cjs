@@ -1526,6 +1526,36 @@ async function driveLiveScenario(win) {
       if (Date.now() >= signalDeadline) break;
       await new Promise((r) => setTimeout(r, 250));
     }
+    // CONSOLE (components/live/console-board.tsx) reads the same tap through its own loop.
+    // Switch this device to it while the tone plays, read its PLAYBACK channel, switch back:
+    // the switch changes the board, never the sound (measureTheSound below still has to hear
+    // the tone running, after both switches).
+    smokeAt("live:audible:console");
+    const switched = await win.webContents.executeJavaScript(
+      `(() => { const b = document.querySelector('[data-testid=live-view-console]');
+        if (!b) return 'no STAGE | CONSOLE switch'; b.click(); return 'clicked'; })()`
+    );
+    let consoleReading = { present: false, switched };
+    if (switched === "clicked") {
+      const consoleDeadline = Date.now() + 10_000;
+      for (;;) {
+        consoleReading = JSON.parse(
+          await win.webContents.executeJavaScript(`JSON.stringify((() => {
+            const c = document.querySelector('[data-testid=console-channel]');
+            const alarm = document.querySelector('[data-testid=signal-alarm]');
+            if (!c) return { present: false, alarm: alarm ? alarm.dataset.kind : null };
+            return { present: true, ready: c.dataset.ready || null, db: c.dataset.db || null, alarm: alarm ? alarm.dataset.kind : null };
+          })())`)
+        );
+        consoleReading.switched = switched;
+        if (consoleReading.present && consoleReading.ready === "1" && consoleReading.db !== null && Number(consoleReading.db) > -30) break;
+        if (Date.now() >= consoleDeadline) break;
+        await new Promise((r) => setTimeout(r, 250));
+      }
+      await win.webContents.executeJavaScript(
+        `(() => { const b = document.querySelector('[data-testid=live-view-stage]'); if (b) b.click(); })()`
+      );
+    }
     smokeAt("live:audible:listening");
     const deadline = Date.now() + 15_000;
     let heard = null;
@@ -1535,7 +1565,7 @@ async function driveLiveScenario(win) {
       if (Date.now() >= deadline) break;
       await new Promise((r) => setTimeout(r, 500));
     }
-    return { role: "audible", after: started, audio: heard, signal, mountedSync: mounted.sync };
+    return { role: "audible", after: started, audio: heard, signal, console: consoleReading, mountedSync: mounted.sync };
   }
 
   if (SMOKE_LIVE === "main" || SMOKE_LIVE === "main-yield") {

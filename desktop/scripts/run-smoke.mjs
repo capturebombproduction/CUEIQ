@@ -860,6 +860,16 @@ async function runAudibleScenario(s) {
     if (!(Number(signal.db) > -30)) problems.push(`the Signal strip read ${signal.db} dB while a -6 dBFS tone played`);
   }
   if (signal?.alarm) problems.push(`a Signal alarm (${signal.alarm}) was up while the tone audibly played`);
+  // CONSOLE's PLAYBACK channel, read the same way after switching to it mid-tone (main.cjs
+  // switches back before measureTheSound, which then still has to hear the tone running).
+  const board = result?.liveReport?.console;
+  console.log(`   the CONSOLE board's meters: ${JSON.stringify(board ?? null)}`);
+  if (!board?.present) problems.push(`the CONSOLE board never showed (${board?.switched ?? "no reading"})`);
+  else {
+    if (board.ready !== "1") problems.push("CONSOLE's meters never started");
+    if (!(Number(board.db) > -30)) problems.push(`CONSOLE's PLAYBACK channel read ${board.db} dB while a -6 dBFS tone played`);
+    if (board.alarm) problems.push(`a Signal alarm (${board.alarm}) was up on CONSOLE while the tone audibly played`);
+  }
   if (problems.length === 0) {
     console.log(
       `   ✔ real signal: peak RMS ${heard.rms} over ${heard.advanced}s of playback ` +

@@ -78,6 +78,8 @@ import { decodeWaveform } from "@/lib/song-analysis";
 import { loudnessDelta, type SongSignalMap } from "@/lib/song-signal";
 import { useSongMarkers } from "@/lib/song-markers-live";
 import { BeatLight } from "@/components/live/beat-light";
+import { ConsoleBoard, type ConsoleItem } from "@/components/live/console-board";
+import { useLiveView } from "@/components/live/use-live-view";
 import { useSongCovers } from "@/lib/song-covers";
 import { KindChip, KindTile } from "@/components/event/kind";
 import { MicGrid } from "@/components/event/mic-grid";
@@ -2521,6 +2523,33 @@ export function LiveMode({
     next?.song_id ? songSignal?.[next.song_id] : undefined,
     currentSongSignal
   );
+  // STAGE | CONSOLE (components/live/use-live-view.ts): which board this device shows. CONSOLE
+  // only on a stage-size screen, and only the board changes: the top bar, the status row, the
+  // dock, Live tools and the whole engine are the same nodes in both.
+  const { view: liveView, setView: setLiveView, stageScreen } = useLiveView();
+  const consoleOn = liveView === "console" && stageScreen;
+  // the CONSOLE board's items: each block, where its audio sits in it, its song's analysis
+  const consoleItems = useMemo<ConsoleItem[]>(
+    () =>
+      items.map((it) => {
+        const sig = it.song_id ? songSignal?.[it.song_id] : undefined;
+        return {
+          id: it.id,
+          kind: (it.kind as SetlistKind | undefined) ?? null,
+          title: it.title,
+          block: blockSeconds(it),
+          audioStart: Math.max(0, it.buffer_before_seconds || 0),
+          audioLen: it.duration_seconds || 0,
+          notes: it.notes ?? null,
+          songId: it.song_id ?? null,
+          lufs: sig?.lufs ?? null,
+          peaks: sig?.peaks ?? null,
+          bpm: sig?.bpm ?? null,
+          beatOffset: sig?.beatOffset ?? null,
+        };
+      }),
+    [items, songSignal]
+  );
   // The Signal alarm, laid over the NOW card's top strip (never in the flow: the countdown
   // keeps its size). The playing file has gone silent or stalled, or the sound's device
   // changed mid-show. Each clears itself when the cause does; a device change waits for ปิด.
@@ -3550,8 +3579,9 @@ export function LiveMode({
           (FRAME_LIGHT_AIM) it would otherwise inherit below stage size. */}
       <StageLight className="[--spot-x:50%] stage:[--spot-x:27%]" />
       {/* the music glow (desktop, a show sounding): app/stage.css .signal-glow, driven by the
-          Signal strip's loop. A layer of its own - the page light above stays static. */}
-      {signalTap && <div ref={signalGlowRef} aria-hidden className="signal-glow no-print [--spot-x:50%] stage:[--spot-x:27%]" />}
+          Signal strip's loop. A layer of its own - the page light above stays static. Aimed at
+          STAGE's NOW column, so not under CONSOLE. */}
+      {signalTap && !consoleOn && <div ref={signalGlowRef} aria-hidden className="signal-glow no-print [--spot-x:50%] stage:[--spot-x:27%]" />}
       {/* hidden file input */}
       <input
         ref={fileInputRef}
@@ -3613,6 +3643,25 @@ export function LiveMode({
               upright keeps its own row). The landscape phone has no other place for
               the running totals, and an operator who cannot see them walks the show
               without noticing the accumulated clock. */}
+          {/* STAGE | CONSOLE - which board this device shows (stage-size screens only; kept per
+              device). Only the board below changes; this bar, the status row and the dock stay. */}
+          {stageScreen && (
+            <div role="group" aria-label="Live view" className="seg quiet en hidden w-[184px] flex-none stage:grid">
+              {(["stage", "console"] as const).map((v) => (
+                <button
+                  key={v}
+                  type="button"
+                  data-testid={`live-view-${v}`}
+                  aria-pressed={liveView === v}
+                  onClick={() => setLiveView(v)}
+                  title={v === "stage" ? "หน้าจอโชว์ (นับถอยหลังตัวใหญ่)" : "มุมมองแบบคอนโซล (ไทม์ไลน์ · มิเตอร์ · มิกเซอร์)"}
+                  className={cn("!px-1 !text-[14px]", liveView === v && "on")}
+                >
+                  {v === "stage" ? "Stage" : "Console"}
+                </button>
+              ))}
+            </div>
+          )}
           <div className="hidden items-center gap-3 [@media(orientation:landscape)_and_(max-height:599.98px)_and_(pointer:coarse)]:flex stage:flex stage:gap-5">
             <Stat label="ผ่านไป">{formatDuration(totalElapsed)}</Stat>
             <Stat label="เหลือทั้งโชว์">{formatDuration(showRemaining)}</Stat>
@@ -3763,7 +3812,8 @@ export function LiveMode({
             waveform={playingWaveform}
             onVerdict={setSignalVerdict}
             glow={signalGlowRef}
-            className="hidden stage:flex"
+            // CONSOLE has its own meters (the PLAYBACK channel); the watch behind these runs on
+            className={consoleOn ? "hidden" : "hidden stage:flex"}
           />
         )}
         {isController ? (
@@ -3935,7 +3985,36 @@ export function LiveMode({
           needs ~123 px of its ~127 px track at 14 px, ~136 of 142 at 16 px from
           1060), and gives a running-order row 20 px over the 270 px it first had:
           the row with the NEXT chip keeps 68 px of title instead of 48, and in
-          edit mode ~20 px between its marks and the ▲▼ keys instead of 0. */}
+          edit mode ~20 px between its marks and the ▲▼ keys instead of 0.
+          CONSOLE (a stage-size screen whose device chose it) puts its own board in this
+          place: the same show, as a DAW draws it, on the same handlers. */}
+      {consoleOn ? (
+        <ConsoleBoard
+          items={consoleItems}
+          index={state.currentIndex}
+          elapsed={elapsedItem}
+          remaining={remaining}
+          zone={zone}
+          running={state.running}
+          endClock={itemEndClock}
+          markers={songMarkers}
+          playingId={audioPlaying ? playingId : null}
+          tap={signalTap}
+          player={() => audioRef.current}
+          // the fader and the fades where STAGE shows them: on the device that holds the
+          // file, or on the controller riding the speaker device's level by remote
+          volume={current && (currentAudioUrl || (isController && state.begun)) ? volumes[current.id] ?? 100 : null}
+          onVolume={isController && current ? (v) => setVolumeFor(current.id, v) : null}
+          onFade={isController ? fadeVolumeTo : null}
+          output={signalTap ? { label: showOutput.label, kind: showOutput.kind } : null}
+          soundOn={soundOutput}
+          onOutput={openTools}
+          // STAGE's running-order tap, under the same lock
+          onCue={state.mode === "auto" || !isController ? null : goto}
+          nextLoudness={nextLoudness}
+          alarm={signalAlarm}
+        />
+      ) : (
       <div className="flex flex-col gap-2 [@media(orientation:landscape)_and_(max-height:599.98px)_and_(pointer:coarse)]:contents stage:grid stage:min-h-0 stage:flex-1 stage:grid-cols-[minmax(0,1fr)_300px_clamp(290px,calc(40vw_-_150px),320px)] stage:grid-rows-[minmax(0,1fr)] stage:gap-4 stage:px-5 stage:pb-3 stage:pt-2">
         <NowCard
           zone={zone}
@@ -4171,6 +4250,7 @@ export function LiveMode({
           <div className="stack stage:min-h-0 stage:flex-1 stage:gap-px stage:overflow-y-auto">{upcomingRows}</div>
         </section>
       </div>
+      )}
 
       {/* last-show time record — saved by จบโชว์, survives a normal Reset Show,
           cleared only by its own ล้าง button. On stage it lives in Live tools. */}

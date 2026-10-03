@@ -1928,3 +1928,101 @@ describe("LiveMode — the NOW card's cover", () => {
     expect(now.querySelector('[data-testid="now-cover"]')).toBeNull();
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// (z) STAGE | CONSOLE — a second board, never a second engine
+//
+// CONSOLE (components/live/console-board.tsx) replaces the board and nothing else:
+// the top bar, the status row, the dock and every player are the same nodes. It is
+// per device, STAGE by default, and a screen under the stage size never gets it.
+// ─────────────────────────────────────────────────────────────────────────────
+describe("LiveMode · STAGE | CONSOLE", () => {
+  const STAGE_QUERY = "(orientation: landscape) and (min-width: 900px) and (min-height: 600px)";
+  let stageSize = true;
+  beforeEach(() => {
+    stageSize = true;
+    localStorage.removeItem("cueiq:liveView");
+    vi.spyOn(window, "matchMedia").mockImplementation(
+      (q: string) =>
+        ({
+          matches: q === STAGE_QUERY && stageSize,
+          media: q,
+          onchange: null,
+          addListener() {},
+          removeListener() {},
+          addEventListener() {},
+          removeEventListener() {},
+          dispatchEvent: () => false,
+        }) as unknown as MediaQueryList
+    );
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    localStorage.removeItem("cueiq:liveView");
+  });
+  const order = () => screen.queryByRole("heading", { name: "Running Order" });
+
+  it("opens on STAGE; the switch puts CONSOLE in the board's place and keeps the choice on this device", async () => {
+    await mountLive();
+    expect(screen.queryByTestId("console")).toBeNull();
+    expect(order()).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId("live-view-console"));
+    expect(screen.getByTestId("console")).toBeInTheDocument();
+    expect(order()).toBeNull();
+    expect(screen.getByTestId("live-view-console")).toHaveAttribute("aria-pressed", "true");
+    expect(localStorage.getItem("cueiq:liveView")).toBe("console");
+    // everything around the board is the same: the sound key, Manual | Auto, START
+    expect(screen.getByTestId("sound-output-toggle")).toBeInTheDocument();
+    expect(screen.getByRole("group", { name: "Show mode" })).toBeInTheDocument();
+    expect(screen.getByTestId("start-show")).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId("live-view-stage"));
+    expect(screen.queryByTestId("console")).toBeNull();
+    expect(order()).toBeInTheDocument();
+    expect(localStorage.getItem("cueiq:liveView")).toBe("stage");
+  });
+
+  it("a device that chose CONSOLE opens on it; under the stage size it is STAGE with no switch", async () => {
+    localStorage.setItem("cueiq:liveView", "console");
+    const first = await mountLive();
+    expect(screen.getByTestId("console")).toBeInTheDocument();
+    first.unmount();
+    stageSize = false;
+    await mountLive();
+    expect(screen.queryByTestId("console")).toBeNull();
+    expect(screen.queryByTestId("live-view-console")).toBeNull();
+    expect(order()).toBeInTheDocument();
+  });
+
+  it("switching boards mid-show touches no player and sends nothing", async () => {
+    const media = instrumentMediaElements();
+    h.saved = [{ itemId: "item-1", blob: new Blob(["audio"]), name: "track-1.wav", path: null }];
+    await mountLive();
+    await startShowFromUi();
+    const calls = media.calls.length;
+    const sends = live().sent.length;
+    fireEvent.click(screen.getByTestId("live-view-console"));
+    fireEvent.click(screen.getByTestId("live-view-stage"));
+    fireEvent.click(screen.getByTestId("live-view-console"));
+    expect(media.calls.length).toBe(calls);
+    expect(live().sent.length).toBe(sends);
+    // the show is where it was, and CONSOLE says so
+    expect(screen.getByTestId("console-remain")).toHaveTextContent("4:00");
+    expect(screen.getByTestId("next")).toBeInTheDocument();
+  });
+
+  it("a CONSOLE clip cues its item as the running order's row would (Manual, the controller)", async () => {
+    await mountLive();
+    await startShowFromUi();
+    fireEvent.click(screen.getByTestId("live-view-console"));
+    const clips = screen.getAllByTestId("console-clip");
+    await act(async () => {
+      fireEvent.click(clips[2]);
+    });
+    expect(stateSends().at(-1)?.payload.currentIndex).toBe(2);
+    // Auto: the clips are locked, as the running order is
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /Auto/ }));
+    });
+    expect(screen.getAllByTestId("console-clip")[0]).toBeDisabled();
+  });
+});
