@@ -81,6 +81,7 @@ export function NowCard({
   total,
   kind,
   title,
+  cover = null,
   note,
   endClock,
   canAdvance,
@@ -97,6 +98,8 @@ export function NowCard({
   /** null for an offline cached row that lost its kind: no chip, never a crash */
   kind: SetlistKind | null;
   title: string;
+  /** the song's cover (songs.cover, a data URL), when it has one and this device has it */
+  cover?: string | null;
   note: string | null;
   /** wall-clock time the item ends, "HH:MM:SS" */
   endClock: string;
@@ -228,6 +231,23 @@ export function NowCard({
         {/* py + matching -my: the clip (overflow: hidden) is the padding box, and at
             1.04 a Barlow-first line box ends inside Kanit's stacked tone marks and
             ุ / ู. The padding gives them room; the margin keeps the row's height. */}
+        {/* The cover sits IN the title row at the title's own line-box height (27.04 px phone,
+            41.6 px stage), so the row - and the card, which is one height in every zone - does
+            not grow. A cue, not a picture: the title still names the song. On the alarm plate
+            it goes grey, like the kind chip there: no band colour on the alarm. */}
+        {cover && (
+          // eslint-disable-next-line @next/next/no-img-element -- a 192 px data-URL thumbnail
+          <img
+            src={cover}
+            alt=""
+            aria-hidden
+            data-testid="now-cover"
+            className={cn(
+              "h-[27px] w-[27px] shrink-0 rounded-[2px] bg-muted object-cover stage:h-[41px] stage:w-[41px]",
+              over && "opacity-70 grayscale"
+            )}
+          />
+        )}
         <h2 ref={titleRef} className={cn("disp min-w-0 flex-1 truncate py-[.25em] -my-[.25em]", TITLE_SIZE[step])}>{title}</h2>
         {zone !== "ok" && (
           <span className={cn("num shrink-0 text-[16px]", !over && "hidden [@media(orientation:landscape)_and_(max-height:599.98px)_and_(pointer:coarse)]:inline")}>{pos}</span>

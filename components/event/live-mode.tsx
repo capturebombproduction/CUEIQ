@@ -71,6 +71,7 @@ import { Button } from "@/components/ui/button";
 import { LiveStatusStrip } from "@/components/event/live-status-strip";
 import { AudioOutputPicker, AUDIO_SINK_KEY, loadAudioSink } from "@/components/event/audio-output-picker";
 import { NowCard } from "@/components/live/now-card";
+import { useSongCovers } from "@/lib/song-covers";
 import { KindChip, KindTile } from "@/components/event/kind";
 import { MicGrid } from "@/components/event/mic-grid";
 import { RunMeter } from "@/components/event/run-meter";
@@ -2443,6 +2444,10 @@ export function LiveMode({
 
   const current = items[state.currentIndex];
   const next = items[state.currentIndex + 1];
+  // The NOW card's cover: the setlist's songs' covers, read once (lib/song-covers.ts —
+  // the event bundle carries none). Decoration: offline, or not yet read, means none.
+  const songCovers = useSongCovers(useMemo(() => items.map((it) => it.song_id), [items]));
+  const currentCover = current?.song_id ? songCovers[current.song_id] ?? null : null;
 
   // Running + this device holds the sounding track's file, but audio isn't playing —
   // e.g. after a reload (browsers block autoplay without a user gesture). Offer a tap.
@@ -3806,6 +3811,7 @@ export function LiveMode({
           total={items.length}
           kind={(current?.kind as SetlistKind | undefined) ?? null}
           title={current?.title || "—"}
+          cover={currentCover}
           note={current?.notes ?? null}
           endClock={itemEndClock}
           canAdvance={!nextLocked}

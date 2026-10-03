@@ -47,6 +47,7 @@ vi.mock("@/lib/audio-store", () => ({
 import { LiveMode } from "./live-mode";
 import { deleteAudio } from "@/lib/audio-store";
 import { OfflineBanner } from "@/components/offline-banner";
+import { resetSongCoverCache } from "@/lib/song-covers";
 
 const EVENT_ID = "11111111-2222-4333-8444-555555555555";
 const GROUP_ID = "66666666-7777-4888-8999-000000000000";
@@ -1876,5 +1877,40 @@ describe("LiveMode · round 15 seams", () => {
     expect(title).toHaveClass("stage:line-clamp-none", "stage:truncate", "stage:flex-1");
     // a base `truncate` (nowrap) would make the line-clamp inert on a phone
     expect(title).not.toHaveClass("truncate");
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The NOW card's cover. The event bundle leaves cover pictures out (lib/song-columns.ts),
+// so Live reads the setlist's covers itself — once, and only "id, cover".
+// ─────────────────────────────────────────────────────────────────────────────
+describe("LiveMode — the NOW card's cover", () => {
+  const COVER = "data:image/webp;base64,UklGRg==";
+  const covered = [makeItem(1, { song_id: "song-1" }), makeItem(2, { song_id: "song-2" }), makeItem(3)];
+
+  beforeEach(() => {
+    resetSongCoverCache();
+    supa.query.setTable("songs", (call) =>
+      call.columns === "id, cover" ? ok([{ id: "song-1", cover: COVER }, { id: "song-2", cover: null }]) : ok([])
+    );
+  });
+
+  it("shows the song ON NOW's cover in the NOW card, from one read of the setlist's songs", async () => {
+    await mountLive({ items: covered });
+    await act(async () => {});
+    const now = document.querySelector("section[data-zone]") as HTMLElement;
+    expect(now.querySelector('[data-testid="now-cover"]')?.getAttribute("src")).toBe(COVER);
+    const reads = supa.query.callsTo("songs", "select").filter((c) => c.columns === "id, cover");
+    expect(reads).toHaveLength(1);
+    const ids = reads[0].filters.find((x) => x.op === "in")?.value as string[];
+    expect([...ids].sort()).toEqual(["song-1", "song-2"]); // the ad-hoc row asks nothing
+  });
+
+  it("a song without a cover (or a row with no song) shows no tile", async () => {
+    await mountLive({ items: [covered[1], covered[2]] });
+    await act(async () => {});
+    const now = document.querySelector("section[data-zone]") as HTMLElement;
+    expect(within(now).getByRole("heading", { level: 2 })).toHaveTextContent("Track 2");
+    expect(now.querySelector('[data-testid="now-cover"]')).toBeNull();
   });
 });

@@ -719,3 +719,46 @@ describe("NowCard · a short stage sheds the cue note row from the card's own he
     expect(threshold).toBeLessThanOrEqual(needed + 2);
   });
 });
+
+describe("NowCard · the song's cover", () => {
+  const COVER = "data:image/webp;base64,UklGRg==";
+
+  it("sits in the title row, at the title's own line-box height, before the title", () => {
+    // 27 px / 41 px against a 27.04 / 41.6 px line box: the row, and so the card that
+    // is one height in every zone, does not grow by a pixel
+    const { el } = card("ok", { cover: COVER });
+    const img = el.querySelector<HTMLImageElement>('[data-testid="now-cover"]')!;
+    expect(img.getAttribute("src")).toBe(COVER);
+    expect(img.className.split(" ")).toContain("h-[27px]");
+    expect(img.className.split(" ")).toContain("w-[27px]");
+    expect(img.className.split(" ")).toContain("stage:h-[41px]");
+    expect(img.className.split(" ")).toContain("shrink-0");
+    const row = img.parentElement!;
+    expect(row.querySelector("h2")).not.toBeNull();
+    expect(Array.from(row.children).indexOf(img)).toBe(0);
+    expect(img.getAttribute("aria-hidden")).toBe("true"); // the title already names the song
+  });
+
+  it("adds no row: the card keeps the same shape with and without a cover", () => {
+    const a = card("warn");
+    const without = shape(a.el);
+    a.unmount();
+    const b = card("warn", { cover: COVER });
+    expect(shape(b.el)).toEqual(without);
+  });
+
+  it("goes grey on the alarm plate (no band colour on the alarm), and only there", () => {
+    for (const z of ["ok", "warn", "urgent", "over"] as const) {
+      const { el, unmount } = card(z, { cover: COVER });
+      const img = el.querySelector('[data-testid="now-cover"]')!;
+      expect(img.className.includes("grayscale"), z).toBe(z === "over");
+      unmount();
+    }
+  });
+
+  it("no cover, no tile: the title keeps the whole row", () => {
+    const { el } = card("ok");
+    expect(el.querySelector('[data-testid="now-cover"]')).toBeNull();
+    expect(el.querySelector("img")).toBeNull();
+  });
+});

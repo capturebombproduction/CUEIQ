@@ -20,7 +20,8 @@ const h = vi.hoisted(() => ({
   engines: [] as FakeEngine[],
   // the songs table as the cover read sees it (filtered by its .eq("id", …))
   coverRows: [] as { id: string; cover: string | null }[],
-  coverReads: [] as string[],
+  // each songs read, as the sorted ids it asked about (lib/song-covers.ts reads with .in)
+  coverReads: [] as string[][],
 }));
 
 vi.mock("@/lib/practice-audio", () => ({
@@ -78,19 +79,20 @@ vi.mock("@/lib/supabase/client", () => ({
   createClient: () => ({
     from: (table: string) => {
       // no shows → the setlist card stays out of the way; songs answers the cover read
-      let id: unknown = null;
+      let ids: string[] = [];
       const b = {
         select: () => b,
-        eq: (col: string, v: unknown) => {
-          if (col === "id") id = v;
+        eq: () => b,
+        in: (_col: string, v: string[]) => {
+          ids = v;
           return b;
         },
         gte: () => b,
         insert: () => b,
-        then: (res: (v: unknown) => unknown) => {
-          if (table === "songs") h.coverReads.push(String(id));
-          const data = table === "songs" ? h.coverRows.filter((r) => r.id === id) : [];
-          return Promise.resolve({ data, error: null }).then(res);
+        then: (res: (v: unknown) => unknown, rej?: (e: unknown) => unknown) => {
+          if (table === "songs") h.coverReads.push([...ids].sort());
+          const data = table === "songs" ? h.coverRows.filter((r) => ids.includes(r.id)) : [];
+          return Promise.resolve({ data, error: null }).then(res, rej);
         },
       };
       return b;
@@ -99,6 +101,7 @@ vi.mock("@/lib/supabase/client", () => ({
 }));
 
 import { PracticePlayer } from "./practice-player";
+import { resetSongCoverCache } from "@/lib/song-covers";
 
 const song = (id: string, title: string): Song =>
   ({ id, tenant_id: "t1", group_id: "g1", title, duration_seconds: 228, audio_path: `${id}.wav` }) as Song;
@@ -141,6 +144,7 @@ beforeEach(() => {
   h.engines = [];
   h.coverRows = [];
   h.coverReads = [];
+  resetSongCoverCache();
 });
 
 describe("PracticePlayer — the Now Playing hero", () => {
@@ -166,20 +170,20 @@ describe("PracticePlayer — the Now Playing hero", () => {
     }
   });
 
-  it("reads the cover the room was not handed (the event bundle leaves covers out), once per song", async () => {
+  it("reads the covers the room was not handed (the bundle leaves them out) once, for the whole list", async () => {
     const COVER = "data:image/webp;base64,UklGRg==";
     h.coverRows = [{ id: "c", cover: COVER }];
     mount();
+    // one read when the room opens, for every listed song
+    await waitFor(() => expect(h.coverReads).toEqual([["a", "b", "c"]]));
     await pick("Neon Samurai", "b.wav");
-    await waitFor(() => expect(h.coverReads).toEqual(["b"]));
     expect(hero().querySelector("img")).toBeNull();
     await pick("Akai Hana", "c.wav");
     await waitFor(() => expect(hero().querySelector("img")?.getAttribute("src")).toBe(COVER));
-    // back to a song already asked about: no second read
     fireEvent.click(within(hero()).getByRole("button", { name: /เพลงก่อนหน้า/ }));
     await waitFor(() => expect(engine().loads).toEqual(["b.wav", "c.wav", "b.wav"]));
     await waitFor(() => expect(hero().querySelector("img")).toBeNull());
-    expect(h.coverReads).toEqual(["b", "c"]);
+    expect(h.coverReads).toEqual([["a", "b", "c"]]); // and never again
   });
 
   it("⏭ loads the next song on the list, and is off on the last one", async () => {
