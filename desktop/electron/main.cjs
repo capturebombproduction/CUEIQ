@@ -7,7 +7,7 @@
 // never has to be whitelisted on the R2 bucket) and open the native file picker for
 // local-file ingest. Auth stays in the renderer: main only ever sees a presigned
 // URL the renderer already minted, so no R2/Supabase secret is bundled in the app.
-const { app, BrowserWindow, Menu, ipcMain, dialog, net, shell, powerSaveBlocker } = require("electron");
+const { app, BrowserWindow, Menu, ipcMain, dialog, net, shell, powerSaveBlocker, powerMonitor } = require("electron");
 const path = require("node:path");
 const fs = require("node:fs");
 const { pathToFileURL } = require("node:url");
@@ -315,10 +315,14 @@ function writeSkippedVersion(version) {
  *
  * พี่'s call (2026-08-02) still stands: ASK FIRST. The installer is ~107 MB and the launch
  * check fires in the same minute an operator sets up on the venue hotspot Live Mode needs.
- * So the launch check only asks, nothing downloads without a press, and a finished download
- * never restarts the app by itself: it asks — and not at all while a show runs or an edit is
- * unsaved (the renderer reports both: startShowPowerSaveBlocker / unloadReason). Declined,
- * the chip says "ติดตั้ง" and the update also goes in when the app is next quit.
+ * So the launch check only asks (Windows; the Mac just shows the chip), nothing downloads
+ * without a press, and a finished download never restarts the app by itself: it asks — and
+ * not at all while a show runs or an edit is unsaved (the renderer reports both:
+ * startShowPowerSaveBlocker / unloadReason). Declined, the chip says "ติดตั้ง" and the update
+ * also goes in when the app is next quit.
+ * ⚠️ macOS: a dialog with no parent window is APP-MODAL there (runModal) — it freezes a
+ * running show's clicks and keyboard cues. Anything the operator did not just press goes
+ * through backgroundNotice, which stays silent while busy.
  *
  *   • Windows: electron-updater against the GitHub feed (package.json build.win.publish).
  *   • macOS: Squirrel.Mac only updates an Apple-signed app and ours is ad-hoc signed, so the
@@ -357,6 +361,11 @@ let macLocalDmg = null;
 let macStaged = null;
 /** Mac: reopen after the swap — for "เปิดใหม่เลย", not for a plain quit. */
 let macReopen = false;
+/** Mac: the last in-app swap failed on the disk (permissions, App Management, …) — that
+ *  version goes the .dmg route from then on ({ version, dmg, result }). */
+let macSwapFailed = null;
+/** Mac: the OS is logging out / shutting down — never start a swap it would kill. */
+let systemShuttingDown = false;
 const UPDATE_PENDING_FILE = () => path.join(app.getPath("userData"), "update-pending.json");
 const UPDATE_RESULT_FILE = () => path.join(app.getPath("userData"), "update-result.txt");
 
@@ -378,7 +387,7 @@ function updateBusyReason() {
   return null;
 }
 
-/** Ask the feed. `prompt` = the launch check's "อัปเดตเลย / ไว้ก่อน". */
+/** Ask the feed. `prompt` = the launch check's "อัปเดตเลย / ไว้ก่อน" (Windows only). */
 async function checkForUpdates({ prompt = false } = {}) {
   if (!updatesSupported()) {
     setUpdateState({ state: "unsupported" });
@@ -441,7 +450,8 @@ async function checkMacFeed() {
     return;
   }
   const asset = updateFeed.macAssetFor(feed, process.arch, rosetta);
-  macBlocker = asset ? macSelfUpdateBlocker() : "no-feed";
+  const failedBefore = macSwapFailed && macSwapFailed.version === latest ? macSwapFailed : null;
+  macBlocker = failedBefore ? "swap-failed" : asset ? macSelfUpdateBlocker() : "no-feed";
   macPlan = macBlocker
     ? null
     : {
@@ -451,7 +461,7 @@ async function checkMacFeed() {
         sha512: asset.sha512,
         size: asset.size,
       };
-  macLocalDmg = null;
+  macLocalDmg = failedBefore?.dmg ?? null;
   setUpdateState({
     state: "available",
     latest,
@@ -459,10 +469,6 @@ async function checkMacFeed() {
     url: updateFeed.macDmgUrl(latest, process.arch, rosetta),
     manual: !macPlan,
   });
-  if (launchPrompt) {
-    launchPrompt = false;
-    promptAtLaunch(latest);
-  }
 }
 
 /** The header's press (and the menu's): download, or install what is ready. */
@@ -492,10 +498,14 @@ async function openMacDmg() {
   if (macLocalDmg && fs.existsSync(macLocalDmg)) await shell.openPath(macLocalDmg);
   else if (updateState.url) await shell.openExternal(updateState.url);
   else return;
+  const once = "ลงใน Applications แบบนี้ครั้งเดียว ครั้งต่อไปกดอัปเดตในแอปได้เลย";
+  const failed = `อัปเดตในแอปไม่สำเร็จ${macSwapFailed?.result ? ` (${macSwapFailed.result})` : ""} — รอบนี้ลงด้วยมือแทน`;
   const why = {
-    dmg: "แอปนี้เปิดจากไฟล์ .dmg อยู่ — ",
-    translocated: "แอปนี้ยังไม่ได้ย้ายไปไว้ใน Applications — ",
-    "read-only": "แอปอยู่ในโฟลเดอร์ที่แก้ไขไม่ได้ — ",
+    dmg: `แอปนี้เปิดจากไฟล์ .dmg อยู่ — ${once}`,
+    translocated: `แอปนี้ยังไม่ได้ย้ายไปไว้ใน Applications — ${once}`,
+    "read-only": `แอปอยู่ในโฟลเดอร์ที่แก้ไขไม่ได้ — ${once}`,
+    stage: failed,
+    "swap-failed": failed,
   }[macBlocker];
   await dialog.showMessageBox({
     type: "info",
@@ -505,16 +515,33 @@ async function openMacDmg() {
     detail:
       "เปิดไฟล์ .dmg → ลากไอคอน CueIQ ไปที่ Applications → เลือก “Replace” (แทนที่)\n" +
       "จากนั้นปิดแอปนี้แล้วเปิด CueIQ ใหม่ ข้อมูลและการล็อกอินยังอยู่ครบ" +
-      (why ? `\n\n${why}ลงใน Applications แบบนี้ครั้งเดียว ครั้งต่อไปกดอัปเดตในแอปได้เลย` : ""),
+      (why ? `\n\n${why}` : ""),
   });
+}
+
+/**
+ * A message the operator did not just ask for (a background download failed, …). ⚠️ On
+ * macOS a dialog with no parent window is APP-MODAL — Electron runs it with [NSAlert
+ * runModal] — so it would freeze every click and keyboard cue of a running show. Such
+ * messages are therefore dropped while busy; the header chip still carries the state.
+ */
+function backgroundNotice(options) {
+  const fallback = { response: options.cancelId ?? 0 };
+  if (updateBusyReason()) return Promise.resolve(fallback);
+  return dialog.showMessageBox(options).catch(() => fallback);
 }
 
 /** Mac, in-app: download + check + stage, then offer the restart. */
 async function macDownload(plan) {
   setUpdateState({ state: "downloading", percent: 0 });
-  const workDir = path.join(app.getPath("temp"), `CueIQ-update-${plan.version}`);
+  // realpath: /var is a symlink to /private/var (the CI smoke uses the same form)
+  const workDir = path.join(fs.realpathSync(app.getPath("temp")), `CueIQ-update-${plan.version}`);
   let dmg;
   try {
+    // an earlier run that quit mid-stage can leave the image mounted inside workDir
+    if (fs.existsSync(path.join(workDir, "mnt"))) {
+      await macUpdate.run("hdiutil", ["detach", path.join(workDir, "mnt"), "-force"], 60_000).catch(() => {});
+    }
     fs.rmSync(workDir, { recursive: true, force: true });
     dmg = await macUpdate.download({
       url: plan.url,
@@ -526,18 +553,27 @@ async function macDownload(plan) {
     });
   } catch (e) {
     console.log("AUTOUPDATE_MAC_DL_FAIL " + String(e));
+    if (/sha512|bytes/.test(String(e))) {
+      // Not the network: the release's .dmg changed under the feed we read (a re-run tag
+      // re-uploads rebuilt bytes). Read the feed again rather than fail on every press.
+      macPlan = null;
+      setUpdateState({ state: "error", percent: null });
+      checkForUpdates();
+      return;
+    }
     setUpdateState({ state: "available", percent: null }); // the chip is back: press again to retry
-    dialog
-      .showMessageBox({
-        type: "warning",
-        buttons: ["ตกลง"],
-        title: "อัปเดต CueIQ",
-        message: "โหลดอัปเดตไม่สำเร็จ",
-        detail: "เช็กอินเทอร์เน็ตแล้วกดปุ่มอัปเดตที่แถบด้านบนอีกครั้ง",
-      })
-      .catch(() => {});
+    backgroundNotice({
+      type: "warning",
+      buttons: ["ตกลง"],
+      title: "อัปเดต CueIQ",
+      message: "โหลดอัปเดตไม่สำเร็จ",
+      detail: "เช็กอินเทอร์เน็ตแล้วกดปุ่มอัปเดตที่แถบด้านบนอีกครั้ง",
+    });
     return;
   }
+  // Mounting and copying ~250 MB is real disk work: never while a show is sounding. The chip
+  // reads "100%" meanwhile (and Live has no header to show it in anyway).
+  while (updateBusyReason() === "show") await new Promise((r) => setTimeout(r, 30_000));
   try {
     const staged = await macUpdate.stageFromDmg({ dmg, workDir, expectVersion: plan.version });
     macStaged = {
@@ -554,19 +590,17 @@ async function macDownload(plan) {
     macBlocker = "stage";
     macLocalDmg = dmg;
     setUpdateState({ state: "available", percent: null, manual: true });
-    const { response } = await dialog
-      .showMessageBox({
-        type: "warning",
-        buttons: ["เปิดไฟล์ติดตั้ง", "ไว้ก่อน"],
-        defaultId: 0,
-        cancelId: 1,
-        title: "อัปเดต CueIQ",
-        message: "ติดตั้งในแอปไม่สำเร็จ",
-        detail:
-          "ไฟล์เวอร์ชันใหม่โหลดมาครบแล้ว — กด “เปิดไฟล์ติดตั้ง” → ลากไอคอน CueIQ ไปที่ Applications → เลือก “Replace”\n" +
-          "จากนั้นปิดแอปนี้แล้วเปิด CueIQ ใหม่",
-      })
-      .catch(() => ({ response: 1 }));
+    const { response } = await backgroundNotice({
+      type: "warning",
+      buttons: ["เปิดไฟล์ติดตั้ง", "ไว้ก่อน"],
+      defaultId: 0,
+      cancelId: 1,
+      title: "อัปเดต CueIQ",
+      message: "ติดตั้งในแอปไม่สำเร็จ",
+      detail:
+        "ไฟล์เวอร์ชันใหม่โหลดมาครบแล้ว — กด “เปิดไฟล์ติดตั้ง” → ลากไอคอน CueIQ ไปที่ Applications → เลือก “Replace”\n" +
+        "จากนั้นปิดแอปนี้แล้วเปิด CueIQ ใหม่",
+    });
     if (response === 0) shell.openPath(dmg);
     return;
   }
@@ -575,28 +609,24 @@ async function macDownload(plan) {
 }
 
 /** A download just finished: offer the restart — unless this is a bad moment, in which case
- *  the chip ("ติดตั้ง") waits and quitting the app installs it too. */
+ *  the chip ("ติดตั้ง") waits and quitting the app installs it too. The operator pressed
+ *  "อัปเดต" moments (or minutes) ago, so this one is expected; it is still never shown
+ *  while a show runs (backgroundNotice). */
 async function offerRestart() {
-  if (updateBusyReason()) return;
-  try {
-    // Parentless, like the launch prompt (see promptAtLaunch): never modal over the window.
-    const { response } = await dialog.showMessageBox({
-      type: "question",
-      buttons: ["เปิดใหม่เลย", "ไว้ทีหลัง"],
-      defaultId: 0,
-      cancelId: 1,
-      title: "อัปเดต CueIQ",
-      message: `CueIQ ${updateState.latest} พร้อมแล้ว`,
-      detail:
-        "กด “เปิดใหม่เลย” แอปจะปิดแล้วเปิดขึ้นมาเป็นเวอร์ชันใหม่เอง" +
-        (process.platform === "win32" ? " (ราว 1 นาที ถ้า Windows ถามสิทธิ์ให้กด Yes)" : "") +
-        "\n“ไว้ทีหลัง” — กดปุ่ม “ติดตั้ง” ที่แถบด้านบนเมื่อสะดวก หรือจะติดตั้งให้ตอนปิดแอป\n" +
-        "ข้อมูลและการล็อกอินยังอยู่ครบ",
-    });
-    if (response === 0) await installUpdate();
-  } catch (e) {
-    console.log("AUTOUPDATE_OFFER_FAIL " + String(e));
-  }
+  const { response } = await backgroundNotice({
+    type: "question",
+    buttons: ["เปิดใหม่เลย", "ไว้ทีหลัง"],
+    defaultId: 0,
+    cancelId: 1,
+    title: "อัปเดต CueIQ",
+    message: `CueIQ ${updateState.latest} พร้อมแล้ว`,
+    detail:
+      "กด “เปิดใหม่เลย” แอปจะปิดแล้วเปิดขึ้นมาเป็นเวอร์ชันใหม่เอง" +
+      (process.platform === "win32" ? " (ราว 1 นาที ถ้า Windows ถามสิทธิ์ให้กด Yes)" : "") +
+      "\n“ไว้ทีหลัง” — กดปุ่ม “ติดตั้ง” ที่แถบด้านบนเมื่อสะดวก หรือจะติดตั้งให้ตอนปิดแอป\n" +
+      "ข้อมูลและการล็อกอินยังอยู่ครบ",
+  });
+  if (response === 0) await installUpdate();
 }
 
 /** Close, replace, reopen — refused while a show runs or an edit is unsaved. */
@@ -626,15 +656,16 @@ async function installUpdate() {
   if (winUpdater) setImmediate(() => winUpdater.quitAndInstall(true, true));
 }
 
-/** macOS: start the swap as the app quits — the press's quit, or any later one. */
+/** macOS: start the swap as the app quits — the press's quit, or any later one. Not when the
+ *  OS is logging out or shutting down: it would kill the script part-way. */
 function installMacOnQuit() {
-  if (process.platform !== "darwin" || !macStaged) return;
+  if (process.platform !== "darwin" || !macStaged || systemShuttingDown) return;
   const s = macStaged;
   macStaged = null;
   try {
     fs.writeFileSync(
       UPDATE_PENDING_FILE(),
-      JSON.stringify({ version: s.version, dmg: s.dmg, workDir: s.workDir }),
+      JSON.stringify({ version: s.version, dmg: s.dmg, staged: s.staged, workDir: s.workDir }),
       "utf8"
     );
     macUpdate.spawnInstaller({
@@ -644,15 +675,24 @@ function installMacOnQuit() {
       staged: s.staged,
       resultFile: UPDATE_RESULT_FILE(),
       reopen: macReopen,
+      version: s.version,
     });
   } catch (e) {
     console.log("AUTOUPDATE_MAC_INSTALL_FAIL " + String(e));
   }
 }
 
-/** macOS, at launch: how did the last swap go? It worked → tidy up. It did not → it is the
- *  OLD app that just opened; say so and hand over the .dmg already on disk. */
-function finishPendingMacUpdate() {
+/**
+ * macOS, at launch: how did the last swap go? No dialog here (a launch can be the reopen of
+ * a show — see backgroundNotice); the chip says it all:
+ *   • this IS the new version → tidy up
+ *   • the swap has not reported yet (someone reopened the app within seconds) → wait for it
+ *   • it never ran to the end, or the old app was running (relaunched / killed / shutdown) →
+ *     the staged copy is still good: back to "ready", the chip offers "ติดตั้ง" again
+ *   • it failed on the disk (no permission, App Management, …) → that version goes the
+ *     .dmg route ("ดาวน์โหลด" opens the .dmg already downloaded, with the reason)
+ */
+async function finishPendingMacUpdate() {
   if (process.platform !== "darwin") return;
   try {
     let pending;
@@ -661,11 +701,18 @@ function finishPendingMacUpdate() {
     } catch {
       return; // nothing was installed on the last quit
     }
-    let result = "";
-    try {
-      result = fs.readFileSync(UPDATE_RESULT_FILE(), "utf8").trim();
-    } catch {
-      /* the script never got as far as writing one */
+    const readResult = () => {
+      try {
+        return fs.readFileSync(UPDATE_RESULT_FILE(), "utf8").trim();
+      } catch {
+        return "";
+      }
+    };
+    const updated = !updateFeed.isNewer(pending.version, app.getVersion());
+    let result = readResult();
+    for (let i = 0; !updated && !result && i < 75; i++) {
+      await new Promise((r) => setTimeout(r, 200));
+      result = readResult();
     }
     fs.rmSync(UPDATE_PENDING_FILE(), { force: true });
     fs.rmSync(UPDATE_RESULT_FILE(), { force: true });
@@ -673,46 +720,47 @@ function finishPendingMacUpdate() {
       typeof pending.workDir === "string" && path.basename(pending.workDir).startsWith("CueIQ-update-")
         ? pending.workDir
         : null;
-    if (!updateFeed.isNewer(pending.version, app.getVersion())) {
+    if (updated) {
       console.log("AUTOUPDATE_MAC_DONE " + app.getVersion());
       if (workDir) fs.rm(workDir, { recursive: true, force: true }, () => {});
       return;
     }
     console.log("AUTOUPDATE_MAC_SWAP_FAIL " + (result || "no result"));
-    const dmg = typeof pending.dmg === "string" && fs.existsSync(pending.dmg) ? pending.dmg : null;
-    dialog
-      .showMessageBox({
-        type: "warning",
-        buttons: dmg ? ["เปิดไฟล์ติดตั้ง", "ไว้ก่อน"] : ["ตกลง"],
-        defaultId: 0,
-        cancelId: dmg ? 1 : 0,
-        title: "อัปเดต CueIQ",
-        message: `อัปเดตเป็น ${pending.version} ไม่สำเร็จ`,
-        detail:
-          `ยังเป็นเวอร์ชัน ${app.getVersion()} อยู่ (${result || "ไม่ทราบสาเหตุ"})\n` +
-          (dmg
-            ? "กด “เปิดไฟล์ติดตั้ง” → ลากไอคอน CueIQ ไปที่ Applications → เลือก “Replace” แล้วเปิดแอปใหม่"
-            : "กดปุ่มอัปเดตที่แถบด้านบนเพื่อลองอีกครั้ง"),
-      })
-      .then(({ response }) => {
-        if (dmg && response === 0) shell.openPath(dmg);
-      })
-      .catch(() => {});
+    const retryable = !result || result === "fail:relaunched" || result === "fail:still-running";
+    const staged = typeof pending.staged === "string" ? pending.staged : null;
+    if (retryable && staged && macUpdate.bundleVersion(staged) === pending.version && !macSelfUpdateBlocker()) {
+      macStaged = {
+        version: pending.version,
+        app: updateFeed.macBundleFromExe(app.getPath("exe")),
+        staged,
+        dmg: pending.dmg,
+        workDir,
+      };
+      setUpdateState({ state: "ready", latest: pending.version, percent: 100, manual: false });
+      return;
+    }
+    macSwapFailed = {
+      version: pending.version,
+      dmg: typeof pending.dmg === "string" && fs.existsSync(pending.dmg) ? pending.dmg : null,
+      result: result || "no result",
+    };
   } catch (e) {
     console.log("AUTOUPDATE_MAC_FINISH_FAIL " + String(e));
   }
 }
 
-/** The launch check found a newer version: ask once (unless this one was declined for good). */
+/** Windows' launch check found a newer version: ask once (unless declined for good). Not on
+ *  the Mac: there a parentless box is app-modal (see backgroundNotice), and a launch can be
+ *  the reopen of a show in progress — the chip in the header is enough. */
 async function promptAtLaunch(version) {
+  if (process.platform !== "win32") return;
   if (!version || version === readSkippedVersion()) return;
-  if (process.platform === "darwin" && !macPlan) return; // the .dmg route: the chip is enough
   try {
     // NO parent window on purpose: a parented box is MODAL and disables the
     // window under it (this file relies on that at the exit confirm). The check
     // can resolve late on a slow venue hotspot, and a modal that lands over a
     // running show kills every click and every keyboard cue until someone finds
-    // the mouse. Parentless, it is just a window the operator can ignore.
+    // the mouse. Parentless, it is just a window the operator can ignore (Windows).
     const { response, checkboxChecked } = await dialog.showMessageBox({
       type: "question",
       buttons: ["อัปเดตเลย", "ไว้ก่อน"],
@@ -727,7 +775,9 @@ async function promptAtLaunch(version) {
       checkboxChecked: false,
     });
     if (response === 0) {
-      await applyUpdate(); // available → downloading
+      // only ever START a download from here: a box left open while the header chip
+      // already downloaded it must not turn into an unasked restart
+      if (updateState.state === "available") await applyUpdate();
     } else if (checkboxChecked) {
       writeSkippedVersion(version);
     }
@@ -769,52 +819,57 @@ function initAutoUpdate() {
     updateState = { ...updateState, state: "unsupported" };
     return;
   }
+  const recheckLater = () =>
+    // a long-running desk machine hears about a release without a restart; quiet, no prompt
+    setInterval(() => {
+      if (["idle", "uptodate", "error"].includes(updateState.state)) checkForUpdates();
+    }, UPDATE_RECHECK_MS).unref?.();
   if (process.platform === "darwin") {
-    finishPendingMacUpdate();
+    powerMonitor.on("shutdown", () => {
+      systemShuttingDown = true;
+    });
     app.on("will-quit", installMacOnQuit);
+    finishPendingMacUpdate().finally(() => checkForUpdates());
+    recheckLater();
+    return;
   }
-  if (process.platform === "win32") {
-    try {
-      ({ autoUpdater: winUpdater } = require("electron-updater"));
-    } catch {
-      updateState = { ...updateState, state: "unsupported" };
-      return; // dependency not bundled — never block startup
-    }
-    winUpdater.autoDownload = false; // the whole point: ask first
-    winUpdater.autoInstallOnAppQuit = true; // …but once downloaded, install on quit
-    winUpdater.on("error", (err) => {
-      console.log("AUTOUPDATE_ERROR " + String(err));
-      if (updateState.state === "checking" || updateState.state === "downloading") setUpdateState({ state: "error" });
-    });
-    winUpdater.on("update-not-available", (info) => {
-      setUpdateState({ state: "uptodate", latest: info?.version ? String(info.version) : null });
-    });
-    winUpdater.on("download-progress", (p) => {
-      setUpdateState({ state: "downloading", percent: Math.max(0, Math.min(100, Math.round(p?.percent ?? 0))) });
-    });
-    winUpdater.on("update-available", (info) => {
-      const version = info?.version ? String(info.version) : "";
-      setUpdateState({ state: "available", latest: version || null });
-      // Only the launch check asks; a press in the header or the menu already chose.
-      if (!launchPrompt) return;
-      launchPrompt = false;
-      promptAtLaunch(version);
-    });
-    // A 107 MB download over venue wifi finishes minutes after it was agreed to — which
-    // can easily be mid-show. offerRestart asks only when no show runs and nothing is
-    // unsaved; otherwise the chip turns into "ติดตั้ง" and waits for a press, and
-    // autoInstallOnAppQuit still covers a plain quit.
-    winUpdater.on("update-downloaded", (info) => {
-      console.log("AUTOUPDATE_READY " + String(info?.version ?? ""));
-      setUpdateState({ state: "ready", latest: info?.version ? String(info.version) : updateState.latest, percent: 100 });
-      offerRestart();
-    });
+  try {
+    ({ autoUpdater: winUpdater } = require("electron-updater"));
+  } catch {
+    updateState = { ...updateState, state: "unsupported" };
+    return; // dependency not bundled — never block startup
   }
+  winUpdater.autoDownload = false; // the whole point: ask first
+  winUpdater.autoInstallOnAppQuit = true; // …but once downloaded, install on quit
+  winUpdater.on("error", (err) => {
+    console.log("AUTOUPDATE_ERROR " + String(err));
+    if (updateState.state === "checking" || updateState.state === "downloading") setUpdateState({ state: "error" });
+  });
+  winUpdater.on("update-not-available", (info) => {
+    setUpdateState({ state: "uptodate", latest: info?.version ? String(info.version) : null });
+  });
+  winUpdater.on("download-progress", (p) => {
+    setUpdateState({ state: "downloading", percent: Math.max(0, Math.min(100, Math.round(p?.percent ?? 0))) });
+  });
+  winUpdater.on("update-available", (info) => {
+    const version = info?.version ? String(info.version) : "";
+    setUpdateState({ state: "available", latest: version || null });
+    // Only the launch check asks; a press in the header or the menu already chose.
+    if (!launchPrompt) return;
+    launchPrompt = false;
+    promptAtLaunch(version);
+  });
+  // A 107 MB download over venue wifi finishes minutes after it was agreed to — which
+  // can easily be mid-show. offerRestart asks only when no show runs and nothing is
+  // unsaved; otherwise the chip turns into "ติดตั้ง" and waits for a press, and
+  // autoInstallOnAppQuit still covers a plain quit.
+  winUpdater.on("update-downloaded", (info) => {
+    console.log("AUTOUPDATE_READY " + String(info?.version ?? ""));
+    setUpdateState({ state: "ready", latest: info?.version ? String(info.version) : updateState.latest, percent: 100 });
+    offerRestart();
+  });
   checkForUpdates({ prompt: true });
-  // a long-running desk machine hears about a release without a restart; quiet, no prompt
-  setInterval(() => {
-    if (["idle", "uptodate", "error"].includes(updateState.state)) checkForUpdates();
-  }, UPDATE_RECHECK_MS).unref?.();
+  recheckLater();
 }
 
 /** File / Edit / View / Window as Electron builds them by default, plus Help → update. */

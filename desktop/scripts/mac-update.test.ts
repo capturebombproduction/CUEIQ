@@ -39,6 +39,7 @@ const mac = require("../electron/mac-update.cjs") as {
     staged: string;
     resultFile: string;
     reopen: boolean;
+    version: string;
   }) => unknown;
 };
 const feed = require("../electron/update-feed.cjs") as {
@@ -203,12 +204,20 @@ describe.skipIf(process.platform === "win32")("the swap script", () => {
   let staged: string;
   let result: string;
   let openLog: string;
+  let signLog: string;
   beforeEach(() => {
     const bin = path.join(dir, "bin");
     fs.mkdirSync(bin);
     fs.writeFileSync(path.join(bin, "ditto"), '#!/bin/sh\nexec cp -R "$1" "$2"\n', { mode: 0o755 });
     openLog = path.join(dir, "opened.log");
     fs.writeFileSync(path.join(bin, "open"), `#!/bin/sh\nprintf '%s\\n' "$1" >> '${openLog}'\n`, { mode: 0o755 });
+    // codesign stand-in: verifies unless the bundle carries a BROKEN file
+    signLog = path.join(dir, "signed.log");
+    fs.writeFileSync(
+      path.join(bin, "codesign"),
+      `#!/bin/sh\nfor a; do last="$a"; done\nprintf '%s\\n' "$last" >> '${signLog}'\n[ ! -e "$last/Contents/BROKEN" ]\n`,
+      { mode: 0o755 }
+    );
     env = { ...process.env, PATH: `${bin}:${process.env.PATH}` };
     script = path.join(dir, "install.sh");
     fs.writeFileSync(script, mac.INSTALL_SCRIPT, { mode: 0o755 });
@@ -220,38 +229,83 @@ describe.skipIf(process.platform === "win32")("the swap script", () => {
     result = path.join(dir, "result.txt");
   });
   const deadPid = () => spawnSync("true").pid as number;
-  const run = (pid: number, appPath = app, reopen = "1") =>
+  const run = (pid: number, { appPath = app, reopen = "1", version = "0.1.26" } = {}) =>
     new Promise<number>((resolve) => {
-      const p = spawn("/bin/sh", [script, String(pid), appPath, staged, result, reopen], { env, stdio: "ignore" });
+      const p = spawn("/bin/sh", [script, String(pid), appPath, staged, result, reopen, version], {
+        env,
+        stdio: "ignore",
+      });
       p.on("exit", (code) => resolve(code ?? -1));
     });
   const read = (f: string) => (fs.existsSync(f) ? fs.readFileSync(f, "utf8").trim() : null);
+  const apps = () => fs.readdirSync(path.join(dir, "Applications")).sort();
+  const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-  it("puts the new bundle in place, leaves no debris, and reopens it", async () => {
+  it("puts the new bundle in place — checked first — leaves no debris, and reopens it", async () => {
     expect(await run(deadPid())).toBe(0);
     expect(read(result)).toBe("ok");
     expect(marker(app)).toBe("new");
-    expect(fs.readdirSync(path.join(dir, "Applications"))).toEqual(["CueIQ.app"]);
+    expect(apps()).toEqual(["CueIQ.app"]);
     expect(fs.existsSync(staged)).toBe(false);
     expect(read(openLog)).toBe(app);
+    expect(read(signLog)).toBe(`${app}.updating`); // the copy was verified before the swap
   });
 
   it("a plain quit swaps without reopening", async () => {
-    expect(await run(deadPid(), app, "0")).toBe(0);
+    expect(await run(deadPid(), { reopen: "0" })).toBe(0);
     expect(marker(app)).toBe("new");
     expect(read(openLog)).toBeNull();
   });
 
-  it("does not touch the bundle until the old app has exited", async () => {
-    const old = spawn("sleep", ["1"]);
-    const exited = new Promise<number>((r) => old.on("exit", () => r(Date.now())));
+  it("copies beside the old app while it quits, but swaps only once it has exited", async () => {
+    const old = spawn("sleep", ["1.5"]);
+    const exited = new Promise<void>((r) => old.on("exit", () => r()));
     const swap = run(old.pid as number);
-    await new Promise((r) => setTimeout(r, 400));
-    expect(marker(app)).toBe("old"); // still waiting
-    const oldGoneAt = await exited;
+    await wait(700);
+    expect(marker(app)).toBe("old"); // still waiting…
+    expect(marker(`${app}.updating`)).toBe("new"); // …with the slow copy already done
+    await exited;
     expect(await swap).toBe(0);
-    expect(fs.statSync(path.join(app, "Contents", "MacOS", "marker")).mtimeMs).toBeGreaterThanOrEqual(oldGoneAt - 50);
     expect(marker(app)).toBe("new");
+    expect(apps()).toEqual(["CueIQ.app"]);
+  });
+
+  it("calls the swap off if the old app was reopened meanwhile (no reopen, staged copy kept)", async () => {
+    // a process whose command line runs from the installed bundle, like a Dock relaunch
+    const relaunched = spawn("/bin/sh", ["-c", "sleep 5", `${app}/Contents/MacOS/CueIQ`]);
+    try {
+      expect(await run(deadPid())).toBe(1);
+    } finally {
+      relaunched.kill();
+    }
+    expect(read(result)).toBe("fail:relaunched");
+    expect(marker(app)).toBe("old");
+    expect(apps()).toEqual(["CueIQ.app"]);
+    expect(fs.existsSync(staged)).toBe(true); // main.cjs offers "ติดตั้ง" again from it
+    expect(read(openLog)).toBeNull();
+  });
+
+  it("a copy that does not verify (wrong version, broken signature) never replaces the app", async () => {
+    expect(await run(deadPid(), { version: "0.1.99" })).toBe(1);
+    expect(read(result)).toBe("fail:verify");
+    expect(marker(app)).toBe("old");
+    expect(apps()).toEqual(["CueIQ.app"]);
+    fs.writeFileSync(path.join(staged, "Contents", "BROKEN"), "");
+    expect(await run(deadPid())).toBe(1);
+    expect(read(result)).toBe("fail:verify");
+    expect(marker(app)).toBe("old");
+    expect(apps()).toEqual(["CueIQ.app"]);
+  });
+
+  it("a failure found before the exit is reported (and reopened) only AFTER the exit", async () => {
+    const old = spawn("sleep", ["1"]);
+    let goneAt = 0;
+    old.on("exit", () => (goneAt = Date.now()));
+    expect(await run(old.pid as number, { version: "0.1.99" })).toBe(1);
+    const reportedAt = fs.statSync(result).mtimeMs;
+    expect(goneAt).toBeGreaterThan(0);
+    expect(reportedAt).toBeGreaterThanOrEqual(goneAt - 50);
+    expect(read(openLog)).toBe(app);
   });
 
   it.skipIf(process.getuid?.() === 0)("a folder it may not write: the OLD app stays whole and reopens", async () => {
@@ -260,20 +314,20 @@ describe.skipIf(process.platform === "win32")("the swap script", () => {
     fs.chmodSync(path.join(dir, "Applications"), 0o755);
     expect(read(result)).toMatch(/^fail:/);
     expect(marker(app)).toBe("old");
-    expect(fs.readdirSync(path.join(dir, "Applications"))).toEqual(["CueIQ.app"]);
+    expect(apps()).toEqual(["CueIQ.app"]);
     expect(read(openLog)).toBe(app);
   });
 
   it("refuses a path that is not an .app before it deletes anything", async () => {
     const notApp = path.join(dir, "Applications");
-    expect(await run(deadPid(), notApp)).toBe(1);
+    expect(await run(deadPid(), { appPath: notApp })).toBe(1);
     expect(read(result)).toBe("fail:bad-path");
     expect(marker(app)).toBe("old");
     expect(fs.existsSync(staged)).toBe(true);
   });
 
   it("spawnInstaller (what main.cjs calls on quit) runs the same swap, detached", async () => {
-    // the detached child inherits THIS process's PATH — point it at the stand-in ditto
+    // the detached child inherits THIS process's PATH — point it at the stand-ins
     const savedPath = process.env.PATH;
     process.env.PATH = env.PATH;
     try {
@@ -284,11 +338,12 @@ describe.skipIf(process.platform === "win32")("the swap script", () => {
         staged,
         resultFile: result,
         reopen: false,
+        version: "0.1.26",
       });
     } finally {
       process.env.PATH = savedPath;
     }
-    for (let i = 0; i < 100 && read(result) === null; i++) await new Promise((r) => setTimeout(r, 50));
+    for (let i = 0; i < 100 && read(result) === null; i++) await wait(50);
     expect(read(result)).toBe("ok");
     expect(marker(app)).toBe("new");
   });

@@ -6,10 +6,12 @@
 //   1. latest-mac.yml lists every .dmg with the size and sha512 it really has
 //   2. download() over HTTP gets this Mac's .dmg and keeps it — and refuses it under a
 //      wrong hash (the check proves it can fail, in the same run)
-//   3. stageFromDmg() mounts it, copies CueIQ.app out, and the copy verifies
-//   4. the swap script replaces an "installed" app once its process has exited, and the
-//      result still passes `codesign --verify --deep` (an arm64 Mac will not run it otherwise)
-//   5. a folder it may not write leaves the installed app whole
+//   3. stageFromDmg() mounts BOTH .dmg files, copies CueIQ.app out, and each copy verifies
+//   4. the swap, started by a process that then exits (the app quitting): it copies beside
+//      the installed app first, swaps only after that process is gone, and the result still
+//      passes `codesign --verify --deep` (an arm64 Mac will not run it otherwise)
+//   5. an app reopened during the swap (a Dock click) calls the swap off, nothing moved
+//   6. a folder it may not write leaves the installed app whole
 //
 //   node desktop/scripts/mac-update-smoke.mjs desktop/release
 import { createRequire } from "node:module";
@@ -19,10 +21,12 @@ import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 const require = createRequire(import.meta.url);
 const mac = require("../electron/mac-update.cjs");
 const feed = require("../electron/update-feed.cjs");
+const MAC_UPDATE_CJS = fileURLToPath(new URL("../electron/mac-update.cjs", import.meta.url));
 
 const releaseDir = path.resolve(process.argv[2] ?? "desktop/release");
 const fail = (msg) => {
@@ -91,13 +95,19 @@ try {
   server.close();
 }
 
-// 3 ── stage from the real .dmg ──────────────────────────────────────────────────────
-const staged = await mac.stageFromDmg({ dmg, workDir: work, expectVersion: version });
-const mounts = execFileSync("hdiutil", ["info"], { encoding: "utf8" });
-if (mounts.includes(path.join(work, "mnt"))) fail("the .dmg is still mounted after staging");
-ok(`staged ${path.basename(staged)} ${mac.bundleVersion(staged)} (codesign verified, .dmg unmounted)`);
+// 3 ── stage from the real .dmg files (both: the Intel one is what an Intel Mac swaps in) ──
+let staged;
+for (const arch of ["arm64", "x64"]) {
+  const a = feed.macAssetFor(parsed, arch);
+  const archWork = path.join(work, `stage-${arch}`);
+  const out = await mac.stageFromDmg({ dmg: path.join(releaseDir, a.url), workDir: archWork, expectVersion: version });
+  const mounts = execFileSync("hdiutil", ["info"], { encoding: "utf8" });
+  if (mounts.includes(path.join(archWork, "mnt"))) fail(`${a.url} is still mounted after staging`);
+  if (arch === process.arch) staged = out;
+  ok(`staged ${a.url} → ${path.basename(out)} ${mac.bundleVersion(out)} (codesign verified, unmounted)`);
+}
 
-// 4 ── the swap, against an "installed" old app whose process is still running ────────
+// 4 ── the swap, against an "installed" old app ─────────────────────────────────────────
 function fakeInstalled(dir) {
   const app = path.join(dir, "CueIQ.app");
   fs.mkdirSync(path.join(app, "Contents", "MacOS"), { recursive: true });
@@ -108,47 +118,81 @@ function fakeInstalled(dir) {
   fs.writeFileSync(path.join(app, "Contents", "MacOS", "OLD"), "old");
   return app;
 }
-async function swap(appsDir, { lock = false } = {}) {
+const isOld = (app) => fs.existsSync(path.join(app, "Contents", "MacOS", "OLD"));
+let runNo = 0;
+/** One swap, started the way main.cjs starts it: by a process that calls spawnInstaller
+ *  with ITS OWN pid and then exits (the app quitting) after `quitAfterMs`. */
+async function swap(appsDir, { lock = false, quitAfterMs = 10000, during } = {}) {
   const app = fakeInstalled(appsDir);
-  // the swap deletes the staged copy it is given: hand it a copy of our one
-  const stagedCopy = path.join(work, `run-${Date.now()}`, "CueIQ.app");
+  // the swap deletes the staged copy it is given: hand it a copy of ours
+  const runDir = path.join(work, `run-${++runNo}`);
+  const stagedCopy = path.join(runDir, "CueIQ.app");
   execFileSync("ditto", [staged, stagedCopy]);
-  const resultFile = path.join(work, `result-${Date.now()}.txt`);
+  const resultFile = path.join(runDir, "result.txt");
   if (lock) fs.chmodSync(appsDir, 0o555);
   try {
-    const old = spawn("sleep", ["2"]); // stands in for the old app, still quitting
-    const oldExit = new Promise((r) => old.on("exit", r));
-    mac.spawnInstaller({ workDir: path.dirname(stagedCopy), pid: old.pid, app, staged: stagedCopy, resultFile, reopen: false });
-    await sleep(1000);
-    const swappedEarly = !fs.existsSync(path.join(app, "Contents", "MacOS", "OLD"));
-    await oldExit;
+    const args = JSON.stringify({ workDir: runDir, app, staged: stagedCopy, resultFile, reopen: false, version });
+    const quitting = spawn(process.execPath, [
+      "-e",
+      `const m = require(${JSON.stringify(MAC_UPDATE_CJS)});` +
+        `m.spawnInstaller({ ...${args}, pid: process.pid });` +
+        `setTimeout(() => process.exit(0), ${quitAfterMs});`,
+    ]);
+    const quitDone = new Promise((r) => quitting.on("exit", r));
+    const seen = during ? await during({ app, appsDir }) : null;
+    await quitDone;
     for (let i = 0; i < 300 && !fs.existsSync(resultFile); i++) await sleep(100);
     const result = fs.existsSync(resultFile) ? fs.readFileSync(resultFile, "utf8").trim() : null;
-    return { app, result, swappedEarly };
+    return { app, result, seen, stagedLeft: fs.existsSync(stagedCopy) };
   } finally {
     if (lock) fs.chmodSync(appsDir, 0o755);
-    fs.rmSync(path.dirname(stagedCopy), { recursive: true, force: true });
+    fs.rmSync(runDir, { recursive: true, force: true });
   }
 }
 
 const apps = path.join(work, "Applications");
 fs.mkdirSync(apps);
-const s = await swap(apps);
-if (s.swappedEarly) fail("the swap touched the installed app while its process was still running");
+const s = await swap(apps, {
+  // the old app is still "quitting" for 10 s: by 8 s the copy must sit beside it, untouched
+  during: async ({ app }) => {
+    await sleep(8000);
+    return { oldStill: isOld(app), copied: fs.existsSync(`${app}.updating/Contents/Info.plist`) };
+  },
+});
+if (!s.seen.oldStill) fail("the swap touched the installed app while its process was still running");
+if (!s.seen.copied) fail("the new bundle was not copied beside the old one before it exited");
 if (s.result !== "ok") fail(`swap result: ${s.result}`);
 if (mac.bundleVersion(s.app) !== version) fail(`installed app says ${mac.bundleVersion(s.app)} after the swap`);
-if (fs.existsSync(path.join(s.app, "Contents", "MacOS", "OLD"))) fail("old bundle content survived the swap");
+if (isOld(s.app)) fail("old bundle content survived the swap");
 const debris = fs.readdirSync(apps).filter((n) => n !== "CueIQ.app");
 if (debris.length) fail(`swap left ${debris.join(", ")} behind`);
 execFileSync("codesign", ["--verify", "--deep", "--verbose=2", s.app], { stdio: "inherit" });
-ok(`swap waited for the old process, installed ${version}, left no debris, signature still valid`);
+ok(`swap outlived the process that started it, copied first, swapped after its exit, installed ${version}, signature valid`);
 
-// 5 ── a folder it may not write: nothing lost ───────────────────────────────────────
+// 5 ── reopened meanwhile (a Dock click): the swap is called off, nothing pulled away ─────
+const apps2 = path.join(work, "Applications2");
+fs.mkdirSync(apps2);
+let relaunched;
+const r2 = await swap(apps2, {
+  quitAfterMs: 1000,
+  during: async ({ app }) => {
+    // a process running from the installed bundle, as the reopened app would
+    relaunched = spawn("/bin/sh", ["-c", "sleep 30", `${app}/Contents/MacOS/CueIQ`]);
+    return null;
+  },
+});
+relaunched?.kill();
+if (r2.result !== "fail:relaunched") fail(`a reopened app answered ${r2.result}`);
+if (!isOld(r2.app) || fs.readdirSync(apps2).join() !== "CueIQ.app") fail("a called-off swap touched the installed app");
+if (!r2.stagedLeft) fail("a called-off swap deleted the staged copy main.cjs would offer again");
+ok("an app reopened during the swap: called off (fail:relaunched), installed app and staged copy kept");
+
+// 6 ── a folder it may not write: nothing lost ───────────────────────────────────────
 const locked = path.join(work, "Locked");
 fs.mkdirSync(locked);
-const r = await swap(locked, { lock: true });
+const r = await swap(locked, { lock: true, quitAfterMs: 500 });
 if (!String(r.result).startsWith("fail:")) fail(`a read-only folder answered ${r.result}`);
-if (!fs.existsSync(path.join(r.app, "Contents", "MacOS", "OLD"))) fail("the old app was damaged by a failed swap");
+if (!isOld(r.app)) fail("the old app was damaged by a failed swap");
 if (fs.readdirSync(locked).join() !== "CueIQ.app") fail(`a failed swap left ${fs.readdirSync(locked).join(", ")}`);
 ok(`a read-only folder: ${r.result}, the installed app untouched`);
 
