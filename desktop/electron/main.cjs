@@ -1552,7 +1552,9 @@ async function driveLiveScenario(win) {
     // the step zooms the page out to give it a desktop's height, and puts the zoom back after.
     // Layout only: the players and the show never notice a zoom.
     const zoomBefore = win.webContents.getZoomFactor();
-    win.webContents.setZoomFactor(0.8);
+    // 0.6, not 0.8: at 0.8 (1260 x 818 CSS px) b893103's CI still reported the panel hidden -
+    // something above the board took the room. 0.6 leaves the column ~800 px whatever does.
+    win.webContents.setZoomFactor(0.6);
     const switched = await win.webContents.executeJavaScript(
       `(() => { const b = document.querySelector('[data-testid=live-view-console]');
         if (!b) return 'no STAGE | CONSOLE switch'; b.click(); return 'clicked'; })()`
@@ -1572,7 +1574,15 @@ async function driveLiveScenario(win) {
             const lufs = m && /[0-9]/.test(m.textContent) ? m.textContent.replace("−", "-") : null;
             // where it was read: the viewport, and whether the ANALYZER's panel was on screen at all
             const panel = document.querySelector('[data-testid=console-panel]');
-            const view = { w: innerWidth, h: innerHeight, panel: panel ? (panel.checkVisibility ? panel.checkVisibility() : true) : null };
+            const col = panel ? panel.parentElement : null;
+            const view = {
+              w: innerWidth,
+              h: innerHeight,
+              panel: panel ? (panel.checkVisibility ? panel.checkVisibility() : true) : null,
+              column: col ? Math.round(col.getBoundingClientRect().height) : null,
+              // what stands above the board: the top bar, banners, the status row (tag:height)
+              above: Array.from(document.querySelectorAll(".live-root > *")).map((e) => e.tagName + ":" + Math.round(e.getBoundingClientRect().height)).join(" "),
+            };
             if (!c) return { present: false, lufs, view, alarm: alarm ? alarm.dataset.kind : null };
             return { present: true, ready: c.dataset.ready || null, db: c.dataset.db || null, lufs, view, alarm: alarm ? alarm.dataset.kind : null };
           })())`)
