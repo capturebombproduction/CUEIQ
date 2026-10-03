@@ -17,6 +17,7 @@ import { ConfirmProvider } from "@/components/ui/confirm-dialog";
 import { ErrorMonitor, AppErrorBoundary } from "@/components/error-monitor";
 import { FeedbackUnreadProvider } from "@/components/feedback-button";
 import { AccountButton, AccountPanel, AccountPanelProvider } from "@/components/account-panel";
+import { NotificationBell } from "@/components/notifications/notification-bell";
 import { isImmersivePath } from "@/components/chrome-gate";
 import { IMMERSIVE_MAIN_CLASS } from "@/components/app-main";
 import { accountLine } from "@/lib/role-label";
@@ -155,6 +156,10 @@ export function Shell() {
                 </Link>
                 <UpdateChip />
                 <MgmtSyncStatus />
+                {/* The web's bell, the same component: feedback replies, approvals and show
+                    reminders were invisible on the desktop - the machine พี่ runs shows from. No
+                    push here (no service worker in the app); the bell says where push lives. */}
+                {userId && tenantId && <NotificationBell userId={userId} tenantId={tenantId} />}
                 <AccountButton name={name} />
               </div>
               <OfflineBanner placement="header" />

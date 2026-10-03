@@ -172,3 +172,27 @@ describe("NotificationBell panel — keyboard", () => {
     expect(panelEl()).not.toBeNull();
   });
 });
+
+// The desktop app (2026-10-04) carries this same bell in its header. It has no push of its
+// own (no service worker), and the web's "install to your home screen" read there as an
+// instruction for the computer - so its footer says where push lives instead.
+describe("NotificationBell · the push footer, web vs the desktop app", () => {
+  const w = window as unknown as { cueiqNative?: unknown };
+  afterEach(() => {
+    delete w.cueiqNative;
+  });
+
+  it("on the web (no push here): install the app on the phone's home screen", async () => {
+    await openPanel();
+    expect(screen.getByTestId("notification-panel").textContent).toContain("ติดตั้งแอปลงหน้าจอโฮม (มือถือ)");
+    expect(screen.getByTestId("notification-panel").textContent).not.toContain("แอปเดสก์ท็อป");
+  });
+
+  it("in the desktop app: this bell is the place, push is the phone's", async () => {
+    w.cueiqNative = { isElectron: true };
+    await openPanel();
+    const text = screen.getByTestId("notification-panel").textContent ?? "";
+    expect(text).toContain("ในแอปเดสก์ท็อป ดูได้ที่กระดิ่งนี้");
+    expect(text).toContain("มือถือ");
+  });
+});

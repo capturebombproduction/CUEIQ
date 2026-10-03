@@ -56,7 +56,15 @@ async function at(path: string) {
 }
 
 beforeEach(() => {
-  h.supa = makeSupabaseFake({ script: { feedback: ok([]) } });
+  h.supa = makeSupabaseFake({
+    script: {
+      feedback: ok([]),
+      notifications: ok([
+        { id: "n1", type: "feedback_reply", title: "มีคำตอบเรื่องที่แจ้งไว้", body: null, link: null, read_at: null, created_at: "2026-10-04T03:00:00.000Z" },
+      ]),
+      events: ok([]),
+    },
+  });
   localStorage.setItem("cueiq:whats-new-seen", WHATS_NEW_ROUND);
 });
 
@@ -86,6 +94,18 @@ describe("desktop Shell — frame", () => {
     expect(within(header).getByRole("navigation", { name: "เมนูหลัก" })).toBeTruthy();
     expect(within(header).getByRole("link", { name: /Quick Show/ })).toBeTruthy();
     expect(screen.queryByTestId("tab-bar")).toBeNull();
+  });
+
+  it("carries the web's bell: what is new reaches the desktop too (approvals, replies, reminders)", async () => {
+    await at("/dashboard");
+    const header = screen.getByRole("banner");
+    const bell = within(header).getByRole("button", { name: /การแจ้งเตือน/ });
+    // the unread count rides the bell
+    expect(bell.textContent).toContain("1");
+    await act(async () => {
+      fireEvent.click(bell);
+    });
+    expect(screen.getByTestId("notification-panel").textContent).toContain("มีคำตอบเรื่องที่แจ้งไว้");
   });
 
   it("keeps the self-test's attributes on the frame", async () => {

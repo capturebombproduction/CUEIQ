@@ -518,6 +518,9 @@ export function NotificationBell({
     }
   }
 
+  // the desktop app (Electron) - the same check components/admin/staff-contacts.tsx makes
+  const inDesktopApp = typeof window !== "undefined" && !!(window as { cueiqNative?: unknown }).cueiqNative;
+
   return (
     <div className="relative" ref={rootRef}>
       <Button
@@ -645,7 +648,11 @@ export function NotificationBell({
               </p>
             ) : pushState === "unsupported" ? (
               <p className="text-xs text-muted-foreground">
-                เด้งถึงเครื่องได้เมื่อติดตั้งแอปลงหน้าจอโฮม (มือถือ) แล้วเปิดจากไอคอนแอป
+                {/* the desktop app has no push of its own: "install to your home screen" there
+                    reads as an instruction for this computer */}
+                {inDesktopApp
+                  ? "ในแอปเดสก์ท็อป ดูได้ที่กระดิ่งนี้ — แจ้งเตือนเด้งถึงเครื่องใช้ได้บนมือถือที่ติดตั้งแอปลงหน้าจอโฮม"
+                  : "เด้งถึงเครื่องได้เมื่อติดตั้งแอปลงหน้าจอโฮม (มือถือ) แล้วเปิดจากไอคอนแอป"}
               </p>
             ) : (
               <button
