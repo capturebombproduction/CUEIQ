@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { flushSync } from "react-dom";
 import Link from "next/link";
 import type { RealtimeChannel } from "@supabase/supabase-js";
@@ -71,6 +71,11 @@ import { Button } from "@/components/ui/button";
 import { LiveStatusStrip } from "@/components/event/live-status-strip";
 import { AudioOutputPicker, AUDIO_SINK_KEY, loadAudioSink } from "@/components/event/audio-output-picker";
 import { NowCard } from "@/components/live/now-card";
+import { SignalStrip } from "@/components/live/signal-strip";
+import { useShowOutput } from "@/components/live/use-show-output";
+import { SignalTap, signalTapSupported, type SilenceVerdict } from "@/lib/live-signal";
+import { decodeWaveform } from "@/lib/song-analysis";
+import type { SongSignalMap } from "@/lib/song-signal";
 import { useSongCovers } from "@/lib/song-covers";
 import { KindChip, KindTile } from "@/components/event/kind";
 import { MicGrid } from "@/components/event/mic-grid";
@@ -189,6 +194,7 @@ export function LiveMode({
   lastRunAt,
   userId,
   tenantId,
+  songSignal,
 }: {
   eventId: string;
   groupId: string;
@@ -204,6 +210,9 @@ export function LiveMode({
    *  app header and no floating button). Without both, the form is not offered. */
   userId?: string | null;
   tenantId?: string | null;
+  /** song_id → the 0045 analysis + tempo (lib/song-signal.ts): the NOW card's waveform,
+   *  the Signal strip's expected-quiet check, NEXT's loudness. Optional: absent = no extras. */
+  songSignal?: SongSignalMap;
 }) {
   const [state, setState] = useState<LiveState>(INITIAL);
   // The setlist is held in state (seeded from the server prop) so edits made on
@@ -664,6 +673,24 @@ export function LiveMode({
       audioRef2.current = null;
     };
   }, []);
+
+  // Live Signal (desktop app): meters + the NO SIGNAL watch, from a tap on a COPY of both
+  // players' output (lib/live-signal.ts - never in the audio path). After the players exist:
+  // effects run in order, so both elements are there to tap. Absent on the web build.
+  const [signalTap, setSignalTap] = useState<SignalTap | null>(null);
+  const [signalVerdict, setSignalVerdict] = useState<SilenceVerdict>(null);
+  useEffect(() => {
+    if (!signalTapSupported()) return;
+    const t = new SignalTap(() => [audioRef.current, audioRef2.current]);
+    t.attach();
+    setSignalTap(t);
+    return () => {
+      t.close();
+      setSignalTap(null);
+    };
+  }, []);
+  // where the sound goes, and a change of device mid-show (the Signal strip + DEVICE LOST)
+  const showOutput = useShowOutput(sinkId, !!signalTap, state.begun);
 
   // Load this device's sound-output preference once (per-device, survives reload).
   useEffect(() => {
@@ -2448,6 +2475,43 @@ export function LiveMode({
   // the event bundle carries none). Decoration: offline, or not yet read, means none.
   const songCovers = useSongCovers(useMemo(() => items.map((it) => it.song_id), [items]));
   const currentCover = current?.song_id ? songCovers[current.song_id] ?? null : null;
+  // The SOUNDING song's 0045 analysis (the NO SIGNAL watch asks its waveform whether a quiet
+  // stretch is the song's own); decoded for that one song only.
+  const playingSongSignal = useMemo(() => {
+    const it = items.find((x) => x.id === playingId);
+    return it?.song_id ? songSignal?.[it.song_id] : undefined;
+  }, [items, playingId, songSignal]);
+  const playingWaveform = useMemo(() => decodeWaveform(playingSongSignal?.peaks), [playingSongSignal?.peaks]);
+  // The Signal alarm, laid over the NOW card's top strip (never in the flow: the countdown
+  // keeps its size). The playing file has gone silent or stalled, or the sound's device
+  // changed mid-show. Each clears itself when the cause does; a device change waits for ปิด.
+  const signalAlarm: ReactNode = signalVerdict ? (
+    <div role="alert" data-testid="signal-alarm" data-kind={signalVerdict} className="signal-band">
+      <VolumeX aria-hidden />
+      {signalVerdict === "frozen" ? (
+        <>
+          <b>Stalled</b>
+          <span>เพลงค้าง ไม่เดินต่อ — กด PAUSE แล้วเล่นใหม่ หรือกด NEXT</span>
+        </>
+      ) : (
+        <>
+          <b>No signal</b>
+          <span>เพลงเล่นอยู่แต่ไม่มีเสียงออกจากแอป — เช็กไฟล์เพลง หรือกด NEXT</span>
+        </>
+      )}
+    </div>
+  ) : showOutput.changed ? (
+    <div role="alert" data-testid="signal-alarm" data-kind="device" className="signal-band">
+      <VolumeX aria-hidden />
+      <b>{showOutput.changed.toKind === "builtin" ? "Device lost" : "Output changed"}</b>
+      <span>
+        {showOutput.changed.from} → ตอนนี้ออก {showOutput.changed.to}
+      </span>
+      <button type="button" onClick={showOutput.dismiss}>
+        ปิด
+      </button>
+    </div>
+  ) : null;
 
   // Running + this device holds the sounding track's file, but audio isn't playing —
   // e.g. after a reload (browsers block autoplay without a user gesture). Offer a tap.
@@ -3616,14 +3680,28 @@ export function LiveMode({
               : "เครื่องนี้เงียบอยู่ — แตะเพื่อให้เสียงออก"
           }
           className={cn(
-            "chip chip-lg shrink-0 gap-[5px] px-2 text-[13px] stage:px-[11px] stage:text-[13.5px]",
-            soundOutput ? "chip-success" : "chip-neutral"
+            "chip chip-lg min-w-0 shrink-0 gap-[5px] px-2 text-[13px] stage:px-[11px] stage:text-[13.5px]",
+            !soundOutput ? "chip-neutral" : signalTap && showOutput.kind === "builtin" ? "chip-warning" : "chip-success"
           )}
         >
           {soundOutput ? (
             <>
               <Volume2 aria-hidden />
-              เสียงออกเครื่องนี้
+              {/* Stage, desktop app: WHERE it goes. The computer's own speaker turns the chip
+                  amber - at a venue that is almost always a cable or an interface gone. */}
+              {signalTap && showOutput.label ? (
+                <>
+                  <span className="stage:hidden">เสียงออกเครื่องนี้</span>
+                  <span
+                    data-testid="signal-output"
+                    className="hidden max-w-[150px] truncate py-[.25em] -my-[.25em] stage:inline xl:max-w-[240px]"
+                  >
+                    ออก: {showOutput.label}
+                  </span>
+                </>
+              ) : (
+                "เสียงออกเครื่องนี้"
+              )}
             </>
           ) : (
             <>
@@ -3632,6 +3710,19 @@ export function LiveMode({
             </>
           )}
         </button>
+        {/* The meters (desktop app): what this machine sends, live. Hidden under stage; the
+            NO SIGNAL watch behind them runs regardless (its alarm is on the NOW card). */}
+        {signalTap && soundOutput && (
+          <SignalStrip
+            tap={signalTap}
+            player={() => audioRef.current}
+            sounding={soundOutput && audioPlaying && !!playingId}
+            trackKey={playingId}
+            waveform={playingWaveform}
+            onVerdict={setSignalVerdict}
+            className="hidden stage:flex"
+          />
+        )}
         {isController ? (
           <>
             {/* Pre-flight readiness — does THIS device hold every track's file, so the
@@ -3816,6 +3907,7 @@ export function LiveMode({
           note={current?.notes ?? null}
           endClock={itemEndClock}
           canAdvance={!nextLocked}
+          alarm={signalAlarm}
         >
           {/* The one-tap fades — on the device that holds the file, or the controller
               riding the speaker device's level by remote. */}

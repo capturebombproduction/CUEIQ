@@ -849,6 +849,17 @@ async function runAudibleScenario(s) {
         `The show ran and produced no signal.`
     );
   }
+  // The app's own Signal strip, read while the same tone played (main.cjs takes it before
+  // measureTheSound reroutes the element). Present, running, near the tone's -6 dBFS peak,
+  // and no NO SIGNAL alarm over a file that is audibly playing.
+  const signal = result?.liveReport?.signal;
+  console.log(`   the app's Signal strip: ${JSON.stringify(signal ?? null)}`);
+  if (!signal?.present) problems.push("the Signal strip was not on the Live screen of the desktop app");
+  else {
+    if (signal.ready !== "1") problems.push("the Signal strip's tap never started (its AudioContext did not run)");
+    if (!(Number(signal.db) > -30)) problems.push(`the Signal strip read ${signal.db} dB while a -6 dBFS tone played`);
+  }
+  if (signal?.alarm) problems.push(`a Signal alarm (${signal.alarm}) was up while the tone audibly played`);
   if (problems.length === 0) {
     console.log(
       `   ✔ real signal: peak RMS ${heard.rms} over ${heard.advanced}s of playback ` +

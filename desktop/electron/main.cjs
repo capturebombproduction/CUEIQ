@@ -1506,6 +1506,26 @@ async function driveLiveScenario(win) {
     // Give the element time to reach the file and get going before listening —
     // and poll for it rather than sleeping, so a fast machine is not punished and
     // a slow one is not failed.
+    // The Signal strip's own reading (lib/live-signal.ts: a captureStream COPY, never in the
+    // audio path), taken FIRST - measureTheSound below reroutes the element into its own
+    // graph, and the app's meter must be shown working on the untouched element. It must see
+    // the tone (a 0.5 sine peaks at -6 dBFS) and raise no NO SIGNAL alarm while it plays.
+    smokeAt("live:audible:signal");
+    const signalDeadline = Date.now() + 10_000;
+    let signal = null;
+    for (;;) {
+      signal = JSON.parse(
+        await win.webContents.executeJavaScript(`JSON.stringify((() => {
+          const s = document.querySelector('[data-testid=signal-strip]');
+          const alarm = document.querySelector('[data-testid=signal-alarm]');
+          if (!s) return { present: false, alarm: alarm ? alarm.dataset.kind : null };
+          return { present: true, ready: s.dataset.ready, db: s.dataset.db || null, alarm: alarm ? alarm.dataset.kind : null };
+        })())`)
+      );
+      if (signal.present && signal.ready === "1" && signal.db !== null && Number(signal.db) > -30) break;
+      if (Date.now() >= signalDeadline) break;
+      await new Promise((r) => setTimeout(r, 250));
+    }
     smokeAt("live:audible:listening");
     const deadline = Date.now() + 15_000;
     let heard = null;
@@ -1515,7 +1535,7 @@ async function driveLiveScenario(win) {
       if (Date.now() >= deadline) break;
       await new Promise((r) => setTimeout(r, 500));
     }
-    return { role: "audible", after: started, audio: heard, mountedSync: mounted.sync };
+    return { role: "audible", after: started, audio: heard, signal, mountedSync: mounted.sync };
   }
 
   if (SMOKE_LIVE === "main" || SMOKE_LIVE === "main-yield") {

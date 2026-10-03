@@ -85,6 +85,7 @@ export function NowCard({
   note,
   endClock,
   canAdvance,
+  alarm = null,
   children,
 }: {
   zone: LiveZone;
@@ -105,6 +106,9 @@ export function NowCard({
   endClock: string;
   /** may THIS device press NEXT now? Only then does overtime say "กด NEXT เมื่อพร้อม" */
   canAdvance: boolean;
+  /** a Signal alarm (NO SIGNAL / DEVICE LOST, live-mode.tsx): laid OVER the card's top strip,
+   *  never in the flow - the card keeps its one height, so the countdown keeps its size */
+  alarm?: ReactNode;
   /** the fade row (and the stage volume row) */
   children?: ReactNode;
 }) {
@@ -165,7 +169,7 @@ export function NowCard({
         // and the tight version of the card — 32 px header, no note row, no fade row
         // (Live tools carries the fades there), smaller gaps — so its bottom clears
         // the dock by 8 px with the iPhone's 21 px home-indicator inset too.
-        "now flex flex-col pb-3.5 stage:min-h-0 stage:[container-type:size] stage:![--pad:24px] [@media(orientation:landscape)_and_(max-height:599.98px)_and_(pointer:coarse)]:![--pad:18px] [@media(orientation:landscape)_and_(max-height:599.98px)_and_(pointer:coarse)]:min-w-0 [@media(orientation:landscape)_and_(max-height:599.98px)_and_(pointer:coarse)]:basis-[calc(50%-6px)] [@media(orientation:landscape)_and_(max-height:599.98px)_and_(pointer:coarse)]:pb-2.5",
+        "now relative flex flex-col pb-3.5 stage:min-h-0 stage:[container-type:size] stage:![--pad:24px] [@media(orientation:landscape)_and_(max-height:599.98px)_and_(pointer:coarse)]:![--pad:18px] [@media(orientation:landscape)_and_(max-height:599.98px)_and_(pointer:coarse)]:min-w-0 [@media(orientation:landscape)_and_(max-height:599.98px)_and_(pointer:coarse)]:basis-[calc(50%-6px)] [@media(orientation:landscape)_and_(max-height:599.98px)_and_(pointer:coarse)]:pb-2.5",
         // Overtime breaks the chamfer AND the phone's 16 px gutter: a square plate to
         // the screen edges is the one shape nothing else on the screen has.
         over
@@ -176,6 +180,7 @@ export function NowCard({
         over && isSettled(remaining) && "settled"
       )}
     >
+      {alarm && <div className="absolute inset-x-0 top-0 z-20">{alarm}</div>}
       {/* Keyed apart: the overtime header is a NEW node, so role="alert" is announced
           when it appears (a role added to a reused node is not reliably read out). */}
       {over ? (

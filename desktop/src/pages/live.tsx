@@ -17,6 +17,7 @@ import {
 import { loadEventBundle, type EventBundle } from "~/data/event-bundle";
 import { useWorkspace } from "~/data/workspace-context";
 import { ImmersiveLoading } from "~/components/immersive-loading";
+import { songSignalMap } from "@/lib/song-signal";
 
 export function LivePage() {
   const { id } = useParams<{ id: string }>();
@@ -106,6 +107,7 @@ export function LivePage() {
         eventName={event.name}
         items={bundle.setlist}
         songAudio={songAudio}
+        songSignal={songSignalMap(bundle.songs)}
         canEdit={canEdit}
         lastRunSeconds={event.last_run_seconds ?? null}
         lastRunAt={event.last_run_at ?? null}

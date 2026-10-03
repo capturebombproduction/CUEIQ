@@ -3,6 +3,7 @@ import { getEventBundle, getWorkspace } from "@/lib/queries";
 import { canLiveEdit, canViewGroup } from "@/lib/permissions";
 import { type SongAudioMap } from "@/lib/audio-targets";
 import { LiveMode } from "@/components/event/live-mode";
+import { songSignalMap } from "@/lib/song-signal";
 
 export const dynamic = "force-dynamic";
 
@@ -37,6 +38,7 @@ export default async function LivePage({
       eventName={bundle.event.name}
       items={bundle.setlist}
       songAudio={songAudio}
+      songSignal={songSignalMap(bundle.songs)}
       canEdit={canEdit}
       lastRunSeconds={bundle.event.last_run_seconds ?? null}
       lastRunAt={bundle.event.last_run_at ?? null}

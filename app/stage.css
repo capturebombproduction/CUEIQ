@@ -385,6 +385,16 @@ nav.glass-bottom { --glass-a: var(--tabbar-glass-a); }
   opacity: 0; pointer-events: none; animation: ring-pulse 900ms var(--ease-out) 3; }
 .alarm-plate.settled::after, .alarm-plate.static::after { animation: none; opacity: 0; }
 .alarm-plate.settled { background-color: hsl(var(--card)); color: hsl(var(--foreground)); box-shadow: inset 0 0 0 5px hsl(var(--alarm)); }
+/* Live Signal alarms (NO SIGNAL / STALLED / DEVICE LOST): laid over the NOW card's top strip.
+   Red stripes on --notify, the one red no band skin rewrites - unlike overtime's black and
+   white hazard band below, so the two can never be mistaken for each other. */
+.signal-band { display: flex; align-items: center; gap: 9px; height: 46px; padding: 0 8px 0 14px; color: #fff;
+  background: repeating-linear-gradient(-45deg, hsl(var(--notify)) 0 12px, hsl(var(--notify) / .78) 12px 24px); }
+.signal-band svg { width: 20px; height: 20px; flex: none; }
+.signal-band b { font-family: var(--font-display-x); font-style: italic; font-weight: 800; font-size: 19px; letter-spacing: .08em;
+  text-transform: uppercase; font-synthesis: none; white-space: nowrap; }
+.signal-band span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13.5px; font-weight: 600; }
+.signal-band button { margin-left: auto; flex: none; height: 34px; padding: 0 12px; background: #fff; color: hsl(var(--notify)); font-weight: 600; font-size: 13px; }
 .hazard-band { height: 40px; display: flex; align-items: center; justify-content: center;
   background: repeating-linear-gradient(-45deg, hsl(var(--alarm-foreground)) 0 10px, hsl(var(--alarm)) 10px 20px); }
 .hazard-band > span { display: inline-flex; align-items: center; gap: 7px; height: 28px; padding: 0 18px; background: hsl(var(--alarm)); color: hsl(var(--alarm-foreground));
