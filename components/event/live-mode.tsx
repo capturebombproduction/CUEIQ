@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { flushSync } from "react-dom";
 import Link from "next/link";
 import type { RealtimeChannel } from "@supabase/supabase-js";
@@ -75,7 +75,9 @@ import { SignalStrip } from "@/components/live/signal-strip";
 import { useShowOutput } from "@/components/live/use-show-output";
 import { SignalTap, signalTapSupported, type SilenceVerdict } from "@/lib/live-signal";
 import { decodeWaveform } from "@/lib/song-analysis";
-import type { SongSignalMap } from "@/lib/song-signal";
+import { loudnessDelta, type SongSignalMap } from "@/lib/song-signal";
+import { useSongMarkers } from "@/lib/song-markers-live";
+import { BeatLight } from "@/components/live/beat-light";
 import { useSongCovers } from "@/lib/song-covers";
 import { KindChip, KindTile } from "@/components/event/kind";
 import { MicGrid } from "@/components/event/mic-grid";
@@ -2482,6 +2484,42 @@ export function LiveMode({
     return it?.song_id ? songSignal?.[it.song_id] : undefined;
   }, [items, playingId, songSignal]);
   const playingWaveform = useMemo(() => decodeWaveform(playingSongSignal?.peaks), [playingSongSignal?.peaks]);
+  // The NOW card's song (the CUED item - in Manual it can differ from the one sounding):
+  // its waveform across the block, the practice room's sections, its loudness, its beat.
+  const songMarkers = useSongMarkers(useMemo(() => items.map((it) => it.song_id), [items]));
+  const currentSongSignal = current?.song_id ? songSignal?.[current.song_id] : undefined;
+  const nowAudioStart = Math.max(0, current?.buffer_before_seconds || 0);
+  const nowWaveLevels = useMemo(() => decodeWaveform(currentSongSignal?.peaks), [currentSongSignal?.peaks]);
+  const nowWave = useMemo(
+    () =>
+      current && nowWaveLevels.length > 0 && current.duration_seconds > 0
+        ? { levels: nowWaveLevels, start: nowAudioStart, length: current.duration_seconds }
+        : null,
+    [current, nowWaveLevels, nowAudioStart]
+  );
+  const nowSections = useMemo(
+    () =>
+      (current?.song_id ? songMarkers[current.song_id] ?? [] : []).map((m) => ({
+        label: m.label,
+        at: nowAudioStart + m.at,
+      })),
+    [current?.song_id, songMarkers, nowAudioStart]
+  );
+  // the beat light runs on the PLAYER's clock, so only where this card's song is sounding
+  const beatClock = useCallback(() => {
+    const a = audioRef.current;
+    return a && !a.paused ? a.currentTime : null;
+  }, []);
+  const showBeat =
+    !!current &&
+    current.id === playingId &&
+    soundOutput &&
+    currentSongSignal?.bpm != null &&
+    currentSongSignal.beatOffset != null;
+  const nextLoudness = loudnessDelta(
+    next?.song_id ? songSignal?.[next.song_id] : undefined,
+    currentSongSignal
+  );
   // The Signal alarm, laid over the NOW card's top strip (never in the flow: the countdown
   // keeps its size). The playing file has gone silent or stalled, or the sound's device
   // changed mid-show. Each clears itself when the cause does; a device change waits for ปิด.
@@ -3908,6 +3946,19 @@ export function LiveMode({
           endClock={itemEndClock}
           canAdvance={!nextLocked}
           alarm={signalAlarm}
+          wave={nowWave}
+          sections={nowSections}
+          lufs={currentSongSignal?.lufs ?? null}
+          beat={
+            showBeat ? (
+              <BeatLight
+                bpm={currentSongSignal!.bpm!}
+                offset={currentSongSignal!.beatOffset!}
+                clock={beatClock}
+                className="hidden stage:flex"
+              />
+            ) : null
+          }
         >
           {/* The one-tap fades — on the device that holds the file, or the controller
               riding the speaker device's level by remote. */}
@@ -3982,6 +4033,25 @@ export function LiveMode({
                 <div className="mb-1.5 mt-2.5 hidden items-center gap-1.5 text-[12.5px] text-muted-foreground stage:flex">
                   <Mic aria-hidden className="size-3.5" />
                   เตรียมไมค์
+                  {/* Loudness against the song on now (0045): the crew rides the fader before
+                      it starts instead of after it blasts. Both songs measured, or nothing. */}
+                  {nextLoudness !== null && (
+                    <span
+                      data-testid="next-loudness"
+                      title="ความดังเฉลี่ยของเพลงถัดไป เทียบกับเพลงที่เล่นอยู่"
+                      className={cn(
+                        "chip ml-auto shrink-0 gap-1 px-1.5 text-[12px]",
+                        nextLoudness > 2 ? "chip-warning" : "chip-neutral"
+                      )}
+                    >
+                      <span className="num text-[14px]">
+                        {Math.abs(nextLoudness) < 1
+                          ? "≈ 0 dB"
+                          : `${nextLoudness > 0 ? "▲ +" : "▼ −"}${Math.abs(nextLoudness).toFixed(1)} dB`}
+                      </span>
+                      {Math.abs(nextLoudness) < 1 ? "ใกล้เคียง" : nextLoudness > 0 ? "ดังกว่า" : "เบากว่า"}
+                    </span>
+                  )}
                 </div>
                 {next.mic_slots?.length > 0 ? (
                   <MicGrid

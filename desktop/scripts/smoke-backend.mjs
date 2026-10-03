@@ -30,9 +30,10 @@
 //   • nothing in it is a credential. The password is a fixture string, the JWT is
 //     unsigned, the server binds 127.0.0.1 and dies with the smoke.
 //
-// WHAT IS DELIBERATELY *NOT* SERVED, and why that is safe: `staff_contacts`,
-// `song_markers` and `practice_songs` are read by the crew and practice screens,
-// which the smoke's boot path never opens. If a future scenario does open them the
+// WHAT IS DELIBERATELY *NOT* SERVED, and why that is safe: `staff_contacts` and
+// `practice_songs` are read by the crew and practice screens, which the smoke's boot
+// path never opens. (`song_markers` IS served since Live Mode reads them for the NOW
+// card's sections - lib/song-markers-live.ts.) If a future scenario does open them the
 // 501 names the table, which is exactly the signal wanted — far better than an
 // empty list that would let the smoke pass on a screen this file never served.
 //
@@ -324,6 +325,12 @@ export const SMOKE_WORLD = deepFreeze({
 
     members: MEMBERS,
     songs: SONGS,
+
+    // The practice room's sections, which Live Mode's NOW card labels its waveform with.
+    song_markers: [
+      { id: "00000000-0000-4000-8000-0000000000d1", tenant_id: TENANT_ID, group_id: GROUP_ID, song_id: SONGS[0].id, label: "VERSE", position_seconds: 15, sort_order: 0, created_by: null, created_at: T0 },
+      { id: "00000000-0000-4000-8000-0000000000d2", tenant_id: TENANT_ID, group_id: GROUP_ID, song_id: SONGS[0].id, label: "CHORUS", position_seconds: 60, sort_order: 1, created_by: null, created_at: T0 },
+    ],
 
     event_members: [
       {

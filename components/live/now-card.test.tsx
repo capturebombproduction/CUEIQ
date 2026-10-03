@@ -40,6 +40,8 @@ function card(zone: LiveZone, over: Partial<React.ComponentProps<typeof NowCard>
 /** The card's rows, as a shape: what each direct child IS, not what it says. */
 function shape(el: HTMLElement) {
   return Array.from(el.children).map((c) => {
+    if (c.getAttribute("data-testid") === "now-wave") return "wave";
+    if (c.querySelector('[data-testid="signal-alarm"]')) return "alarm";
     if (c.classList.contains("zhead")) return "header";
     if (c.querySelector("h2")) return "title";
     if (c.classList.contains("h-5")) return "note";
@@ -760,5 +762,77 @@ describe("NowCard · the song's cover", () => {
     const { el } = card("ok");
     expect(el.querySelector('[data-testid="now-cover"]')).toBeNull();
     expect(el.querySelector("img")).toBeNull();
+  });
+});
+
+// ── Live Signal (0045): the waveform, the sections, the alarm, the loudness ──────────────
+describe("NowCard · Signal", () => {
+  const levels = Array.from({ length: 200 }, (_, i) => (i % 2 ? 0.4 : 0.8));
+  const wave = { levels, start: 0, length: BLOCK };
+
+  it("draws the waveform only with data, BESIDE the track: CSS keeps one of them by the card's height", () => {
+    const plain = card("ok");
+    expect(plain.el.querySelector('[data-testid="now-wave"]')).toBeNull();
+    expect(plain.el.querySelector(".track")!.className).not.toMatch(/@container/);
+    plain.unmount();
+    const { el } = card("ok", { wave });
+    const w = el.querySelector<HTMLElement>('[data-testid="now-wave"]')!;
+    expect(w.querySelectorAll(":scope > div > span")).toHaveLength(200);
+    // hidden by default (phones), shown on stage only when the card is >= 500 px tall - and
+    // the thin track hides under exactly the same condition, so one of the two is always there
+    expect(w.className.split(/\s+/)).toContain("hidden");
+    expect(w.className).toContain("stage:[@container_(min-height:500px)]:block");
+    expect(el.querySelector(".track")!.className).toContain("stage:[@container_(min-height:500px)]:hidden");
+    expect(shape(el)).toEqual(["header", "title", "note", "countdown", "wave", "meter", "labels", "children"]);
+  });
+
+  it("the countdown's box is the same with a waveform as without (its numerals never shrink for it)", () => {
+    const { el } = card("ok", { wave });
+    expect(el.querySelector<HTMLElement>(".cd-wrap")!.style.height).toBe("131px");
+  });
+
+  it("lights what has played and tints the WARN stretch amber", () => {
+    const { el } = card("ok", { wave }); // 32 s into a 92 s block; WARN from 46 s
+    const bars = Array.from(el.querySelectorAll<HTMLElement>('[data-testid="now-wave"] > div > span'));
+    const played = bars.filter((b) => b.classList.contains("bg-foreground")).length;
+    expect(played / bars.length).toBeCloseTo(32 / 92, 1);
+    expect(bars[199].className).toContain("bg-warning/60");
+    expect(bars[85].className).toContain("bg-foreground/20"); // ~39 s: not played yet, before WARN (46 s)
+  });
+
+  it("says where the song is - in the OK zone; the WARN / URGENT caption keeps its place", () => {
+    const sections = [
+      { label: "VERSE", at: 10 },
+      { label: "CHORUS", at: 47 },
+    ];
+    const ok = card("ok", { wave, sections }); // elapsed 32
+    const line = within(ok.el).getByTestId("now-section");
+    expect(line.textContent).toContain("VERSE");
+    expect(line.textContent).toContain("CHORUS");
+    expect(line.textContent).toContain("0:15");
+    ok.unmount();
+    const warn = card("warn", { wave, sections }); // elapsed 52: past CHORUS, but WARN speaks
+    expect(within(warn.el).queryByTestId("now-section")).toBeNull();
+    warn.unmount();
+    const last = card("ok", { sections: [{ label: "INTRO", at: 0 }] });
+    expect(within(last.el).getByTestId("now-section").textContent).toContain("ท่อนสุดท้าย");
+  });
+
+  it("an alarm is laid OVER the top strip, never into the flow: every row stays where it was", () => {
+    const { el } = card("ok", { alarm: <div data-testid="signal-alarm">No signal</div> });
+    const s = shape(el);
+    expect(s[0]).toBe("alarm");
+    expect(el.firstElementChild!.className).toContain("absolute");
+    expect(s.slice(1)).toEqual(["header", "title", "note", "countdown", "meter", "labels", "children"]);
+  });
+
+  it("the song's loudness rides the title row on stage - never on the overtime plate", () => {
+    const ok = card("ok", { lufs: -14.25 });
+    const chip = within(ok.el).getByText("-14.3 LUFS");
+    expect(chip.className).toContain("stage:inline-block");
+    expect(chip.className.split(/\s+/)).toContain("hidden");
+    ok.unmount();
+    const over = card("over", { lufs: -14.25 });
+    expect(within(over.el).queryByText(/LUFS/)).toBeNull();
   });
 });

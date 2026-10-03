@@ -4,6 +4,7 @@ import { useId, useLayoutEffect, useRef, useState, type CSSProperties, type Reac
 import { Hourglass, Lightbulb, OctagonAlert, SkipForward, Timer } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { thresholds, zoneCaption, type LiveZone } from "@/lib/live-zone";
+import { sectionAt } from "@/lib/song-signal";
 import { formatDuration, isSettled } from "@/lib/time";
 import { Countdown } from "@/components/live/countdown";
 import { KindChip } from "@/components/event/kind";
@@ -86,6 +87,10 @@ export function NowCard({
   endClock,
   canAdvance,
   alarm = null,
+  wave = null,
+  sections = [],
+  beat = null,
+  lufs = null,
   children,
 }: {
   zone: LiveZone;
@@ -109,14 +114,26 @@ export function NowCard({
   /** a Signal alarm (NO SIGNAL / DEVICE LOST, live-mode.tsx): laid OVER the card's top strip,
    *  never in the flow - the card keeps its one height, so the countdown keeps its size */
   alarm?: ReactNode;
+  /** the song's 0045 waveform (0-1 levels) and where its audio sits in the block (seconds):
+   *  drawn in place of the progress bar on stage, when the card has room (see below) */
+  wave?: { levels: readonly number[]; start: number; length: number } | null;
+  /** the practice room's section markers, in BLOCK seconds, time-ordered */
+  sections?: readonly { label: string; at: number }[];
+  /** the beat light (components/live/beat-light.tsx), in the top strip on stage */
+  beat?: ReactNode;
+  /** the song's integrated loudness (0045), a chip beside the kind on stage */
+  lufs?: number | null;
   /** the fade row (and the stage volume row) */
   children?: ReactNode;
 }) {
   const t = thresholds(blockSec);
+  const t0warn = t.warn;
   const over = zone === "over";
   const pct = (s: number) => (blockSec > 0 ? `${(s / blockSec) * 100}%` : "100%");
   const progress = blockSec > 0 ? Math.min(100, Math.max(0, (elapsed / blockSec) * 100)) : 0;
   const pos = `${p2(index)} / ${p2(total)}`;
+  const section = sections.length > 0 ? sectionAt(sections, elapsed) : null;
+  const waveOn = !over && !!wave && wave.levels.length > 0 && wave.length > 0;
   // The cue note opens in full on a tap — a `title` tooltip never opens on a phone or
   // an iPad. Open for THIS item's note only: when the show moves on, it is closed.
   const noteKey = note ? `${index}\u0000${note}` : null;
@@ -226,6 +243,7 @@ export function NowCard({
           >
             {pos}
           </span>
+          {beat}
           <span className="zend">
             จบ<b suppressHydrationWarning>{endClock}</b>
           </span>
@@ -256,6 +274,14 @@ export function NowCard({
         <h2 ref={titleRef} className={cn("disp min-w-0 flex-1 truncate py-[.25em] -my-[.25em]", TITLE_SIZE[step])}>{title}</h2>
         {zone !== "ok" && (
           <span className={cn("num shrink-0 text-[16px]", !over && "hidden [@media(orientation:landscape)_and_(max-height:599.98px)_and_(pointer:coarse)]:inline")}>{pos}</span>
+        )}
+        {lufs != null && !over && (
+          <span
+            title="ความดังเฉลี่ยของเพลงนี้ (LUFS)"
+            className="num hidden shrink-0 px-1.5 py-[3px] text-[12.5px] leading-none text-muted-foreground shadow-[inset_0_0_0_1px_hsl(var(--border))] stage:inline-block"
+          >
+            {lufs.toFixed(1)} LUFS
+          </span>
         )}
         {kind && (
           <KindChip
@@ -350,9 +376,59 @@ export function NowCard({
       {over ? (
         <div className="mt-3 h-2 shrink-0 hatch [@media(orientation:landscape)_and_(max-height:599.98px)_and_(pointer:coarse)]:mt-2 stage:h-2.5" />
       ) : (
+        <>
+        {/* STAGE WAVEFORM (0045): the song's level across the block, played part lit, the
+            last WARN seconds amber, the practice room's sections marked. It takes the thin
+            track's place ONLY when the card has height to spare: 500 px of card content is
+            the other rows (265.6 px) + the countdown at its 236 px cap (188.8 px of numerals)
+            + this strip's extra 34 px, rounded up. Below that the thin track stays, so the
+            countdown is never smaller for it (พี่: "เลขเวลาใดๆ ใหญ่เหมือนเดิม"). */}
+        {waveOn && wave && (
+          <div
+            data-testid="now-wave"
+            aria-hidden
+            className="relative mt-3 hidden h-11 shrink-0 stage:[@container_(min-height:500px)]:block"
+          >
+            <div className="absolute inset-0 flex items-center gap-px">
+              {wave.levels.map((lv, i) => {
+                const t = wave.start + ((i + 0.5) / wave.levels.length) * wave.length;
+                const played = t <= elapsed;
+                const warnZone = t >= blockSec - t0warn;
+                return (
+                  <span
+                    key={i}
+                    className={cn(
+                      "min-w-0 flex-1",
+                      played ? "bg-foreground" : warnZone ? "bg-warning/60" : "bg-foreground/20"
+                    )}
+                    style={{ height: `${Math.max(6, lv * 100)}%` }}
+                  />
+                );
+              })}
+            </div>
+            {sections.map((m) => (
+              <div
+                key={`${m.label}-${m.at}`}
+                className="absolute -inset-y-0.5 border-l border-foreground/25"
+                style={{ left: pct(m.at) }}
+              >
+                <span
+                  className={cn(
+                    "num absolute -top-px left-[3px] whitespace-nowrap bg-background/70 px-[3px] text-[10px] leading-[13px] tracking-[.04em]",
+                    section?.now === m.label ? "text-foreground" : section?.next === m.label ? "text-warning-ink" : "text-muted-foreground"
+                  )}
+                >
+                  {m.label}
+                </span>
+              </div>
+            ))}
+            <span className="absolute -inset-y-1 w-[2px] bg-foreground shadow-[0_0_8px_hsl(var(--foreground)/.8)]" style={{ left: `${progress}%` }} />
+          </div>
+        )}
         <div
           className={cn(
             "track zoned mt-3 shrink-0 [@media(orientation:landscape)_and_(max-height:599.98px)_and_(pointer:coarse)]:mt-2 stage:h-2.5",
+            waveOn && "stage:[@container_(min-height:500px)]:hidden",
             zone === "warn" && "warn",
             zone === "urgent" && "urgent"
           )}
@@ -360,6 +436,7 @@ export function NowCard({
         >
           <span style={{ width: `${progress}%` }} />
         </div>
+        </>
       )}
 
       <div className="mt-2 flex shrink-0 items-baseline justify-between gap-2 text-[11.5px] text-muted-foreground [@media(orientation:landscape)_and_(max-height:599.98px)_and_(pointer:coarse)]:mt-1.5 stage:text-[12.5px]">
@@ -371,7 +448,21 @@ export function NowCard({
             over && "font-semibold"
           )}
         >
-          {zoneCaption(zone, blockSec)}
+          {zone === "ok" && section ? (
+            <span data-testid="now-section">
+              ท่อน <b className="num text-[14px] text-foreground stage:text-[16px]">{section.now ?? "—"}</b>
+              {section.next ? (
+                <>
+                  {" "}· ถัดไป <b className="num text-[14px] text-warning-ink stage:text-[16px]">{section.next}</b> ใน{" "}
+                  <b className="num text-[15px] text-warning-ink stage:text-[19px]">{formatDuration(Math.ceil(section.inSec ?? 0))}</b>
+                </>
+              ) : (
+                " · ท่อนสุดท้าย"
+              )}
+            </span>
+          ) : (
+            zoneCaption(zone, blockSec)
+          )}
         </span>
         <span className="num text-[14px] stage:text-[16px]">{formatDuration(blockSec)}</span>
       </div>
