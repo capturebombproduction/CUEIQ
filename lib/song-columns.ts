@@ -1,4 +1,5 @@
-// The songs columns a SHOW needs: every column except `cover`.
+// The songs columns a SHOW needs: every column except `cover`. The 0045 analysis columns
+// ride along on purpose: `peaks` is 200 characters, and Live draws the NOW card from it.
 //
 // songs.cover (0044) is a ~10 K-char data URL per song. Seishin's 36 covers came to
 // ~360 K chars, 14x the rest of their song rows put together. Only the Library and
@@ -11,4 +12,4 @@
 // ONE string literal on purpose: postgrest-js types a .select() by parsing the
 // literal, and a concatenated string widens to `string`, which it cannot parse.
 export const SONG_SHOW_COLUMNS =
-  "id, tenant_id, group_id, title, file_name, duration_seconds, language, category, copyright_status, notes, audio_path, audio_name, audio_expires_at, bpm, created_at, updated_at";
+  "id, tenant_id, group_id, title, file_name, duration_seconds, language, category, copyright_status, notes, audio_path, audio_name, audio_expires_at, bpm, lufs, peaks, beat_offset, created_at, updated_at";

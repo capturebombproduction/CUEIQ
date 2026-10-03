@@ -32,6 +32,7 @@ import { createClient } from "@/lib/supabase/client";
 import { notify } from "@/lib/notify-client";
 import { detectAudioDuration } from "@/lib/audio";
 import { makeCoverDataUrl } from "@/lib/song-cover";
+import { analyzeAudioFile } from "@/lib/song-analysis-browser";
 import {
   buildSongAudioPath,
   uploadEventAudio,
@@ -942,6 +943,25 @@ export function SongLibrary({
     });
   }
 
+  // The analysis half of an upload (see uploadSongAudio). Written only while the song still
+  // points at the file that was measured: a second upload landing first must not get the
+  // first file's numbers.
+  async function measureUploadedSong(song: Song, path: string, file: File) {
+    const a = await analyzeAudioFile(file);
+    if (!a) return;
+    const patch: Partial<Song> = { lufs: a.lufs, peaks: a.peaks, beat_offset: a.beat_offset };
+    if (song.bpm == null && a.bpm != null) patch.bpm = a.bpm;
+    const { data, error } = await supabase
+      .from("songs")
+      .update(patch)
+      .eq("id", song.id)
+      .eq("audio_path", path)
+      .select("id");
+    if (error || wroteNothing(data)) return;
+    setSongs((prev) => prev.map((s) => (s.id === song.id ? { ...s, ...patch } : s)));
+    broadcastSongsChanged(song.group_id);
+  }
+
   // Upload (or replace) a song's audio to R2. A library upload is PERMANENT, so
   // we also clear any temp-expiry the song carried (e.g. it was first created
   // ad-hoc from Live Mode).
@@ -995,6 +1015,10 @@ export function SongLibrary({
       }
       broadcastSongsChanged(song.group_id); // live update any open Live Mode
       toast.success("อัปโหลดไฟล์เพลงขึ้นคลังแล้ว");
+      // 0045: measure the file just uploaded (loudness, waveform, first beat) so Live can
+      // draw and compare it on every device. In the background and best-effort: on any
+      // failure the song simply stays unmeasured, as every song was before 0045.
+      void measureUploadedSong(song, path, file);
       return path;
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);

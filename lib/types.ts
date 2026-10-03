@@ -503,6 +503,9 @@ export interface Song {
   audio_expires_at?: string | null; // null = permanent; timestamp = temp (ad-hoc), auto-cleaned after
   bpm?: number | null; // tempo for the practice metronome (null = unset)
   cover?: string | null; // square thumbnail data URL (0044, lib/song-cover.ts); null = none
+  lufs?: number | null; // integrated loudness, LUFS (0045, lib/song-analysis.ts); null = not measured
+  peaks?: string | null; // waveform overview, 200 base64url chars (0045); null = not measured
+  beat_offset?: number | null; // first tracked beat, seconds (0045); null = not measured
   created_at: string;
   updated_at: string;
 }

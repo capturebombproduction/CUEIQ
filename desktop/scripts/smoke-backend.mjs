@@ -131,6 +131,9 @@ const song = (n, title, over = {}) => ({
   audio_name: null,
   audio_expires_at: null,
   bpm: 128,
+  lufs: null, // 0045: unmeasured, as every song is until the library or the backfill measures it
+  peaks: null,
+  beat_offset: null,
   created_at: T0,
   updated_at: T0,
   ...over,
