@@ -7,7 +7,7 @@
 // never has to be whitelisted on the R2 bucket) and open the native file picker for
 // local-file ingest. Auth stays in the renderer: main only ever sees a presigned
 // URL the renderer already minted, so no R2/Supabase secret is bundled in the app.
-const { app, BrowserWindow, ipcMain, dialog, net, shell, powerSaveBlocker } = require("electron");
+const { app, BrowserWindow, Menu, ipcMain, dialog, net, shell, powerSaveBlocker } = require("electron");
 const path = require("node:path");
 const fs = require("node:fs");
 const { pathToFileURL } = require("node:url");
@@ -274,6 +274,10 @@ function registerIpc() {
   ipcMain.handle("cueiq:set-unload-reason", (_e, reason) => {
     unloadReason = reason === "show" || reason === "unsaved" ? reason : null;
   });
+  // the header update chip (desktop/src/components/update-chip.tsx); see checkForUpdates
+  ipcMain.handle("cueiq:update-get", () => updateState);
+  ipcMain.handle("cueiq:update-check", () => checkForUpdates());
+  ipcMain.handle("cueiq:update-apply", () => applyUpdate());
 }
 
 /** Why the renderer currently vetoes unload — set through the IPC above. Read by
@@ -302,78 +306,264 @@ function writeSkippedVersion(version) {
 }
 
 /**
- * Check GitHub Releases for a newer build and ASK before doing anything about it.
- * Wired to the "publish: github" config in package.json.
+ * Updates — ONE state, shown in the app's header (desktop/src/components/update-chip.tsx)
+ * and reachable from Help → "ตรวจหาอัปเดต…". พี่ (2026-10-03): the desktop and the Mac
+ * should be updatable with a press, not only by a prompt at launch.
  *
- * พี่'s call (2026-08-02): ASK FIRST. The installer is ~107 MB and the check fires
- * at launch — which at a venue is the same minute the operator is setting up, on
- * the same phone hotspot Live Mode needs for realtime and for pulling audio off R2.
- * Downloading that unasked is the app competing with its own show. So: check
- * quietly, ask once, and only download if the answer is yes. Installing still
- * happens on QUIT and never mid-show.
+ * พี่'s call (2026-08-02) still stands: ASK FIRST. The installer is ~107 MB and the launch
+ * check fires in the same minute an operator sets up on the venue hotspot Live Mode needs.
+ * So the launch check only asks (Windows), and nothing downloads or installs without a
+ * press. Installing is refused while a show is running (the renderer reports it, see
+ * startShowPowerSaveBlocker); otherwise it still happens on quit as before.
  *
- * Gated to a packaged WINDOWS build on purpose:
- *   • dev / unpacked (`!app.isPackaged`) has nothing to update;
- *   • macOS auto-update needs a signed app (Squirrel.Mac) and we ship UNSIGNED,
- *     so it would only ever error — Mac users re-download the .dmg manually.
- * Every failure is swallowed: a flaky network or missing release must not delay
- * or break app start (this is the zero-tolerance live path's host).
+ *   • Windows: electron-updater against the GitHub feed (package.json build.win.publish).
+ *     available → press → downloading n% → ready → press → quit, install, relaunch.
+ *   • macOS: Squirrel.Mac only updates an Apple-signed app and ours is ad-hoc signed, so the
+ *     Mac reads the version off the same latest.yml and its press opens the right .dmg
+ *     (desktop/electron/update-feed.cjs) with the two steps to replace the app.
+ *   • dev / unpacked / the self-test: "unsupported" — there is nothing to update.
+ * Every failure lands in state "error" and is never thrown: a flaky network or a missing
+ * release must not delay or break app start (this is the zero-tolerance live path's host).
  */
-function initAutoUpdate() {
-  if (!app.isPackaged || DEV_URL || SMOKE || process.platform !== "win32") return;
-  let autoUpdater;
-  try {
-    ({ autoUpdater } = require("electron-updater"));
-  } catch {
-    return; // dependency not bundled — never block startup
+const updateFeed = require("./update-feed.cjs");
+const UPDATE_RECHECK_MS = 6 * 60 * 60 * 1000;
+
+/** { state: idle|unsupported|checking|uptodate|available|downloading|ready|error,
+ *    current, latest, percent, url, platform } — sent to every window on each change. */
+let updateState = {
+  state: "idle",
+  current: app.getVersion(),
+  latest: null,
+  percent: null,
+  url: null,
+  platform: process.platform,
+};
+let launchPrompt = false; // the next update-available came from the launch check
+let winUpdater = null; // electron-updater's autoUpdater, Windows only, once loaded
+
+function updatesSupported() {
+  return app.isPackaged && !DEV_URL && !SMOKE && (process.platform === "win32" || process.platform === "darwin");
+}
+
+function setUpdateState(patch) {
+  updateState = { ...updateState, ...patch };
+  for (const w of BrowserWindow.getAllWindows()) {
+    if (!w.isDestroyed()) w.webContents.send("cueiq:update-state", updateState);
   }
-  autoUpdater.autoDownload = false; // the whole point: ask first
-  autoUpdater.autoInstallOnAppQuit = true; // …but once downloaded, install on quit
-  autoUpdater.on("error", (err) => console.log("AUTOUPDATE_ERROR " + String(err)));
+}
 
-  autoUpdater.on("update-available", async (info) => {
-    const version = info?.version ? String(info.version) : "";
-    if (version && version === readSkippedVersion()) return; // already declined this one
-    try {
-      // NO parent window on purpose: a parented box is MODAL and disables the
-      // window under it (this file relies on that at the exit confirm). The check
-      // can resolve late on a slow venue hotspot, and a modal that lands over a
-      // running show kills every click and every keyboard cue until someone finds
-      // the mouse. Parentless, it is just a window the operator can ignore.
-      const { response, checkboxChecked } = await dialog.showMessageBox({
-        type: "question",
-        buttons: ["โหลดเลย", "ไว้ก่อน"],
-        defaultId: 0,
-        cancelId: 1,
-        title: "CueIQ มีเวอร์ชันใหม่",
-        message: `มีเวอร์ชันใหม่${version ? ` (${version})` : ""}`,
-        detail:
-          "ไฟล์ประมาณ 100 MB — ถ้าอยู่หน้างานและใช้เน็ตมือถือ กด “ไว้ก่อน” ได้เลย\n" +
-          "ถ้าโหลด จะติดตั้งให้ตอนปิดโปรแกรม ไม่รบกวนระหว่างโชว์",
-        checkboxLabel: "ไม่ต้องถามเรื่องเวอร์ชันนี้อีก",
-        checkboxChecked: false,
-      });
-      if (response === 0) {
-        autoUpdater.downloadUpdate().catch((e) => console.log("AUTOUPDATE_DL_FAIL " + String(e)));
-      } else if (checkboxChecked && version) {
-        writeSkippedVersion(version);
+/** Ask the feed. `prompt` = the launch check's "โหลดเลย / ไว้ก่อน" (Windows). */
+async function checkForUpdates({ prompt = false } = {}) {
+  if (!updatesSupported()) {
+    setUpdateState({ state: "unsupported" });
+    return updateState;
+  }
+  // a download in flight or one waiting to install is already the answer
+  if (["checking", "downloading", "ready"].includes(updateState.state)) return updateState;
+  setUpdateState({ state: "checking" });
+  launchPrompt = prompt;
+  try {
+    if (process.platform === "win32") {
+      if (!winUpdater) throw new Error("electron-updater not loaded");
+      const result = await winUpdater.checkForUpdates();
+      // the events below set the state; a null result (no feed) means nothing to offer
+      if (!result && updateState.state === "checking") setUpdateState({ state: "uptodate" });
+    } else {
+      const res = await net.fetch(updateFeed.LATEST_YML_URL, { cache: "no-store" });
+      if (!res.ok) throw new Error(`feed answered ${res.status}`);
+      const latest = updateFeed.versionFromLatestYml(await res.text());
+      if (latest && updateFeed.isNewer(latest, app.getVersion())) {
+        setUpdateState({
+          state: "available",
+          latest,
+          url: updateFeed.macDmgUrl(latest, process.arch, app.runningUnderARM64Translation === true),
+        });
+      } else {
+        setUpdateState({ state: "uptodate", latest });
       }
-    } catch (e) {
-      console.log("AUTOUPDATE_PROMPT_FAIL " + String(e));
     }
-  });
+  } catch (e) {
+    console.log("AUTOUPDATE_CHECK_FAIL " + String(e));
+    if (updateState.state === "checking") setUpdateState({ state: "error" });
+  }
+  return updateState;
+}
 
-  // Deliberately SILENT. A 107 MB download over venue wifi finishes minutes after
-  // it was agreed to — which can easily be mid-show — and there is nothing for the
-  // operator to do about it: autoInstallOnAppQuit already handles the rest. An
-  // announcement here would be a dialog nobody asked for at the worst moment.
-  autoUpdater.on("update-downloaded", (info) => {
-    console.log("AUTOUPDATE_READY " + String(info?.version ?? ""));
-  });
+/** The header's press: download (Windows), install (Windows, ready), or the .dmg (Mac). */
+async function applyUpdate() {
+  if (updateState.state === "error" || updateState.state === "uptodate" || updateState.state === "idle") {
+    return checkForUpdates();
+  }
+  if (process.platform === "darwin") {
+    if (updateState.state !== "available" || !updateState.url) return updateState;
+    await shell.openExternal(updateState.url);
+    await dialog.showMessageBox({
+      type: "info",
+      buttons: ["ตกลง"],
+      title: "อัปเดต CueIQ",
+      message: `กำลังโหลด CueIQ ${updateState.latest}`,
+      detail:
+        "โหลดเสร็จแล้วเปิดไฟล์ .dmg → ลากไอคอน CueIQ ไปที่ Applications → เลือก “Replace” (แทนที่)\n" +
+        "จากนั้นปิดแอปนี้แล้วเปิด CueIQ ใหม่ ข้อมูลและการล็อกอินยังอยู่ครบ",
+    });
+    return updateState;
+  }
+  if (!winUpdater) return updateState;
+  if (updateState.state === "available") {
+    setUpdateState({ state: "downloading", percent: 0 });
+    winUpdater.downloadUpdate().catch((e) => {
+      console.log("AUTOUPDATE_DL_FAIL " + String(e));
+      setUpdateState({ state: "error" });
+    });
+    return updateState;
+  }
+  if (updateState.state === "ready") {
+    if (powerSaveBlockerId !== null) {
+      await dialog.showMessageBox({
+        type: "warning",
+        buttons: ["ตกลง"],
+        title: "ยังติดตั้งไม่ได้",
+        message: "กำลังรันโชว์อยู่",
+        detail: "การติดตั้งจะปิดแอป — จบโชว์ก่อนแล้วค่อยกดติดตั้ง หรือปิดแอปตามปกติ ระบบจะติดตั้งให้ตอนปิด",
+      });
+      return updateState;
+    }
+    const { response } = await dialog.showMessageBox({
+      type: "question",
+      buttons: ["ติดตั้งเลย", "ไว้ก่อน"],
+      defaultId: 0,
+      cancelId: 1,
+      title: "ติดตั้ง CueIQ",
+      message: `ติดตั้ง CueIQ ${updateState.latest} ตอนนี้?`,
+      detail: "แอปจะปิด ติดตั้ง แล้วเปิดขึ้นมาใหม่เอง (ราว 1 นาที) ถ้า Windows ถามสิทธิ์ให้กด Yes\nข้อมูลและการล็อกอินยังอยู่ครบ",
+    });
+    // silent install, then start the new version
+    if (response === 0) setImmediate(() => winUpdater.quitAndInstall(true, true));
+  }
+  return updateState;
+}
 
-  autoUpdater
-    .checkForUpdates()
-    .catch((e) => console.log("AUTOUPDATE_CHECK_FAIL " + String(e)));
+/** Help → ตรวจหาอัปเดต…: the same check, answered in words. */
+async function checkUpdatesFromMenu() {
+  const s = await checkForUpdates();
+  const say = (message, detail = "") =>
+    dialog.showMessageBox({ type: "info", buttons: ["ตกลง"], title: "อัปเดต CueIQ", message, detail });
+  if (s.state === "available" || s.state === "ready") {
+    const verb = s.state === "ready" ? "ติดตั้ง" : process.platform === "darwin" ? "ดาวน์โหลด" : "โหลด";
+    const { response } = await dialog.showMessageBox({
+      type: "question",
+      buttons: [`${verb}เลย`, "ไว้ก่อน"],
+      defaultId: 0,
+      cancelId: 1,
+      title: "อัปเดต CueIQ",
+      message: `มีเวอร์ชันใหม่ ${s.latest} (เครื่องนี้ ${s.current})`,
+      detail: "กดปุ่มอัปเดตที่แถบด้านบนของแอปได้ทุกเมื่อเช่นกัน",
+    });
+    if (response === 0) await applyUpdate();
+  } else if (s.state === "downloading") {
+    await say(`กำลังโหลดเวอร์ชัน ${s.latest}… ${s.percent ?? 0}%`, "โหลดเสร็จแล้วจะมีปุ่ม “ติดตั้ง” ที่แถบด้านบน");
+  } else if (s.state === "uptodate") {
+    await say(`CueIQ ${s.current} เป็นเวอร์ชันล่าสุดแล้ว`);
+  } else if (s.state === "unsupported") {
+    await say("ตรวจอัปเดตได้เฉพาะแอปที่ติดตั้งจากตัวติดตั้งเท่านั้น");
+  } else {
+    await say("ตรวจหาอัปเดตไม่สำเร็จ", "เช็กอินเทอร์เน็ตแล้วลองใหม่อีกครั้ง");
+  }
+}
+
+function initAutoUpdate() {
+  if (!updatesSupported()) {
+    updateState = { ...updateState, state: "unsupported" };
+    return;
+  }
+  if (process.platform === "win32") {
+    try {
+      ({ autoUpdater: winUpdater } = require("electron-updater"));
+    } catch {
+      updateState = { ...updateState, state: "unsupported" };
+      return; // dependency not bundled — never block startup
+    }
+    winUpdater.autoDownload = false; // the whole point: ask first
+    winUpdater.autoInstallOnAppQuit = true; // …but once downloaded, install on quit
+    winUpdater.on("error", (err) => {
+      console.log("AUTOUPDATE_ERROR " + String(err));
+      if (updateState.state === "checking" || updateState.state === "downloading") setUpdateState({ state: "error" });
+    });
+    winUpdater.on("update-not-available", (info) => {
+      setUpdateState({ state: "uptodate", latest: info?.version ? String(info.version) : null });
+    });
+    winUpdater.on("download-progress", (p) => {
+      setUpdateState({ state: "downloading", percent: Math.max(0, Math.min(100, Math.round(p?.percent ?? 0))) });
+    });
+    winUpdater.on("update-available", async (info) => {
+      const version = info?.version ? String(info.version) : "";
+      setUpdateState({ state: "available", latest: version || null });
+      // Only the launch check asks; a press in the header or the menu already chose.
+      if (!launchPrompt) return;
+      launchPrompt = false;
+      if (version && version === readSkippedVersion()) return; // already declined this one
+      try {
+        // NO parent window on purpose: a parented box is MODAL and disables the
+        // window under it (this file relies on that at the exit confirm). The check
+        // can resolve late on a slow venue hotspot, and a modal that lands over a
+        // running show kills every click and every keyboard cue until someone finds
+        // the mouse. Parentless, it is just a window the operator can ignore.
+        const { response, checkboxChecked } = await dialog.showMessageBox({
+          type: "question",
+          buttons: ["โหลดเลย", "ไว้ก่อน"],
+          defaultId: 0,
+          cancelId: 1,
+          title: "CueIQ มีเวอร์ชันใหม่",
+          message: `มีเวอร์ชันใหม่${version ? ` (${version})` : ""}`,
+          detail:
+            "ไฟล์ประมาณ 100 MB — ถ้าอยู่หน้างานและใช้เน็ตมือถือ กด “ไว้ก่อน” ได้เลย\n" +
+            "ถ้าโหลด จะติดตั้งให้ตอนปิดโปรแกรม (หรือกด “ติดตั้ง” ที่แถบด้านบน) ไม่รบกวนระหว่างโชว์",
+          checkboxLabel: "ไม่ต้องถามเรื่องเวอร์ชันนี้อีก",
+          checkboxChecked: false,
+        });
+        if (response === 0) {
+          await applyUpdate(); // available → downloading
+        } else if (checkboxChecked && version) {
+          writeSkippedVersion(version);
+        }
+      } catch (e) {
+        console.log("AUTOUPDATE_PROMPT_FAIL " + String(e));
+      }
+    });
+    // Deliberately SILENT. A 107 MB download over venue wifi finishes minutes after
+    // it was agreed to — which can easily be mid-show. The header's chip turns into
+    // "ติดตั้ง" and waits for a press; autoInstallOnAppQuit still covers a plain quit.
+    winUpdater.on("update-downloaded", (info) => {
+      console.log("AUTOUPDATE_READY " + String(info?.version ?? ""));
+      setUpdateState({ state: "ready", latest: info?.version ? String(info.version) : updateState.latest, percent: 100 });
+    });
+  }
+  checkForUpdates({ prompt: true });
+  // a long-running desk machine hears about a release without a restart; quiet, no prompt
+  setInterval(() => {
+    if (["idle", "uptodate", "error"].includes(updateState.state)) checkForUpdates();
+  }, UPDATE_RECHECK_MS).unref?.();
+}
+
+/** File / Edit / View / Window as Electron builds them by default, plus Help → update. */
+function buildAppMenu() {
+  const isMac = process.platform === "darwin";
+  const template = [
+    ...(isMac ? [{ role: "appMenu" }] : []),
+    { role: "fileMenu" },
+    { role: "editMenu" },
+    { role: "viewMenu" },
+    { role: "windowMenu" },
+    {
+      role: "help",
+      submenu: [
+        { label: "ตรวจหาอัปเดต…", click: () => checkUpdatesFromMenu().catch((e) => console.log("UPDATE_MENU_FAIL " + String(e))) },
+        { type: "separator" },
+        { label: `CueIQ ${app.getVersion()}`, enabled: false },
+      ],
+    },
+  ];
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
 
 // ─── self-test helpers (CUEIQ_SMOKE only) ────────────────────────────────────
@@ -1792,6 +1982,7 @@ async function createWindow() {
 
 app.whenReady().then(() => {
   registerIpc();
+  buildAppMenu();
   // Under the self-test, ANY throw during window setup used to end as silence: the
   // promise rejected, nothing was written, and CI reported "the packaged app never
   // reported — it crashed or hung on boot" for what was a one-line mistake in the

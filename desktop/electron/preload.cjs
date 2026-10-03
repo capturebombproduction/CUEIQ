@@ -21,4 +21,17 @@ contextBridge.exposeInMainWorld("cueiqNative", {
   // dialog whose words are written in main.cjs, so main has to be told which
   // situation it is describing or it will say a show is running during an edit.
   setUnloadReason: (reason) => ipcRenderer.invoke("cueiq:set-unload-reason", reason),
+  // The update state main keeps (desktop/electron/main.cjs, checkForUpdates): read it, ask
+  // the feed again, press the header chip (download / install / open the .dmg), and hear
+  // every change. onChange returns its own unsubscribe.
+  updates: {
+    get: () => ipcRenderer.invoke("cueiq:update-get"),
+    check: () => ipcRenderer.invoke("cueiq:update-check"),
+    apply: () => ipcRenderer.invoke("cueiq:update-apply"),
+    onChange: (cb) => {
+      const fn = (_e, state) => cb(state);
+      ipcRenderer.on("cueiq:update-state", fn);
+      return () => ipcRenderer.removeListener("cueiq:update-state", fn);
+    },
+  },
 });

@@ -23,6 +23,7 @@ import { accountLine } from "@/lib/role-label";
 import { canEditAnyGroup } from "@/lib/permissions";
 import { MgmtSyncStatus } from "~/components/mgmt-sync-status";
 import { QuickShowLink } from "~/components/quick-show-link";
+import { UpdateChip } from "~/components/update-chip";
 import { useWorkspace } from "~/data/workspace-context";
 
 /** Escape hatch shown while the workspace is loading and when it failed to load.
@@ -152,6 +153,7 @@ export function Shell() {
                 >
                   <Play className="h-3.5 w-3.5" aria-hidden /> Quick Show
                 </Link>
+                <UpdateChip />
                 <MgmtSyncStatus />
                 <AccountButton name={name} />
               </div>

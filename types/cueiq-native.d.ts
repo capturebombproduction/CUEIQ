@@ -15,6 +15,27 @@ interface CueiqNative {
    *  neither. Electron swaps the browser's leave-confirm for a native dialog whose
    *  wording lives in main.cjs, so it has to be told which one it is describing. */
   setUnloadReason: (reason: "show" | "unsaved" | null) => Promise<void>;
+  /** The app's update state (desktop/electron/main.cjs). Optional: an older preload
+   *  without it leaves the update chip simply absent. */
+  updates?: CueiqUpdates;
+}
+
+interface CueiqUpdateState {
+  state: "idle" | "unsupported" | "checking" | "uptodate" | "available" | "downloading" | "ready" | "error";
+  current: string;
+  latest: string | null;
+  /** download progress 0-100 while "downloading" */
+  percent: number | null;
+  /** macOS only: the .dmg the press opens */
+  url: string | null;
+  platform: string;
+}
+
+interface CueiqUpdates {
+  get: () => Promise<CueiqUpdateState>;
+  check: () => Promise<CueiqUpdateState>;
+  apply: () => Promise<CueiqUpdateState>;
+  onChange: (cb: (state: CueiqUpdateState) => void) => () => void;
 }
 
 interface Window {
