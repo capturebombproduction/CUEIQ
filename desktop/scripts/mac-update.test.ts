@@ -271,8 +271,13 @@ describe.skipIf(process.platform === "win32")("the swap script", () => {
   });
 
   it("calls the swap off if the old app was reopened meanwhile (no reopen, staged copy kept)", async () => {
-    // a process whose command line runs from the installed bundle, like a Dock relaunch
-    const relaunched = spawn("/bin/sh", ["-c", "sleep 5", `${app}/Contents/MacOS/CueIQ`]);
+    // a process running FROM the installed bundle, as a Dock relaunch does: a copy of sleep
+    // as Contents/MacOS/CueIQ (not `sh -c … <path>`: macOS sh execs the command and the
+    // path vanishes from the command line — the CI Mac caught exactly that)
+    const exe = path.join(app, "Contents", "MacOS", "CueIQ");
+    fs.copyFileSync(spawnSync("/bin/sh", ["-c", "command -v sleep"], { encoding: "utf8" }).stdout.trim(), exe);
+    fs.chmodSync(exe, 0o755);
+    const relaunched = spawn(exe, ["5"]);
     try {
       expect(await run(deadPid())).toBe(1);
     } finally {

@@ -176,8 +176,13 @@ let relaunched;
 const r2 = await swap(apps2, {
   quitAfterMs: 1000,
   during: async ({ app }) => {
-    // a process running from the installed bundle, as the reopened app would
-    relaunched = spawn("/bin/sh", ["-c", "sleep 30", `${app}/Contents/MacOS/CueIQ`]);
+    // a process running FROM the installed bundle, as the reopened app would: a copy of
+    // sleep as Contents/MacOS/CueIQ. (A first cut used `sh -c "sleep 30" <path>` — macOS sh
+    // execs sleep, the path left the command line, and this step failed on the stand-in.)
+    const exe = path.join(app, "Contents", "MacOS", "CueIQ");
+    fs.copyFileSync("/bin/sleep", exe);
+    fs.chmodSync(exe, 0o755);
+    relaunched = spawn(exe, ["30"]);
     return null;
   },
 });
