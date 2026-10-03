@@ -1543,12 +1543,24 @@ async function driveLiveScenario(win) {
           await win.webContents.executeJavaScript(`JSON.stringify((() => {
             const c = document.querySelector('[data-testid=console-channel]');
             const alarm = document.querySelector('[data-testid=signal-alarm]');
-            if (!c) return { present: false, alarm: alarm ? alarm.dataset.kind : null };
-            return { present: true, ready: c.dataset.ready || null, db: c.dataset.db || null, alarm: alarm ? alarm.dataset.kind : null };
+            // the ANALYZER tab (the default where there is a tap): its momentary loudness, BS.1770's
+            // K-weighting run live by Chromium's own IIR filters. The app prints a real minus (−).
+            const m = document.querySelector('[data-testid=console-lufs-momentary]');
+            const lufs = m && /[0-9]/.test(m.textContent) ? m.textContent.replace("−", "-") : null;
+            if (!c) return { present: false, lufs, alarm: alarm ? alarm.dataset.kind : null };
+            return { present: true, ready: c.dataset.ready || null, db: c.dataset.db || null, lufs, alarm: alarm ? alarm.dataset.kind : null };
           })())`)
         );
         consoleReading.switched = switched;
-        if (consoleReading.present && consoleReading.ready === "1" && consoleReading.db !== null && Number(consoleReading.db) > -30) break;
+        if (
+          consoleReading.present &&
+          consoleReading.ready === "1" &&
+          consoleReading.db !== null &&
+          Number(consoleReading.db) > -30 &&
+          consoleReading.lufs !== null &&
+          Number(consoleReading.lufs) > -30
+        )
+          break;
         if (Date.now() >= consoleDeadline) break;
         await new Promise((r) => setTimeout(r, 250));
       }

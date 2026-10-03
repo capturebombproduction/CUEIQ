@@ -14,6 +14,8 @@
 // pass it on. The strip says so in its title.
 //
 // Pure helpers first (unit-tested in lib/live-signal.test.ts), the Web Audio part last.
+import { kWeighting } from "./song-analysis";
+import { tailMeanSquare, type AnalysisFrame, type AnalysisSource } from "./live-analyzer";
 
 /** Linear amplitude → dBFS (−Infinity for silence). */
 export const toDb = (x: number) => (x > 0 ? 20 * Math.log10(x) : -Infinity);
@@ -174,6 +176,24 @@ interface Tap {
   left: AnalyserNode;
   right: AnalyserNode;
   onTracks: () => void;
+  /** while CONSOLE's analysis runs: this player's fader, feeding the analysis bus */
+  toBus: GainNode | null;
+}
+
+/** CONSOLE's analysis graph (startAnalysis): built on demand, torn down by the last stop(). */
+interface Analysis {
+  bus: GainNode;
+  nodes: AudioNode[];
+  spec: AnalyserNode;
+  rawL: AnalyserNode;
+  rawR: AnalyserNode;
+  kL: AnalyserNode;
+  kR: AnalyserNode;
+  bins: Float32Array<ArrayBuffer>;
+  left: Float32Array<ArrayBuffer>;
+  right: Float32Array<ArrayBuffer>;
+  kbuf: Float32Array<ArrayBuffer>;
+  users: number;
 }
 
 /**
@@ -188,6 +208,7 @@ export class SignalTap {
   private ctx: AudioContext | null = null;
   private taps: Tap[] = [];
   private buf = new Float32Array(1024);
+  private analysis: Analysis | null = null;
   private unlock = () => {
     this.ctx?.resume().catch(() => {});
   };
@@ -228,7 +249,7 @@ export class SignalTap {
     left.fftSize = right.fftSize = 1024;
     splitter.connect(left, 0);
     splitter.connect(right, 1);
-    const t: Tap = { el, stream, source: null, trackId: null, left, right, onTracks: () => {} };
+    const t: Tap = { el, stream, source: null, trackId: null, left, right, onTracks: () => {}, toBus: null };
     t.onTracks = () => {
       const track = stream.getAudioTracks().find((x) => x.readyState === "live") ?? null;
       if ((track?.id ?? null) === t.trackId) return;
@@ -242,6 +263,7 @@ export class SignalTap {
       if (!track || !this.ctx) return;
       t.source = this.ctx.createMediaStreamSource(new MediaStream([track]));
       t.source.connect(splitter);
+      if (t.toBus) t.source.connect(t.toBus);
     };
     stream.addEventListener("addtrack", t.onTracks);
     stream.addEventListener("removetrack", t.onTracks);
@@ -249,6 +271,150 @@ export class SignalTap {
     el.addEventListener("play", this.unlock);
     t.onTracks();
     this.taps.push(t);
+    if (this.analysis) this.feedBus(t);
+  }
+
+  private feedBus(t: Tap): void {
+    if (!this.ctx || !this.analysis || t.toBus) return;
+    t.toBus = this.ctx.createGain();
+    t.toBus.connect(this.analysis.bus);
+    t.source?.connect(t.toBus);
+  }
+
+  /**
+   * CONSOLE's ANALYZER (components/live/console-analyzer.tsx): a second graph on the same copies,
+   * built when the panel opens and gone when the last user stops - STAGE, and CONSOLE on another
+   * tab, pay nothing. Each player's copy goes through a gain set to that player's volume (so the
+   * analysis is AFTER the fader: what the room gets) into one summing bus, and off the bus: an
+   * 8192-point spectrum, the raw left / right for the stereo picture, and BS.1770's K-weighting
+   * (lib/song-analysis.ts's two stages, as IIR filters, per channel) into analysers long enough
+   * to hold the 400 ms momentary block. Like everything here it ends in analysers: no output.
+   * null where there is no tap (the web build, an engine without IIR filters).
+   */
+  startAnalysis(): AnalysisSource | null {
+    const ctx = this.ctx;
+    if (!ctx) return null;
+    if (!this.analysis) {
+      try {
+        const nodes: AudioNode[] = [];
+        const add = <T extends AudioNode>(n: T) => (nodes.push(n), n);
+        const bus = add(ctx.createGain());
+        bus.channelCount = 2;
+        bus.channelCountMode = "explicit";
+        bus.channelInterpretation = "speakers";
+        const analyser = (size: number) => {
+          const a = add(ctx.createAnalyser());
+          a.fftSize = size;
+          return a;
+        };
+        const spec = analyser(8192);
+        spec.smoothingTimeConstant = 0.55;
+        spec.minDecibels = -110;
+        spec.maxDecibels = 0;
+        bus.connect(spec);
+        const split = add(ctx.createChannelSplitter(2));
+        bus.connect(split);
+        const rawL = analyser(2048);
+        const rawR = analyser(2048);
+        split.connect(rawL, 0);
+        split.connect(rawR, 1);
+        const [shelf, highpass] = kWeighting(ctx.sampleRate);
+        const iir = ([b0, b1, b2, a1, a2]: number[]) => add(ctx.createIIRFilter([b0, b1, b2], [1, a1, a2]));
+        const kL = analyser(32768);
+        const kR = analyser(32768);
+        for (const [out, k] of [
+          [0, kL],
+          [1, kR],
+        ] as const) {
+          const a = iir(shelf);
+          const b = iir(highpass);
+          split.connect(a, out);
+          a.connect(b);
+          b.connect(k);
+        }
+        this.analysis = {
+          bus,
+          nodes,
+          spec,
+          rawL,
+          rawR,
+          kL,
+          kR,
+          bins: new Float32Array(spec.frequencyBinCount),
+          left: new Float32Array(2048),
+          right: new Float32Array(2048),
+          kbuf: new Float32Array(32768),
+          users: 0,
+        };
+        for (const t of this.taps) this.feedBus(t);
+      } catch {
+        this.dropAnalysis();
+        return null;
+      }
+    }
+    const a = this.analysis;
+    if (!a) return null;
+    a.users++;
+    let stopped = false;
+    return {
+      read: () => this.readAnalysis(),
+      stop: () => {
+        if (stopped) return;
+        stopped = true;
+        if (this.analysis === a && --a.users <= 0) this.dropAnalysis();
+      },
+    };
+  }
+
+  private readAnalysis(): AnalysisFrame | null {
+    const a = this.analysis;
+    if (!a || !this.ctx || this.ctx.state !== "running") return null;
+    for (const t of this.taps) {
+      t.onTracks();
+      if (t.toBus) {
+        const v = t.el.muted ? 0 : t.el.volume;
+        if (t.toBus.gain.value !== v) t.toBus.gain.value = v;
+      }
+    }
+    a.spec.getFloatFrequencyData(a.bins);
+    a.rawL.getFloatTimeDomainData(a.left);
+    a.rawR.getFloatTimeDomainData(a.right);
+    const n = 0.4 * this.ctx.sampleRate;
+    a.kL.getFloatTimeDomainData(a.kbuf);
+    let z = tailMeanSquare(a.kbuf, n);
+    a.kR.getFloatTimeDomainData(a.kbuf);
+    z += tailMeanSquare(a.kbuf, n);
+    let peak = 0;
+    for (let i = 0; i < a.left.length; i++) {
+      const v = Math.max(Math.abs(a.left[i]), Math.abs(a.right[i]));
+      if (v > peak) peak = v;
+    }
+    return { sampleRate: this.ctx.sampleRate, bins: a.bins, left: a.left, right: a.right, kMeanSquare: z, peak };
+  }
+
+  private dropAnalysis(): void {
+    for (const t of this.taps) {
+      if (!t.toBus) continue;
+      try {
+        t.source?.disconnect(t.toBus);
+      } catch {
+        /* never connected */
+      }
+      try {
+        t.toBus.disconnect();
+      } catch {
+        /* already gone */
+      }
+      t.toBus = null;
+    }
+    for (const n of this.analysis?.nodes ?? []) {
+      try {
+        n.disconnect();
+      } catch {
+        /* already gone */
+      }
+    }
+    this.analysis = null;
   }
 
   read(): SignalReading {
@@ -272,6 +438,7 @@ export class SignalTap {
   }
 
   close(): void {
+    this.dropAnalysis();
     document.removeEventListener("pointerdown", this.unlock, true);
     document.removeEventListener("keydown", this.unlock, true);
     for (const t of this.taps) {

@@ -3998,7 +3998,9 @@ export function LiveMode({
           running={state.running}
           endClock={itemEndClock}
           markers={songMarkers}
-          playingId={audioPlaying ? playingId : null}
+          // the item loaded on this device's player (paused or not: a pause is not a new song,
+          // so the analyzer's integrated loudness carries on through it)
+          playingId={playingId}
           tap={signalTap}
           player={() => audioRef.current}
           // the fader and the fades where STAGE shows them: on the device that holds the

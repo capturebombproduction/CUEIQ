@@ -240,7 +240,10 @@ describe("the playback channel", () => {
 
   it("with a tap the loop reads it: the peak after the player's volume, the clip light", () => {
     let level = 0.5;
-    const tap = { read: (): SignalReading => ({ ready: true, rmsL: level, rmsR: level, peakL: level, peakR: level }) } as unknown as SignalTap;
+    const tap = {
+      read: (): SignalReading => ({ ready: true, rmsL: level, rmsR: level, peakL: level, peakR: level }),
+      startAnalysis: () => null,
+    } as unknown as SignalTap;
     const el = { currentTime: 1, paused: false, muted: false, volume: 0.5 } as HTMLMediaElement;
     mount({ tap, player: () => el });
     step();
@@ -275,5 +278,87 @@ describe("the next channel", () => {
     expect(screen.getByTestId("console-next-loudness").textContent).toBe("ยังไม่ได้วัดความดัง");
     rerender(<ConsoleBoard {...props} index={2} />);
     expect(screen.getByLabelText("Next channel").textContent).toContain("จบโชว์");
+  });
+});
+
+describe("the bottom panel", () => {
+  /** A tap whose analysis reads a steady −12 LUFS (z = 10^((−12 + 0.691) / 10)), peak 0.5. */
+  function analysisTap() {
+    const stop = vi.fn();
+    const z = Math.pow(10, (-12 + 0.691) / 10);
+    const frame = {
+      sampleRate: 48000,
+      bins: new Float32Array(4096).fill(-60),
+      left: new Float32Array(2048).fill(0.1),
+      right: new Float32Array(2048).fill(0.1),
+      kMeanSquare: z,
+      peak: 0.5,
+    };
+    const startAnalysis = vi.fn(() => ({ read: () => frame, stop }));
+    const tap = {
+      read: (): SignalReading => ({ ready: true, rmsL: 0.1, rmsR: 0.1, peakL: 0.1, peakR: 0.1 }),
+      startAnalysis,
+    } as unknown as SignalTap;
+    return { tap, startAnalysis, stop };
+  }
+  beforeEach(() => localStorage.removeItem("cueiq:consoleTab"));
+
+  it("the web build (no tap) has the SET MIXER alone", () => {
+    mount();
+    expect(screen.getAllByRole("tab").map((t) => t.textContent)).toEqual(["Set mixer"]);
+  });
+
+  it("with a tap: ANALYZER first, and its readouts are the live loudness", () => {
+    const { tap, startAnalysis } = analysisTap();
+    mount({ tap });
+    expect(screen.getAllByRole("tab").map((t) => t.textContent)).toEqual(["Analyzer", "Set mixer", "Spectrogram"]);
+    expect(screen.getByRole("tab", { name: "Analyzer" })).toHaveAttribute("aria-selected", "true");
+    expect(startAnalysis).toHaveBeenCalledTimes(1);
+    step();
+    expect(screen.getByTestId("console-lufs-momentary").textContent).toBe("−12.0");
+    expect(screen.getByTestId("console-lufs-integrated").textContent).toBe("−12.0");
+  });
+
+  it("a tab is kept per device; leaving the analysis tabs stops the analysis graph", () => {
+    const { tap, startAnalysis, stop } = analysisTap();
+    const { unmount } = mount({ tap });
+    fireEvent.click(screen.getByRole("tab", { name: "Spectrogram" }));
+    // analyzer -> spectrogram is the same analysis: not rebuilt
+    expect(startAnalysis).toHaveBeenCalledTimes(1);
+    expect(stop).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("tab", { name: "Set mixer" }));
+    expect(stop).toHaveBeenCalledTimes(1);
+    expect(localStorage.getItem("cueiq:consoleTab")).toBe("mixer");
+    expect(screen.getAllByTestId("console-strip")).toHaveLength(3);
+    unmount();
+    mount({ tap });
+    expect(screen.getByRole("tab", { name: "Set mixer" })).toHaveAttribute("aria-selected", "true");
+  });
+
+  it("a new song starts the integrated loudness over; a pause does not", () => {
+    let clock = 0;
+    vi.spyOn(performance, "now").mockImplementation(() => clock);
+    const { tap, frame } = (() => {
+      const t = analysisTap();
+      return { tap: t.tap, frame: (t.tap.startAnalysis() as unknown as { read: () => { kMeanSquare: number } }).read() };
+    })();
+    const z = (lufs: number) => Math.pow(10, (lufs + 0.691) / 10);
+    const at = (lufs: number) => {
+      frame.kMeanSquare = z(lufs);
+      clock += 200;
+      step();
+    };
+    const { rerender, props } = mount({ tap });
+    at(-6);
+    at(-6);
+    expect(screen.getByTestId("console-lufs-integrated").textContent).toBe("−6.0");
+    // paused (Live keeps the item loaded): the song goes on, so does its value
+    rerender(<ConsoleBoard {...props} tap={tap} running={false} />);
+    at(-8);
+    expect(screen.getByTestId("console-lufs-integrated").textContent).not.toBe("−8.0");
+    // the next song: its own value from its first block
+    rerender(<ConsoleBoard {...props} tap={tap} playingId="item-3" />);
+    at(-20);
+    expect(screen.getByTestId("console-lufs-integrated").textContent).toBe("−20.0");
   });
 });

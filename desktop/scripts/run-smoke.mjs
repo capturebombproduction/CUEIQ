@@ -868,6 +868,8 @@ async function runAudibleScenario(s) {
   else {
     if (board.ready !== "1") problems.push("CONSOLE's meters never started");
     if (!(Number(board.db) > -30)) problems.push(`CONSOLE's PLAYBACK channel read ${board.db} dB while a -6 dBFS tone played`);
+    // the analysis graph (K-weighted, after the fader): a 0.5 sine on both sides is about −7 LUFS
+    if (!(Number(board.lufs) > -30)) problems.push(`CONSOLE's ANALYZER read ${board.lufs} LUFS momentary while a -6 dBFS tone played`);
     if (board.alarm) problems.push(`a Signal alarm (${board.alarm}) was up on CONSOLE while the tone audibly played`);
   }
   if (problems.length === 0) {

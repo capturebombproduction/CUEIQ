@@ -13,9 +13,10 @@
 // What moves at screen rate (meters, peak, clip, BAR.BEAT, the beat light, the playing
 // strip's live bar) is written straight onto its nodes by one requestAnimationFrame loop, as
 // the Signal strip does; React re-renders only on Live's own 500 ms tick.
-import { memo, useEffect, useMemo, useRef, type ReactNode } from "react";
+import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Lightbulb, Volume1, Volume2, VolumeX } from "lucide-react";
 import { KindChip } from "@/components/event/kind";
+import { ConsoleAnalyzer } from "@/components/live/console-analyzer";
 import { cn } from "@/lib/utils";
 import { formatCountdown, formatDuration, formatOvertime } from "@/lib/time";
 import { thresholds, type LiveZone } from "@/lib/live-zone";
@@ -102,7 +103,7 @@ export function ConsoleBoard({
   endClock: string;
   /** song id → the practice room's sections, in AUDIO seconds */
   markers: Record<string, LiveMarker[]>;
-  /** the item this device is sounding (null: none) */
+  /** the item loaded on this device's player, playing or paused (null: none) */
   playingId: string | null;
   tap: SignalTap | null;
   /** the primary player: position, volume, muted (read only) */
@@ -285,7 +286,7 @@ export function ConsoleBoard({
 
         <ClipEditor item={current} elapsed={elapsed} running={running} sections={curMarkers} section={section} />
 
-        <SetMixer items={items} index={index} playingId={playingId} liveRef={stripLive} />
+        <BottomPanel items={items} index={index} playingId={playingId} liveRef={stripLive} tap={tap} />
       </div>
 
       <aside aria-label="Playback" className="flex min-h-0 flex-col gap-2">
@@ -828,18 +829,7 @@ const SetMixer = memo(function SetMixer({
   liveRef: React.RefObject<HTMLSpanElement | null>;
 }) {
   const target = lufsBar(LOUDNESS_TARGET) * 100;
-  const measured = items.filter((it) => it.lufs != null).length;
   return (
-    <section
-      aria-label="Set mixer"
-      className="slab flex min-h-0 flex-[1.15] flex-col overflow-hidden [@container_(max-height:430px)]:hidden"
-    >
-      <PanelHead label="Set mixer">
-        <span className="truncate text-[11.5px] text-muted-foreground">
-          ความดังเฉลี่ยของแต่ละรายการ เทียบเป้า <b className="num text-[13px] text-warning-ink">−14 LUFS</b>
-          {measured < items.length ? ` · วัดแล้ว ${measured}/${items.length}` : ""}
-        </span>
-      </PanelHead>
       <div className="flex min-h-0 flex-1 gap-[3px] overflow-x-auto p-2">
         {items.map((it, i) => {
           const trim = it.kind === "song" ? trimFor(it.lufs) : null;
@@ -890,9 +880,96 @@ const SetMixer = memo(function SetMixer({
           );
         })}
       </div>
-    </section>
   );
 });
+
+// ── THE BOTTOM PANEL ──────────────────────────────────────────────────────────────────────
+// ANALYZER | SET MIXER | SPECTROGRAM. The two that read the live sound need the tap (the desktop
+// app); the web build has the SET MIXER alone. The choice is kept per device. On a short stage
+// the whole panel steps aside (the column's container query) and the analysis stops drawing.
+type PanelTab = "analyzer" | "mixer" | "spectrogram";
+const TAB_KEY = "cueiq:consoleTab";
+const TAB_LABEL: Record<PanelTab, string> = { analyzer: "Analyzer", mixer: "Set mixer", spectrogram: "Spectrogram" };
+
+function BottomPanel({
+  items,
+  index,
+  playingId,
+  liveRef,
+  tap,
+}: {
+  items: readonly ConsoleItem[];
+  index: number;
+  playingId: string | null;
+  liveRef: React.RefObject<HTMLSpanElement | null>;
+  tap: SignalTap | null;
+}) {
+  const tabs: PanelTab[] = tap ? ["analyzer", "mixer", "spectrogram"] : ["mixer"];
+  const [picked, setPicked] = useState<PanelTab>(() => {
+    try {
+      const v = localStorage.getItem(TAB_KEY);
+      return v === "mixer" || v === "spectrogram" || v === "analyzer" ? v : "analyzer";
+    } catch {
+      return "analyzer";
+    }
+  });
+  const tab: PanelTab = tabs.includes(picked) ? picked : tabs[0];
+  const pick = (t: PanelTab) => {
+    setPicked(t);
+    try {
+      localStorage.setItem(TAB_KEY, t);
+    } catch {
+      /* this page still shows it */
+    }
+  };
+  const measured = items.filter((it) => it.lufs != null).length;
+  return (
+    <section
+      aria-label={TAB_LABEL[tab]}
+      data-testid="console-panel"
+      className="slab flex min-h-0 flex-[1.15] flex-col overflow-hidden [@container_(max-height:430px)]:hidden"
+    >
+      <div className="flex h-7 shrink-0 items-stretch gap-0.5 bg-foreground/[.04] pl-1 pr-2.5 shadow-[inset_0_-1px_0_hsl(var(--border))]">
+        <div role="tablist" aria-label="แผงล่าง" className="flex items-stretch gap-0.5">
+          {tabs.map((t) => (
+            <button
+              key={t}
+              type="button"
+              role="tab"
+              aria-selected={tab === t}
+              onClick={() => pick(t)}
+              className={cn(
+                "en px-3 text-[12.5px] tracking-[.08em]",
+                tab === t
+                  ? "bg-card text-foreground shadow-[inset_0_-2px_0_hsl(var(--primary))]"
+                  : "text-muted-foreground hover:text-foreground"
+              )}
+            >
+              {TAB_LABEL[t]}
+            </button>
+          ))}
+        </div>
+        <span className="ml-auto min-w-0 self-center truncate pl-2 text-[11.5px] text-muted-foreground">
+          {tab === "mixer" ? (
+            <>
+              ความดังเฉลี่ยของแต่ละรายการ เทียบเป้า <b className="num text-[13px] text-warning-ink">−14 LUFS</b>
+              {measured < items.length ? ` · วัดแล้ว ${measured}/${items.length}` : ""}
+            </>
+          ) : tab === "analyzer" ? (
+            "เสียงที่เครื่องนี้ส่งออก หลังเฟดเดอร์ · LUFS ตามมาตรฐาน BS.1770"
+          ) : (
+            "20 Hz – 20 kHz · เสียงที่เครื่องนี้ส่งออก"
+          )}
+        </span>
+      </div>
+      {tab === "mixer" || !tap ? (
+        <SetMixer items={items} index={index} playingId={playingId} liveRef={liveRef} />
+      ) : (
+        <ConsoleAnalyzer tap={tap} trackKey={playingId} view={tab} />
+      )}
+    </section>
+  );
+}
 
 // ── THE FADER ─────────────────────────────────────────────────────────────────────────────
 // The cued track's volume (the same value as STAGE's ความดัง slider and Live tools), as a
