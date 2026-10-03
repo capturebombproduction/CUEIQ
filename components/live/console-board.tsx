@@ -58,6 +58,8 @@ export interface ConsoleItem {
   peaks: string | null;
   bpm: number | null;
   beatOffset: number | null;
+  /** the item's mic SWAPS (setlist_items.mic_slots; none = the Mic Map as it stands) */
+  mics: readonly { mic: string; member: string }[];
 }
 
 /** How long a clip keeps the light on, and a peak its hold mark (as the Signal strip). */
@@ -79,11 +81,13 @@ export function ConsoleBoard({
   endClock,
   markers,
   playingId,
+  sounding = false,
   tap,
   player,
   volume,
   onVolume,
   onFade,
+  volumeDead = false,
   output,
   soundOn,
   onOutput,
@@ -105,6 +109,8 @@ export function ConsoleBoard({
   markers: Record<string, LiveMarker[]>;
   /** the item loaded on this device's player, playing or paused (null: none) */
   playingId: string | null;
+  /** that player is playing right now */
+  sounding?: boolean;
   tap: SignalTap | null;
   /** the primary player: position, volume, muted (read only) */
   player: () => HTMLMediaElement | null;
@@ -113,6 +119,9 @@ export function ConsoleBoard({
   /** null = read only (a viewer) */
   onVolume: ((v: number) => void) | null;
   onFade: ((target: number, ms?: number) => void) | null;
+  /** iPhone / iPad sounding the show: the player's volume cannot be set there (STAGE says so
+   *  beside its fades, and so does this, beside the fader) */
+  volumeDead?: boolean;
   /** where the sound goes (desktop app), null where the build cannot tell */
   output: { label: string | null; kind: OutputKind } | null;
   /** this device makes the show's sound */
@@ -128,6 +137,10 @@ export function ConsoleBoard({
 }) {
   const current = items[index] ?? null;
   const next = items[index + 1] ?? null;
+  // Manual: NEXT cues an item while the last one keeps sounding. The meters read what SOUNDS,
+  // the fader and the fades act on what is CUED (as STAGE's NOW card does) - say so when they differ.
+  const soundingIndex = playingId ? items.findIndex((it) => it.id === playingId) : -1;
+  const split = sounding && soundingIndex >= 0 && soundingIndex !== index;
 
   // ── the screen-rate loop: meters, peak, clip, BAR.BEAT, the beat light ──────────────────
   const meterL = useRef<HTMLSpanElement>(null);
@@ -219,7 +232,6 @@ export function ConsoleBoard({
           whole, and the arrangement and the editor keep their room */}
       <div className="flex min-h-0 min-w-0 flex-col gap-2 [container-type:size]">
         <div className="relative shrink-0">
-          {alarm && <div className="absolute inset-x-0 top-0 z-20">{alarm}</div>}
           <div role="group" aria-label="Transport" className="flex min-w-0 gap-1 overflow-hidden">
             <Lcd label="Remain" wide tone={zone === "warn" ? "warn" : zone === "urgent" || zone === "over" ? "alarm" : null}>
               <span
@@ -242,7 +254,7 @@ export function ConsoleBoard({
                 —
               </span>
             </Lcd>
-            <Lcd label="BPM">
+            <Lcd label="BPM" narrowHide>
               <span className="flex items-center gap-1.5">
                 <span
                   ref={beatLedRef}
@@ -282,17 +294,17 @@ export function ConsoleBoard({
           </div>
         </div>
 
-        <Arrangement items={items} index={index} elapsed={elapsed} onCue={onCue} />
+        <Arrangement items={items} index={index} elapsed={elapsed} onCue={onCue} alarm={alarm} />
 
         <ClipEditor item={current} elapsed={elapsed} running={running} sections={curMarkers} section={section} />
 
         <BottomPanel items={items} index={index} playingId={playingId} liveRef={stripLive} tap={tap} />
       </div>
 
-      <aside aria-label="Playback" className="flex min-h-0 flex-col gap-2">
+      <aside aria-label="Playback" className="flex min-h-0 flex-col gap-2 [container-type:size]">
         <div
           className={cn(
-            "flex h-[46px] shrink-0 items-center gap-2 rounded-[2px] px-2.5",
+            "flex h-[46px] shrink-0 items-center gap-2 rounded-[2px] px-2.5 [@container_(max-height:420px)]:hidden",
             !soundOn
               ? "bg-muted shadow-edge"
               : output?.kind === "builtin"
@@ -327,11 +339,21 @@ export function ConsoleBoard({
           className="slab flex min-h-0 flex-1 flex-col overflow-hidden"
         >
           <PanelHead label="Playback">
-            <span className="num text-[12px] text-muted-foreground">
-              CH 1–2{volume != null ? ` · ${volume}%` : ""}
+            {/* the fader's track: the cued item */}
+            <span data-testid="console-fader-item" className="min-w-0 truncate text-[12px] text-muted-foreground">
+              {current ? `${pad2(index + 1)} ${current.title || "—"}` : ""}
             </span>
+            {volume != null && <span className="num ml-auto shrink-0 text-[12px]">{volume}%</span>}
           </PanelHead>
-          <div className="grid min-h-0 flex-1 grid-cols-[24px_14px_14px_minmax(0,1fr)] gap-1.5 px-3 pb-2 pt-3">
+          {split && (
+            <p
+              data-testid="console-split"
+              className="shrink-0 bg-warning/[.14] px-2.5 py-1 text-[11px] leading-snug text-warning-ink shadow-[inset_0_-1px_0_hsl(var(--warning)/.35)]"
+            >
+              มิเตอร์ = {pad2(soundingIndex + 1)} {items[soundingIndex].title} (ยังเล่นอยู่) · เฟดเดอร์และปุ่ม = รายการที่เลือกไว้
+            </p>
+          )}
+          <div className="grid min-h-0 flex-1 grid-cols-[24px_14px_14px_minmax(0,1fr)] gap-1.5 px-3 pb-2 pt-3 [@container_(max-height:420px)]:pt-1.5">
             {/* the meters: lit by the frame loop from the tap (desktop app); without one they
                 stand unlit and the line under them says why */}
             <>
@@ -366,7 +388,9 @@ export function ConsoleBoard({
             )}
           </div>
           {!tap ? (
-            <p className="shrink-0 px-3 pb-2 text-[11.5px] leading-snug text-muted-foreground">มิเตอร์ทำงานในแอปเดสก์ท็อปเท่านั้น</p>
+            <p className="shrink-0 px-3 pb-2 text-[11.5px] leading-snug text-muted-foreground [@container_(max-height:420px)]:hidden">
+              มิเตอร์ทำงานในแอปเดสก์ท็อปเท่านั้น
+            </p>
           ) : (
             <div className="flex shrink-0 items-baseline justify-between px-3 pb-2">
               <span className="text-[11.5px] text-muted-foreground">พีก</span>
@@ -382,6 +406,12 @@ export function ConsoleBoard({
                 Clip
               </span>
             </div>
+          )}
+          {volumeDead && volume != null && (
+            <p data-testid="console-volume-dead" className="shrink-0 px-2.5 pb-1.5 text-[11px] leading-snug text-warning-ink">
+              เครื่องนี้ (iPhone/iPad) ปรับระดับเสียงในแอปไม่ได้ — เฟดเดอร์กับปุ่มหรี่จะไม่มีผลจริง ใช้ปุ่มเพิ่ม/ลดเสียงข้างเครื่อง
+              (ปุ่มปิดเสียงยังใช้ได้)
+            </p>
           )}
           <div className="grid shrink-0 grid-cols-3 gap-1 px-2 pb-2">
             {(
@@ -414,28 +444,47 @@ export function ConsoleBoard({
                 <span className="min-w-0 flex-1 truncate text-[13px] font-medium">{next.title || "—"}</span>
                 <span className="num shrink-0 text-[15px]">{formatDuration(next.block)}</span>
               </div>
-              <div
-                data-testid="console-next-loudness"
-                className={cn(
-                  "mt-1.5 flex items-center gap-1.5 rounded-[2px] px-2 py-1 text-[11.5px]",
-                  nextLoudness != null && nextLoudness > 2
-                    ? "bg-warning/[.14] text-warning-ink shadow-[inset_0_0_0_1px_hsl(var(--warning)/.45)]"
-                    : "bg-muted text-muted-foreground"
-                )}
-              >
-                {nextLoudness == null ? (
-                  "ยังไม่ได้วัดความดัง"
+              {/* against the song on now; a next SONG that is not measured says so, anything
+                  else (an MC next, an MC now) has nothing to compare and shows nothing, as STAGE */}
+              {nextLoudness != null ? (
+                <div
+                  data-testid="console-next-loudness"
+                  className={cn(
+                    "mt-1.5 flex items-center gap-1.5 rounded-[2px] px-2 py-1 text-[11.5px]",
+                    nextLoudness > 2
+                      ? "bg-warning/[.14] text-warning-ink shadow-[inset_0_0_0_1px_hsl(var(--warning)/.45)]"
+                      : "bg-muted text-muted-foreground"
+                  )}
+                >
+                  <span className="num text-[15px] text-foreground">
+                    {Math.abs(nextLoudness) < 1 ? "≈ 0 dB" : `${nextLoudness > 0 ? "▲" : "▼"} ${signedDb(nextLoudness)} dB`}
+                  </span>
+                  {Math.abs(nextLoudness) < 1
+                    ? "ดังใกล้เคียงเพลงนี้"
+                    : nextLoudness > 0
+                      ? "ดังกว่า — เตรียมลดเฟดเดอร์"
+                      : "เบากว่าเพลงนี้"}
+                </div>
+              ) : next.songId && next.lufs == null ? (
+                <div data-testid="console-next-loudness" className="mt-1.5 rounded-[2px] bg-muted px-2 py-1 text-[11.5px] text-muted-foreground">
+                  ยังไม่ได้วัดความดังของเพลงนี้
+                </div>
+              ) : null}
+              {/* the mics to prepare: the item's SWAPS; none = the Mic Map (STAGE's wording) */}
+              <div data-testid="console-next-mics" className="mt-1.5">
+                {next.mics.length > 0 ? (
+                  <div className="grid grid-cols-3 gap-[3px]">
+                    {next.mics.map((m, k) => (
+                      <span key={`${m.mic}-${k}`} className="flex min-w-0 items-baseline gap-1 rounded-[2px] bg-muted px-1.5 py-0.5">
+                        <span className="num text-[14px] leading-none">{m.mic}</span>
+                        <span className="min-w-0 truncate text-[11px] text-muted-foreground">{m.member}</span>
+                      </span>
+                    ))}
+                  </div>
                 ) : (
-                  <>
-                    <span className="num text-[15px] text-foreground">
-                      {Math.abs(nextLoudness) < 1 ? "≈ 0 dB" : `${nextLoudness > 0 ? "▲" : "▼"} ${signedDb(nextLoudness)} dB`}
-                    </span>
-                    {Math.abs(nextLoudness) < 1
-                      ? "ดังใกล้เคียงเพลงนี้"
-                      : nextLoudness > 0
-                        ? "ดังกว่า — เตรียมลดเฟดเดอร์"
-                        : "เบากว่าเพลงนี้"}
-                  </>
+                  <p className="text-[11.5px] text-muted-foreground">
+                    — {(current?.mics.length ?? 0) > 0 ? "กลับไมค์ตาม Mic Map" : "ไมค์ตาม Mic Map"} —
+                  </p>
                 )}
               </div>
             </>
@@ -453,6 +502,7 @@ function Lcd({
   label,
   wide = false,
   grow = false,
+  narrowHide = false,
   tone = null,
   title,
   children,
@@ -460,6 +510,8 @@ function Lcd({
   label: string;
   wide?: boolean;
   grow?: boolean;
+  /** steps aside when the column is narrow (a 900-990 px stage) */
+  narrowHide?: boolean;
   /** the item clock's zone, as a wash behind the readout (the NOW card's ladder) */
   tone?: "warn" | "alarm" | null;
   title?: string;
@@ -472,6 +524,7 @@ function Lcd({
         "lcd flex min-w-0 shrink-0 flex-col px-2.5 pb-0.5 pt-[3px]",
         wide && "min-w-[84px]",
         grow && "min-w-[120px] flex-1 shrink",
+        narrowHide && "[@container_(max-width:680px)]:hidden",
         tone === "warn" && "!bg-warning/[.16]",
         tone === "alarm" && "!bg-destructive/[.2]"
       )}
@@ -508,11 +561,15 @@ const Arrangement = memo(function Arrangement({
   index,
   elapsed,
   onCue,
+  alarm,
 }: {
   items: readonly ConsoleItem[];
   index: number;
   elapsed: number;
   onCue: ((i: number) => void) | null;
+  /** NO SIGNAL / STALLED / DEVICE LOST, laid over this panel's head: the transport above (REMAIN,
+   *  the item's clock) stays readable, as STAGE's countdown does under its band */
+  alarm?: ReactNode;
 }) {
   const { starts, total } = useMemo(() => blockStarts(items.map((it) => it.block)), [items]);
   const curBlock = items[index]?.block ?? 0;
@@ -531,24 +588,27 @@ const Arrangement = memo(function Arrangement({
   const nextNote = items.findIndex((it, i) => i > index && !!it.notes);
   const pct = (sec: number) => `${((sec - win.start) / win.span) * 100}%`;
   return (
-    <section aria-label="Arrangement" className="slab flex min-h-[112px] flex-[1.05] flex-col overflow-hidden">
+    <section aria-label="Arrangement" className="slab relative flex min-h-[112px] flex-[1.05] flex-col overflow-hidden">
+      {alarm && <div className="absolute inset-x-0 top-0 z-20">{alarm}</div>}
       <PanelHead label="Arrangement">
         <span className="num truncate text-[12px] text-muted-foreground">
           {mmss(win.start)}–{mmss(win.start + win.span)} · {items.length} รายการ
         </span>
       </PanelHead>
       {/* the whole show: blocks by kind, the window, the playhead */}
-      <div className="relative mx-2.5 mb-1 ml-[82px] mt-1.5 flex h-2.5 shrink-0 gap-px">
-        {items.map((it, i) => (
-          <span
-            key={it.id}
-            className={cn(
-              "min-w-0",
-              i === index ? "bg-primary" : i < index ? "bg-foreground/15" : it.kind === "song" ? "bg-primary/35" : "bg-foreground/20"
-            )}
-            style={{ flexGrow: Math.max(1, it.block), flexBasis: 0 }}
-          />
-        ))}
+      <div className="relative mx-2.5 mb-1 ml-[82px] mt-1.5 h-2.5 shrink-0">
+        {/* by percent, as the window and the playhead are: flex gaps drifted them apart */}
+        {total > 0 &&
+          items.map((it, i) => (
+            <span
+              key={it.id}
+              className={cn(
+                "absolute inset-y-0 border-r border-card",
+                i === index ? "bg-primary" : i < index ? "bg-foreground/15" : it.kind === "song" ? "bg-primary/35" : "bg-foreground/20"
+              )}
+              style={{ left: `${(starts[i] / total) * 100}%`, width: `${(it.block / total) * 100}%` }}
+            />
+          ))}
         {total > 0 && (
           <>
             <span
@@ -643,7 +703,10 @@ const Arrangement = memo(function Arrangement({
           </div>
           <div className="relative">
             {items.map((it, i) => {
-              if (!it.notes || starts[i] < win.start || starts[i] >= win.start + win.span) return null;
+              // the item on now keeps its note when its start has scrolled off (a long MC), pinned
+              // to the window's left edge as its clip's title is
+              const pinned = i === index && starts[i] < win.start;
+              if (!it.notes || (!pinned && (starts[i] < win.start || starts[i] >= win.start + win.span))) return null;
               const up = i === nextNote;
               const past = i < index;
               return (
@@ -660,7 +723,7 @@ const Arrangement = memo(function Arrangement({
                           ? "bg-primary/[.14] text-foreground shadow-[inset_2px_0_0_hsl(var(--primary))]"
                           : "bg-foreground/[.06] text-muted-foreground shadow-[inset_2px_0_0_hsl(var(--foreground)/.3)]"
                   )}
-                  style={{ left: pct(starts[i]) }}
+                  style={{ left: pct(Math.max(starts[i], win.start)) }}
                 >
                   <Lightbulb aria-hidden />
                   <span className="truncate">
@@ -718,9 +781,8 @@ const ClipEditor = memo(function ClipEditor({
   const col = (sec: number) => (item.audioLen > 0 ? Math.round(((sec - item.audioStart) / item.audioLen) * n) : 0);
   const playedTo = Math.max(0, Math.min(n, col(elapsed)));
   const warnAt = Math.max(playedTo, Math.min(n, col(warnFrom)));
-  const tickStep = block > 600 ? 60 : block > 150 ? 30 : 15;
-  const ticks: number[] = [];
-  for (let s = 0; s < block; s += tickStep) ticks.push(s);
+  const ticks = block > 0 ? rulerMarks({ start: 0, span: block }) : [];
+  const nextRegion = regions.findIndex((r) => r.start > elapsed);
   return (
     <section aria-label="Clip editor" className="slab flex min-h-[104px] flex-1 flex-col overflow-hidden">
       <PanelHead label="Clip">
@@ -738,9 +800,9 @@ const ClipEditor = memo(function ClipEditor({
       <div className="relative mx-2.5 min-h-0 flex-1">
         {/* sections */}
         <div className="absolute inset-x-0 top-1 h-4">
-          {regions.map((r) => {
+          {regions.map((r, k) => {
             const isNow = section?.now === r.label && elapsed >= r.start && elapsed < r.end;
-            const isNext = !isNow && section?.next === r.label && r.start > elapsed;
+            const isNext = k === nextRegion;
             return (
               <span
                 key={`${r.label}-${r.start}`}
@@ -790,17 +852,19 @@ const ClipEditor = memo(function ClipEditor({
         )}
         {/* time */}
         <div className="absolute inset-x-0 bottom-0 h-4">
-          {ticks.map((s) => (
+          {ticks.map((m) => (
             <span
-              key={s}
+              key={m.at}
               className="num absolute inset-y-0 border-l border-foreground/20 pl-[3px] text-[10.5px] font-semibold leading-4 text-muted-foreground"
-              style={{ left: at(s) }}
+              style={{ left: `${m.pct}%` }}
             >
-              {mmss(s)}
+              {m.label}
             </span>
           ))}
         </div>
         <span
+          // keyed to the item: a new item's playhead starts at its 0, never slides back to it
+          key={item.id}
           aria-hidden
           className={cn(
             "pointer-events-none absolute bottom-4 top-0.5 w-[2px] bg-foreground shadow-[0_0_8px_hsl(var(--foreground)/.8)]",
@@ -922,7 +986,8 @@ function BottomPanel({
       /* this page still shows it */
     }
   };
-  const measured = items.filter((it) => it.lufs != null).length;
+  const songs = items.filter((it) => it.songId);
+  const measured = songs.filter((it) => it.lufs != null).length;
   return (
     <section
       aria-label={TAB_LABEL[tab]}
@@ -953,7 +1018,7 @@ function BottomPanel({
           {tab === "mixer" ? (
             <>
               ความดังเฉลี่ยของแต่ละรายการ เทียบเป้า <b className="num text-[13px] text-warning-ink">−14 LUFS</b>
-              {measured < items.length ? ` · วัดแล้ว ${measured}/${items.length}` : ""}
+              {measured < songs.length ? ` · วัดแล้ว ${measured}/${songs.length} เพลง` : ""}
             </>
           ) : tab === "analyzer" ? (
             "เสียงที่เครื่องนี้ส่งออก หลังเฟดเดอร์ · LUFS ตามมาตรฐาน BS.1770"
@@ -1004,7 +1069,8 @@ function Fader({ value, onChange }: { value: number; onChange: ((v: number) => v
         onPointerDown={(e) => {
           if (!onChange) return;
           e.currentTarget.setPointerCapture?.(e.pointerId);
-          onChange(fromY(e.clientY));
+          const v = fromY(e.clientY);
+          if (v !== value) onChange(v);
         }}
         onPointerMove={(e) => {
           if (!onChange || !e.currentTarget.hasPointerCapture?.(e.pointerId)) return;
@@ -1029,10 +1095,11 @@ function Fader({ value, onChange }: { value: number; onChange: ((v: number) => v
                     : null;
           if (to === null) return;
           e.preventDefault();
-          onChange(Math.min(100, Math.max(0, to)));
+          const v = Math.min(100, Math.max(0, to));
+          if (v !== value) onChange(v);
         }}
         className={cn(
-          "relative min-h-[60px] w-12 flex-1 touch-none outline-none focus-visible:ring-2 focus-visible:ring-ring",
+          "relative min-h-[60px] w-12 flex-1 touch-none outline-none focus-visible:ring-2 focus-visible:ring-ring [@container_(max-height:420px)]:min-h-[36px]",
           onChange ? "cursor-ns-resize" : "cursor-not-allowed opacity-60"
         )}
       >

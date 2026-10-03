@@ -2546,6 +2546,7 @@ export function LiveMode({
           peaks: sig?.peaks ?? null,
           bpm: sig?.bpm ?? null,
           beatOffset: sig?.beatOffset ?? null,
+          mics: (it.mic_slots ?? []).map((m) => ({ mic: String(m.mic), member: m.member })),
         };
       }),
     [items, songSignal]
@@ -4001,6 +4002,7 @@ export function LiveMode({
           // the item loaded on this device's player (paused or not: a pause is not a new song,
           // so the analyzer's integrated loudness carries on through it)
           playingId={playingId}
+          sounding={audioPlaying}
           tap={signalTap}
           player={() => audioRef.current}
           // the fader and the fades where STAGE shows them: on the device that holds the
@@ -4008,6 +4010,7 @@ export function LiveMode({
           volume={current && (currentAudioUrl || (isController && state.begun)) ? volumes[current.id] ?? 100 : null}
           onVolume={isController && current ? (v) => setVolumeFor(current.id, v) : null}
           onFade={isController ? fadeVolumeTo : null}
+          volumeDead={volumeIsDead && soundOutput}
           output={signalTap ? { label: showOutput.label, kind: showOutput.kind } : null}
           soundOn={soundOutput}
           onOutput={openTools}

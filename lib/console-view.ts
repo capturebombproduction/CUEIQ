@@ -89,7 +89,7 @@ export function barLines(
   audioLen: number,
   every = 4
 ): { at: number; bar: number }[] {
-  if (bpm == null || offset == null || !(bpm > 0) || !(audioLen > 0) || !Number.isFinite(offset)) return [];
+  if (bpm == null || offset == null || !(bpm > 0) || !(audioLen > 0) || !Number.isFinite(offset) || !(every >= 1)) return [];
   const barLen = 240 / bpm;
   const out: { at: number; bar: number }[] = [];
   for (let b = 0; offset + b * barLen < audioLen && out.length < 512; b += every) {

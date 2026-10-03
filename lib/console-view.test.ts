@@ -170,3 +170,10 @@ describe("the set mixer", () => {
     expect(lufsBar(null)).toBe(0);
   });
 });
+
+describe("guards", () => {
+  it("a bar grid every 0 (or fewer) bars is no grid, never an endless loop", () => {
+    expect(barLines(120, 0, 0, 60, 0)).toEqual([]);
+    expect(barLines(120, 0, 0, 60, -4)).toEqual([]);
+  });
+});

@@ -1,8 +1,9 @@
 // components/live/console-board.tsx - Live's CONSOLE board. It owns no show state: every
 // readout comes from props and every key calls one of Live's own handlers. So the questions
 // here are: does it SAY the right thing (the remaining time, the section, the next note, the
-// next song's loudness, the trims), does each key call the handler STAGE's key calls with the
-// same arguments, and does a locked board (a viewer, Auto) call nothing.
+// next song's loudness and mics, the trims, which track the fader is on), does each key call
+// the handler STAGE's key calls with the same arguments, does a locked board (a viewer, Auto)
+// call nothing - and does its frame loop only ever READ the player.
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, within, act } from "@testing-library/react";
 import { ConsoleBoard, type ConsoleItem } from "./console-board";
@@ -24,14 +25,16 @@ function item(n: number, over: Partial<ConsoleItem> = {}): ConsoleItem {
     peaks: PEAKS,
     bpm: 120,
     beatOffset: 0.5,
+    mics: [],
     ...over,
   };
 }
 
+// two songs, then an MC with a cue note and no library song
 const ITEMS = [
   item(1, { lufs: -11.2 }),
-  item(2, { kind: "mc", title: "MC talk", songId: null, lufs: null, peaks: null, bpm: null, beatOffset: null, notes: "ไฟแดงเต็มเวที" }),
-  item(3, { lufs: -17 }),
+  item(2, { lufs: -17, mics: [{ mic: "1", member: "Aoi" }, { mic: "2", member: "Rin" }] }),
+  item(3, { kind: "mc", title: "MC talk", songId: null, lufs: null, peaks: null, bpm: null, beatOffset: null, notes: "ไฟแดงเต็มเวที" }),
 ];
 
 type Props = React.ComponentProps<typeof ConsoleBoard>;
@@ -46,6 +49,7 @@ function mount(over: Partial<Props> = {}) {
     endClock: "21:04:30",
     markers: { "song-1": [{ label: "INTRO", at: 0 }, { label: "VERSE", at: 20 }, { label: "CHORUS", at: 42 }] },
     playingId: "item-1",
+    sounding: true,
     tap: null,
     player: () => null,
     volume: 80,
@@ -55,7 +59,8 @@ function mount(over: Partial<Props> = {}) {
     soundOn: true,
     onOutput: vi.fn(),
     onCue: vi.fn(),
-    nextLoudness: 3.1,
+    // Track 2 against Track 1: −17 − (−11.2)
+    nextLoudness: -5.8,
     ...over,
   };
   return { props, ...render(<ConsoleBoard {...props} />) };
@@ -67,12 +72,31 @@ beforeEach(() => {
   vi.stubGlobal("requestAnimationFrame", (f: FrameRequestCallback) => (frames.push(f), frames.length));
   vi.stubGlobal("cancelAnimationFrame", () => {});
 });
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
+});
 const step = () => {
   const run = frames;
   frames = [];
   act(() => run.forEach((f) => f(performance.now())));
 };
+
+/** A player whose every write or call is recorded: the board may only READ it. */
+function readOnlyPlayer(state: { currentTime: number; paused: boolean; muted: boolean; volume: number }) {
+  const writes: string[] = [];
+  const el = {} as HTMLMediaElement;
+  for (const k of ["currentTime", "paused", "muted", "volume", "src", "playbackRate", "duration"] as const) {
+    Object.defineProperty(el, k, {
+      get: () => (state as Record<string, unknown>)[k] ?? 0,
+      set: () => writes.push(k),
+    });
+  }
+  for (const m of ["play", "pause", "load", "setSinkId"] as const) {
+    Object.defineProperty(el, m, { value: () => writes.push(`${m}()`) });
+  }
+  return { el, writes };
+}
 
 describe("the transport", () => {
   it("prints the item's clock, its place in the show, the section and when it ends", () => {
@@ -97,7 +121,7 @@ describe("the transport", () => {
   });
 
   it("BAR.BEAT runs on the player's clock, only while the cued song is the one sounding", () => {
-    const el = { currentTime: 4.6, paused: false, muted: false, volume: 1 } as HTMLMediaElement;
+    const { el } = readOnlyPlayer({ currentTime: 4.6, paused: false, muted: false, volume: 1 });
     const { rerender, props } = mount({ player: () => el });
     step();
     // 120 BPM, first beat at 0.5 s: 4.6 s is beat 8 → bar 3, beat 1
@@ -108,9 +132,11 @@ describe("the transport", () => {
     expect(screen.getByTestId("console-barbeat").textContent).toBe("—");
   });
 
-  it("the alarm band lies over the transport", () => {
+  it("an alarm lies over the ARRANGEMENT's head - REMAIN, the item's only clock here, stays clear", () => {
     mount({ alarm: <div role="alert">No signal</div> });
-    expect(screen.getByRole("alert").textContent).toBe("No signal");
+    const alarm = screen.getByRole("alert");
+    expect(screen.getByLabelText("Arrangement").contains(alarm)).toBe(true);
+    expect(screen.getByRole("group", { name: "Transport" }).contains(alarm)).toBe(false);
   });
 });
 
@@ -131,13 +157,26 @@ describe("the arrangement", () => {
 
   it("the notes lane counts down to the next item's note", () => {
     mount();
-    // item 2 starts at 4:00; the playhead is at 0:30 → in 3:30
-    expect(screen.getByText(/ไฟแดงเต็มเวที · ใน 3:30/)).toBeTruthy();
+    // the MC starts at 8:00; the playhead is at 0:30 → in 7:30
+    expect(screen.getByText(/ไฟแดงเต็มเวที · ใน 7:30/)).toBeTruthy();
+  });
+
+  it("the item on now keeps its note when its start has scrolled out of the window", () => {
+    // 15-minute blocks: the window (20 min, the playhead 4 min in) starts after item 2 did
+    const long = [
+      item(1, { block: 900, notes: "เปิดม่าน" }),
+      item(2, { block: 900, notes: "สปอตไลต์ขาว" }),
+      item(3, { block: 900 }),
+    ];
+    mount({ items: long, index: 1, elapsed: 400, remaining: 500 });
+    expect(screen.getByText("สปอตไลต์ขาว")).toBeTruthy();
+    // a past item's note that scrolled out is gone, as it should be
+    expect(screen.queryByText("เปิดม่าน")).toBeNull();
   });
 });
 
 describe("the clip editor", () => {
-  it("draws a measured song's waveform; says so for an unmeasured one or an item with no song", () => {
+  it("draws a measured song's waveform; says so for an unmeasured one", () => {
     const { unmount } = mount();
     expect(screen.getByTestId("console-wave")).toBeTruthy();
     unmount();
@@ -146,7 +185,7 @@ describe("the clip editor", () => {
   });
 
   it("an item with no library song says it has none", () => {
-    mount({ index: 1, elapsed: 10, remaining: 230 });
+    mount({ index: 2, elapsed: 10, remaining: 230 });
     expect(screen.getByText("รายการนี้ไม่ได้ผูกกับเพลงในคลัง")).toBeTruthy();
   });
 });
@@ -158,10 +197,16 @@ describe("the set mixer", () => {
     expect(strips).toHaveLength(3);
     expect(strips[0].textContent).toContain("-11.2");
     expect(strips[0].textContent).toContain("−2.8"); // 2.8 dB down to −14
-    expect(strips[1].textContent).toContain("—"); // MC: unmeasured
-    expect(strips[2].textContent).toContain("-17.0");
-    expect(strips[2].textContent).not.toContain("+"); // a quiet song is never raised
-    expect(screen.getByLabelText("Set mixer").textContent).toContain("วัดแล้ว 2/3");
+    expect(strips[1].textContent).toContain("-17.0");
+    expect(strips[1].textContent).not.toMatch(/[+−]\d/); // a quiet song is never raised
+    expect(strips[2].textContent).toContain("—"); // the MC: no song, nothing to measure
+    // every SONG is measured: no "measured x/y" (the MC is not a song left unmeasured)
+    expect(screen.getByLabelText("Set mixer").textContent).not.toContain("วัดแล้ว");
+  });
+
+  it("counts the songs still unmeasured, and only songs", () => {
+    mount({ items: [ITEMS[0], item(2, { lufs: null }), ITEMS[2]] });
+    expect(screen.getByLabelText("Set mixer").textContent).toContain("วัดแล้ว 1/2 เพลง");
   });
 });
 
@@ -176,15 +221,16 @@ describe("the playback channel", () => {
     expect(props.onFade).toHaveBeenNthCalledWith(3, 100, 2500);
   });
 
-  it("a viewer's fades and fader do nothing", () => {
-    const { props } = mount({ onFade: null, onVolume: null });
+  it("a viewer's fades and fader are off", () => {
+    mount({ onFade: null, onVolume: null });
     expect(screen.getByRole("button", { name: "Mute" })).toBeDisabled();
     const fader = screen.getByTestId("console-fader");
     expect(fader.getAttribute("aria-disabled")).toBe("true");
     expect(fader.tabIndex).toBe(-1);
+    // nothing to call, and nothing breaks when it is pressed anyway
     fireEvent.keyDown(fader, { key: "ArrowUp" });
     fireEvent.pointerDown(fader, { clientY: 0, pointerId: 1 });
-    expect(props.onVolume).toBeNull();
+    expect(fader.getAttribute("aria-valuenow")).toBe("80");
   });
 
   it("the fader moves the track's volume with ↑ ↓ (Shift = 10), and leaves ← → to the show", () => {
@@ -205,13 +251,39 @@ describe("the playback channel", () => {
     expect(onVolume).toHaveBeenCalledTimes(3);
   });
 
-  it("the fader stops at 0 and 100", () => {
+  it("the fader stops at 0 and 100, and a key that changes nothing sends nothing (a fade runs on)", () => {
     const onVolume = vi.fn();
     const { rerender, props } = mount({ onVolume, volume: 100 });
     fireEvent.keyDown(screen.getByTestId("console-fader"), { key: "PageUp" });
+    // a press on the cap where it already is (jsdom has no layout: the press reads the same level)
+    fireEvent.pointerDown(screen.getByTestId("console-fader"), { clientY: 10, pointerId: 1 });
+    expect(onVolume).not.toHaveBeenCalled();
     rerender(<ConsoleBoard {...props} volume={3} />);
     fireEvent.keyDown(screen.getByTestId("console-fader"), { key: "ArrowDown", shiftKey: true });
-    expect(onVolume.mock.calls).toEqual([[100], [0]]);
+    expect(onVolume.mock.calls).toEqual([[0]]);
+  });
+
+  it("names the track the fader is on: the cued item", () => {
+    mount({ index: 1, elapsed: 0, remaining: 240, playingId: "item-2" });
+    expect(screen.getByTestId("console-fader-item").textContent).toBe("02 Track 2");
+  });
+
+  it("Manual, the last song still sounding under a new cue: it says the meters and the fader differ", () => {
+    const { rerender, props } = mount({ index: 1, elapsed: 0, remaining: 240, running: false, playingId: "item-1", sounding: true });
+    expect(screen.getByTestId("console-split").textContent).toContain("01 Track 1");
+    // the same track on both: no note
+    rerender(<ConsoleBoard {...props} playingId="item-2" />);
+    expect(screen.queryByTestId("console-split")).toBeNull();
+    // the old one stopped: nothing is sounding, no note
+    rerender(<ConsoleBoard {...props} sounding={false} />);
+    expect(screen.queryByTestId("console-split")).toBeNull();
+  });
+
+  it("an iPhone / iPad sounding the show says the fader cannot set its level, as STAGE does", () => {
+    const { rerender, props } = mount({ volumeDead: true });
+    expect(screen.getByTestId("console-volume-dead").textContent).toContain("iPhone/iPad");
+    rerender(<ConsoleBoard {...props} volumeDead={false} />);
+    expect(screen.queryByTestId("console-volume-dead")).toBeNull();
   });
 
   it("no file here (STAGE shows no fades either): no fader, and the fades are off", () => {
@@ -238,13 +310,14 @@ describe("the playback channel", () => {
     expect(screen.queryByTestId("console-peak")).toBeNull();
   });
 
-  it("with a tap the loop reads it: the peak after the player's volume, the clip light", () => {
+  it("with a tap the loop reads it: the peak after the player's volume, the clip light - and only reads", () => {
     let level = 0.5;
     const tap = {
       read: (): SignalReading => ({ ready: true, rmsL: level, rmsR: level, peakL: level, peakR: level }),
       startAnalysis: () => null,
     } as unknown as SignalTap;
-    const el = { currentTime: 1, paused: false, muted: false, volume: 0.5 } as HTMLMediaElement;
+    const state = { currentTime: 1, paused: false, muted: false, volume: 0.5 };
+    const { el, writes } = readOnlyPlayer(state);
     mount({ tap, player: () => el });
     step();
     // 0.5 × the player's 0.5 = 0.25 → −12.0 dBFS
@@ -254,30 +327,47 @@ describe("the playback channel", () => {
     expect(screen.getByTestId("console-channel").dataset.db).toBe("-12.0");
     expect(screen.getByTestId("console-clip-light").dataset.on).toBe("0");
     level = 1;
-    el.volume = 1;
+    state.volume = 1;
+    step();
     step();
     expect(screen.getByTestId("console-clip-light").dataset.on).toBe("1");
+    // the whole time: not one write to the player, not one call
+    expect(writes).toEqual([]);
   });
 });
 
 describe("the next channel", () => {
-  it("says how much louder the next song is, and asks for the fader before it starts", () => {
+  it("says how the next song compares, and which mics to prepare", () => {
     mount();
+    const box = screen.getByTestId("console-next-loudness");
+    expect(box.textContent).toContain("▼ −5.8 dB");
+    expect(box.textContent).toContain("เบากว่า");
+    const next = screen.getByLabelText("Next channel");
+    expect(within(next).getByText("Track 2")).toBeTruthy();
+    expect(screen.getByTestId("console-next-mics").textContent).toBe("1Aoi2Rin");
+  });
+
+  it("a louder next song asks for the fader before it starts", () => {
+    mount({ items: [ITEMS[0], item(2, { lufs: -8.1 }), ITEMS[2]], nextLoudness: 3.1 });
     const box = screen.getByTestId("console-next-loudness");
     expect(box.textContent).toContain("▲ +3.1 dB");
     expect(box.textContent).toContain("ดังกว่า");
-    expect(within(screen.getByLabelText("Next channel")).getByText("MC talk")).toBeTruthy();
   });
 
-  it("quieter, about the same, unmeasured, and the end of the show", () => {
-    const { rerender, props } = mount({ nextLoudness: -2 });
-    expect(screen.getByTestId("console-next-loudness").textContent).toContain("▼ −2.0 dB");
-    rerender(<ConsoleBoard {...props} nextLoudness={0.4} />);
-    expect(screen.getByTestId("console-next-loudness").textContent).toContain("≈ 0 dB");
-    rerender(<ConsoleBoard {...props} nextLoudness={null} />);
-    expect(screen.getByTestId("console-next-loudness").textContent).toBe("ยังไม่ได้วัดความดัง");
-    rerender(<ConsoleBoard {...props} index={2} />);
+  it("an unmeasured next song says so; an MC next has nothing to compare; and the end of the show", () => {
+    const { rerender, props } = mount({ items: [ITEMS[0], item(2, { lufs: null }), ITEMS[2]], nextLoudness: null });
+    expect(screen.getByTestId("console-next-loudness").textContent).toBe("ยังไม่ได้วัดความดังของเพลงนี้");
+    // Track 2 (with mic swaps) is on, the MC is next: no loudness line, the mics go back
+    rerender(<ConsoleBoard {...props} items={ITEMS} index={1} nextLoudness={null} />);
+    expect(screen.queryByTestId("console-next-loudness")).toBeNull();
+    expect(screen.getByTestId("console-next-mics").textContent).toBe("— กลับไมค์ตาม Mic Map —");
+    rerender(<ConsoleBoard {...props} items={ITEMS} index={2} nextLoudness={null} />);
     expect(screen.getByLabelText("Next channel").textContent).toContain("จบโชว์");
+  });
+
+  it("near-equal reads as about the same", () => {
+    mount({ nextLoudness: 0.4 });
+    expect(screen.getByTestId("console-next-loudness").textContent).toContain("≈ 0 dB");
   });
 });
 
@@ -299,7 +389,7 @@ describe("the bottom panel", () => {
       read: (): SignalReading => ({ ready: true, rmsL: 0.1, rmsR: 0.1, peakL: 0.1, peakR: 0.1 }),
       startAnalysis,
     } as unknown as SignalTap;
-    return { tap, startAnalysis, stop };
+    return { tap, startAnalysis, stop, frame };
   }
   beforeEach(() => localStorage.removeItem("cueiq:consoleTab"));
 
@@ -338,10 +428,7 @@ describe("the bottom panel", () => {
   it("a new song starts the integrated loudness over; a pause does not", () => {
     let clock = 0;
     vi.spyOn(performance, "now").mockImplementation(() => clock);
-    const { tap, frame } = (() => {
-      const t = analysisTap();
-      return { tap: t.tap, frame: (t.tap.startAnalysis() as unknown as { read: () => { kMeanSquare: number } }).read() };
-    })();
+    const { tap, frame } = analysisTap();
     const z = (lufs: number) => Math.pow(10, (lufs + 0.691) / 10);
     const at = (lufs: number) => {
       frame.kMeanSquare = z(lufs);
@@ -353,7 +440,7 @@ describe("the bottom panel", () => {
     at(-6);
     expect(screen.getByTestId("console-lufs-integrated").textContent).toBe("−6.0");
     // paused (Live keeps the item loaded): the song goes on, so does its value
-    rerender(<ConsoleBoard {...props} tap={tap} running={false} />);
+    rerender(<ConsoleBoard {...props} tap={tap} running={false} sounding={false} />);
     at(-8);
     expect(screen.getByTestId("console-lufs-integrated").textContent).not.toBe("−8.0");
     // the next song: its own value from its first block

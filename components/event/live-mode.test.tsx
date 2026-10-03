@@ -1981,6 +1981,38 @@ describe("LiveMode · STAGE | CONSOLE", () => {
     expect(localStorage.getItem("cueiq:liveView")).toBe("stage");
   });
 
+  it("around the board nothing is rebuilt: the same top-bar, status-row and dock NODES", async () => {
+    await mountLive();
+    const sound = screen.getByTestId("sound-output-toggle");
+    const start = screen.getByTestId("start-show");
+    const mode = screen.getByRole("group", { name: "Show mode" });
+    const tools = screen.getByRole("button", { name: "Live tools" });
+    fireEvent.click(screen.getByTestId("live-view-console"));
+    expect(screen.getByTestId("console")).toBeInTheDocument();
+    expect(screen.getByTestId("sound-output-toggle")).toBe(sound);
+    expect(screen.getByTestId("start-show")).toBe(start);
+    expect(screen.getByRole("group", { name: "Show mode" })).toBe(mode);
+    expect(screen.getByRole("button", { name: "Live tools" })).toBe(tools);
+  });
+
+  it("CONSOLE's fader and fades drive Live's own volume, for the cued item (the wire says so)", async () => {
+    await mountLive();
+    await startShowFromUi();
+    fireEvent.click(screen.getByTestId("live-view-console"));
+    const volumeSends = () => live().sent.filter((s) => s.event === "volume").map((s) => s.payload);
+    fireEvent.keyDown(screen.getByTestId("console-fader"), { key: "ArrowDown" });
+    await act(async () => {
+      vi.advanceTimersByTime(300);
+    });
+    expect(volumeSends().at(-1)).toMatchObject({ itemId: "item-1", target: 99, ms: 0 });
+    expect(screen.getByTestId("console-fader")).toHaveAttribute("aria-valuenow", "99");
+    fireEvent.click(screen.getByRole("button", { name: "Mute" }));
+    await act(async () => {
+      vi.advanceTimersByTime(300);
+    });
+    expect(volumeSends().at(-1)).toMatchObject({ itemId: "item-1", target: 0, ms: 3000 });
+  });
+
   it("a device that chose CONSOLE opens on it; under the stage size it is STAGE with no switch", async () => {
     localStorage.setItem("cueiq:liveView", "console");
     const first = await mountLive();

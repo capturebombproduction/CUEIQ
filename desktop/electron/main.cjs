@@ -1537,7 +1537,8 @@ async function driveLiveScenario(win) {
     );
     let consoleReading = { present: false, switched };
     if (switched === "clicked") {
-      const consoleDeadline = Date.now() + 10_000;
+      // capped: the tone (run-smoke.mjs) has to still be playing when measureTheSound listens
+      const consoleDeadline = Date.now() + 6_000;
       for (;;) {
         consoleReading = JSON.parse(
           await win.webContents.executeJavaScript(`JSON.stringify((() => {
@@ -1564,8 +1565,17 @@ async function driveLiveScenario(win) {
         if (Date.now() >= consoleDeadline) break;
         await new Promise((r) => setTimeout(r, 250));
       }
-      await win.webContents.executeJavaScript(
-        `(() => { const b = document.querySelector('[data-testid=live-view-stage]'); if (b) b.click(); })()`
+      // and back to STAGE - asserted (run-smoke.mjs), not assumed: a switch that cannot go back
+      // would leave the rest of this scenario on the wrong board
+      consoleReading.back = await win.webContents.executeJavaScript(
+        `(async () => { const b = document.querySelector('[data-testid=live-view-stage]');
+          if (!b) return 'no STAGE key'; b.click();
+          for (let i = 0; i < 20; i++) {
+            if (document.querySelector('[data-testid=live-view-stage]')?.getAttribute('aria-pressed') === 'true'
+                && !document.querySelector('[data-testid=console]')) return 'stage';
+            await new Promise((r) => setTimeout(r, 50));
+          }
+          return 'still on CONSOLE'; })()`
       );
     }
     smokeAt("live:audible:listening");

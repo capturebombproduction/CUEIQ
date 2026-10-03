@@ -343,8 +343,13 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
  *
  * Half amplitude on purpose: full-scale would clip on any resampler in the way and
  * makes "is this signal real" harder to reason about, not easier.
+ *
+ * 30 seconds: the scenario reads the Signal strip, then switches to CONSOLE and waits for
+ * its meters and its ANALYZER's loudness, then switches back, and only then listens. A
+ * 6-second tone ended before the listening (66e24c5's CI): "not playing", pointing at the
+ * audio engine for what was the test's own clock. ~2.6 MB, generated, never committed.
  */
-function makeToneWav({ seconds = 6, hz = 440, rate = 44100, amplitude = 0.5 } = {}) {
+function makeToneWav({ seconds = 30, hz = 440, rate = 44100, amplitude = 0.5 } = {}) {
   const samples = Math.floor(seconds * rate);
   const dataBytes = samples * 2; // mono, 16-bit
   const buf = Buffer.alloc(44 + dataBytes);
@@ -871,6 +876,7 @@ async function runAudibleScenario(s) {
     // the analysis graph (K-weighted, after the fader): a 0.5 sine on both sides is about −7 LUFS
     if (!(Number(board.lufs) > -30)) problems.push(`CONSOLE's ANALYZER read ${board.lufs} LUFS momentary while a -6 dBFS tone played`);
     if (board.alarm) problems.push(`a Signal alarm (${board.alarm}) was up on CONSOLE while the tone audibly played`);
+    if (board.back !== "stage") problems.push(`switching back from CONSOLE to STAGE failed (${board.back})`);
   }
   if (problems.length === 0) {
     console.log(
