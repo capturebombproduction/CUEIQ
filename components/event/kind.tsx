@@ -33,8 +33,25 @@ function metaOf(kind: SetlistKind) {
 }
 
 /** The 36 px square at the start of a setlist row: icon only, the kind named for AT. */
-export function KindTile({ kind, className }: { kind: SetlistKind; className?: string }) {
+export function KindTile({
+  kind,
+  cover = null,
+  className,
+}: {
+  kind: SetlistKind;
+  /** the song's cover (songs.cover): shown in the same square in place of the icon, so
+   *  the row keeps its size; the kind is still named for AT */
+  cover?: string | null;
+  className?: string;
+}) {
   const { Icon, tile, short, label } = metaOf(kind);
+  if (cover)
+    return (
+      <span role="img" aria-label={short} title={label} className={cn("kind overflow-hidden bg-muted", className)}>
+        {/* eslint-disable-next-line @next/next/no-img-element -- a 192 px data-URL thumbnail */}
+        <img src={cover} alt="" className="h-full w-full object-cover" />
+      </span>
+    );
   return (
     <span role="img" aria-label={short} title={label} className={cn("kind", tile, className)}>
       <Icon aria-hidden />

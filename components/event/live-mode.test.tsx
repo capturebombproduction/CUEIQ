@@ -1906,6 +1906,20 @@ describe("LiveMode — the NOW card's cover", () => {
     expect([...ids].sort()).toEqual(["song-1", "song-2"]); // the ad-hoc row asks nothing
   });
 
+  it("the running order shows each song's cover in its kind square, still named for AT", async () => {
+    await mountLive({ items: covered });
+    await act(async () => {});
+    const tiles = Array.from(document.querySelectorAll<HTMLElement>(".kind"));
+    expect(tiles).toHaveLength(3);
+    // song-1 has a cover, song-2 has none, row 3 is ad-hoc: the cover replaces the icon only where there is one
+    expect(tiles[0].querySelector("img")?.getAttribute("src")).toBe(COVER);
+    expect(tiles[0].getAttribute("aria-label")).toBe("SONG");
+    expect(tiles[0].className.split(" ")).toContain("kind"); // the same 36 / 22 px square
+    expect(tiles[1].querySelector("img")).toBeNull();
+    expect(tiles[1].querySelector("svg")).not.toBeNull();
+    expect(tiles[2].querySelector("img")).toBeNull();
+  });
+
   it("a song without a cover (or a row with no song) shows no tile", async () => {
     await mountLive({ items: [covered[1], covered[2]] });
     await act(async () => {});

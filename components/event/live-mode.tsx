@@ -3210,6 +3210,7 @@ export function LiveMode({
               {/* stage edit mode lends the tile's 28 px to the title, beside the keys */}
               <KindTile
                 kind={it.kind as SetlistKind}
+                cover={it.song_id ? songCovers[it.song_id] ?? null : null}
                 className="stage:!size-[22px] stage:[&_svg]:!size-3 stage:group-data-[edit=on]/ro:hidden"
               />
               {/* Phone: the title gets the row's whole width, wrapping to a second line
@@ -3338,7 +3339,7 @@ export function LiveMode({
         );
       }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [items, state, playingId, audioPlaying, audioUrls, audioBusy, isController, plannedStarts]
+    [items, state, playingId, audioPlaying, audioUrls, audioBusy, isController, plannedStarts, songCovers]
   );
 
   if (items.length === 0) {
