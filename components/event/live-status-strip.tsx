@@ -125,8 +125,8 @@ export function LiveStatusStrip({
   const attention =
     !online || pending === null || (pending ?? 0) > 0 || saveLost || (!!otherMain?.ghost && !isController);
   // …except WHERE control lives. The status row says this device only views; it
-  // never names the device that drives, and a viewer needs that before it presses
-  // ขอควบคุม (or asks the wrong person). So a healthy viewer keeps the one
+  // never names the device that drives, and a viewer needs that to know whom to ask
+  // (there is no take-over, พี่ 2026-10-04). So a healthy viewer keeps the one
   // "MAIN · <device>" chip — the badge crew read (lib/show-authority.ts).
   const mainOnly = !attention && !!otherMain && !isController;
 
@@ -151,13 +151,14 @@ export function LiveStatusStrip({
       </span>
 
       {/* Cross-device: another device is the recorded MAIN — so you know where
-          control lives (and if that device went dark, a stale = reclaimable main). */}
+          control lives (and if that device went dark: it is opened again, where its
+          own snapshot carries the show on - nobody else takes it). */}
       {otherMain && !isController && (
         <span
           className={cn("chip", otherMain.ghost ? "chip-warning" : "chip-neutral")}
           title={
             otherMain.ghost
-              ? "เครื่องที่คุมโชว์เงียบไป (ไม่เห็นสัญญาณ) — กดขอควบคุมเพื่อรับช่วงต่อได้"
+              ? "เครื่องที่คุมโชว์เงียบไป (ไม่เห็นสัญญาณ) — เปิดแอปที่เครื่องนั้นใหม่ โชว์จะเดินต่อจากที่บันทึกไว้ในเครื่อง"
               : `เครื่องที่กำลังคุมโชว์: ${otherMain.label}`
           }
         >

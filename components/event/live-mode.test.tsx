@@ -312,9 +312,10 @@ describe("LiveMode · a held key is one intention, not fifty", () => {
 // ─────────────────────────────────────────────────────────────────────────────
 // (b) THE START GATE
 //
-// Starting before the first sync round-trip stamps a NEWER controllerSince than
-// the real controller's, which hijacks a running show back to item 0 and mutes
-// its speaker. The gate is timer-driven in four different ways and none of them
+// Starting before the first sync round-trip begins a SECOND show on this device
+// (item 0, its own sound) while one is already running elsewhere. The arbitration
+// gives the show back to the first device, but the gate stops the second from
+// existing. The gate is timer-driven in four different ways and none of them
 // had a test.
 //
 // The three constants below are TRANSCRIBED from live-mode.tsx, not imported from
@@ -413,6 +414,43 @@ describe("LiveMode · the START gate", () => {
     });
     expect(start()).toBeEnabled();
   });
+
+  // พี่ 2026-10-04: the device that started the show keeps it. START here while another
+  // device holds it (its heartbeat is fresh) used to ASK "reset that show and silence
+  // that device?" - a take-over by confirm. Now it is refused.
+  it("is refused - never a confirm-to-reset - while another device holds the show", async () => {
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    const now = new Date().toISOString();
+    supa.setTable(
+      "show_authority",
+      ok([
+        {
+          event_id: EVENT_ID,
+          kind: "show_main",
+          device_id: "the-pa",
+          device_label: "MacBook PA",
+          by_user_id: null,
+          by_role: null,
+          claimed_at: now,
+          heartbeat_at: now,
+        },
+      ])
+    );
+    await mountLive();
+    await act(async () => {
+      live().setStatus("SUBSCRIBED");
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(SETTLE_AFTER_SUBSCRIBED_MS);
+    });
+    await act(async () => {
+      fireEvent.click(start());
+    });
+    expect(confirm).not.toHaveBeenCalled();
+    expect(stateSends()).toHaveLength(0);
+    expect(document.querySelector("[data-cueiq-live]")!.getAttribute("data-cueiq-live-begun")).toBe("0");
+    confirm.mockRestore();
+  });
 });
 
 /** Subscribe, settle the gate, press START, and hand back the show's start stamp. */
@@ -432,20 +470,99 @@ async function startShowFromUi(): Promise<number> {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// (c) TWO-DEVICE HANDOFF, without a second device
+// (c) TWO DEVICES, without a second device
+//
+// พี่ 2026-10-04: the device that STARTED the show keeps it - it drives and it sounds.
+// Every device that opens the page after it only watches. There is no take-over.
 // ─────────────────────────────────────────────────────────────────────────────
-describe("LiveMode · two-device handoff", () => {
+describe("LiveMode · two devices: the first one keeps the show", () => {
   let media: MediaInstrumentation;
 
   beforeEach(() => {
     media = instrumentMediaElements();
   });
 
-  it("steps down to viewer for a peer holding the newer claim, and goes quiet", async () => {
+  // A second START (a device that started its own show while it could not hear this
+  // one, or two presses at once) is a NEWER claim. It used to win - that was ขอควบคุม.
+  it("keeps the show against a peer with a NEWER claim, and tells it so once", async () => {
+    await mountLive();
+    const ts = await startShowFromUi();
+    const peer = {
+      sender: "peer-device",
+      fromController: true,
+      begun: true,
+      running: true,
+      startedAt: ts + 10_000,
+      itemStartedAt: ts + 10_000,
+      itemElapsedAtPause: null,
+      currentIndex: 2,
+      mode: "manual",
+      controllerSince: ts + 10_000, // a later START (or an old page's ขอควบคุม)
+      ended: false,
+    };
+    await act(async () => {
+      live().emit("state", { ...peer, sentAt: Date.now() });
+    });
+
+    // still the controller, still sounding, still where it was
+    expect(screen.queryByTestId("viewer-banner")).not.toBeInTheDocument();
+    expect(media.state(media.first()!).muted).toBe(false);
+    const sends = stateSends();
+    expect(sends).toHaveLength(2);
+    expect(sends[1].payload.currentIndex).toBe(0);
+    expect(sends[1].payload.controllerSince).toBe(ts);
+
+    // A page still on the OLD rule ("the newer claim wins") answers every re-assert with
+    // its own: this device re-asserts at most once per 2 s, so the pair cannot storm.
+    await act(async () => {
+      live().emit("state", { ...peer, sentAt: Date.now() });
+      live().emit("state", { ...peer, sentAt: Date.now() });
+    });
+    expect(stateSends()).toHaveLength(2);
+    await act(async () => {
+      vi.advanceTimersByTime(2_000);
+    });
+    await act(async () => {
+      live().emit("state", { ...peer, sentAt: Date.now() });
+    });
+    expect(stateSends()).toHaveLength(3);
+  });
+
+  // Two clocks. The peer's runs two minutes SLOW: its claim reads a minute before ours,
+  // but by our clock it started a minute AFTER us. Judged raw, this device would hand the
+  // show to the one that started second.
+  it("judges a peer's claim on OUR clock: a slow-clocked peer that started after us does not take the show", async () => {
+    await mountLive();
+    const ts = await startShowFromUi();
+    const SLOW = 120_000;
+    await act(async () => {
+      live().emit("state", {
+        sender: "peer-device",
+        sentAt: Date.now() - SLOW, // its clock reads two minutes behind ours
+        fromController: true,
+        begun: true,
+        running: true,
+        startedAt: ts - 60_000,
+        itemStartedAt: ts - 60_000,
+        itemElapsedAtPause: null,
+        currentIndex: 2,
+        mode: "manual",
+        controllerSince: ts - 60_000, // = ts + 60 s on our clock
+        ended: false,
+      });
+    });
+    expect(screen.queryByTestId("viewer-banner")).not.toBeInTheDocument();
+    expect(stateSends().at(-1)!.payload.controllerSince).toBe(ts);
+  });
+
+  it("steps down for a peer holding an EARLIER claim (it started first), and goes quiet", async () => {
+    // this device is SOUNDING its first track when it learns it was not first
+    h.saved = [{ itemId: "item-1", blob: new Blob(["audio"]), name: "track-1.wav", path: null }];
     await mountLive();
     const ts = await startShowFromUi();
     expect(stateSends()).toHaveLength(1);
     expect(screen.queryByTestId("viewer-banner")).not.toBeInTheDocument();
+    expect(media.state(media.first()!).paused).toBe(false);
 
     await act(async () => {
       live().emit("state", {
@@ -454,21 +571,22 @@ describe("LiveMode · two-device handoff", () => {
         fromController: true,
         begun: true,
         running: true,
-        startedAt: ts,
-        itemStartedAt: ts,
+        startedAt: ts - 10_000,
+        itemStartedAt: ts - 10_000,
         itemElapsedAtPause: null,
         currentIndex: 2,
         mode: "manual",
-        controllerSince: ts + 10_000, // a deliberate take-control, after ours
+        controllerSince: ts - 10_000, // it started the show before this device did
         ended: false,
       });
     });
 
     // 1. demoted
     expect(screen.getByTestId("viewer-banner")).toBeInTheDocument();
-    // 2. เครื่องเสียงคุมคนเดียว — the sound went with the control
+    // 2. a viewer is silent: paused and muted
     expect(media.state(media.first()!).muted).toBe(true);
     expect(media.state(media.second()!).muted).toBe(true);
+    expect(media.state(media.first()!).paused).toBe(true);
     // 3. and it stopped talking: a viewer that keeps broadcasting is two controllers
     expect(stateSends()).toHaveLength(1);
   });
@@ -508,7 +626,7 @@ describe("LiveMode · two-device handoff", () => {
         itemElapsedAtPause: null,
         currentIndex: 2,
         mode: "manual",
-        controllerSince: ts + 10_000,
+        controllerSince: ts - 10_000, // started before this device
         ended: false,
       });
     });
@@ -571,7 +689,7 @@ describe("LiveMode · two-device handoff", () => {
         itemElapsedAtPause: null,
         currentIndex: 1,
         mode: "manual",
-        controllerSince: ts + 10_000,
+        controllerSince: ts - 10_000, // started before this device
         ended: false,
       });
     });
@@ -598,60 +716,53 @@ describe("LiveMode · two-device handoff", () => {
 // ─────────────────────────────────────────────────────────────────────────────
 // (e) SINGLE AUDIO SOURCE — "เสียงออกเครื่องเดียว", the zero-tolerance guarantee
 //
-// The viewer follows the controller's DISCRETE intent (which track, play/pause)
-// and never imports its position again. The second half of this test is the
-// no-desync guarantee: a later anchor for the SAME track must move nothing.
+// พี่ 2026-10-04: the device that started the show is the only one that sounds it. A
+// viewer used to follow the controller's track as a second speaker; now the
+// controller's track is never loaded or played on a viewer, and its sound key is
+// locked off while the show runs - but its screen follows every cue.
 // ─────────────────────────────────────────────────────────────────────────────
-describe("LiveMode · the sounding device owns its own playhead", () => {
-  it("loads and seeks ONCE on a track change, and never again for the same track", async () => {
+describe("LiveMode · a viewer never sounds", () => {
+  it("does not load, seek or play the controller's track - and its sound key is locked off", async () => {
     const media = instrumentMediaElements();
+    // the viewer even HOLDS the file: holding it is not a reason to play it
     h.saved = [
       { itemId: "item-2", blob: new Blob(["audio"]), name: "track-2.wav", path: null },
     ];
     await mountLive();
 
     const anchor = Date.now();
-    const controllerState = {
-      sender: "pa-device",
-      fromController: true,
-      begun: true,
-      running: true,
-      startedAt: anchor - 60_000,
-      itemStartedAt: anchor,
-      itemElapsedAtPause: null,
-      currentIndex: 1,
-      mode: "manual",
-      controllerSince: anchor - 1_000,
-      ended: false,
-      audioItemId: "item-2",
-      audioPlaying: true,
-    };
-
-    await act(async () => {
-      live().emit("state", { ...controllerState, sentAt: Date.now(), audioAnchor: anchor });
-    });
-
-    const primary = media.first()!;
-    const writes = () => media.callsFor(primary);
-    expect(writes().filter((c) => c.type === "src")).toHaveLength(1);
-    expect(writes().filter((c) => c.type === "currentTime")).toHaveLength(1);
-    expect(writes().filter((c) => c.type === "play")).toHaveLength(1);
-    expect(media.state(primary).paused).toBe(false);
-
-    // The SAME track, re-announced with an anchor 30s further on — a reconnect, a
-    // hand-off, a controller that recomputed its own clock. Importing that would
-    // be an audible mid-song jump in front of the room.
     await act(async () => {
       live().emit("state", {
-        ...controllerState,
+        sender: "pa-device",
         sentAt: Date.now(),
-        audioAnchor: anchor + 30_000,
+        fromController: true,
+        begun: true,
+        running: true,
+        startedAt: anchor - 60_000,
+        itemStartedAt: anchor,
+        itemElapsedAtPause: null,
+        currentIndex: 1,
+        mode: "manual",
+        controllerSince: anchor - 60_000,
+        ended: false,
+        audioItemId: "item-2",
+        audioPlaying: true,
+        audioAnchor: anchor,
       });
     });
 
-    expect(writes().filter((c) => c.type === "src")).toHaveLength(1);
-    expect(writes().filter((c) => c.type === "currentTime")).toHaveLength(1);
-    expect(writes().filter((c) => c.type === "play")).toHaveLength(1);
+    // it follows the show on screen…
+    expect(screen.getByTestId("viewer-banner")).toBeInTheDocument();
+    expect(document.querySelector("[data-cueiq-live]")!.getAttribute("data-cueiq-live-index")).toBe("1");
+    // …and makes no sound: nothing loaded, nothing played, its output off
+    const writes = media.callsFor(media.first()!);
+    expect(writes.filter((c) => c.type === "src")).toHaveLength(0);
+    expect(writes.filter((c) => c.type === "play")).toHaveLength(0);
+    expect(document.querySelector("[data-cueiq-live]")!.getAttribute("data-cueiq-live-sound")).toBe("0");
+    const key = screen.getByTestId("sound-output-toggle");
+    expect(key).toBeDisabled();
+    // the silence is a verdict for this show, not the device's saved preference
+    expect(localStorage.getItem("cueiq:soundOutput")).not.toBe("0");
   });
 });
 
@@ -1367,18 +1478,36 @@ describe("LiveMode · the NEXT card", () => {
 });
 
 describe("LiveMode · a viewer device", () => {
-  it("keeps its sound toggle beside the viewer banner, and ขอควบคุม only while it outputs sound", async () => {
+  // พี่ 2026-10-04: a viewer only watches. No take-over at all - not even a device that
+  // turns its own sound on (that is how ขอควบคุม used to appear).
+  it("shows the viewer banner, a locked-off sound key, and no ขอควบคุม at all", async () => {
     seedSnapshot({ isController: false });
     await mountLive();
     expect(screen.getByTestId("viewer-banner")).toBeInTheDocument();
-    expect(screen.getByTestId("sound-output-toggle")).toBeInTheDocument();
-    expect(screen.getByTestId("request-control")).toBeInTheDocument();
-
-    // เครื่องเสียงคุมคนเดียว: a muted viewer cannot take the show
+    const key = screen.getByTestId("sound-output-toggle");
+    expect(key).toBeDisabled();
+    expect(document.querySelector("[data-cueiq-live]")!.getAttribute("data-cueiq-live-sound")).toBe("0");
     await act(async () => {
-      fireEvent.click(screen.getByTestId("sound-output-toggle"));
+      fireEvent.click(key);
     });
+    expect(document.querySelector("[data-cueiq-live]")!.getAttribute("data-cueiq-live-sound")).toBe("0");
     expect(screen.queryByTestId("request-control")).toBeNull();
+    expect(screen.queryByText("ขอควบคุม")).toBeNull();
+  });
+
+  it("edits nothing: no Loop or file keys on its rows, and the edit chip is gone", async () => {
+    seedSnapshot({ isController: false });
+    await mountLive();
+    expect(screen.queryByTitle(/ไฟล์เพลง/)).toBeNull();
+    expect(screen.queryByTitle(/Loop/i)).toBeNull();
+    expect(screen.queryByTitle(/แสดงปุ่มแก้ไขของแต่ละแถว/)).toBeNull();
+  });
+
+  it("the controller of the same show keeps its edit keys (the lock is the viewer's alone)", async () => {
+    seedSnapshot({ isController: true, controllerSince: 1_000 });
+    await mountLive();
+    expect(screen.queryByTestId("viewer-banner")).toBeNull();
+    expect(screen.getAllByTitle(/ไฟล์เพลง/).length).toBeGreaterThan(0);
   });
 });
 
@@ -1486,17 +1615,11 @@ describe("LiveMode · what a show needs stays where the show can reach it", () =
     expect(screen.getByTitle(/^โหมดซ้อม/)).not.toHaveClass("hidden");
   });
 
-  it("a viewer that is the sound device is told which tracks it does not hold; a muted one is not", async () => {
+  it("a viewer is never the sound device, so it is not asked which tracks it holds", async () => {
     seedSnapshot({ isController: false });
     const items = [makeItem(1, { audio_path: "t/g/one.mp3" }), makeItem(2), makeItem(3)];
     supa.setTable("setlist_items", ok(items));
     await mountLive({ items });
-    const banner = screen.getByTestId("viewer-banner");
-    expect(within(banner).getByTitle(READINESS)).toBeTruthy();
-
-    await act(async () => {
-      fireEvent.click(screen.getByTestId("sound-output-toggle"));
-    });
     expect(within(screen.getByTestId("viewer-banner")).queryByTitle(READINESS)).toBeNull();
   });
 
@@ -2203,5 +2326,57 @@ describe("LiveMode · CONSOLE's clip is the file on the item's clock", () => {
     const l = levels();
     expect(l.slice(0, 80).every((x) => x === 1)).toBe(true);
     expect(l.slice(80, 160).every((x) => x < 0.1)).toBe(true);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// (z4) A LOOPING ROW RESUMES INSIDE ITS FILE
+//
+// A seek is the item's elapsed time. Past a loop's first pass that is past the file's
+// end, where a media element clamps and - looping - starts the file over from 0: a
+// resume 3:20 into a 2:00 BGM loop played it from the top. It must land at 1:20.
+// ─────────────────────────────────────────────────────────────────────────────
+describe("LiveMode · a looping row resumes inside its file", () => {
+  const paused = (elapsed: number) => ({
+    state: {
+      running: false,
+      begun: true,
+      startedAt: Date.now() - 400_000,
+      itemStartedAt: null,
+      itemElapsedAtPause: elapsed,
+      currentIndex: 0,
+      mode: "manual",
+    },
+    isController: true,
+    controllerSince: 1_000,
+  });
+  const signal = { "song-1": { lufs: null, peaks: null, beatOffset: null, bpm: null, duration: 120 } };
+
+  it("RUN 3:20 into a 2:00 loop seeks the file to 1:20", async () => {
+    const media = instrumentMediaElements();
+    h.saved = [{ itemId: "item-1", blob: new Blob(["audio"]), name: "bgm.wav", path: null }];
+    const items = [makeItem(1, { song_id: "song-1", loop_audio: true, duration_seconds: 300 }), makeItem(2)];
+    supa.setTable("setlist_items", ok(items));
+    seedSnapshot(paused(200));
+    await mountLive({ items, songSignal: signal });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("run-toggle"));
+    });
+    const seeks = media.callsFor(media.first()!).filter((c) => c.type === "currentTime");
+    expect(seeks.at(-1)?.value).toBe(80);
+  });
+
+  it("a row that does not loop is sought to its elapsed time, as before", async () => {
+    const media = instrumentMediaElements();
+    h.saved = [{ itemId: "item-1", blob: new Blob(["audio"]), name: "song.wav", path: null }];
+    const items = [makeItem(1, { song_id: "song-1", duration_seconds: 300 }), makeItem(2)];
+    supa.setTable("setlist_items", ok(items));
+    seedSnapshot(paused(200));
+    await mountLive({ items, songSignal: signal });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("run-toggle"));
+    });
+    const seeks = media.callsFor(media.first()!).filter((c) => c.type === "currentTime");
+    expect(seeks.at(-1)?.value).toBe(200);
   });
 });

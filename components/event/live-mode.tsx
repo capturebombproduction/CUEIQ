@@ -43,7 +43,7 @@ import {
 import { toast } from "sonner";
 import { createClient } from "@/lib/supabase/client";
 import { hasLiveSession } from "@/lib/auth-session";
-import { shouldMuteOnStepDown, shouldYieldControl } from "@/lib/live-arbitration";
+import { shouldYieldControl } from "@/lib/live-arbitration";
 import { saveAudio, loadAudioForEvent, deleteAudio } from "@/lib/audio-store";
 import { heldFileIsAnotherSongs } from "@/lib/audio-targets";
 import { getCachedSongBlob, cacheSongBlob } from "@/lib/song-cache";
@@ -243,15 +243,18 @@ export function LiveMode({
   const [syncReady, setSyncReady] = useState(false);
   const [syncStatus, setSyncStatus] = useState<string>("init"); // raw channel status, for diagnosing sync issues
   // Gate START SHOW until this device has had a chance to hear about a show already
-  // running elsewhere: starting before the first sync round-trip would stamp a NEWER
-  // controllerSince that beats the real controller's older claim — hijacking/resetting
-  // a live show to item 0 and muting its speaker. Settles when: a state broadcast is
+  // running elsewhere: starting before the first sync round-trip would begin a SECOND
+  // show here (from item 0, with this device's sound). The arbitration hands it back to
+  // the first device (the earlier claim wins), but the gate keeps the second one from
+  // existing at all. Settles when: a state broadcast is
   // heard · the sync-request reply window passes in silence · the channel fails
   // (offline shows must still start) · a hard fallback timeout.
   const [syncSettled, setSyncSettled] = useState(false);
-  // Only ONE device drives the show. This device may control until it receives
-  // state from another device (then it becomes a read-only viewer); "ขอควบคุม"
-  // flips it back and demotes the others.
+  // Only ONE device drives the show: the one that started it (พี่ 2026-10-04). This
+  // device may control until it receives state from another device (then it becomes a
+  // viewer that only watches - silent, no keys, no edits). There is no take-over:
+  // lib/live-arbitration.ts keeps the first device's claim, and a first device that
+  // went down is opened again, where its own snapshot carries the show on.
   const [isController, setIsController] = useState(true);
   const channelRef = useRef<RealtimeChannel | null>(null);
   // always-current state for use inside stable callbacks (subscribe, visibilitychange)
@@ -259,16 +262,15 @@ export function LiveMode({
   stateRef.current = state;
   const isControllerRef = useRef(isController);
   isControllerRef.current = isController;
-  // When this device became the ACTIVE controller (began the show or took control).
+  // When this device became the ACTIVE controller (began the show).
   // null = never actively claimed: a fresh device defaults to isController=true but
-  // must YIELD to any device that actually began/claimed. Settles the race where two
-  // default-controller devices press "เริ่มโชว์" at the same instant — the more-recent
+  // must YIELD to any device that actually began. Settles the race where two
+  // default-controller devices press "เริ่มโชว์" at the same instant — the EARLIER
   // claim wins (ties broken by sender id) so exactly one stays in control instead of
   // both demoting each other into a silent, uncontrolled show.
   const controllerSinceRef = useRef<number | null>(null);
-  // when THIS page instance opened — a control claim older than this was made before
-  // we (re)loaded, i.e. we're re-joining an existing arrangement, not being taken over.
-  const mountedAtRef = useRef<number>(Date.now());
+  // when this device last re-asserted its claim to each other device (see the sync handler)
+  const reassertAtRef = useRef<Record<string, number>>({});
   const meId = useRef<string>(
     typeof crypto !== "undefined" && "randomUUID" in crypto
       ? crypto.randomUUID()
@@ -435,11 +437,6 @@ export function LiveMode({
   // timestamps are absolute, so the clock resumes as if nothing happened; a live
   // controller on another device still overrides this via the realtime sync.
   const liveRestoredRef = useRef(false);
-  // true only when a running show was actually resumed from THIS device's snapshot —
-  // i.e. this device was already part of the run before it reloaded. Used by the sync
-  // handler to decide whether stepping down should silence it (see "เครื่องเสียง
-  // คุมคนเดียว"); a `begun` adopted from someone else's broadcast must not count.
-  const resumedRunRef = useRef(false);
   useEffect(() => {
     try {
       const raw = localStorage.getItem(`cueiq:live:${eventId}`);
@@ -450,7 +447,6 @@ export function LiveMode({
           Date.now() - snap.savedAt < 6 * 60 * 60 * 1000; // within 6h
         if (snap?.state?.begun && fresh) {
           committedRef.current = snap.committed ?? { id: null, anchor: null };
-          resumedRunRef.current = true;
           setState(snap.state as LiveState);
           // Come back as the ROLE this device had, not as a fresh default.
           // Viewers write snapshots too (any device in a running show does), and
@@ -766,15 +762,25 @@ export function LiveMode({
     }
   }, [soundOutput]);
 
+  // A viewer of a running show is silent (พี่ 2026-10-04: the device that started the
+  // show is the only one that sounds it; every other device only watches). One rule for
+  // every way in: stepping down, adopting a show already running, coming back from a
+  // viewer's snapshot. A verdict for this show, never the device's saved preference -
+  // the next gig may make it the PA. The sound key is locked while it watches.
+  useEffect(() => {
+    if (isController || !state.begun || !soundOutput) return;
+    mutedByStepDownRef.current = true;
+    setSoundOutput(false);
+  }, [isController, state.begun, soundOutput]);
+
   // Lock the SOUND device into Live Mode while a show is live: leaving would cut the
   // audio. Block in-app navigation (back / header nav / logo) + warn on refresh/close.
   // To leave, turn off "เสียงออกเครื่องนี้" first (then edit on a remote with sound off).
   //
-  // The CONTROLLER is guarded too, sound or no sound. Driving a show from a muted
-  // phone while the PA plays the file is a supported setup (see the remote-control
-  // help text below), and on that phone none of this was armed: one stray tap on
-  // the logo navigated away instantly, and because auto-advance is controller-only,
-  // the running track finished and the show simply stopped with nobody driving it.
+  // The CONTROLLER is guarded too, sound or no sound. A controller whose output is off
+  // still drives the show, and on it none of this was armed: one stray tap on the logo
+  // navigated away instantly, and because auto-advance is controller-only, the running
+  // track finished and the show simply stopped with nobody driving it.
   useEffect(() => {
     if (!(state.begun && (soundOutput || isController))) return;
     // Tell out-of-tree actions (the header Sign-out button) that a sounding show is
@@ -1289,55 +1295,19 @@ export function LiveMode({
     }
   }, [now, state, items, audioUrls]);
 
-  // Viewer audio follow (SINGLE AUDIO SOURCE model): a non-controller speaker device
-  // follows the controller's DISCRETE intent only — which item should sound, and
-  // play/pause. It does NOT import the controller's position: after loading a newly
-  // committed track (a one-time start offset), it plays from its OWN clock. This is
-  // what removes every involuntary mid-show seek (drift / hand-off / reconnect jump):
-  // nothing outside this device can move its playhead except a deliberate song change.
+  // A VIEWER NEVER SOUNDS (SINGLE AUDIO SOURCE, พี่ 2026-10-04: the device that started
+  // the show is the only one that plays it). Viewers used to follow the controller's
+  // track as a second speaker; now nothing the controller announces loads a file here,
+  // and whatever this device was playing when it became a viewer (it lost a START race,
+  // or adopted a show already running) stops. Its screen still follows every cue.
   useEffect(() => {
     if (isControllerRef.current) return; // the controller drives its own audio
     const audio = audioRef.current;
-    if (!audio) return;
-    const cmd = remoteAudio;
-    const url = cmd?.id ? audioUrls[cmd.id] : undefined;
-
-    if (cmd && cmd.id && cmd.playing && url) {
-      // this track already played to its natural end — don't loop-restart it (the
-      // show item can run past the file via buffer_after); wait for the next command.
-      if (endedItemRef.current === cmd.id) {
-        if (!audio.paused) audio.pause();
-        if (audioPlaying) setAudioPlaying(false);
-        return;
-      }
-      if (playingId !== cmd.id) {
-        // DISCRETE track change committed by the controller (user-intended) — the
-        // ONLY position we ever import: load + seek to the start offset ONCE, then
-        // this device owns the position from here on.
-        const pos = cmd.anchor != null ? (Date.now() - cmd.anchor) / 1000 : 0;
-        audio.src = url;
-        audio.currentTime = Math.max(0, pos);
-        audio.playbackRate = 1;
-        setPlayingId(cmd.id);
-        // No optimistic true here. This device is the one wired to the PA, and it
-        // is following a command from ANOTHER device — nobody has touched this
-        // screen, which is precisely the case WebKit refuses. Claiming it plays
-        // hid the "แตะเพื่อเล่นเสียงต่อ" banner (gated on !audioPlaying) and left
-        // the room silent while every indicator here said the show was running.
-        // The element's own "playing" event sets the flag when sound really starts.
-        audio.play().catch((err) => onPlayRejected(cmd.id, err));
-      } else {
-        // same track already loaded — follow PLAY only; NEVER touch the position.
-        if (audio.paused) audio.play().catch((err) => onPlayRejected(cmd.id, err));
-        else if (!audioPlaying) setAudioPlaying(true);
-      }
-    } else {
-      // controller paused, or we don't have this item's file → stop our audio
-      if (!audio.paused) audio.pause();
-      if (audioPlaying) setAudioPlaying(false);
-    }
+    if (audio && !audio.paused) audio.pause();
+    audioRef2.current?.pause();
+    if (audioPlaying) setAudioPlaying(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [remoteAudio, audioUrls, isController, playingId]);
+  }, [remoteAudio, isController]);
 
   // realtime sync
   useEffect(() => {
@@ -1357,9 +1327,8 @@ export function LiveMode({
       // both screens count down in step even if their system clocks disagree.
       const skew =
         typeof payload.sentAt === "number" ? Date.now() - payload.sentAt : 0;
-      // An ACTIVE controller is driving → step down to a read-only viewer so we can't
-      // fight it. (We do NOT pause audio: a speaker-wired device keeps playing and
-      // follows the new controller's commands — see the viewer audio-sync effect.)
+      // Another device says it controls: settle who does. The loser steps down to a
+      // viewer, which goes quiet and only watches (see "A VIEWER NEVER SOUNDS").
       if (fromController && isControllerRef.current) {
         // Two devices both think they're the controller (e.g. both pressed "เริ่มโชว์"
         // before either's broadcast arrived, or both RELOADED and restored the same
@@ -1381,10 +1350,21 @@ export function LiveMode({
           // authority, and stop the music. See lib/live-arbitration.ts.
           mineBegun: stateRef.current.begun,
           theirsBegun: !!payload.begun,
+          // their claim on OUR clock: a PA whose clock drifted minutes must not lose
+          // the show to a phone that started after it (lib/live-arbitration.ts rule 2)
+          theirsAtMyClock: theirs != null && typeof payload.sentAt === "number" ? theirs + skew : null,
         });
         if (!iYield) {
           // I hold the stronger claim → keep control and re-assert so the OTHER device
-          // steps down. Don't adopt its state — I'm the authority.
+          // steps down. Don't adopt its state — I'm the authority. At most once per
+          // 2 s per device: one re-assert settles any current peer, but a page still
+          // running the OLD rule ("the newer claim wins", ขอควบคุม) never yields to an
+          // earlier claim, and answering each of its answers would be a broadcast storm
+          // for as long as that tab stays open.
+          const sender = String(payload.sender ?? "");
+          const last = reassertAtRef.current[sender] ?? 0;
+          if (Date.now() - last < 2000) return;
+          reassertAtRef.current[sender] = Date.now();
           channelRef.current?.send({
             type: "broadcast",
             event: "state",
@@ -1394,27 +1374,9 @@ export function LiveMode({
         }
         isControllerRef.current = false;
         setIsController(false);
-        audioRef2.current?.pause(); // stop only any overlap pre-roll on the secondary
-        // เครื่องเสียงคุมคนเดียว: whoever took control had to turn their OWN output on
-        // to do it, so the sound moves there and this device goes quiet — except for a
-        // reloaded speaker handing its default flag back to the incumbent it was
-        // already following, which is what silenced a PA mid-show once. The snapshot
-        // ref (not state.begun) is the discriminator on purpose: `begun` can be adopted
-        // from another device's broadcast, and a phone that merely joined mid-show
-        // keeping its sound on would mean two sound hosts. Pure + tested in
-        // lib/live-arbitration.ts.
-        if (
-          shouldMuteOnStepDown({
-            mine,
-            theirsAtMyClock: theirs != null ? theirs + skew : null,
-            resumedOwnSnapshot: resumedRunRef.current,
-            mountedAt: mountedAtRef.current,
-          })
-        ) {
-          // A verdict, not a preference — don't let it be written to disk.
-          mutedByStepDownRef.current = true;
-          setSoundOutput(false);
-        }
+        // the loser of the claim goes quiet: the viewer effects pause it and turn its
+        // sound off for this show (a verdict, never its saved preference)
+        audioRef2.current?.pause();
       }
       // Picking up a show that was already running, with no claim of our own, makes
       // this device a VIEWER — even when the state came from another viewer's
@@ -1843,33 +1805,14 @@ export function LiveMode({
   // reorderTo) and clears it. The toast says exactly that, so nothing is
   // promised that this code does not do.
 
-  // Claim control of the show on this device. Broadcasting our current state tells
-  // the previous controller to step down (it'll see our message and become a viewer).
-  function takeControl() {
-    // เครื่องเสียงคุมคนเดียว: only the device that's OUTPUTTING sound may drive the
-    // show. A muted (view-only) device can't take control — that's exactly what
-    // stopped a remote from grabbing control and desyncing the countdown from the
-    // real audio. To control from here, turn on "เสียงออกเครื่องนี้" first (the show
-    // sound then moves to this device, so audio + control always travel together).
-    if (!soundOutput) {
-      toast.warning("เครื่องนี้อยู่โหมดดูอย่างเดียว", {
-        description: "เปิด “เสียงออกเครื่องนี้” ก่อน ถ้าจะให้เครื่องนี้คุมโชว์ (เสียงจะมาออกที่เครื่องนี้)",
-      });
-      return;
-    }
-    controllerSinceRef.current = Date.now(); // fresh claim → wins over the current controller's older stamp
-    setIsController(true);
-    isControllerRef.current = true;
-    channelRef.current?.send({
-      type: "broadcast",
-      event: "state",
-      payload: statePayload(stateRef.current),
-    });
-  }
+  // A viewer of a running show only watches (พี่ 2026-10-04): no keys, no sound, and
+  // no edits either - a reorder, a loop flag or a new file would reach the device
+  // that started the show. Read through refs: the row keys are memoized.
+  const watchingOnly = () => stateRef.current.begun && !isControllerRef.current;
 
   // audio controls
   function openFilePicker(itemId: string) {
-    if (!canEdit) return;
+    if (!canEdit || watchingOnly()) return;
     loadTargetRef.current = itemId;
     fileInputRef.current?.click();
   }
@@ -1889,7 +1832,7 @@ export function LiveMode({
   // The audio loops to fill the item's time and Live Mode fades it out to end on
   // time. Persists + syncs like any setlist edit.
   async function toggleLoop(itemId: string) {
-    if (!canEdit) return;
+    if (!canEdit || watchingOnly()) return;
     const item = itemsRef.current.find((it) => it.id === itemId);
     if (!item) return;
     const next = !item.loop_audio;
@@ -1924,7 +1867,7 @@ export function LiveMode({
   // with the neighbour, keep currentIndex on the same item, persist + broadcast so
   // every device re-syncs. Detailed edits (time/mic/buffers) stay in the editor.
   async function moveItem(index: number, dir: -1 | 1) {
-    if (!canEdit) return;
+    if (!canEdit || watchingOnly()) return;
     const arr = itemsRef.current;
     const j = index + dir;
     if (j < 0 || j >= arr.length) return;
@@ -2156,7 +2099,7 @@ export function LiveMode({
   // the changed rows, keep currentIndex on the same item, broadcast.
   const dragIndexRef = useRef<number | null>(null);
   async function reorderTo(from: number, to: number) {
-    if (!canEdit) return;
+    if (!canEdit || watchingOnly()) return;
     if (from === to) return;
     const orig = itemsRef.current;
     const arr = [...orig];
@@ -2214,7 +2157,7 @@ export function LiveMode({
     const file = e.target.files?.[0];
     const itemId = loadTargetRef.current;
     e.target.value = "";
-    if (!canEdit) return;
+    if (!canEdit || watchingOnly()) return;
     if (!file || !itemId) return;
     const item = itemsRef.current.find((it) => it.id === itemId);
     if (!item) return;
@@ -2450,7 +2393,7 @@ export function LiveMode({
             crossfadeSwap(cur.id, url, offset);
           } else {
             audio.src = url;
-            audio.currentTime = Math.max(0, offset);
+            audio.currentTime = filePos(cur.id, offset);
             setPlayingId(cur.id);
             audio.play().catch((err) => onPlayRejected(cur.id, err));
             setAudioPlaying(true);
@@ -2806,6 +2749,23 @@ export function LiveMode({
   // fade the outgoing one down (~2s) before stopping it. The negative-buffer
   // overlap pre-roll (its own mechanism) takes precedence over this in Auto.
   const outFadeTokenRef = useRef(0);
+
+  // Where the FILE is `sec` into its item, for a seek. A looping row plays its file round
+  // and round, so past the first pass that is `sec % length`: told to seek past its end, a
+  // media element clamps there and - looping - starts the file over from 0, so a resume
+  // 3:20 into a 2:00 loop played the BGM from the top instead of 1:20 in. The length is
+  // the song's (songs.duration_seconds, the waveform's clock), else the loaded element's
+  // (unknown right after a new src - then the seek stays as it was).
+  function filePos(itemId: string, sec: number, el?: HTMLMediaElement | null): number {
+    const s = Math.max(0, sec);
+    const it = itemsRef.current.find((x) => x.id === itemId);
+    if (!it?.loop_audio) return s;
+    const len =
+      (it.song_id ? songSignal?.[it.song_id]?.duration : null) ??
+      (el && Number.isFinite(el.duration) && el.duration > 0 ? el.duration : null);
+    return len && len > 0 ? s % len : s;
+  }
+
   function crossfadeSwap(itemId: string, url: string, fromOffset = 0) {
     const incoming = audioRef2.current;
     if (!incoming || !audioRef.current) return;
@@ -2814,7 +2774,7 @@ export function LiveMode({
     endedItemRef.current = null;
     incoming.pause();
     incoming.src = url;
-    incoming.currentTime = Math.max(0, fromOffset);
+    incoming.currentTime = filePos(itemId, fromOffset);
     incoming.volume = Math.min(1, Math.max(0, (volumesRef.current[itemId] ?? 100) / 100));
     incoming.play().catch((err) => onPlayRejected(itemId, err));
     swapAudio(); // incoming → primary (scrubber/volume follow it); outgoing → secondary
@@ -2850,7 +2810,7 @@ export function LiveMode({
     const anchor = committedRef.current.anchor ?? state.itemStartedAt;
     const pos = anchor ? (Date.now() - anchor) / 1000 : 0;
     if (playingId !== sid) audio.src = url;
-    audio.currentTime = Math.max(0, pos);
+    audio.currentTime = filePos(sid, pos, playingId === sid ? audio : null);
     setPlayingId(sid);
     audio
       .play()
@@ -2913,12 +2873,13 @@ export function LiveMode({
     try {
       primeSecondaryAudio(); // must happen inside this tap, before any await — see the helper
       const holder = await otherDeviceHoldsShow();
-      if (
-        holder &&
-        !window.confirm(
-          `ดูเหมือนโชว์กำลังรันอยู่บนเครื่อง “${holder}” — เริ่มใหม่ที่นี่จะรีเซ็ตโชว์นั้นกลับไปเพลงแรกและปิดเสียงเครื่องนั้น ยืนยันจะเริ่มไหม?`
-        )
-      ) {
+      if (holder) {
+        // The device that started the show keeps it (พี่ 2026-10-04): starting here would
+        // reset it to the first song and take its sound away, so this is refused, not
+        // confirmed. A holder whose heartbeat has gone stale is not counted (isGhost).
+        toast.warning(`โชว์กำลังรันอยู่บนเครื่อง “${holder}”`, {
+          description: "เครื่องนี้ดูได้อย่างเดียว — ถ้าจะเริ่มใหม่ ให้กดจบโชว์/รีเซ็ตที่เครื่องนั้นก่อน",
+        });
         return;
       }
       // Re-read after the await: a controller elsewhere may have started the show
@@ -3004,11 +2965,11 @@ export function LiveMode({
         if (playingId !== cur.id) {
           // a different track is loaded — switch to the anchor track and seek
           audio.src = url;
-          audio.currentTime = Math.max(0, offset);
+          audio.currentTime = filePos(cur.id, offset);
           setPlayingId(cur.id);
         } else if (!haveLocalAudio) {
           // same track but it wasn't actively playing — resync its position
-          audio.currentTime = Math.max(0, offset);
+          audio.currentTime = filePos(cur.id, offset, audio);
         }
         // if it's already the live playing track, leave its position untouched
         audio.play().catch((err) => onPlayRejected(cur.id, err));
@@ -3398,7 +3359,7 @@ export function LiveMode({
                   )}
                   {/* the track sounding right now (static: no pulse on this screen) */}
                   {isPlayingThis && <Volume2 aria-hidden className="size-3.5 shrink-0 text-primary-ink" />}
-                  {busy && !canEdit && (
+                  {busy && !(canEdit && !(state.begun && !isController)) && (
                     <Loader2 aria-hidden className="size-3.5 shrink-0 animate-spin text-muted-foreground" />
                   )}
                   {i === state.currentIndex + 1 && (
@@ -3420,7 +3381,8 @@ export function LiveMode({
             {/* The admin's row keys. Every slot is kept on every row (a row with no
                 file holds an empty loop slot), so the keys and the lengths line up
                 down the list. Stage: only in edit mode, at 36 px. */}
-            {canEdit && (
+            {/* a viewer of a running show edits nothing (watchingOnly) */}
+            {canEdit && !(state.begun && !isController) && (
               <div className="flex shrink-0 items-center gap-1 stage:hidden stage:group-data-[edit=on]/ro:flex">
                 {/* quick reorder — Admin + Manual + controller only (detailed edits = setlist editor).
                     Stage only (CQ-17): on a phone the two 22 px keys took ~28 px from a title that
@@ -3789,23 +3751,26 @@ export function LiveMode({
       )}
 
       {/* ── STATUS ROW ── this device's sound · audio readiness · Manual | Auto. A
-          viewer gets its banner (and, on a sound device, ขอควบคุม) in place of the
-          controls. Sound is LOCAL per device (never broadcast): the PA on, a remote
-          off, so the remote stays silent without muting the PA. A phone held
-          sideways shows it under NOW | NEXT (one short scroll), never hides it:
-          Live tools has no copy of the sound key, Manual | Auto or ขอควบคุม. */}
+          viewer gets its banner in place of the controls, and its sound key is locked
+          off. Sound is LOCAL per device (never broadcast). A phone held sideways shows
+          it under NOW | NEXT (one short scroll), never hides it: Live tools has no
+          copy of the sound key or Manual | Auto. */}
       <div className="flex h-11 min-w-0 shrink-0 items-center gap-1.5 [@media(orientation:landscape)_and_(max-height:599.98px)_and_(pointer:coarse)]:order-1 [@media(orientation:landscape)_and_(max-height:599.98px)_and_(pointer:coarse)]:basis-full stage:h-[60px] stage:gap-2 stage:px-5 stage:pt-3">
         <button
           type="button"
           data-testid="sound-output-toggle"
           onClick={() => setSoundOutput((v) => !v)}
+          // a viewer of a running show is silent - the show sounds on the device that started it
+          disabled={state.begun && !isController}
           title={
-            soundOutput
-              ? "เสียงออกที่เครื่องนี้ — แตะเพื่อปิดเสียงเฉพาะเครื่องนี้"
-              : "เครื่องนี้เงียบอยู่ — แตะเพื่อให้เสียงออก"
+            state.begun && !isController
+              ? "ดูอย่างเดียว — เสียงออกที่เครื่องที่เริ่มโชว์เท่านั้น"
+              : soundOutput
+                ? "เสียงออกที่เครื่องนี้ — แตะเพื่อปิดเสียงเฉพาะเครื่องนี้"
+                : "เครื่องนี้เงียบอยู่ — แตะเพื่อให้เสียงออก"
           }
           className={cn(
-            "chip chip-lg min-w-0 shrink-0 gap-[5px] px-2 text-[13px] stage:px-[11px] stage:text-[13.5px]",
+            "chip chip-lg min-w-0 shrink-0 gap-[5px] px-2 text-[13px] disabled:opacity-60 stage:px-[11px] stage:text-[13.5px]",
             !soundOutput ? "chip-neutral" : signalTap && showOutput.kind === "builtin" ? "chip-warning" : "chip-success"
           )}
         >
@@ -3948,42 +3913,13 @@ export function LiveMode({
             data-testid="viewer-banner"
             className="flex h-11 min-w-0 flex-1 items-center gap-2 rounded-[2px] bg-info/[.15] pl-2.5 pr-1 text-info-ink"
           >
-            {audioPlaying ? (
-              <Volume2 aria-hidden className="size-4 shrink-0" />
-            ) : (
-              <Eye aria-hidden className="size-4 shrink-0" />
-            )}
+            <Eye aria-hidden className="size-4 shrink-0" />
+            {/* พี่ 2026-10-04: a viewer only watches - no sound, no keys, and no
+                take-over (there is no ขอควบคุม); the device that started the show
+                runs it to the end. */}
             <span className="min-w-0 flex-1 truncate text-[13px] font-medium">
-              {audioPlaying ? "เครื่องนี้เล่นเสียงอยู่ — คุมจากเครื่องอื่น" : "ดูอย่างเดียว — ซิงค์จากเครื่องคุม"}
+              ดูอย่างเดียว — โชว์รันที่เครื่องที่เริ่มโชว์
             </span>
-            {/* A viewer that SOUNDS plays from its own files too: say which it lacks
-                (3ddf617's readiness banner reached every device). */}
-            {soundOutput && audioItems.length > 0 && !allReady && (
-              <span title={readinessSentence} className="chip chip-warning shrink-0 gap-1 px-1.5 text-[12px]">
-                {downloadingAudio ? (
-                  <Loader2 aria-hidden className="animate-spin" />
-                ) : (
-                  <HardDriveDownload aria-hidden />
-                )}
-                <span className="num text-[14px]">
-                  {readyCount}/{audioItems.length}
-                </span>
-              </span>
-            )}
-            {/* เครื่องเสียงคุมคนเดียว: only a sound-output device may take control.
-                A muted viewer sees no take-control button — turn its sound on first
-                to become the show device (audio + control move here together). */}
-            {soundOutput && (
-              <Button
-                size="sm"
-                variant="secondary"
-                data-testid="request-control"
-                onClick={takeControl}
-                className="h-9 shrink-0"
-              >
-                ขอควบคุม
-              </Button>
-            )}
           </div>
         )}
       </div>
@@ -4271,7 +4207,7 @@ export function LiveMode({
             </span>
             {/* Stage only (phones always show their row keys): the admin's reorder,
                 Loop and file keys stay out of the running order until asked for. */}
-            {canEdit && (
+            {canEdit && !(state.begun && !isController) && (
               <button
                 type="button"
                 aria-pressed={orderEdit}
@@ -4668,13 +4604,14 @@ export function LiveMode({
                   กำลังดาวน์โหลดเพลงจากคลาวด์…
                 </p>
               ) : (
-                // controller with no local file: the fades ride the speaker device's
-                // volume by remote
+                // the controller holds no file for this item: it is the only device that
+                // sounds the show, so this item is silent unless one is loaded here
                 <div className="flex min-w-0 items-center justify-between gap-2">
                   <p className="flex min-w-0 items-center gap-1.5 text-[12.5px] text-muted-foreground">
-                    <Volume2 aria-hidden className="size-3.5 shrink-0" />
-                    <span className="min-w-0">คุมเสียงของเครื่องที่เล่นไฟล์ (รีโมท)</span>
+                    <VolumeX aria-hidden className="size-3.5 shrink-0" />
+                    <span className="min-w-0">เครื่องนี้ไม่มีไฟล์ของรายการนี้ — รายการนี้จะไม่มีเสียง</span>
                   </p>
+                  {canEdit && (
                   <Button
                     type="button"
                     variant="outline"
@@ -4685,6 +4622,7 @@ export function LiveMode({
                     <FolderOpen aria-hidden className="size-4" />
                     โหลดไฟล์ที่นี่
                   </Button>
+                  )}
                 </div>
               )}
             </div>
@@ -4694,7 +4632,7 @@ export function LiveMode({
               <Loader2 aria-hidden className="size-3.5 shrink-0 animate-spin" />
               กำลังเตรียมไฟล์เพลงจากคลาวด์…
             </p>
-          ) : current ? (
+          ) : current && canEdit && !(state.begun && !isController) ? (
             <Button
               type="button"
               variant="outline"

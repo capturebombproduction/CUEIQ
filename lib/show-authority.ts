@@ -67,9 +67,9 @@ export const GHOST_MS = 90_000;
 // heartbeat it writes is stamped two minutes in the past as far as every
 // NTP-synced phone in the room is concerned. `now - heartbeat_at` = 120s > 90s,
 // so every other device declares the working PA dead: live-status-strip raises the
-// amber "MAIN เดิมหลุด" badge whose tooltip tells the reader to press ขอควบคุม, and
-// live-mode's otherDeviceHoldsShow() stops seeing the holder, so pressing เริ่มโชว์
-// on a phone skips the "โชว์กำลังรันอยู่บนเครื่องอื่น" confirmation. The margin used
+// amber "MAIN เดิมหลุด" badge, and live-mode's otherDeviceHoldsShow() stops seeing
+// the holder, so pressing เริ่มโชว์ on a phone skips the "โชว์กำลังรันอยู่บนเครื่องอื่น"
+// refusal (a confirm until 2026-10-04). The margin used
 // to be GHOST_MS minus the 30s heartbeat interval = SIXTY SECONDS of clock
 // disagreement between two devices that never compare clocks. That is nothing.
 //
@@ -120,10 +120,11 @@ export const GHOST_MS = 90_000;
 // now - t = +120s > 90s and declares the healthy phone dead — live-status-strip
 // raises the amber "MAIN เดิมหลุด" badge on the desk running the sound, and
 // otherDeviceHoldsShow() filters the live holder out with `!isGhost(r)` and returns
-// null, so pressing เริ่มโชว์ on the PA skips the "โชว์กำลังรันอยู่บนเครื่อง X —
-// ยืนยันไหม?" confirm entirely and starts, resetting the running show to item 0 with
-// a fresh clock and muting the phone. That silent skip is precisely the failure
-// otherDeviceHoldsShow was written to prevent.
+// null, so pressing เริ่มโชว์ on the PA skips the "โชว์กำลังรันอยู่บนเครื่อง X" refusal
+// and starts a second show. Since 2026-10-04 that second show loses the arbitration
+// (the EARLIER claim keeps the show, judged across clocks - lib/live-arbitration.ts),
+// so the phone keeps it - but the skip is still the failure otherDeviceHoldsShow was
+// written to prevent, and the reason the grace stays.
 //
 // So the exit condition is: the trigger alone is not sufficient — keep a grace, OR
 // give isGhost a server-derived `now` (e.g. the Date header off a Supabase response,
@@ -137,28 +138,18 @@ export const GHOST_MS = 90_000;
 // show is gone says it is healthy, and the crew is looking at that badge precisely
 // because they are trying to work out whether the silence is the PA or the room.
 // Accepted because "ghost" never takes anything away by itself — the locked
-// decision is เมนหาย = ไม่ auto-steal (docs/offline-first-plan.md §10.5) — so for
-// those extra two minutes pressing เริ่มโชว์ elsewhere merely asks "โชว์กำลังรันอยู่
-// บนเครื่อง X — ยืนยันไหม?" and then starts anyway when you confirm. Nobody is ever
-// locked out. The other direction — a working PA declared dead in front of the
-// crew mid-show, under a tooltip telling them to take control off it — is the
+// decision is เมนหาย = ไม่ auto-steal (docs/offline-first-plan.md §10.5), and since
+// 2026-10-04 there is no take-over at all (พี่: the device that started the show keeps
+// it) — so for those extra two minutes pressing เริ่มโชว์ elsewhere is refused, which
+// for a main that really died means waiting for the window or reopening it. The
+// other direction — a working PA declared dead in front of the crew mid-show — is the
 // failure being removed, and it is the worse of the two.
 //
-// ⚠️ THIS IS NOT THE LAST UNCORRECTED CROSS-DEVICE CLOCK COMPARISON. The round-10
-// version of this comment claimed show_authority was "the one cross-device timing
-// surface with no such correction". That was false, and it was false about the
-// control path specifically, so it would have stopped the next reader from
-// looking. The outstanding one is in components/event/live-mode.tsx's realtime-sync
-// effect: it computes `skew = Date.now() - payload.sentAt`, applies it to the
-// peer's claim for shouldMuteOnStepDown (`theirsAtMyClock: theirs + skew`) — and
-// passes `theirs` RAW, straight off the peer's clock, into shouldYieldControl,
-// which is the call that decides WHO DRIVES THE SHOW. With the same 2-minute-slow
-// PA, pressing ขอควบคุม on the desk stamps a claim two minutes in the past, the
-// phone's more-recent-claim-wins rule keeps control, and the PA both yields AND
-// mutes itself — the operator presses "take control" on the desk with the speakers
-// and the desk becomes a muted viewer. Fixing that lives in live-mode.tsx (pass
-// `theirs + skew` into shouldYieldControl too, exactly as the shouldMuteOnStepDown
-// call a few lines below it already does); this file does not certify it clean.
+// The control path had its own uncorrected comparison: live-mode.tsx passed the
+// peer's claim RAW into shouldYieldControl, the call that decides WHO DRIVES THE SHOW.
+// Fixed 2026-10-04 with the first-device rule: it now also passes `theirsAtMyClock`
+// (their stamp + (our now - their sentAt)), and a gap wider than CLAIM_SKEW_TRUST_MS is
+// judged on corrected clocks (lib/live-arbitration.ts rule 2).
 export const CLOCK_SKEW_GRACE_MS = 120_000;
 
 /**

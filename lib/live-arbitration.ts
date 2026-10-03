@@ -1,18 +1,24 @@
 // Who drives the show when two devices both believe they are the controller?
 //
+// พี่'s rule (2026-10-04): the device that STARTED the show is the show — it drives it
+// and it sounds it. Every device that opens the page after it only watches, and
+// nothing it does reaches the first one. There is no take-over: if the first device
+// goes down, it is opened again, and its own snapshot carries the show on.
+//
 // A device defaults to isController=true when the live page opens, and
 // `controllerSince` is stamped ONLY when it actively claimed: it pressed
-// เริ่มโชว์ or ขอควบคุม. So "null" means "I hold the default flag, I never
-// claimed anything" — which is also what a device holds after a RELOAD, because
-// the crash-recovery snapshot restores `begun` but nothing restores a claim.
+// เริ่มโชว์. So "null" means "I hold the default flag, I never claimed anything" —
+// which is also what a device held after a RELOAD before the crash-recovery
+// snapshot learned to carry the claim (a device restored from an older snapshot
+// still can).
 //
 // That is the case this file exists for. Two devices that both restored the same
 // running show (a venue power blip, two refreshes) both answer a sync-request
 // with fromController=true and controllerSince=null — and the rule "null always
 // yields" then made BOTH of them step down, leaving the show with no controller
-// at all: Auto stops advancing, next/prev go dead, and someone has to notice and
-// press ขอควบคุม mid-show. Exactly the outcome the arbitration was written to
-// prevent, reached through the one input it did not consider.
+// at all: Auto stops advancing and next/prev go dead mid-show. Exactly the outcome
+// the arbitration was written to prevent, reached through the one input it did not
+// consider.
 //
 // Pure and total: every device must reach the SAME verdict from its own side of
 // the exchange, so the tie-break has to be symmetric — see the id comparison.
@@ -30,7 +36,19 @@ export interface ControllerClaim {
   mineBegun?: boolean;
   /** Is one running on theirs? */
   theirsBegun?: boolean;
+  /**
+   * `theirs` moved into THIS device's clock (their stamp + (my now - their sentAt)),
+   * when the message carried a sentAt. See rule 2.
+   */
+  theirsAtMyClock?: number | null;
 }
+
+/**
+ * Two claims further apart than this, once the other device's clock is corrected
+ * into ours, are judged on the corrected times. Closer than this they are judged on
+ * the raw stamps. Far above a message's latency, far below a show.
+ */
+export const CLAIM_SKEW_TRUST_MS = 10_000;
 
 /**
  * True when THIS device should step down to a viewer. Exactly one side of any
@@ -41,8 +59,17 @@ export interface ControllerClaim {
  *  0. A device with a RUNNING SHOW beats one with nothing. See below — this rule
  *     was missing, and its absence could stop a show mid-song.
  *  1. A real claim always beats no claim.
- *  2. Between two real claims the MORE RECENT wins — an intentional ขอควบคุม
- *     refreshes its stamp, and taking control is meant to work.
+ *  2. Between two real claims the EARLIER wins — the device that started the show
+ *     first. A second START (two presses at once, or a device that started its own
+ *     show while it could not hear the first and then reconnected) loses, and the
+ *     first device is never moved. The stamps come from two CLOCKS: a PA that sat
+ *     offline for days drifts minutes, and judged raw, a fast-clocked PA would lose
+ *     to a phone that started a minute after it. So a gap wider than
+ *     CLAIM_SKEW_TRUST_MS after correcting their clock into ours is judged on the
+ *     corrected times - both sides see the same wide gap, with opposite signs, and
+ *     agree. A narrow gap (two presses at once) is judged on the RAW stamps: the
+ *     correction carries a message's latency, which could tip the two sides into
+ *     different verdicts there, and the raw pair is the same two numbers on both.
  *  3. Anything still tied (both unclaimed, or the same millisecond) is settled by
  *     id: the HIGHER id keeps control. Arbitrary, but identical on both devices,
  *     which is the only property that matters — and it is the direction the
@@ -71,47 +98,15 @@ export function shouldYieldControl({
   theirId,
   mineBegun = false,
   theirsBegun = false,
+  theirsAtMyClock = null,
 }: ControllerClaim): boolean {
   if (mineBegun !== theirsBegun) return theirsBegun;
   if (mine == null && theirs == null) return theirId > myId;
   if (mine == null) return true;
   if (theirs == null) return false;
-  if (theirs !== mine) return theirs > mine;
+  if (theirsAtMyClock != null && Math.abs(theirsAtMyClock - mine) > CLAIM_SKEW_TRUST_MS) {
+    return theirsAtMyClock < mine;
+  }
+  if (theirs !== mine) return theirs < mine;
   return theirId > myId;
-}
-
-export interface StepDownContext {
-  /** This device's claim stamp (null = default/restored flag, never claimed). */
-  mine: number | null;
-  /** The winner's claim stamp, already corrected into this device's clock, or null. */
-  theirsAtMyClock: number | null;
-  /** Did THIS device resume a running show from its own local snapshot? */
-  resumedOwnSnapshot: boolean;
-  /** When this page instance opened (epoch ms). */
-  mountedAt: number;
-}
-
-/**
- * When a device steps down, does its sound go too?
- *
- * Default YES — เครื่องเสียงคุมคนเดียว: whoever took control had to turn their own
- * output on to do it, so the audio moves there and a stale speaker must not keep
- * playing against the new controller's clock.
- *
- * The exception is the reloaded speaker. A device that resumed this show from its
- * OWN snapshot and never claimed anything is not being taken over — it is handing
- * its default flag back to the incumbent it was already following. Muting it there
- * is what silenced a reloaded PA mid-show. But if the winner's claim is NEWER than
- * this page's own life, that is a real, deliberate take-control that happened after
- * we loaded, and then the sound does move.
- */
-export function shouldMuteOnStepDown({
-  mine,
-  theirsAtMyClock,
-  resumedOwnSnapshot,
-  mountedAt,
-}: StepDownContext): boolean {
-  const resumedThisShow = mine == null && resumedOwnSnapshot;
-  const freshClaim = theirsAtMyClock != null && theirsAtMyClock > mountedAt;
-  return !resumedThisShow || freshClaim;
 }

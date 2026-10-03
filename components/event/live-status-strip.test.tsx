@@ -2,7 +2,7 @@
 // needs the operator — the status row already says whether this device drives. What
 // the status row never says is WHICH device drives: 3ddf617's strip always carried
 // "MAIN · iPad-xxxx" on a viewer, and with the strip hidden a healthy viewer had no
-// way to know where control lives before pressing ขอควบคุม.
+// way to know where control lives (whom to ask - there is no take-over).
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, act } from "@testing-library/react";
 import type { AuthorityRow } from "@/lib/show-authority";

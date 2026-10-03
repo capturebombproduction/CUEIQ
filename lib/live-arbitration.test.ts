@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { shouldYieldControl, shouldMuteOnStepDown } from "./live-arbitration";
+import { shouldYieldControl, CLAIM_SKEW_TRUST_MS } from "./live-arbitration";
 
 // The property that matters more than any individual case: whatever the inputs,
 // exactly ONE of the two devices yields. Two controllers fight; zero controllers
@@ -40,10 +40,13 @@ describe("shouldYieldControl", () => {
     expect(bYields).toBe(false);
   });
 
-  it("gives control to the MORE RECENT claim — ขอควบคุม has to work", () => {
+  // พี่ 2026-10-04: the device that started the show keeps it. There is no take-over,
+  // so a later START (two presses at once, or a device that started its own show
+  // while it could not hear the first one) is the one that steps down.
+  it("gives control to the EARLIER claim - the first device keeps the show", () => {
     const { aYields, bYields } = settle(1000, 2000);
-    expect(aYields).toBe(true);
-    expect(bYields).toBe(false);
+    expect(aYields).toBe(false);
+    expect(bYields).toBe(true);
   });
 
   it("leaves exactly one controller when BOTH devices restored the show themselves", () => {
@@ -93,8 +96,8 @@ describe("shouldYieldControl", () => {
     }
   });
 
-  // …and it outranks a claim too: a device that pressed ขอควบคุม on a page where
-  // no show is running must not be able to take one off a machine mid-song.
+  // …and it outranks a claim too: a claim held on a page where no show is running
+  // must not be able to take one off a machine mid-song.
   it("a running show outranks even a real claim held by an idle device", () => {
     const { aYields, bYields } = settle(null, 9999, "aaa", "bbb", true, false);
     expect(aYields).toBe(false);
@@ -103,7 +106,9 @@ describe("shouldYieldControl", () => {
 
   it("when both are running, the old claim rules decide as before", () => {
     expect(settle(null, 1000, "aaa", "bbb", true, true).aYields).toBe(true);
-    expect(settle(2000, 1000, "aaa", "bbb", true, true).aYields).toBe(false);
+    // two running shows: the one started first is the show
+    expect(settle(2000, 1000, "aaa", "bbb", true, true).aYields).toBe(true);
+    expect(settle(1000, 2000, "aaa", "bbb", true, true).aYields).toBe(false);
   });
 
   // A peer on an older build sends no `begun`, so both flags read false and the
@@ -131,64 +136,49 @@ describe("shouldYieldControl", () => {
   });
 });
 
-describe("shouldMuteOnStepDown", () => {
-  const mountedAt = 5_000;
+// Two devices, two clocks. Real time: the PA started at 1_000_000, the phone (which could
+// not hear it) started its own show a minute later, at 1_060_000. The PA's clock runs
+// two minutes FAST, so its stamp reads 1_120_000 - judged raw, it looks LATER than the
+// phone's and the PA would hand the show to the phone that started after it.
+describe("shouldYieldControl across clocks", () => {
+  const SKEW = 120_000; // PA clock - phone clock
+  const pa = { claim: 1_120_000, id: "aaa" }; // on the PA's clock
+  const phone = { claim: 1_060_000, id: "zzz" }; // on the phone's clock
 
-  it("mutes a device that merely joined the show", () => {
-    expect(
-      shouldMuteOnStepDown({
-        mine: null,
-        theirsAtMyClock: 1_000,
-        resumedOwnSnapshot: false,
-        mountedAt,
-      })
-    ).toBe(true);
+  it("a wide gap is judged on the corrected clocks: the PA, which started first, keeps the show", () => {
+    const paYields = shouldYieldControl({
+      mine: pa.claim,
+      theirs: phone.claim,
+      theirsAtMyClock: phone.claim + SKEW,
+      myId: pa.id,
+      theirId: phone.id,
+      mineBegun: true,
+      theirsBegun: true,
+    });
+    const phoneYields = shouldYieldControl({
+      mine: phone.claim,
+      theirs: pa.claim,
+      theirsAtMyClock: pa.claim - SKEW,
+      myId: phone.id,
+      theirId: pa.id,
+      mineBegun: true,
+      theirsBegun: true,
+    });
+    expect(paYields).toBe(false);
+    expect(phoneYields).toBe(true);
   });
 
-  it("keeps a reloaded speaker sounding when it yields to the incumbent", () => {
-    // The claim predates this page's life → we are re-joining, not being taken over.
-    expect(
-      shouldMuteOnStepDown({
-        mine: null,
-        theirsAtMyClock: 1_000,
-        resumedOwnSnapshot: true,
-        mountedAt,
-      })
-    ).toBe(false);
+  it("a narrow gap (two presses at once) is judged on the raw stamps - the same verdict on both sides even when latency tips the correction", () => {
+    // corrected gaps of +40 ms on one side and +60 ms on the other: both under the trust
+    // window, so neither side uses them
+    const a = shouldYieldControl({ mine: 5_000, theirs: 5_050, theirsAtMyClock: 5_040, myId: "aaa", theirId: "zzz", mineBegun: true, theirsBegun: true });
+    const b = shouldYieldControl({ mine: 5_050, theirs: 5_000, theirsAtMyClock: 5_060, myId: "zzz", theirId: "aaa", mineBegun: true, theirsBegun: true });
+    expect(a !== b).toBe(true);
+    expect(a).toBe(false); // raw: 5_000 is earlier
   });
 
-  it("moves the sound when someone deliberately takes control after we loaded", () => {
-    expect(
-      shouldMuteOnStepDown({
-        mine: null,
-        theirsAtMyClock: 9_000,
-        resumedOwnSnapshot: true,
-        mountedAt,
-      })
-    ).toBe(true);
-  });
-
-  it("mutes a device that lost a claim of its own", () => {
-    expect(
-      shouldMuteOnStepDown({
-        mine: 2_000,
-        theirsAtMyClock: 3_000,
-        resumedOwnSnapshot: true,
-        mountedAt,
-      })
-    ).toBe(true);
-  });
-
-  it("does not mute on an unclaimed winner it cannot date", () => {
-    // theirs=null with a resumed snapshot: the tie-break above decided this, and a
-    // reloaded speaker must not be silenced by a claim that does not exist.
-    expect(
-      shouldMuteOnStepDown({
-        mine: null,
-        theirsAtMyClock: null,
-        resumedOwnSnapshot: true,
-        mountedAt,
-      })
-    ).toBe(false);
+  it("the trust window is far above a message's latency and far below a show", () => {
+    expect(CLAIM_SKEW_TRUST_MS).toBeGreaterThanOrEqual(5_000);
+    expect(CLAIM_SKEW_TRUST_MS).toBeLessThanOrEqual(60_000);
   });
 });

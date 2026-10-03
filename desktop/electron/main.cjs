@@ -1626,7 +1626,7 @@ async function driveLiveScenario(win) {
     return { role: "audible", after: started, audio: heard, signal, console: consoleReading, mountedSync: mounted.sync };
   }
 
-  if (SMOKE_LIVE === "main" || SMOKE_LIVE === "main-yield") {
+  if (SMOKE_LIVE === "main") {
     smokeAt(`live:${SMOKE_LIVE}:starting`);
     const clicked = await win.webContents.executeJavaScript(
       `(() => { const b = document.querySelector('[data-testid=start-show]');
@@ -1659,12 +1659,10 @@ async function driveLiveScenario(win) {
     // Tell the runner it may launch the second device — and only then.
     await smokeMark("main-started", { set: true });
     smokeAt(`live:${SMOKE_LIVE}:holding`);
-    // Two ways to be released, one per scenario. "peer-settled" is set by the
-    // RUNNER once the joining device has written its verdict (the show stays
-    // here); "peer-took-control" is set by the PEER ITSELF the moment it takes the
-    // show (the handoff scenario). Waiting on the wrong one would hold this device
-    // until its watchdog and report a hang for a scenario that worked.
-    await waitForMark(SMOKE_LIVE === "main-yield" ? "peer-took-control" : "peer-settled", 90_000);
+    // Released by the RUNNER once the second device has written its verdict - in
+    // both scenarios the show stays here (พี่ 2026-10-04: the device that started the
+    // show keeps it; there is no take-over).
+    await waitForMark("peer-settled", 90_000);
     smokeAt(`live:${SMOKE_LIVE}:rechecking`);
     // ⚠️ Read the live state AGAIN rather than trusting `started`. The whole
     // scenario is about what a second device DID to this one, and a reading taken
@@ -1673,7 +1671,7 @@ async function driveLiveScenario(win) {
     return { role: SMOKE_LIVE, atStart: started, after, mountedSync: mounted.sync };
   }
 
-  if (SMOKE_LIVE === "peer" || SMOKE_LIVE === "peer-take") {
+  if (SMOKE_LIVE === "peer" || SMOKE_LIVE === "peer-try") {
     smokeAt(`live:${SMOKE_LIVE}:adopting`);
     // No press of anything. Adoption arrives over the socket: the PA answers this
     // device's sync-request with its state, and live-mode.tsx's "adoptingRunningShow"
@@ -1690,42 +1688,38 @@ async function driveLiveScenario(win) {
     await smokeMark("peer-joined", { set: true });
     if (SMOKE_LIVE === "peer") return { role: "peer", after: adopted, mountedSync: mounted.sync };
 
-    // ── THE HANDOFF, which is the operator's real move ────────────────────────
-    // "เครื่องเสียงคุมคนเดียว" is enforced in the UI, not merely in the arbitration:
-    // the ขอควบคุม button DOES NOT EXIST on a muted viewer (live-mode.tsx renders
-    // it only when soundOutput is on), because control and audio must travel
-    // together. So this device has to do what a person does — turn its own output
-    // on first, and only then ask for the show.
-    smokeAt("live:peer-take:turning-sound-on");
-    const soundOn = await win.webContents.executeJavaScript(
+    // ── THE OLD TAKE-OVER MOVES, which must all fail now ──────────────────────
+    // พี่ 2026-10-04: the device that started the show keeps it; every other device
+    // only watches. This device does what an operator used to do to move the show -
+    // turn its own sound on, press ขอควบคุม, press START - and none of it may land.
+    smokeAt("live:peer-try:sound-key");
+    const soundKey = await win.webContents.executeJavaScript(
       `(() => { const b = document.querySelector('[data-testid=sound-output-toggle]');
-        if (!b) return 'no sound toggle'; b.click(); return 'clicked'; })()`
+        if (!b) return 'no sound toggle'; const was = b.disabled; b.click(); return was ? 'locked' : 'open'; })()`
     );
-    if (soundOn !== "clicked") throw new Error(`could not turn the sound on: ${soundOn}`);
-    await pollLive(win, "this device never took its sound output", (l) => l.sound, 10_000);
-
-    smokeAt("live:peer-take:asking-for-control");
-    const asked = await win.webContents.executeJavaScript(
-      `(() => { const b = document.querySelector('[data-testid=request-control]');
-        if (!b) return 'no request-control button — is this device still muted?';
-        b.click(); return 'clicked'; })()`
+    if (soundKey !== "locked") throw new Error(`a viewer's sound key is not locked off: ${soundKey}`);
+    smokeAt("live:peer-try:take-over");
+    const takeOver = await win.webContents.executeJavaScript(
+      `(() => {
+        const ask = document.querySelector('[data-testid=request-control]');
+        if (ask) { ask.click(); return 'request-control exists'; }
+        const start = document.querySelector('[data-testid=start-show]');
+        if (start && !start.disabled) { start.click(); return 'start-show was pressable'; }
+        return 'none';
+      })()`
     );
-    if (asked !== "clicked") throw new Error(`could not ask for control: ${asked}`);
-    const took = await pollLive(
-      win,
-      "this device asked for control and never got it",
-      (l) => l.controller && l.sound && l.begun,
-      20_000
-    );
-    // Release the old controller: it re-reads its own state and reports what the
-    // handoff did to it. Set by THIS device rather than by the runner, because
-    // only this device knows the moment control actually moved.
-    await smokeMark("peer-took-control", { set: true });
-    return { role: "peer-take", adopted, after: took, mountedSync: mounted.sync };
+    if (takeOver !== "none") throw new Error(`a viewer could reach a take-over key: ${takeOver}`);
+    // Long enough for anything those clicks set off to cross the socket and back.
+    await new Promise((r) => setTimeout(r, 3000));
+    const after = JSON.parse(await win.webContents.executeJavaScript(SMOKE_LIVE_PROBE));
+    if (after.controller || after.sound) {
+      throw new Error(`the viewer changed role after trying: controller=${after.controller} sound=${after.sound}`);
+    }
+    return { role: "peer-try", adopted, after, mountedSync: mounted.sync };
   }
 
   throw new Error(
-    `CUEIQ_SMOKE_LIVE must be main / main-yield / peer / peer-take / audible, got "${SMOKE_LIVE}"`
+    `CUEIQ_SMOKE_LIVE must be main / peer / peer-try / audible, got "${SMOKE_LIVE}"`
   );
 }
 

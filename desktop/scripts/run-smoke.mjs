@@ -238,7 +238,7 @@ const SCENARIOS = [
     what: "PA starts a show, a second device joins -> one controller, one sound host",
     // a = launched first and starts the show; b = joins mid-show. `controller`
     // names which of the two must END with the show, and everything the pair is
-    // checked on is written in terms of that — so the handoff scenario below is the
+    // checked on is written in terms of that — so the no-takeover scenario below is the
     // same code with one letter changed, rather than a second copy of it.
     pair: {
       a: { role: "main", expect: "live-controller" },
@@ -257,23 +257,18 @@ const SCENARIOS = [
     },
   },
   {
-    // THE HANDOFF — "2-device handoff" is the exact phrase on the hand-run list.
-    // The PA runs the show; the second device does what an operator does when the
-    // desk moves: turns its OWN sound output on, then presses ขอควบคุม. The show,
-    // the audio and the item index all have to move together and land on one
-    // device — and the old PA has to go quiet, which is the half that has cost a
-    // real show before (two speakers, one of them a second behind).
-    //
-    // The button it presses is not visible until the sound is on: live-mode.tsx
-    // renders ขอควบคุม only for a device that is outputting, precisely so control
-    // can never be taken by a muted phone. That rule is now exercised by a machine
-    // pressing real buttons in a real window.
-    name: "two-device-handoff",
-    what: "the show, the audio and the control all move to the second device",
+    // NO TAKE-OVER (พี่ 2026-10-04: "เครื่องอื่นที่เข้ามาดูได้อย่างเดียว ต้องไม่ส่งผลกระทบกับ
+    // เครื่องแรกที่เป็นเครื่องเปิดเพลง"). This scenario used to prove the HANDOFF - the
+    // second device turned its own sound on and pressed ขอควบคุม, and the show moved
+    // to it. Now the second device makes the same moves (the sound key, ขอควบคุม,
+    // START) and every one of them has to fail: the PA keeps the show, the sound and
+    // the item, and the second device stays a silent viewer.
+    name: "two-device-no-takeover",
+    what: "the second device tries the old take-over moves; the PA keeps the show and the sound",
     pair: {
-      a: { role: "main-yield", expect: "live-viewer" },
-      b: { role: "peer-take", expect: "live-controller" },
-      controller: "b",
+      a: { role: "main", expect: "live-controller" },
+      b: { role: "peer-try", expect: "live-viewer" },
+      controller: "a",
     },
     seed: false,
     backend: true,
@@ -652,12 +647,10 @@ async function runTwoDeviceScenario(s) {
     console.log("   the PA is running the show — launching the second device");
     peer = await runScenario(device(s.pair.b), shared);
     // Release the first device: it re-reads its own live state and writes its
-    // verdict. In the HANDOFF scenario it is usually already released — the peer
-    // sets "peer-took-control" itself the moment the show moves — and setting this
-    // one anyway is what stops a peer that DIED mid-handoff from leaving the other
-    // process hanging until its watchdog, which would report the wrong failure.
+    // verdict. Setting it whatever the peer did is what stops a peer that DIED
+    // mid-scenario from leaving the other process hanging until its watchdog,
+    // which would report the wrong failure.
     backend.setMark("peer-settled");
-    backend.setMark("peer-took-control");
     main = await mainRun;
   } finally {
     await backend.close();
@@ -709,7 +702,7 @@ async function runTwoDeviceScenario(s) {
 
   // ── THE PAIR ITSELF ─────────────────────────────────────────────────────────
   // Written against WHO MUST END UP DRIVING (s.pair.controller) rather than against
-  // "the PA", so the join scenario and the handoff scenario are the same five
+  // "the PA", so the join scenario and the no-takeover scenario are the same five
   // checks. The interesting property is identical in both: after two devices have
   // finished negotiating, the room has one show on it.
   const aState = main?.liveReport?.after;

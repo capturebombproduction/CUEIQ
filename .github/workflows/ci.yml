@@ -130,11 +130,12 @@ jobs:
       # navigator.onLine false) -> the signed-in dashboard rendered from cache ·
       # handover -> signs in for real against a local Supabase stub, lets the app
       # write its OWN caches, and only then cuts the network (the half hand-seeding
-      # can never prove) · two-device + two-device-handoff -> TWO of these processes
+      # can never prove) · two-device + two-device-no-takeover -> TWO of these processes
       # at once, over a real socket (a local Realtime stub): one joins a running show
-      # and must stay a silent viewer, and one TAKES the show (sound output on, then
-      # ขอควบคุม) and must end up holding all of it. Both end with exactly one
-      # controller, one sound host and both screens on the same item ·
+      # and must stay a silent viewer, and one also TRIES the old take-over moves
+      # (the sound key, ขอควบคุม, START) and every one must fail - the first device
+      # keeps the show (พี่ 2026-10-04). Both end with exactly one controller (the
+      # device that started), one sound host and both screens on the same item ·
       # audible -> plants a real WAV in the app's own audio cache, starts the show,
       # and MEASURES THE WAVEFORM coming out of the player (a silent file fails it
       # while every other reading stays green) · Quick Show -> opens with no account
