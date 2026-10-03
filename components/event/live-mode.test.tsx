@@ -2114,4 +2114,73 @@ describe("LiveMode · the NOW waveform is the file on the item's clock", () => {
     expect(h.slice(0, 100).every((x) => x === 100)).toBe(true);
     expect(h.slice(100).every((x) => x < 10)).toBe(true);
   });
+
+  it("a file half the slot: a looping row plays it again, a row that does not loop is silent after it", async () => {
+    const looped = await mountLive({
+      items: [makeItem(1, { song_id: "song-1", duration_seconds: 240, loop_audio: true }), ITEMS[1]],
+      songSignal: signal(120),
+    });
+    // the file's loud half comes back in the slot's third quarter
+    expect(heights().slice(100, 150).every((x) => x === 100)).toBe(true);
+    looped.unmount();
+    await mountLive({ items: [makeItem(1, { song_id: "song-1", duration_seconds: 240 }), ITEMS[1]], songSignal: signal(120) });
+    expect(heights().slice(100).every((x) => x < 10)).toBe(true);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// (z3) CONSOLE DRAWS THE SAME FILE ON THE SAME CLOCK
+//
+// Live hands CONSOLE each item's file length (the song's, not the row's) and its loop flag;
+// the clip editor then draws what the NOW card draws.
+// ─────────────────────────────────────────────────────────────────────────────
+describe("LiveMode · CONSOLE's clip is the file on the item's clock", () => {
+  const STAGE_QUERY = "(orientation: landscape) and (min-width: 900px) and (min-height: 600px)";
+  const PEAKS = "_".repeat(100) + "A".repeat(100); // loud first half, silent second
+  beforeEach(() => {
+    localStorage.setItem("cueiq:liveView", "console");
+    vi.spyOn(window, "matchMedia").mockImplementation(
+      (q: string) =>
+        ({
+          matches: q === STAGE_QUERY,
+          media: q,
+          onchange: null,
+          addListener() {},
+          removeListener() {},
+          addEventListener() {},
+          removeEventListener() {},
+          dispatchEvent: () => false,
+        }) as unknown as MediaQueryList
+    );
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    localStorage.removeItem("cueiq:liveView");
+  });
+  // the clip editor's bars, by column: 1 = full scale, 0.03 = the floor
+  const levels = () => {
+    const d = [...document.querySelectorAll('[data-testid="console-wave"] path')].map((p) => p.getAttribute("d") ?? "").join("");
+    const out: number[] = [];
+    for (const m of d.matchAll(/M([\d.]+) [-\d.]+h[\d.]+v([\d.]+)/g)) out[Math.floor(Number(m[1]))] = Number(m[2]) / 96;
+    return out;
+  };
+  const signal = (duration: number) => ({ "song-1": { lufs: -9, peaks: PEAKS, beatOffset: null, bpm: null, duration } });
+
+  it("a file twice the slot: the song's length, not the row's - only the loud half is in it", async () => {
+    await mountLive({ items: [makeItem(1, { song_id: "song-1", duration_seconds: 120 }), ITEMS[1]], songSignal: signal(240) });
+    const l = levels();
+    expect(l).toHaveLength(200);
+    expect(l.every((x) => x === 1)).toBe(true);
+  });
+
+  it("a looping row repeats the file; one that does not loop is silent after it", async () => {
+    const looped = await mountLive({
+      items: [makeItem(1, { song_id: "song-1", duration_seconds: 240, loop_audio: true }), ITEMS[1]],
+      songSignal: signal(120),
+    });
+    expect(levels().slice(100, 150).every((x) => x === 1)).toBe(true);
+    looped.unmount();
+    await mountLive({ items: [makeItem(1, { song_id: "song-1", duration_seconds: 240 }), ITEMS[1]], songSignal: signal(120) });
+    expect(levels().slice(100).every((x) => x < 0.1)).toBe(true);
+  });
 });

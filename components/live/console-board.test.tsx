@@ -202,6 +202,14 @@ describe("the clip editor", () => {
     mount({ index: 2, elapsed: 10, remaining: 230 });
     expect(screen.getByText("รายการนี้ไม่ได้ผูกกับเพลงในคลัง")).toBeTruthy();
   });
+
+  it("a measured song on a 0:00 row says the row has no length - not that the song is unmeasured", () => {
+    // a template row cloned with 0 s: nothing to draw the file over
+    mount({ items: [item(1, { block: 0 }), ...ITEMS.slice(1)], elapsed: 0, remaining: 0 });
+    expect(screen.queryByTestId("console-wave")).toBeNull();
+    expect(screen.getByText("รายการนี้ยาว 0:00 — ตั้งความยาวในเซ็ตลิสต์ก่อน")).toBeTruthy();
+    expect(screen.queryByText("ยังไม่ได้วัดรูปคลื่นของเพลงนี้")).toBeNull();
+  });
 });
 
 describe("the set mixer", () => {

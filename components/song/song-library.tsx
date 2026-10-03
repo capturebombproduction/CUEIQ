@@ -32,7 +32,7 @@ import { createClient } from "@/lib/supabase/client";
 import { notify } from "@/lib/notify-client";
 import { detectAudioDuration } from "@/lib/audio";
 import { makeCoverDataUrl } from "@/lib/song-cover";
-import { analyzeAudioFile } from "@/lib/song-analysis-browser";
+import { STALE_FILE_FACTS, writeSongFileFacts } from "@/lib/song-file-facts";
 import {
   buildSongAudioPath,
   uploadEventAudio,
@@ -805,9 +805,10 @@ export function SongLibrary({
     }
 
     // A file picked in this dialog is uploaded to R2 now that we have the song id
-    // (one-step add+upload). uploadSongAudio sets audio_path + shows its own toast.
+    // (one-step add+upload). uploadSongAudio sets audio_path + shows its own toast. The
+    // length this dialog showed (and the user may have changed) is the one saved above.
     if (pickedFile) {
-      await uploadSongAudio(saved, pickedFile);
+      await uploadSongAudio(saved, pickedFile, true);
     } else {
       toast.success(form.id ? "บันทึกเพลงแล้ว" : "เพิ่มเพลงแล้ว");
     }
@@ -943,21 +944,13 @@ export function SongLibrary({
     });
   }
 
-  // The analysis half of an upload (see uploadSongAudio). Written only while the song still
-  // points at the file that was measured: a second upload landing first must not get the
-  // first file's numbers.
-  async function measureUploadedSong(song: Song, path: string, file: File) {
-    const a = await analyzeAudioFile(file);
-    if (!a) return;
-    const patch: Partial<Song> = { lufs: a.lufs, peaks: a.peaks, beat_offset: a.beat_offset };
-    if (song.bpm == null && a.bpm != null) patch.bpm = a.bpm;
-    const { data, error } = await supabase
-      .from("songs")
-      .update(patch)
-      .eq("id", song.id)
-      .eq("audio_path", path)
-      .select("id");
-    if (error || wroteNothing(data)) return;
+  // The measuring half of an upload (see uploadSongAudio): the new file's own length and its
+  // loudness, waveform and first beat (lib/song-file-facts.ts). Written only while the song
+  // still points at the file that was measured: a second upload landing first must not get
+  // the first file's numbers.
+  async function measureUploadedSong(song: Song, path: string, file: File, keepLength: boolean) {
+    const patch = await writeSongFileFacts(supabase, song, path, file, { length: !keepLength });
+    if (!patch) return;
     setSongs((prev) => prev.map((s) => (s.id === song.id ? { ...s, ...patch } : s)));
     broadcastSongsChanged(song.group_id);
   }
@@ -967,7 +960,9 @@ export function SongLibrary({
   // ad-hoc from Live Mode).
   // Returns the new R2 object path on success (so "ดันขึ้นเป็นต้นฉบับ" can seed the
   // device cache), or null on failure. Existing callers ignore the return.
-  async function uploadSongAudio(song: Song, file: File): Promise<string | null> {
+  // `keepLength`: the edit dialog already saved the length it showed the user (who may
+  // have changed it); every other caller gets the new file's own length.
+  async function uploadSongAudio(song: Song, file: File, keepLength = false): Promise<string | null> {
     setAudioBusy((b) => ({ ...b, [song.id]: "up" }));
     const prevPath = song.audio_path ?? null;
     const path = buildSongAudioPath(song.tenant_id, song.group_id, song.id, file.name);
@@ -975,9 +970,10 @@ export function SongLibrary({
     try {
       await uploadEventAudio(path, file, file.type);
       uploaded = true;
+      // the old file's loudness/waveform/beat go with it (lib/song-file-facts.ts)
       const { data, error } = await supabase
         .from("songs")
-        .update({ audio_path: path, audio_name: file.name, audio_expires_at: null })
+        .update({ audio_path: path, audio_name: file.name, audio_expires_at: null, ...STALE_FILE_FACTS })
         .eq("id", song.id)
         .select("id");
       if (error) throw error;
@@ -991,7 +987,7 @@ export function SongLibrary({
       setSongs((prev) =>
         prev.map((s) =>
           s.id === song.id
-            ? { ...s, audio_path: path, audio_name: file.name, audio_expires_at: null }
+            ? { ...s, audio_path: path, audio_name: file.name, audio_expires_at: null, ...STALE_FILE_FACTS }
             : s
         )
       );
@@ -1015,10 +1011,10 @@ export function SongLibrary({
       }
       broadcastSongsChanged(song.group_id); // live update any open Live Mode
       toast.success("อัปโหลดไฟล์เพลงขึ้นคลังแล้ว");
-      // 0045: measure the file just uploaded (loudness, waveform, first beat) so Live can
-      // draw and compare it on every device. In the background and best-effort: on any
-      // failure the song simply stays unmeasured, as every song was before 0045.
-      void measureUploadedSong(song, path, file);
+      // Measure the file just uploaded (its length; 0045's loudness, waveform, first beat)
+      // so Live draws and compares it on every device. In the background and best-effort:
+      // on any failure the song simply stays unmeasured, as every song was before 0045.
+      void measureUploadedSong(song, path, file, keepLength);
       return path;
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);

@@ -766,12 +766,13 @@ const ClipEditor = memo(function ClipEditor({
   const block = item?.block ?? 0;
   // the file on the item's own clock, one column per 200th of the block: its real length, looped
   // or silent after its end (lib/song-signal.ts waveOverBlock)
+  const wave = useMemo(() => decodeWaveform(item?.peaks), [item?.peaks]);
   const levels = useMemo(
     () =>
       item
-        ? waveOverBlock(decodeWaveform(item.peaks), { block: item.block, start: item.audioStart, fileLen: item.audioLen, loop: item.loop, columns: 200 })
+        ? waveOverBlock(wave, { block: item.block, start: item.audioStart, fileLen: item.audioLen, loop: item.loop, columns: 200 })
         : [],
-    [item]
+    [item, wave]
   );
   const regions = useMemo(() => sectionRegions(sections, block), [sections, block]);
   const grid = useMemo(
@@ -853,7 +854,12 @@ const ClipEditor = memo(function ClipEditor({
           </div>
         ) : (
           <p className="absolute inset-x-0 bottom-4 top-6 grid place-items-center text-[12px] text-muted-foreground">
-            {item.songId ? "ยังไม่ได้วัดรูปคลื่นของเพลงนี้" : "รายการนี้ไม่ได้ผูกกับเพลงในคลัง"}
+            {/* nothing to draw: no song, an unmeasured song, or a row with no length to draw it over */}
+            {!item.songId
+              ? "รายการนี้ไม่ได้ผูกกับเพลงในคลัง"
+              : wave.length === 0
+                ? "ยังไม่ได้วัดรูปคลื่นของเพลงนี้"
+                : "รายการนี้ยาว 0:00 — ตั้งความยาวในเซ็ตลิสต์ก่อน"}
           </p>
         )}
         {/* time */}

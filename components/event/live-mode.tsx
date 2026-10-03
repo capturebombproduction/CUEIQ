@@ -76,6 +76,7 @@ import { useShowOutput } from "@/components/live/use-show-output";
 import { SignalTap, signalTapSupported, type SilenceVerdict } from "@/lib/live-signal";
 import { decodeWaveform } from "@/lib/song-analysis";
 import { loudnessDelta, waveOverBlock, type SongSignalMap } from "@/lib/song-signal";
+import { writeSongFileFacts } from "@/lib/song-file-facts";
 import { useSongMarkers } from "@/lib/song-markers-live";
 import { BeatLight } from "@/components/live/beat-light";
 import { ConsoleBoard, type ConsoleItem } from "@/components/live/console-board";
@@ -2276,6 +2277,9 @@ export function LiveMode({
         .update({ song_id: songId })
         .eq("id", itemId);
       if (linkErr) throw linkErr;
+      // The song was made with the ROW's length; the file has its own, and Live draws the
+      // waveform on it (lib/song-file-facts.ts). In the background and best-effort.
+      void writeSongFileFacts(supabase, { id: songId, duration_seconds: item.duration_seconds, bpm: null }, path, file);
       songAudioRef.current[songId] = { path, name: file.name };
       cachedPathRef.current[itemId] = path;
       setItems((prev) =>

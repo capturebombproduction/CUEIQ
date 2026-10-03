@@ -38,6 +38,7 @@ import { removeEventAudio, uploadEventAudio } from "@/lib/audio-remote";
 import { privateChannel, songsTopic } from "@/lib/realtime";
 import { clearLocalSource, getLocalSource } from "@/lib/local-source";
 import { cacheSongBlob } from "@/lib/song-cache";
+import { STALE_FILE_FACTS, writeSongFileFacts } from "@/lib/song-file-facts";
 import { hasLiveSession } from "@/lib/auth-session";
 import { wroteNothing } from "@/lib/write-guard";
 import { getStoredSessionUser } from "~/data/stored-session";
@@ -587,7 +588,7 @@ async function applyAudioUploadOp(
   const supabase = createClient();
   const { data, error, status } = await supabase
     .from("songs")
-    .select("id, audio_path")
+    .select("id, audio_path, duration_seconds, bpm")
     .eq("id", op.id)
     .maybeSingle();
   if (error) {
@@ -661,9 +662,10 @@ async function applyAudioUploadOp(
       if (isQueueableWriteError(msg, onLine, status)) throw e instanceof Error ? e : new Error(msg);
       return { conflict: msg };
     }
+    // the old file's loudness/waveform/beat go with it (lib/song-file-facts.ts)
     const upd = await supabase
       .from("songs")
-      .update({ audio_path: op.path, audio_name: op.fileName, audio_expires_at: null })
+      .update({ audio_path: op.path, audio_name: op.fileName, audio_expires_at: null, ...STALE_FILE_FACTS })
       .eq("id", op.id)
       .select("id");
     if (upd.error) {
@@ -680,6 +682,15 @@ async function applyAudioUploadOp(
     // Real replace just landed (not the "applied" pass-through below, which means
     // a previous flush already did this) — same trigger the online path fires on.
     broadcastAudioChanged(op.groupId);
+    // The new file's own length, in the background (never under the outbox lock) —
+    // Live draws the waveform on it. Length only: this flush can land mid-show, and
+    // decoding a long WAV for its loudness/waveform is left to the library's next
+    // upload or the backfill.
+    if (data) {
+      const file = new File([local.blob], op.fileName, { type: op.contentType || local.blob.type });
+      const song = { id: op.id, duration_seconds: data.duration_seconds as number, bpm: (data.bpm as number | null) ?? null };
+      void writeSongFileFacts(supabase, song, op.path, file, { analyze: false });
+    }
   }
   // Landed (or was already landed by a half-finished flush). Best-effort tail —
   // none of it may fail the op, which the server has now accepted.
