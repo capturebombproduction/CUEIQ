@@ -385,6 +385,15 @@ nav.glass-bottom { --glass-a: var(--tabbar-glass-a); }
   opacity: 0; pointer-events: none; animation: ring-pulse 900ms var(--ease-out) 3; }
 .alarm-plate.settled::after, .alarm-plate.static::after { animation: none; opacity: 0; }
 .alarm-plate.settled { background-color: hsl(var(--card)); color: hsl(var(--foreground)); box-shadow: inset 0 0 0 5px hsl(var(--alarm)); }
+/* Live Signal glow (desktop, a show sounding): a second, SEPARATE light that breathes with the
+   music behind the NOW column. The page light (.spotlight) stays the spec's static wash -
+   this layer is not it. Only its opacity moves (written per frame by signal-strip.tsx: a
+   compositor-only change), its peak alpha is under a third of the page light's, and it is
+   simply off for reduced motion and in overtime, where the alarm light takes the stage. */
+.signal-glow { position: fixed; inset: 0; pointer-events: none; z-index: -1; opacity: 0;
+  background-image: radial-gradient(ellipse 640px 560px at var(--spot-x, 50%) 58%, hsl(var(--spot) / .2) 0%, hsl(var(--spot) / .07) 48%, hsl(var(--spot) / 0) 78%); }
+.zone-over .signal-glow { display: none; }
+@media (prefers-reduced-motion: reduce) { .signal-glow { display: none; } }
 /* Live Signal alarms (NO SIGNAL / STALLED / DEVICE LOST): laid over the NOW card's top strip.
    Red stripes on --notify, the one red no band skin rewrites - unlike overtime's black and
    white hazard band below, so the two can never be mistaken for each other. */

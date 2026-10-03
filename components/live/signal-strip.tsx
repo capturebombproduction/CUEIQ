@@ -30,6 +30,7 @@ export function SignalStrip({
   trackKey,
   waveform,
   onVerdict,
+  glow,
   className,
 }: {
   tap: SignalTap | null;
@@ -42,6 +43,8 @@ export function SignalStrip({
   /** the playing song's waveform (lib/song-analysis.ts decodeWaveform), [] if unmeasured */
   waveform: readonly number[];
   onVerdict: (v: SilenceVerdict) => void;
+  /** the music glow layer (.signal-glow) whose opacity follows the level */
+  glow?: React.RefObject<HTMLElement | null>;
   className?: string;
 }) {
   const rootRef = useRef<HTMLDivElement>(null);
@@ -53,8 +56,8 @@ export function SignalStrip({
   const clipRef = useRef<HTMLSpanElement>(null);
   const [ready, setReady] = useState(false);
   // the latest props, for the loop (it is started once)
-  const live = useRef({ sounding, trackKey, waveform, onVerdict, player });
-  live.current = { sounding, trackKey, waveform, onVerdict, player };
+  const live = useRef({ sounding, trackKey, waveform, onVerdict, player, glow });
+  live.current = { sounding, trackKey, waveform, onVerdict, player, glow };
 
   useEffect(() => {
     if (!tap) return;
@@ -62,10 +65,14 @@ export function SignalStrip({
     let watch = initialSilence();
     let lastVerdict: SilenceVerdict = null;
     let wasReady = false;
+    let glowLevel = 0;
+    let lastFrame = performance.now();
     const hold = { l: 0, r: 0, lAt: 0, rAt: 0, clipAt: -Infinity };
     const frame = () => {
       raf = requestAnimationFrame(frame);
       const now = performance.now();
+      const dt = Math.min(250, Math.max(0, now - lastFrame));
+      lastFrame = now;
       const p = live.current;
       const el = p.player();
       const r = tap.read();
@@ -87,6 +94,13 @@ export function SignalStrip({
         hold.rAt = now;
       }
       if (pk >= CLIP_LEVEL) hold.clipAt = now;
+      // The glow: what leaves the app, its quiet half dark, rising at once and falling slowly
+      // (a breath, not a flicker). Off while this device is not sounding the show.
+      const g = p.sounding ? Math.max(0, (meterPos(Math.max(l, rr)) - 0.45) / 0.55) : 0;
+      // release in TIME (a 450 ms time constant), not per frame: the same breath at 30 or 120 Hz
+      glowLevel = g > glowLevel ? g : glowLevel * Math.exp(-dt / 450);
+      const glowEl = p.glow?.current;
+      if (glowEl) glowEl.style.opacity = glowLevel < 0.01 ? "0" : glowLevel.toFixed(3);
       // RMS bars, peak-hold marks, the readout: transforms and text, no React
       // the lit part is the fixed gradient; a cover anchored right shrinks to reveal it
       if (barL.current) barL.current.style.transform = `scaleX(${1 - meterPos(l)})`;
@@ -131,6 +145,8 @@ export function SignalStrip({
     return () => {
       cancelAnimationFrame(raf);
       if (lastVerdict !== null) live.current.onVerdict(null);
+      const glowEl = live.current.glow?.current;
+      if (glowEl) glowEl.style.opacity = "0";
     };
   }, [tap]);
 

@@ -681,6 +681,7 @@ export function LiveMode({
   // effects run in order, so both elements are there to tap. Absent on the web build.
   const [signalTap, setSignalTap] = useState<SignalTap | null>(null);
   const [signalVerdict, setSignalVerdict] = useState<SilenceVerdict>(null);
+  const signalGlowRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!signalTapSupported()) return;
     const t = new SignalTap(() => [audioRef.current, audioRef2.current]);
@@ -3548,6 +3549,9 @@ export function LiveMode({
           explicit: this root sits inside the app frame, whose lg aim
           (FRAME_LIGHT_AIM) it would otherwise inherit below stage size. */}
       <StageLight className="[--spot-x:50%] stage:[--spot-x:27%]" />
+      {/* the music glow (desktop, a show sounding): app/stage.css .signal-glow, driven by the
+          Signal strip's loop. A layer of its own - the page light above stays static. */}
+      {signalTap && <div ref={signalGlowRef} aria-hidden className="signal-glow no-print [--spot-x:50%] stage:[--spot-x:27%]" />}
       {/* hidden file input */}
       <input
         ref={fileInputRef}
@@ -3758,6 +3762,7 @@ export function LiveMode({
             trackKey={playingId}
             waveform={playingWaveform}
             onVerdict={setSignalVerdict}
+            glow={signalGlowRef}
             className="hidden stage:flex"
           />
         )}

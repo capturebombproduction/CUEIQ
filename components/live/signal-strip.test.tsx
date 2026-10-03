@@ -97,4 +97,23 @@ describe("SignalStrip", () => {
     advance(10000);
     expect(a).not.toHaveBeenCalledWith("silent");
   });
+
+  it("drives the music glow from the level that leaves the app - and only while it sounds", () => {
+    const glow = { current: document.createElement("div") };
+    const { rerender } = render(
+      <SignalStrip tap={tap} player={() => player} sounding trackKey="item-1" waveform={[]} onVerdict={() => {}} glow={glow} />
+    );
+    level = 0.5; // ~ -6 dBFS
+    advance(300);
+    expect(Number(glow.current.style.opacity)).toBeGreaterThan(0.5);
+    (player as { volume: number }).volume = 0; // AUTO MUTE: nothing leaves, the glow falls away
+    advance(6000);
+    expect(glow.current.style.opacity).toBe("0");
+    (player as { volume: number }).volume = 1;
+    rerender(
+      <SignalStrip tap={tap} player={() => player} sounding={false} trackKey="item-1" waveform={[]} onVerdict={() => {}} glow={glow} />
+    );
+    advance(6000);
+    expect(glow.current.style.opacity).toBe("0");
+  });
 });

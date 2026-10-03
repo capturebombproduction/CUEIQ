@@ -212,3 +212,36 @@ describe("no light texture, ghost word or cone anywhere (spec §A.1, §I)", () =
     expect(hits).toEqual([]);
   });
 });
+
+describe(".signal-glow — Live's music glow, a layer APART from the page light", () => {
+  const d = decls(".signal-glow");
+
+  it("is a fixed, untappable layer behind the content that starts dark", () => {
+    expect(d.position).toBe("fixed");
+    expect(d.inset).toBe("0");
+    expect(d["pointer-events"]).toBe("none");
+    expect(d["z-index"]).toBe("-1");
+    expect(d.opacity).toBe("0");
+  });
+
+  it("is never the page light: .spotlight keeps no rule in common with it", () => {
+    for (const { rule } of rulesFor(".signal-glow")) {
+      expect(rule.selectors.map((x) => x.trim())).not.toContain(".spotlight");
+    }
+  });
+
+  it("stays a faint wash: its peak alpha is under a third of the page light's ceiling", () => {
+    const alphas = [...(d["background-image"] ?? "").matchAll(/hsl\(var\(--spot\) \/ ([\d.]+)\)/g)].map((m) => Number(m[1]));
+    expect(alphas.length).toBeGreaterThan(0);
+    expect(Math.max(...alphas)).toBeLessThanOrEqual(0.2);
+  });
+
+  it("is off in overtime (the alarm light takes the stage) and for reduced motion", () => {
+    expect(decls(".zone-over .signal-glow").display).toBe("none");
+    const reduced = rulesFor(".signal-glow").find((r) => r.media.includes("prefers-reduced-motion"));
+    expect(reduced, "a reduced-motion rule").toBeTruthy();
+    const out: Record<string, string> = {};
+    reduced!.rule.walkDecls((x) => void (out[x.prop] = x.value));
+    expect(out.display).toBe("none");
+  });
+});
