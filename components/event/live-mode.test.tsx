@@ -115,6 +115,30 @@ async function mountLive(over: Parameters<typeof renderLive>[0] = {}) {
   return view;
 }
 
+/** Mount a page that the device running the show (another one) has made a VIEWER:
+ *  the PA announces a show it started a minute ago, standing on item `index`. */
+async function mountViewer(over: Parameters<typeof renderLive>[0] = {}, index = 0) {
+  const view = await mountLive(over);
+  const t = Date.now();
+  await act(async () => {
+    live().emit("state", {
+      sender: "pa-device",
+      sentAt: t,
+      fromController: true,
+      begun: true,
+      running: true,
+      startedAt: t - 60_000,
+      itemStartedAt: t - 10_000,
+      itemElapsedAtPause: null,
+      currentIndex: index,
+      mode: "manual",
+      controllerSince: t - 60_000,
+      ended: false,
+    });
+  });
+  return view;
+}
+
 /** The crash-recovery snapshot, as writeLiveSnapshot() writes it. */
 function seedSnapshot(over: Record<string, unknown> = {}) {
   localStorage.setItem(
@@ -298,14 +322,14 @@ describe("LiveMode · a held key is one intention, not fifty", () => {
   });
 
   it("a VIEWER's keyboard drives nothing and broadcasts nothing", async () => {
-    seedSnapshot({ isController: false });
-    await mountLive();
+    await mountViewer();
     expect(screen.getByTestId("viewer-banner")).toBeInTheDocument();
+    const before = stateSends().length;
 
     const prevented = holdKey(window, { code: "Space", key: " " }, 3);
 
     expect(prevented).toBe(0);
-    expect(stateSends()).toHaveLength(0);
+    expect(stateSends()).toHaveLength(before);
   });
 });
 
@@ -714,6 +738,268 @@ describe("LiveMode · two devices: the first one keeps the show", () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// (c2) A CLAIM IS A RUN'S START - AN OLD RUN IS NOT THE SHOW
+//
+// The earlier claim keeps the show, so a claim left from an earlier run (a rehearsal
+// this afternoon, a run that was reset) must not count: the review of 93d4979 found a
+// phone back with its 17:00 rehearsal taking the 20:00 show off the PA.
+// ─────────────────────────────────────────────────────────────────────────────
+describe("LiveMode · an old run is not the show", () => {
+  let media: MediaInstrumentation;
+  beforeEach(() => {
+    media = instrumentMediaElements();
+  });
+  const peerState = (over: Record<string, unknown>) => ({
+    sender: "phone",
+    sentAt: Date.now(),
+    fromController: true,
+    begun: true,
+    running: true,
+    startedAt: Date.now() - 3 * 3600_000,
+    itemStartedAt: Date.now() - 3 * 3600_000,
+    itemElapsedAtPause: null,
+    currentIndex: 3,
+    mode: "manual",
+    ended: false,
+    ...over,
+  });
+
+  it("keeps the show against a phone back with an EARLIER claim from a run it left before this one started", async () => {
+    await mountLive();
+    const ts = await startShowFromUi();
+    await act(async () => {
+      vi.advanceTimersByTime(60_000); // the phone opens a minute into the show
+    });
+    await act(async () => {
+      live().emit(
+        "state",
+        peerState({
+          controllerSince: ts - 3 * 3600_000, // its rehearsal, three hours ago
+          absentFrom: ts - 2.5 * 3600_000, // closed half an hour into it
+          absentUntil: Date.now(), // and opened again just now
+        })
+      );
+    });
+    expect(screen.queryByTestId("viewer-banner")).not.toBeInTheDocument();
+    expect(media.state(media.first()!).muted).toBe(false);
+    // it told the phone so - AT the phone
+    expect(stateSends().at(-1)!.payload.reassertTo).toBe("phone");
+    expect(stateSends().at(-1)!.payload.controllerSince).toBe(ts);
+  });
+
+  it("keeps the show against an earlier claim whose run was ENDED (จบโชว์)", async () => {
+    await mountLive();
+    const ts = await startShowFromUi();
+    await act(async () => {
+      live().emit("state", peerState({ controllerSince: ts - 3 * 3600_000, running: false, ended: true }));
+    });
+    expect(screen.queryByTestId("viewer-banner")).not.toBeInTheDocument();
+  });
+
+  it("a device back from a reload yields when another device STARTED the show while it was away", async () => {
+    // this device ran a show from three hours ago and was closed two hours ago
+    const t = Date.now();
+    seedSnapshot({
+      state: {
+        running: true,
+        begun: true,
+        startedAt: t - 3 * 3600_000,
+        itemStartedAt: t - 3 * 3600_000,
+        itemElapsedAtPause: null,
+        currentIndex: 0,
+        mode: "manual",
+      },
+      isController: true,
+      controllerSince: t - 3 * 3600_000,
+      savedAt: t - 2 * 3600_000,
+    });
+    await mountLive();
+    await act(async () => {
+      live().emit("state", peerState({ sender: "pa", controllerSince: t - 3600_000, startedAt: t - 3600_000 }));
+    });
+    expect(screen.getByTestId("viewer-banner")).toBeInTheDocument();
+    expect(document.querySelector("[data-cueiq-live]")!.getAttribute("data-cueiq-live-index")).toBe("3");
+  });
+
+  it("…but keeps its show after a reload when nothing started while it was away", async () => {
+    const t = Date.now();
+    seedSnapshot({
+      state: {
+        running: true,
+        begun: true,
+        startedAt: t - 3600_000,
+        itemStartedAt: t - 600_000,
+        itemElapsedAtPause: null,
+        currentIndex: 2,
+        mode: "manual",
+      },
+      isController: true,
+      controllerSince: t - 3600_000,
+      savedAt: t - 5_000, // reloaded five seconds ago
+    });
+    await mountLive();
+    // a phone that could not hear it started its own show twenty minutes ago
+    await act(async () => {
+      live().emit("state", peerState({ controllerSince: t - 1200_000, startedAt: t - 1200_000 }));
+    });
+    expect(screen.queryByTestId("viewer-banner")).not.toBeInTheDocument();
+    expect(document.querySelector("[data-cueiq-live]")!.getAttribute("data-cueiq-live-index")).toBe("2");
+  });
+
+  it("a page that SLEPT is away too: a show started during the sleep is not its to take", async () => {
+    await mountLive();
+    const ts = await startShowFromUi();
+    // the phone sleeps for ten minutes: no timer runs, then the clock is simply later
+    vi.setSystemTime(Date.now() + 600_000);
+    await act(async () => {
+      vi.advanceTimersByTime(15_000); // the first tick after waking sees the gap
+    });
+    await act(async () => {
+      live().emit("state", peerState({ sender: "pa", controllerSince: ts + 300_000, startedAt: ts + 300_000 }));
+    });
+    expect(screen.getByTestId("viewer-banner")).toBeInTheDocument();
+  });
+
+  it("a reset run's claim is dropped: the next START is a new claim", async () => {
+    await mountLive();
+    const ts = await startShowFromUi();
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("reset"));
+    });
+    confirm.mockRestore();
+    expect(stateSends().at(-1)!.payload.begun).toBe(false);
+    expect(stateSends().at(-1)!.payload.controllerSince).toBeNull();
+    expect(ts).toBeGreaterThan(0);
+  });
+
+  it("two STARTs at once: each keeps it on its corrected clock, and the re-assert AT the other settles it", async () => {
+    await mountLive();
+    const ts = await startShowFromUi();
+    // a peer that pressed START 50 ms after us, on a clock that reads 30 s behind ours
+    // (raw, its stamp looks EARLIER): one exchange keeps both...
+    await act(async () => {
+      live().emit("state", peerState({ sentAt: Date.now() - 30_000, controllerSince: ts + 50 - 30_000, startedAt: ts + 50 - 30_000 }));
+    });
+    expect(screen.queryByTestId("viewer-banner")).not.toBeInTheDocument();
+    // ...and when it insists AT us, both fall back to the raw stamps: ours is later.
+    await act(async () => {
+      vi.advanceTimersByTime(2_000);
+    });
+    await act(async () => {
+      live().emit(
+        "state",
+        peerState({ sentAt: Date.now() - 30_000, controllerSince: ts + 50 - 30_000, startedAt: ts + 50 - 30_000, reassertTo: stateSends()[0].payload.sender })
+      );
+    });
+    expect(screen.getByTestId("viewer-banner")).toBeInTheDocument();
+  });
+});
+
+describe("LiveMode · before a show, and after one is reset", () => {
+  it("two pages before any show do not make each other viewers: both keep START", async () => {
+    await mountLive();
+    await act(async () => {
+      live().emit("state", {
+        sender: "other-page",
+        sentAt: Date.now(),
+        fromController: true,
+        begun: false,
+        running: false,
+        startedAt: null,
+        itemStartedAt: null,
+        itemElapsedAtPause: null,
+        currentIndex: 0,
+        mode: "auto",
+        controllerSince: null,
+        ended: false,
+      });
+    });
+    expect(screen.queryByTestId("viewer-banner")).not.toBeInTheDocument();
+    expect(document.querySelector("[data-cueiq-live]")!.getAttribute("data-cueiq-live-controller")).toBe("1");
+  });
+
+  it("a viewer whose show is RESET by its device is free again: START comes back", async () => {
+    await mountViewer();
+    expect(screen.getByTestId("viewer-banner")).toBeInTheDocument();
+    await act(async () => {
+      live().emit("state", {
+        sender: "pa-device",
+        sentAt: Date.now(),
+        fromController: true,
+        begun: false,
+        running: false,
+        startedAt: null,
+        itemStartedAt: null,
+        itemElapsedAtPause: null,
+        currentIndex: 0,
+        mode: "manual",
+        controllerSince: null,
+        ended: false,
+      });
+    });
+    expect(screen.queryByTestId("viewer-banner")).not.toBeInTheDocument();
+    await act(async () => {
+      vi.advanceTimersByTime(6_000);
+    });
+    expect(screen.getByTestId("start-show")).toBeEnabled();
+  });
+
+  it("a fresh page does not pick up an ENDED show from another viewer's reply", async () => {
+    await mountLive();
+    await act(async () => {
+      live().emit("state", {
+        sender: "some-viewer",
+        sentAt: Date.now(),
+        fromController: false,
+        begun: true,
+        running: false,
+        startedAt: Date.now() - 3600_000,
+        itemStartedAt: null,
+        itemElapsedAtPause: 120,
+        currentIndex: 5,
+        mode: "manual",
+        controllerSince: null,
+        ended: true,
+      });
+    });
+    const root = document.querySelector("[data-cueiq-live]")!;
+    expect(root.getAttribute("data-cueiq-live-begun")).toBe("0");
+    expect(root.getAttribute("data-cueiq-live-controller")).toBe("1");
+  });
+});
+
+describe("LiveMode · the device running the show owns its level and its MAIN record", () => {
+  it("ignores another page's volume message while it runs the show", async () => {
+    const media = instrumentMediaElements();
+    h.saved = [{ itemId: "item-1", blob: new Blob(["audio"]), name: "track-1.wav", path: null }];
+    await mountLive();
+    await startShowFromUi();
+    const before = media.state(media.first()!).volume;
+    await act(async () => {
+      live().emit("volume", { sender: "old-tab", itemId: "item-1", target: 0, ms: 0 });
+      vi.advanceTimersByTime(300);
+    });
+    expect(media.state(media.first()!).volume).toBe(before);
+  });
+
+  it("claims show_main back when its heartbeat finds the row gone or another device's", async () => {
+    await mountLive();
+    await startShowFromUi();
+    await act(async () => {});
+    const claims = () => supa.callsTo("show_authority", "upsert").length;
+    const first = claims();
+    expect(first).toBeGreaterThan(0);
+    // the fake answers the heartbeat's update with no rows: the row is not this device's
+    await act(async () => {
+      vi.advanceTimersByTime(30_000);
+    });
+    await act(async () => {});
+    expect(claims()).toBeGreaterThan(first);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // (e) SINGLE AUDIO SOURCE — "เสียงออกเครื่องเดียว", the zero-tolerance guarantee
 //
 // พี่ 2026-10-04: the device that started the show is the only one that sounds it. A
@@ -761,6 +1047,8 @@ describe("LiveMode · a viewer never sounds", () => {
     expect(document.querySelector("[data-cueiq-live]")!.getAttribute("data-cueiq-live-sound")).toBe("0");
     const key = screen.getByTestId("sound-output-toggle");
     expect(key).toBeDisabled();
+    // nor is it asked to "tap to resume" a sound it is never to make
+    expect(screen.queryByText(/แตะเพื่อเล่นเสียงต่อ/)).toBeNull();
     // the silence is a verdict for this show, not the device's saved preference
     expect(localStorage.getItem("cueiq:soundOutput")).not.toBe("0");
   });
@@ -878,7 +1166,10 @@ describe("LiveMode · จบโชว์ stops the sound", () => {
 // reply is where they become visible.
 // ─────────────────────────────────────────────────────────────────────────────
 describe("LiveMode · the crash-recovery snapshot restores the device's ROLE", () => {
-  it("answers a sync-request as the viewer it was, with its claim and its ended flag", async () => {
+  // A viewer keeps no snapshot now: it has nothing to resume (it picks the show up from
+  // its device again), and one restored as a viewer outlived the show it watched - a
+  // page could be left watching nothing, with START gone, forever.
+  it("a VIEWER's snapshot (an older build wrote them) is not restored: the page opens fresh", async () => {
     seedSnapshot({
       state: {
         running: false,
@@ -894,20 +1185,27 @@ describe("LiveMode · the crash-recovery snapshot restores the device's ROLE", (
       ended: true,
     });
     await mountLive();
+    const root = document.querySelector("[data-cueiq-live]")!;
+    expect(root.getAttribute("data-cueiq-live-begun")).toBe("0");
+    expect(root.getAttribute("data-cueiq-live-controller")).toBe("1");
+  });
 
+  it("a viewer answers a sync-request as a viewer, and writes no snapshot of its own", async () => {
+    await mountViewer({}, 1);
     let delivered = 0;
     await act(async () => {
       delivered = live().emit("sync-request", { sender: "joining-phone" });
     });
-
     // 0 handlers would mean the component never registered — the failure this is hunting.
     expect(delivered).toBe(1);
     const reply = live().lastSent("state");
     expect(reply).toBeTruthy();
     expect(reply!.payload.fromController).toBe(false);
-    expect(reply!.payload.controllerSince).toBe(12_345);
-    expect(reply!.payload.ended).toBe(true);
     expect(reply!.payload.currentIndex).toBe(1);
+    await act(async () => {
+      vi.advanceTimersByTime(1_000);
+    });
+    expect(localStorage.getItem(SNAPSHOT_KEY)).toBeNull();
   });
 
   it("a restored CONTROLLER answers as one", async () => {
@@ -1481,8 +1779,7 @@ describe("LiveMode · a viewer device", () => {
   // พี่ 2026-10-04: a viewer only watches. No take-over at all - not even a device that
   // turns its own sound on (that is how ขอควบคุม used to appear).
   it("shows the viewer banner, a locked-off sound key, and no ขอควบคุม at all", async () => {
-    seedSnapshot({ isController: false });
-    await mountLive();
+    await mountViewer();
     expect(screen.getByTestId("viewer-banner")).toBeInTheDocument();
     const key = screen.getByTestId("sound-output-toggle");
     expect(key).toBeDisabled();
@@ -1496,8 +1793,7 @@ describe("LiveMode · a viewer device", () => {
   });
 
   it("edits nothing: no Loop or file keys on its rows, and the edit chip is gone", async () => {
-    seedSnapshot({ isController: false });
-    await mountLive();
+    await mountViewer();
     expect(screen.queryByTitle(/ไฟล์เพลง/)).toBeNull();
     expect(screen.queryByTitle(/Loop/i)).toBeNull();
     expect(screen.queryByTitle(/แสดงปุ่มแก้ไขของแต่ละแถว/)).toBeNull();
@@ -1616,10 +1912,9 @@ describe("LiveMode · what a show needs stays where the show can reach it", () =
   });
 
   it("a viewer is never the sound device, so it is not asked which tracks it holds", async () => {
-    seedSnapshot({ isController: false });
     const items = [makeItem(1, { audio_path: "t/g/one.mp3" }), makeItem(2), makeItem(3)];
     supa.setTable("setlist_items", ok(items));
-    await mountLive({ items });
+    await mountViewer({ items });
     expect(within(screen.getByTestId("viewer-banner")).queryByTitle(READINESS)).toBeNull();
   });
 

@@ -220,22 +220,28 @@ export async function claimAuthority(
   }
 }
 
-/** Refresh the heartbeat for a role THIS device holds (no-op if it doesn't). */
+/** Refresh the heartbeat for a role THIS device holds (no-op if it doesn't).
+ *  Resolves false when it touched no row - the row is gone or another device's now
+ *  (a losing START upserts over the holder, then deletes "its" row as it steps
+ *  down) - so the holder can claim it back; null when the write itself failed. */
 export async function heartbeatAuthority(
   eventId: string,
   kind: AuthorityKind,
   deviceId: string
-): Promise<void> {
+): Promise<boolean | null> {
   try {
     const supabase = createClient();
-    await supabase
+    const { data, error } = await supabase
       .from("show_authority")
       .update({ heartbeat_at: new Date().toISOString() })
       .eq("event_id", eventId)
       .eq("kind", kind)
-      .eq("device_id", deviceId);
+      .eq("device_id", deviceId)
+      .select("event_id");
+    if (error || !data) return null;
+    return data.length > 0;
   } catch {
-    /* best-effort */
+    return null;
   }
 }
 
