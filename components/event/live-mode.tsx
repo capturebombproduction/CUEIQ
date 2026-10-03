@@ -367,6 +367,8 @@ export function LiveMode({
   const [toolsOpen, setToolsOpen] = useState(false);
   const toolsBtnRef = useRef<HTMLButtonElement>(null);
   const toolsCloseRef = useRef<HTMLButtonElement>(null);
+  // the key that opened the sheet (⋯, or CONSOLE's เปลี่ยน) — focus goes back to it
+  const toolsOpenerRef = useRef<HTMLElement | null>(null);
   // Stage running order (presentation only): the admin's row keys show in edit mode
   // only. Read by CSS through `data-edit`, so the memoized rows never re-render for it.
   const [orderEdit, setOrderEdit] = useState(false);
@@ -2650,16 +2652,22 @@ export function LiveMode({
   const nextLocked = !isController || state.mode === "auto" || state.currentIndex >= items.length - 1;
   // An offline cached row can lack `kind`: no "(undefined)" under START.
   const firstKind = items[0]?.kind ? SETLIST_KIND_SHORT[items[0].kind as SetlistKind] : undefined;
-  // Live tools: focus moves into the sheet when it opens and back to ⋯ when it
-  // closes (so Escape, handled on the sheet, reaches it). flushSync un-hides the
-  // sheet before the focus call; neither touches the show.
-  const openTools = () => {
+  // Live tools: focus moves into the sheet when it opens and back to the key that
+  // opened it when it closes (so Escape, handled on the sheet, reaches it): ⋯, or
+  // CONSOLE's เปลี่ยน beside the output. If that key cannot take focus any more,
+  // ⋯ does. flushSync un-hides the sheet before the focus call; neither touches
+  // the show.
+  const openTools = (opener?: HTMLElement) => {
+    toolsOpenerRef.current = opener ?? null;
     flushSync(() => setToolsOpen(true));
     toolsCloseRef.current?.focus();
   };
   const closeTools = () => {
     setToolsOpen(false);
-    toolsBtnRef.current?.focus();
+    const back = toolsOpenerRef.current ?? toolsBtnRef.current;
+    toolsOpenerRef.current = null;
+    back?.focus();
+    if (document.activeElement !== back) toolsBtnRef.current?.focus();
   };
   // The sheet is aria-modal, so the page under it must not move: a wheel or a drag
   // on its scrim used to scroll the document and leave NOW's timer off-screen after
@@ -3699,7 +3707,7 @@ export function LiveMode({
             title="Live tools"
             aria-haspopup="dialog"
             aria-expanded={toolsOpen}
-            onClick={openTools}
+            onClick={() => openTools()}
             className="grid size-11 shrink-0 place-items-center rounded-[3px] hover:bg-muted"
           >
             <Ellipsis aria-hidden className="size-[22px]" />

@@ -2057,6 +2057,30 @@ describe("LiveMode · STAGE | CONSOLE", () => {
     });
     expect(screen.getAllByTestId("console-clip")[0]).toBeDisabled();
   });
+
+  it("Live tools opened from CONSOLE's เปลี่ยน gives focus back to เปลี่ยน, not ⋯", async () => {
+    await mountLive();
+    fireEvent.click(screen.getByTestId("live-view-console"));
+    const change = screen.getByRole("button", { name: "เปลี่ยน" });
+    await act(async () => {
+      fireEvent.click(change);
+    });
+    const sheet = screen.getByRole("dialog", { name: "Live tools" });
+    expect(sheet).toContainElement(document.activeElement as HTMLElement);
+    await act(async () => {
+      fireEvent.keyDown(document.activeElement!, { key: "Escape" });
+    });
+    expect(sheet).not.toBeVisible();
+    expect(document.activeElement).toBe(change);
+    // ⋯ still gets its own focus back the next time
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Live tools" }));
+    });
+    await act(async () => {
+      fireEvent.keyDown(document.activeElement!, { key: "Escape" });
+    });
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Live tools" }));
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

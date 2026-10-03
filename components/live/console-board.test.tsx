@@ -315,7 +315,8 @@ describe("the playback channel", () => {
     rerender(<ConsoleBoard {...props} soundOn={false} />);
     expect(screen.getByTestId("console-output").textContent).toBe("ปิดเสียงเครื่องนี้");
     fireEvent.click(screen.getByRole("button", { name: "เปลี่ยน" }));
-    expect(props.onOutput).toHaveBeenCalled();
+    // the button hands itself over, so Live tools can give focus back to it
+    expect(props.onOutput).toHaveBeenCalledWith(screen.getByRole("button", { name: "เปลี่ยน" }));
   });
 
   it("without a tap (the web build) the meters stand unlit and say where they work", () => {

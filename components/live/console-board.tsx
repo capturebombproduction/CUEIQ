@@ -129,8 +129,8 @@ export function ConsoleBoard({
   output: { label: string | null; kind: OutputKind } | null;
   /** this device makes the show's sound */
   soundOn: boolean;
-  /** opens Live tools, where the output picker lives */
-  onOutput: () => void;
+  /** opens Live tools, where the output picker lives; focus comes back to `opener` */
+  onOutput: (opener: HTMLElement) => void;
   /** cue an item (STAGE's running-order tap); null = locked (Auto, a viewer) */
   onCue: ((i: number) => void) | null;
   /** the next song against this one, dB (lib/song-signal.ts loudnessDelta) */
@@ -327,7 +327,7 @@ export function ConsoleBoard({
           </div>
           <button
             type="button"
-            onClick={onOutput}
+            onClick={(e) => onOutput(e.currentTarget)}
             title="เลือกอุปกรณ์เสียง (Live tools)"
             className="h-8 shrink-0 rounded-[2px] bg-foreground/[.08] px-2 text-[12.5px] hover:bg-foreground/[.14]"
           >
