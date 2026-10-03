@@ -6,28 +6,33 @@
 // goes down, it is opened again, and its own snapshot carries the show on.
 //
 // A device defaults to isController=true when the live page opens, and
-// `controllerSince` is stamped ONLY when it actively claimed: it pressed
-// เริ่มโชว์. So "null" means "I hold the default flag, I never claimed anything" —
-// which is also what a device held after a RELOAD before the crash-recovery
-// snapshot learned to carry the claim (a device restored from an older snapshot
-// still can).
+// `controllerSince` is stamped ONLY when it actively claimed: it pressed เริ่มโชว์.
+// That stamp is the RUN's identity - the crash-recovery snapshot carries it, so the
+// first device that reloads comes back as the same run. "null" means "I hold the
+// default flag, I never claimed anything".
 //
-// That is the case this file exists for. Two devices that both restored the same
-// running show (a venue power blip, two refreshes) both answer a sync-request
-// with fromController=true and controllerSince=null — and the rule "null always
-// yields" then made BOTH of them step down, leaving the show with no controller
-// at all: Auto stops advancing and next/prev go dead mid-show. Exactly the outcome
-// the arbitration was written to prevent, reached through the one input it did not
-// consider.
+// What this decides, and what it deliberately does NOT:
 //
-// Pure and total: every device must reach the SAME verdict from its own side of
-// the exchange, so the tie-break has to be symmetric — see the id comparison.
+//  - A device RUNNING a show against one with nothing: the idle one steps down (it is
+//    a page that merely opened - it becomes a viewer of the show).
+//  - The SAME run on two devices (two tabs restored from one snapshot; equal stamps)
+//    or two runs nobody can tell apart (no stamps): one steps down - the one NOT
+//    sounding the show, else by id - and watches the very same show.
+//  - TWO DIFFERENT RUNS (a phone back with this afternoon's rehearsal; a phone that
+//    started its own show while it could not hear the PA; two STARTs at once): NOBODY
+//    steps down. "conflict" - both keep what they run and both say so on screen, and a
+//    person resets the one that is not the show. Every automatic answer here was tried
+//    and each one, somewhere, took the show off the device that started it (an old
+//    claim winning, clocks that disagree by minutes, a device that was away, two
+//    devices yielding at once and leaving the show with no driver). Two devices that
+//    disagree about which show is THE show cannot settle it between themselves
+//    without one of them being moved, and moving the first device is the one thing
+//    the rule forbids.
+//
+// Pure and total: every device reaches the SAME verdict from its own side of the
+// exchange (yield on one side means keep on the other; conflict on both).
 
-/** A stretch when a device was not running its page: closed, asleep, reloading. Epoch ms. */
-export interface Absence {
-  from: number;
-  to: number;
-}
+export type ControlVerdict = "keep" | "yield" | "conflict";
 
 export interface ControllerClaim {
   /** When THIS device claimed control (epoch ms) - its run's START - or null if it never did. */
@@ -42,108 +47,41 @@ export interface ControllerClaim {
   mineBegun?: boolean;
   /** Is one running on theirs? */
   theirsBegun?: boolean;
-  /** Has this device's show been ended (จบโชว์)? */
-  mineEnded?: boolean;
-  /** Has theirs? */
-  theirsEnded?: boolean;
-  /**
-   * `theirs` moved into THIS device's clock (their stamp + (my now - their sentAt)),
-   * when the message carried a sentAt. See rules 2 and 3.
-   */
-  theirsAtMyClock?: number | null;
-  /** This device's last absence (its own clock), or null. */
-  myAbsence?: Absence | null;
-  /** The other device's last absence, already moved into THIS device's clock, or null. */
-  theirAbsenceAtMyClock?: Absence | null;
-  /**
-   * The message is the other device RE-ASSERTING its claim at THIS device - it judged
-   * the pair and kept the show too. See rule 4.
-   */
-  theyInsistOnMe?: boolean;
+  /** Is THIS device sounding the show right now? (the same run on two tabs) */
+  mineSounding?: boolean;
+  /** Is theirs? */
+  theirsSounding?: boolean;
 }
 
 /**
- * True when THIS device should step down to a viewer. Exactly one side of any
- * pair gets true (ids are distinct), so the show always ends up with one
- * controller — never two, never none.
+ * What THIS device does about another device that says it controls.
  *
- * Order of the rules:
- *  0. A device with a RUNNING SHOW beats one with nothing. See below — this rule
- *     was missing, and its absence could stop a show mid-song.
- *  1. Between two running shows, one still ON beats one that was ended (จบโชว์): an
- *     ended run is a run-through somebody finished, not the show.
- *  2. A run that STARTED WHILE THE OTHER DEVICE WAS AWAY (its page closed, asleep or
- *     reloading) beats that device's run. A claim is a run's START, and under rule 4
- *     an old claim wins - so a phone coming back with this afternoon's rehearsal
- *     would otherwise take tonight's show off the PA that started it. Whoever was
- *     away when the other run began has nothing to defend: the show started without
- *     it. (The first device that reloads mid-show is away for seconds, and nobody can
- *     start a show in those seconds - START is refused while it holds show_authority.)
- *  3. A real claim always beats no claim.
- *  4. Between two real claims the EARLIER wins — the device that started the show
- *     first. A second START (two presses at once, or a device that started its own
- *     show while it could not hear the first and then reconnected) loses, and the
- *     first device is never moved. The stamps come from two CLOCKS (a PA that sat
- *     offline for days drifts minutes), so they are compared CORRECTED: their stamp
- *     plus (my now - their sentAt). Each side's correction carries its own message
- *     latency (always >= 0), and that has one exact consequence: the two sides can
- *     never BOTH yield, and can both KEEP only when the two STARTs were within one
- *     latency of each other. That pair settles on the next exchange - each re-asserts
- *     AT the other (theyInsistOnMe), and a device that kept and is insisted on falls
- *     back to the RAW stamps, the same two numbers on both sides, so exactly one
- *     yields (either winner is fair for two presses at once; agreeing is what
- *     matters). A threshold ("raw when the gap is small") was tried first and has an
- *     edge where both sides yield - a show with no controller.
- *  5. Anything still tied (both unclaimed, or the same millisecond) is settled by
- *     id: the HIGHER id keeps control. Arbitrary, but identical on both devices,
- *     which is the only property that matters — and it is the direction the
- *     same-millisecond case already shipped with.
- *
- * ⚠️ WHY RULE 0 EXISTS. Every live page opens as isController=true with a NULL
- * claim, and a device that reloaded mid-show also holds begun=true with a NULL
- * claim (nothing restored a stamp then). So when a band member merely OPENED the live
- * page while the PA had reloaded at some point, both sides were {mine:null,
- * theirs:null} and the winner was decided by comparing two random uuids — a coin
- * flip. Half the time the phone won, and the "I keep control" branch re-broadcasts
- * ITS state, which for a page that never started anything is INITIAL. The PA then
- * adopts begun:false / currentIndex:0: the audio pauses mid-track, the accumulated
- * clock is gone, and 500ms later the crash-recovery snapshot is deleted because
- * begun is false, so even a reload cannot get the run back. Nobody touched a
- * control. Whether a show is RUNNING is the one fact that outranks a coin flip.
- *
- * Every flag defaults to false / null, which keeps its rule inert for a caller that
- * doesn't pass it (and for a peer on an older build whose payload lacks it).
+ * ⚠️ WHY "A RUNNING SHOW BEATS NOTHING" COMES FIRST. Every live page opens as
+ * isController=true with a NULL claim. Decided by comparing two random ids, a phone
+ * that merely OPENED the page won half the time against a PA that had reloaded
+ * mid-show, re-broadcast its own INITIAL state as the authority, and the PA adopted
+ * begun:false — the audio paused mid-track and the accumulated clock was gone.
+ * Whether a show is RUNNING is the one fact that outranks a coin flip. (The flag
+ * defaults to false for a peer on an older build whose payload lacks `begun`.)
  */
-export function shouldYieldControl({
+export function settleControl({
   mine,
   theirs,
   myId,
   theirId,
   mineBegun = false,
   theirsBegun = false,
-  mineEnded = false,
-  theirsEnded = false,
-  theirsAtMyClock = null,
-  myAbsence = null,
-  theirAbsenceAtMyClock = null,
-  theyInsistOnMe = false,
-}: ControllerClaim): boolean {
-  if (mineBegun !== theirsBegun) return theirsBegun;
-  if (mineBegun && mineEnded !== theirsEnded) return mineEnded;
-  if (mine != null && theirs != null) {
-    const theirStart = theirsAtMyClock ?? theirs;
-    const startedWhileAway = (start: number, a: Absence | null) => a != null && start > a.from && start < a.to;
-    const theyStartedWhileIWasAway = startedWhileAway(theirStart, myAbsence);
-    const iStartedWhileTheyWereAway = startedWhileAway(mine, theirAbsenceAtMyClock);
-    if (theyStartedWhileIWasAway !== iStartedWhileTheyWereAway) return theyStartedWhileIWasAway;
-  }
-  if (mine == null && theirs == null) return theirId > myId;
-  if (mine == null) return true;
-  if (theirs == null) return false;
-  if (theirsAtMyClock != null) {
-    if (theirsAtMyClock < mine) return true;
-    if (theirsAtMyClock > mine && !theyInsistOnMe) return false;
-  }
-  if (theirs !== mine) return theirs < mine;
-  return theirId > myId;
+  mineSounding = false,
+  theirsSounding = false,
+}: ControllerClaim): ControlVerdict {
+  if (mineBegun !== theirsBegun) return theirsBegun ? "yield" : "keep";
+  // before any show nobody controls a show: both keep START, the first to press it is first
+  if (!mineBegun) return "keep";
+  if (mine != null && theirs != null && mine !== theirs) return "conflict";
+  if (mine == null && theirs != null) return "yield";
+  if (mine != null && theirs == null) return "keep";
+  // the same run on two devices, or no claim on either: the one sounding it keeps it
+  // (the other tab would have to be tapped to sound), else one id
+  if (mineSounding !== theirsSounding) return mineSounding ? "keep" : "yield";
+  return theirId > myId ? "yield" : "keep";
 }

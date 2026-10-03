@@ -136,7 +136,8 @@ async function mountViewer(over: Parameters<typeof renderLive>[0] = {}, index = 
       ended: false,
     });
   });
-  return view;
+  // the run it watches: the PA's claim
+  return Object.assign(view, { run: t - 60_000 });
 }
 
 /** The crash-recovery snapshot, as writeLiveSnapshot() writes it. */
@@ -337,9 +338,9 @@ describe("LiveMode · a held key is one intention, not fifty", () => {
 // (b) THE START GATE
 //
 // Starting before the first sync round-trip begins a SECOND show on this device
-// (item 0, its own sound) while one is already running elsewhere. The arbitration
-// gives the show back to the first device, but the gate stops the second from
-// existing. The gate is timer-driven in four different ways and none of them
+// (item 0, its own sound) while one is already running elsewhere. Two different runs
+// move nobody (they both warn), so the gate is what stops the second from existing.
+// The gate is timer-driven in four different ways and none of them
 // had a test.
 //
 // The three constants below are TRANSCRIBED from live-mode.tsx, not imported from
@@ -497,7 +498,9 @@ async function startShowFromUi(): Promise<number> {
 // (c) TWO DEVICES, without a second device
 //
 // พี่ 2026-10-04: the device that STARTED the show keeps it - it drives and it sounds.
-// Every device that opens the page after it only watches. There is no take-over.
+// Every device that opens the page after it only watches, and nothing it does reaches
+// the first one. There is no take-over. Two DIFFERENT runs are never settled by moving
+// one of them: both keep what they run and both say so (lib/live-arbitration.ts).
 // ─────────────────────────────────────────────────────────────────────────────
 describe("LiveMode · two devices: the first one keeps the show", () => {
   let media: MediaInstrumentation;
@@ -506,103 +509,138 @@ describe("LiveMode · two devices: the first one keeps the show", () => {
     media = instrumentMediaElements();
   });
 
+  /** Another device running ITS OWN show (a different claim). */
+  const otherRun = (claim: number, over: Record<string, unknown> = {}) => ({
+    sender: "phone",
+    sentAt: Date.now(),
+    fromController: true,
+    begun: true,
+    running: true,
+    startedAt: claim,
+    itemStartedAt: claim,
+    itemElapsedAtPause: null,
+    currentIndex: 3,
+    mode: "manual",
+    controllerSince: claim,
+    ended: false,
+    deviceLabel: "iPhone ของมุก",
+    ...over,
+  });
+
   // A second START (a device that started its own show while it could not hear this
-  // one, or two presses at once) is a NEWER claim. It used to win - that was ขอควบคุม.
-  it("keeps the show against a peer with a NEWER claim, and tells it so once", async () => {
-    await mountLive();
-    const ts = await startShowFromUi();
-    const peer = {
-      sender: "peer-device",
-      fromController: true,
-      begun: true,
-      running: true,
-      startedAt: ts + 10_000,
-      itemStartedAt: ts + 10_000,
-      itemElapsedAtPause: null,
-      currentIndex: 2,
-      mode: "manual",
-      controllerSince: ts + 10_000, // a later START (or an old page's ขอควบคุม)
-      ended: false,
-    };
-    await act(async () => {
-      live().emit("state", { ...peer, sentAt: Date.now() });
-    });
-
-    // still the controller, still sounding, still where it was
-    expect(screen.queryByTestId("viewer-banner")).not.toBeInTheDocument();
-    expect(media.state(media.first()!).muted).toBe(false);
-    const sends = stateSends();
-    expect(sends).toHaveLength(2);
-    expect(sends[1].payload.currentIndex).toBe(0);
-    expect(sends[1].payload.controllerSince).toBe(ts);
-
-    // A page still on the OLD rule ("the newer claim wins") answers every re-assert with
-    // its own: this device re-asserts at most once per 2 s, so the pair cannot storm.
-    await act(async () => {
-      live().emit("state", { ...peer, sentAt: Date.now() });
-      live().emit("state", { ...peer, sentAt: Date.now() });
-    });
-    expect(stateSends()).toHaveLength(2);
-    await act(async () => {
-      vi.advanceTimersByTime(2_000);
-    });
-    await act(async () => {
-      live().emit("state", { ...peer, sentAt: Date.now() });
-    });
-    expect(stateSends()).toHaveLength(3);
-  });
-
-  // Two clocks. The peer's runs two minutes SLOW: its claim reads a minute before ours,
-  // but by our clock it started a minute AFTER us. Judged raw, this device would hand the
-  // show to the one that started second.
-  it("judges a peer's claim on OUR clock: a slow-clocked peer that started after us does not take the show", async () => {
-    await mountLive();
-    const ts = await startShowFromUi();
-    const SLOW = 120_000;
-    await act(async () => {
-      live().emit("state", {
-        sender: "peer-device",
-        sentAt: Date.now() - SLOW, // its clock reads two minutes behind ours
-        fromController: true,
-        begun: true,
-        running: true,
-        startedAt: ts - 60_000,
-        itemStartedAt: ts - 60_000,
-        itemElapsedAtPause: null,
-        currentIndex: 2,
-        mode: "manual",
-        controllerSince: ts - 60_000, // = ts + 60 s on our clock
-        ended: false,
-      });
-    });
-    expect(screen.queryByTestId("viewer-banner")).not.toBeInTheDocument();
-    expect(stateSends().at(-1)!.payload.controllerSince).toBe(ts);
-  });
-
-  it("steps down for a peer holding an EARLIER claim (it started first), and goes quiet", async () => {
-    // this device is SOUNDING its first track when it learns it was not first
+  // one, or two presses at once) used to win - the newer claim, which was ขอควบคุม.
+  it("a device running a DIFFERENT run (a later START): nothing moves - this one keeps the show and says so", async () => {
     h.saved = [{ itemId: "item-1", blob: new Blob(["audio"]), name: "track-1.wav", path: null }];
     await mountLive();
     const ts = await startShowFromUi();
-    expect(stateSends()).toHaveLength(1);
+    await act(async () => {
+      live().emit("state", otherRun(ts + 10_000));
+    });
+    // still the controller, still sounding, still where it was, taking nothing from it
     expect(screen.queryByTestId("viewer-banner")).not.toBeInTheDocument();
+    expect(media.state(media.first()!).muted).toBe(false);
+    expect(media.state(media.first()!).paused).toBe(false);
+    expect(document.querySelector("[data-cueiq-live]")!.getAttribute("data-cueiq-live-index")).toBe("0");
+    // nobody is to yield, so nobody is told to: no re-assert
+    expect(stateSends()).toHaveLength(1);
+    // the warning names the other device and when its run began
+    const warning = screen.getByTestId("run-conflict");
+    expect(warning).toHaveTextContent("iPhone ของมุก");
+    expect(warning).toHaveTextContent("รีเซ็ต");
+  });
+
+  // The review of 93d4979: under "the earlier claim wins", a phone back with this
+  // afternoon's rehearsal took tonight's show off the PA.
+  it("…and an EARLIER run (a phone back with this afternoon's rehearsal) moves nothing either", async () => {
+    await mountLive();
+    const ts = await startShowFromUi();
+    await act(async () => {
+      live().emit("state", otherRun(ts - 3 * 3600_000));
+    });
+    expect(screen.queryByTestId("viewer-banner")).not.toBeInTheDocument();
+    expect(document.querySelector("[data-cueiq-live]")!.getAttribute("data-cueiq-live-controller")).toBe("1");
+    expect(screen.getByTestId("run-conflict")).toBeInTheDocument();
+  });
+
+  it("…whatever the other device's clock says", async () => {
+    await mountLive();
+    const ts = await startShowFromUi();
+    await act(async () => {
+      live().emit("state", otherRun(ts - 60_000, { sentAt: Date.now() - 120_000 }));
+    });
+    expect(screen.queryByTestId("viewer-banner")).not.toBeInTheDocument();
+    expect(screen.getByTestId("run-conflict")).toBeInTheDocument();
+  });
+
+  it("while two runs are up it re-sends its own state, so the other screen keeps its warning", async () => {
+    await mountLive();
+    const ts = await startShowFromUi();
+    await act(async () => {
+      live().emit("state", otherRun(ts + 10_000));
+    });
+    expect(stateSends()).toHaveLength(1);
+    await act(async () => {
+      vi.advanceTimersByTime(10_000);
+    });
+    expect(stateSends().length).toBeGreaterThan(1);
+    expect(stateSends().at(-1)!.payload.controllerSince).toBe(ts);
+  });
+
+  it("the warning goes when the other run is reset - and once it has gone quiet", async () => {
+    await mountLive();
+    const ts = await startShowFromUi();
+    await act(async () => {
+      live().emit("state", otherRun(ts + 10_000));
+    });
+    expect(screen.getByTestId("run-conflict")).toBeInTheDocument();
+    await act(async () => {
+      live().emit("state", otherRun(ts + 10_000, { begun: false, running: false, startedAt: null, controllerSince: null, resetRun: ts + 10_000 }));
+    });
+    expect(screen.queryByTestId("run-conflict")).toBeNull();
+
+    // again, and this time the other page simply closes: no word from it for 30 s
+    await act(async () => {
+      live().emit("state", otherRun(ts + 20_000));
+    });
+    expect(screen.getByTestId("run-conflict")).toBeInTheDocument();
+    await act(async () => {
+      vi.advanceTimersByTime(31_000);
+    });
+    expect(screen.queryByTestId("run-conflict")).toBeNull();
+  });
+
+  // Two tabs restored from ONE snapshot hold the SAME run: either may drive it, so one
+  // steps down and watches the very same show - the one NOT making the sound (the other
+  // would have to be tapped to sound), else by id.
+  it("the SAME run on another tab that is sounding it: this silent tab steps down", async () => {
+    await mountLive();
+    const ts = await startShowFromUi();
+    await act(async () => {
+      live().emit("state", otherRun(ts, { sender: "aaaa-other-tab", currentIndex: 0, sounding: true }));
+    });
+    expect(screen.getByTestId("viewer-banner")).toBeInTheDocument();
+  });
+
+  it("the SAME run on a silent copy tab: this tab, sounding it, keeps it whatever the ids", async () => {
+    h.saved = [{ itemId: "item-1", blob: new Blob(["audio"]), name: "track-1.wav", path: null }];
+    await mountLive();
+    const ts = await startShowFromUi();
+    await act(async () => {
+      live().emit("state", otherRun(ts, { sender: "zzzzzzzz-other-tab", currentIndex: 0, sounding: false }));
+    });
+    expect(screen.queryByTestId("viewer-banner")).not.toBeInTheDocument();
+    expect(media.state(media.first()!).paused).toBe(false);
+  });
+
+  it("the SAME run, both tabs sounding, the other with the higher id: this tab steps down and goes quiet", async () => {
+    // this tab is SOUNDING its first track when it learns the other tab holds the run
+    h.saved = [{ itemId: "item-1", blob: new Blob(["audio"]), name: "track-1.wav", path: null }];
+    await mountLive();
+    const ts = await startShowFromUi();
     expect(media.state(media.first()!).paused).toBe(false);
 
     await act(async () => {
-      live().emit("state", {
-        sender: "peer-device",
-        sentAt: Date.now(),
-        fromController: true,
-        begun: true,
-        running: true,
-        startedAt: ts - 10_000,
-        itemStartedAt: ts - 10_000,
-        itemElapsedAtPause: null,
-        currentIndex: 2,
-        mode: "manual",
-        controllerSince: ts - 10_000, // it started the show before this device did
-        ended: false,
-      });
+      live().emit("state", otherRun(ts, { sender: "zzzzzzzz-other-tab", currentIndex: 0, sounding: true }));
     });
 
     // 1. demoted
@@ -613,6 +651,7 @@ describe("LiveMode · two devices: the first one keeps the show", () => {
     expect(media.state(media.first()!).paused).toBe(true);
     // 3. and it stopped talking: a viewer that keeps broadcasting is two controllers
     expect(stateSends()).toHaveLength(1);
+    expect(screen.queryByTestId("run-conflict")).toBeNull();
   });
 
   // ── THE ATTRIBUTES THE TWO-DEVICE SMOKE READS ──────────────────────────────
@@ -639,20 +678,7 @@ describe("LiveMode · two devices: the first one keeps the show", () => {
     // asserts on: not controller, not sounding, and standing on the CONTROLLER's
     // item rather than back at the first one.
     await act(async () => {
-      live().emit("state", {
-        sender: "peer-device",
-        sentAt: Date.now(),
-        fromController: true,
-        begun: true,
-        running: true,
-        startedAt: ts,
-        itemStartedAt: ts,
-        itemElapsedAtPause: null,
-        currentIndex: 2,
-        mode: "manual",
-        controllerSince: ts - 10_000, // started before this device
-        ended: false,
-      });
+      live().emit("state", otherRun(ts, { sender: "zzzzzzzz-other-tab", currentIndex: 2 }));
     });
     expect(root().getAttribute("data-cueiq-live-controller")).toBe("0");
     expect(root().getAttribute("data-cueiq-live-sound")).toBe("0");
@@ -691,6 +717,27 @@ describe("LiveMode · two devices: the first one keeps the show", () => {
     expect(sends[1].payload.fromController).toBe(true);
   });
 
+  // A page still on the OLD rule ("the newer claim wins", ขอควบคุม) never steps down, and
+  // answers every re-assert with its own: at most one re-assert per 2 s per device.
+  it("re-asserts at most once per 2 s at a device that will not step down", async () => {
+    await mountLive();
+    const ts = await startShowFromUi();
+    const stubborn = { ...otherRun(ts), controllerSince: null, sender: "old-tab" };
+    await act(async () => {
+      live().emit("state", { ...stubborn, sentAt: Date.now() });
+      live().emit("state", { ...stubborn, sentAt: Date.now() });
+      live().emit("state", { ...stubborn, sentAt: Date.now() });
+    });
+    expect(stateSends()).toHaveLength(2);
+    await act(async () => {
+      vi.advanceTimersByTime(2_000);
+    });
+    await act(async () => {
+      live().emit("state", { ...stubborn, sentAt: Date.now() });
+    });
+    expect(stateSends()).toHaveLength(3);
+  });
+
   // ── (d) A VERDICT IS NOT A PREFERENCE ──────────────────────────────────────
   // A tablet that joined one running show came back as the PA at the NEXT gig
   // with its output off, under a green "เสียงพร้อมครบ". The mute above is a
@@ -702,20 +749,7 @@ describe("LiveMode · two devices: the first one keeps the show", () => {
     expect(localStorage.getItem("cueiq:soundOutput")).toBe("1");
 
     await act(async () => {
-      live().emit("state", {
-        sender: "peer-device",
-        sentAt: Date.now(),
-        fromController: true,
-        begun: true,
-        running: true,
-        startedAt: ts,
-        itemStartedAt: ts,
-        itemElapsedAtPause: null,
-        currentIndex: 1,
-        mode: "manual",
-        controllerSince: ts - 10_000, // started before this device
-        ended: false,
-      });
+      live().emit("state", otherRun(ts, { sender: "zzzzzzzz-other-tab", currentIndex: 1 }));
     });
 
     // The element really is muted for this show…
@@ -738,129 +772,117 @@ describe("LiveMode · two devices: the first one keeps the show", () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// (c2) A CLAIM IS A RUN'S START - AN OLD RUN IS NOT THE SHOW
+// (c2) A VIEWER FOLLOWS A RUN, NOT A DEVICE
 //
-// The earlier claim keeps the show, so a claim left from an earlier run (a rehearsal
-// this afternoon, a run that was reset) must not count: the review of 93d4979 found a
-// phone back with its 17:00 rehearsal taking the 20:00 show off the PA.
+// The run is the controller's claim stamp: it survives that device's reload (a new
+// broadcast id), and a second run on the channel does not pull the screen across.
 // ─────────────────────────────────────────────────────────────────────────────
-describe("LiveMode · an old run is not the show", () => {
-  let media: MediaInstrumentation;
-  beforeEach(() => {
-    media = instrumentMediaElements();
-  });
-  const peerState = (over: Record<string, unknown>) => ({
+describe("LiveMode · a viewer follows a run", () => {
+  const runState = (run: number, over: Record<string, unknown> = {}) => ({
     sender: "phone",
     sentAt: Date.now(),
     fromController: true,
     begun: true,
     running: true,
-    startedAt: Date.now() - 3 * 3600_000,
-    itemStartedAt: Date.now() - 3 * 3600_000,
+    startedAt: run,
+    itemStartedAt: run,
     itemElapsedAtPause: null,
-    currentIndex: 3,
+    currentIndex: 5,
     mode: "manual",
+    controllerSince: run,
     ended: false,
     ...over,
   });
+  const index = () => document.querySelector("[data-cueiq-live]")!.getAttribute("data-cueiq-live-index");
 
-  it("keeps the show against a phone back with an EARLIER claim from a run it left before this one started", async () => {
-    await mountLive();
-    const ts = await startShowFromUi();
+  it("keeps watching its run while another run talks on the channel", async () => {
+    const { run } = await mountViewer();
+    expect(index()).toBe("0");
     await act(async () => {
-      vi.advanceTimersByTime(60_000); // the phone opens a minute into the show
+      live().emit("state", runState(run + 50_000));
     });
-    await act(async () => {
-      live().emit(
-        "state",
-        peerState({
-          controllerSince: ts - 3 * 3600_000, // its rehearsal, three hours ago
-          absentFrom: ts - 2.5 * 3600_000, // closed half an hour into it
-          absentUntil: Date.now(), // and opened again just now
-        })
-      );
-    });
-    expect(screen.queryByTestId("viewer-banner")).not.toBeInTheDocument();
-    expect(media.state(media.first()!).muted).toBe(false);
-    // it told the phone so - AT the phone
-    expect(stateSends().at(-1)!.payload.reassertTo).toBe("phone");
-    expect(stateSends().at(-1)!.payload.controllerSince).toBe(ts);
+    expect(index()).toBe("0");
   });
 
-  it("keeps the show against an earlier claim whose run was ENDED (จบโชว์)", async () => {
-    await mountLive();
-    const ts = await startShowFromUi();
+  it("…and takes the other run up once its own has been silent for a minute", async () => {
+    const { run } = await mountViewer();
     await act(async () => {
-      live().emit("state", peerState({ controllerSince: ts - 3 * 3600_000, running: false, ended: true }));
+      vi.advanceTimersByTime(61_000);
     });
-    expect(screen.queryByTestId("viewer-banner")).not.toBeInTheDocument();
+    await act(async () => {
+      live().emit("state", runState(run + 50_000));
+    });
+    expect(index()).toBe("5");
   });
 
-  it("a device back from a reload yields when another device STARTED the show while it was away", async () => {
-    // this device ran a show from three hours ago and was closed two hours ago
-    const t = Date.now();
-    seedSnapshot({
-      state: {
-        running: true,
-        begun: true,
-        startedAt: t - 3 * 3600_000,
-        itemStartedAt: t - 3 * 3600_000,
+  it("follows its run through that device's reload: a new broadcast id, the same claim", async () => {
+    const { run } = await mountViewer();
+    await act(async () => {
+      live().emit("state", runState(run, { sender: "pa-device-after-reload", currentIndex: 4 }));
+    });
+    expect(index()).toBe("4");
+  });
+
+  it("a page that merely opened (no show) moves nothing on a viewer", async () => {
+    await mountViewer();
+    await act(async () => {
+      live().emit("state", {
+        sender: "other-page",
+        sentAt: Date.now(),
+        fromController: true,
+        begun: false,
+        running: false,
+        startedAt: null,
+        itemStartedAt: null,
+        itemElapsedAtPause: null,
+        currentIndex: 0,
+        mode: "auto",
+        controllerSince: null,
+        ended: false,
+      });
+    });
+    expect(screen.getByTestId("viewer-banner")).toBeInTheDocument();
+    expect(document.querySelector("[data-cueiq-live]")!.getAttribute("data-cueiq-live-begun")).toBe("1");
+  });
+
+  it("the reset of some OTHER run does not free a viewer", async () => {
+    const { run } = await mountViewer();
+    await act(async () => {
+      live().emit("state", {
+        sender: "phone",
+        sentAt: Date.now(),
+        fromController: true,
+        begun: false,
+        running: false,
+        startedAt: null,
+        itemStartedAt: null,
         itemElapsedAtPause: null,
         currentIndex: 0,
         mode: "manual",
-      },
-      isController: true,
-      controllerSince: t - 3 * 3600_000,
-      savedAt: t - 2 * 3600_000,
-    });
-    await mountLive();
-    await act(async () => {
-      live().emit("state", peerState({ sender: "pa", controllerSince: t - 3600_000, startedAt: t - 3600_000 }));
-    });
-    expect(screen.getByTestId("viewer-banner")).toBeInTheDocument();
-    expect(document.querySelector("[data-cueiq-live]")!.getAttribute("data-cueiq-live-index")).toBe("3");
-  });
-
-  it("…but keeps its show after a reload when nothing started while it was away", async () => {
-    const t = Date.now();
-    seedSnapshot({
-      state: {
-        running: true,
-        begun: true,
-        startedAt: t - 3600_000,
-        itemStartedAt: t - 600_000,
-        itemElapsedAtPause: null,
-        currentIndex: 2,
-        mode: "manual",
-      },
-      isController: true,
-      controllerSince: t - 3600_000,
-      savedAt: t - 5_000, // reloaded five seconds ago
-    });
-    await mountLive();
-    // a phone that could not hear it started its own show twenty minutes ago
-    await act(async () => {
-      live().emit("state", peerState({ controllerSince: t - 1200_000, startedAt: t - 1200_000 }));
-    });
-    expect(screen.queryByTestId("viewer-banner")).not.toBeInTheDocument();
-    expect(document.querySelector("[data-cueiq-live]")!.getAttribute("data-cueiq-live-index")).toBe("2");
-  });
-
-  it("a page that SLEPT is away too: a show started during the sleep is not its to take", async () => {
-    await mountLive();
-    const ts = await startShowFromUi();
-    // the phone sleeps for ten minutes: no timer runs, then the clock is simply later
-    vi.setSystemTime(Date.now() + 600_000);
-    await act(async () => {
-      vi.advanceTimersByTime(15_000); // the first tick after waking sees the gap
-    });
-    await act(async () => {
-      live().emit("state", peerState({ sender: "pa", controllerSince: ts + 300_000, startedAt: ts + 300_000 }));
+        controllerSince: null,
+        ended: false,
+        resetRun: run + 50_000,
+      });
     });
     expect(screen.getByTestId("viewer-banner")).toBeInTheDocument();
   });
 
-  it("a reset run's claim is dropped: the next START is a new claim", async () => {
+  // The snapshot key is shared by this browser's tabs. A viewer tab that cleared it left
+  // the tab running the show with nothing to come back to after a crash.
+  it("a viewer leaves the snapshot alone - the one the tab running the show wrote stays", async () => {
+    const { run } = await mountViewer();
+    const theirs = JSON.stringify({ state: { begun: true }, controllerSince: run, isController: true, savedAt: Date.now() });
+    localStorage.setItem(SNAPSHOT_KEY, theirs);
+    await act(async () => {
+      live().emit("state", runState(run, { sender: "pa-device", currentIndex: 2 }));
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(1_000);
+    });
+    expect(localStorage.getItem(SNAPSHOT_KEY)).toBe(theirs);
+  });
+
+  it("a reset names the run it stops, and drops this device's claim", async () => {
     await mountLive();
     const ts = await startShowFromUi();
     const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
@@ -868,31 +890,10 @@ describe("LiveMode · an old run is not the show", () => {
       fireEvent.click(screen.getByTestId("reset"));
     });
     confirm.mockRestore();
-    expect(stateSends().at(-1)!.payload.begun).toBe(false);
-    expect(stateSends().at(-1)!.payload.controllerSince).toBeNull();
-    expect(ts).toBeGreaterThan(0);
-  });
-
-  it("two STARTs at once: each keeps it on its corrected clock, and the re-assert AT the other settles it", async () => {
-    await mountLive();
-    const ts = await startShowFromUi();
-    // a peer that pressed START 50 ms after us, on a clock that reads 30 s behind ours
-    // (raw, its stamp looks EARLIER): one exchange keeps both...
-    await act(async () => {
-      live().emit("state", peerState({ sentAt: Date.now() - 30_000, controllerSince: ts + 50 - 30_000, startedAt: ts + 50 - 30_000 }));
-    });
-    expect(screen.queryByTestId("viewer-banner")).not.toBeInTheDocument();
-    // ...and when it insists AT us, both fall back to the raw stamps: ours is later.
-    await act(async () => {
-      vi.advanceTimersByTime(2_000);
-    });
-    await act(async () => {
-      live().emit(
-        "state",
-        peerState({ sentAt: Date.now() - 30_000, controllerSince: ts + 50 - 30_000, startedAt: ts + 50 - 30_000, reassertTo: stateSends()[0].payload.sender })
-      );
-    });
-    expect(screen.getByTestId("viewer-banner")).toBeInTheDocument();
+    const last = stateSends().at(-1)!.payload;
+    expect(last.begun).toBe(false);
+    expect(last.resetRun).toBe(ts);
+    expect(last.controllerSince).toBeNull();
   });
 });
 
@@ -920,7 +921,7 @@ describe("LiveMode · before a show, and after one is reset", () => {
   });
 
   it("a viewer whose show is RESET by its device is free again: START comes back", async () => {
-    await mountViewer();
+    const { run } = await mountViewer();
     expect(screen.getByTestId("viewer-banner")).toBeInTheDocument();
     await act(async () => {
       live().emit("state", {
@@ -936,6 +937,7 @@ describe("LiveMode · before a show, and after one is reset", () => {
         mode: "manual",
         controllerSince: null,
         ended: false,
+        resetRun: run,
       });
     });
     expect(screen.queryByTestId("viewer-banner")).not.toBeInTheDocument();

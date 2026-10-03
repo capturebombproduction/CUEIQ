@@ -39,11 +39,12 @@ import {
   Maximize,
   SlidersHorizontal,
   Pencil,
+  AlertTriangle,
 } from "lucide-react";
 import { toast } from "sonner";
 import { createClient } from "@/lib/supabase/client";
 import { hasLiveSession } from "@/lib/auth-session";
-import { shouldYieldControl, type Absence } from "@/lib/live-arbitration";
+import { settleControl } from "@/lib/live-arbitration";
 import { saveAudio, loadAudioForEvent, deleteAudio } from "@/lib/audio-store";
 import { heldFileIsAnotherSongs } from "@/lib/audio-targets";
 import { getCachedSongBlob, cacheSongBlob } from "@/lib/song-cache";
@@ -140,9 +141,13 @@ function blockSeconds(it: SetlistItem) {
 // item and starts this item's clock |lead| in, so file time still equals item time.
 const FILE_START_SEC = 0;
 
-// A gap this long between two of the page's 15 s ticks means it was away (asleep,
-// frozen) - see absenceRef.
-const ABSENT_GAP_MS = 90_000;
+// A viewer keeps watching the run it follows; another run's broadcasts are taken up only
+// once its own has been silent this long (its device gone, not merely between cues - a
+// controller answers every sync-request and broadcasts on every move).
+const FOLLOWED_RUN_STALE_MS = 60_000;
+// Two runs at once (see lib/live-arbitration.ts "conflict"): the warning stays up until
+// the other run has been silent this long.
+const CONFLICT_STALE_MS = 30_000;
 
 /** What a non-admin may and may not do here — the โหมดซ้อม chip's title and the
  *  first line of Live tools. */
@@ -248,17 +253,18 @@ export function LiveMode({
   const [syncStatus, setSyncStatus] = useState<string>("init"); // raw channel status, for diagnosing sync issues
   // Gate START SHOW until this device has had a chance to hear about a show already
   // running elsewhere: starting before the first sync round-trip would begin a SECOND
-  // show here (from item 0, with this device's sound). The arbitration hands it back to
-  // the first device (the earlier claim wins), but the gate keeps the second one from
-  // existing at all. Settles when: a state broadcast is
+  // show here (from item 0, with this device's sound). Two different runs move nobody
+  // (lib/live-arbitration.ts "conflict" - a person resets one), so the gate keeps the
+  // second one from existing at all. Settles when: a state broadcast is
   // heard · the sync-request reply window passes in silence · the channel fails
   // (offline shows must still start) · a hard fallback timeout.
   const [syncSettled, setSyncSettled] = useState(false);
   // Only ONE device drives the show: the one that started it (พี่ 2026-10-04). This
   // device may control until it receives state from another device (then it becomes a
   // viewer that only watches - silent, no keys, no edits). There is no take-over:
-  // lib/live-arbitration.ts keeps the first device's claim, and a first device that
-  // went down is opened again, where its own snapshot carries the show on.
+  // nothing another device does moves the first one (lib/live-arbitration.ts), and a
+  // first device that went down is opened again, where its own snapshot carries the
+  // show on.
   const [isController, setIsController] = useState(true);
   const channelRef = useRef<RealtimeChannel | null>(null);
   // always-current state for use inside stable callbacks (subscribe, visibilitychange)
@@ -275,13 +281,12 @@ export function LiveMode({
   const controllerSinceRef = useRef<number | null>(null);
   // when this device last re-asserted its claim to each other device (see the sync handler)
   const reassertAtRef = useRef<Record<string, number>>({});
-  // This device's last ABSENCE, on its own clock: its page closed and came back (the
-  // snapshot restore), or slept / froze (the tick below). A run another device started
-  // inside it beats this device's older claim (lib/live-arbitration.ts rule 2) - a
-  // phone back with this afternoon's rehearsal must not take tonight's show.
-  const absenceRef = useRef<Absence | null>(null);
-  // the controller whose show this device is watching (its broadcast id)
-  const followingRef = useRef<string | null>(null);
+  // The RUN this device watches (its controller's claim stamp - it survives that
+  // device's reload, which a broadcast id does not) and when it was last heard.
+  const followingRunRef = useRef<number | null>(null);
+  const followedHeardAtRef = useRef(0);
+  // set for the one broadcast that resets a run, so the viewers watching it are freed
+  const resetRunRef = useRef<number | null>(null);
   const meId = useRef<string>(
     typeof crypto !== "undefined" && "randomUUID" in crypto
       ? crypto.randomUUID()
@@ -325,6 +330,8 @@ export function LiveMode({
   // (the show item can outlast the file via buffer_after). Cleared on the next command.
   const endedItemRef = useRef<string | null>(null);
   const [audioPlaying, setAudioPlaying] = useState(false);
+  const audioPlayingRef = useRef(audioPlaying);
+  audioPlayingRef.current = audioPlaying;
   // A REAL media failure on THIS device (a dangling cached blob, an evicted file, a
   // codec this device can't decode) — as opposed to the benign autoplay block, which
   // the "แตะเพื่อเล่นเสียงต่อ" banner already handles. Kept on screen because the
@@ -339,6 +346,8 @@ export function LiveMode({
   // actually makes sound (e.g. plugged into the PA)? A remote/control device sets
   // this OFF so it stays silent without muting the PA device. Default ON.
   const [soundOutput, setSoundOutput] = useState(true);
+  const soundOutputRef = useRef(soundOutput);
+  soundOutputRef.current = soundOutput;
   // Set just before an ARBITRATION mute so the persist effect below can tell a
   // verdict apart from the operator flipping the switch. Cleared as it is read.
   const mutedByStepDownRef = useRef(false);
@@ -384,6 +393,15 @@ export function LiveMode({
     const id = setInterval(() => setNow(Date.now()), 500);
     return () => clearInterval(id);
   }, []);
+
+  // TWO RUNS AT ONCE (lib/live-arbitration.ts "conflict"): another device runs a
+  // DIFFERENT show while this one runs its own. Nobody is moved; this says so on screen.
+  const [runConflict, setRunConflict] = useState<{
+    label: string | null;
+    startedAt: number | null;
+    heardAt: number;
+  } | null>(null);
+  const inConflict = runConflict != null && now - runConflict.heardAt < CONFLICT_STALE_MS;
 
   // Live tools sheet (presentation only): open/closed + where focus goes.
   const [toolsOpen, setToolsOpen] = useState(false);
@@ -463,13 +481,11 @@ export function LiveMode({
         if (snap?.state?.begun && fresh && snap.isController !== false) {
           committedRef.current = snap.committed ?? { id: null, anchor: null };
           setState(snap.state as LiveState);
-          // The claim comes back with the show, so the first device is the first device
-          // again after a reload - and the time it was gone comes back as its absence: a
-          // show some other device STARTED in that time is not this one's to take.
+          // The claim comes back with the show: it is the run's identity, so the first
+          // device is the same run again after a reload.
           if (typeof snap.controllerSince === "number") {
             controllerSinceRef.current = snap.controllerSince;
           }
-          absenceRef.current = { from: snap.savedAt, to: Date.now() };
           // Restore "the show already ended" too. จบโชว์ leaves begun:true, so a
           // device that reloads afterwards used to come back believing the show
           // was still on — and since `ended` now travels between devices, it
@@ -498,10 +514,13 @@ export function LiveMode({
   function writeLiveSnapshot(s: LiveState = stateRef.current) {
     if (!liveRestoredRef.current) return; // don't write before the restore check ran
     try {
-      // Only the device that runs the show keeps one: a viewer has nothing to resume
-      // (it picks the show up from its device again), and a viewer's snapshot outlived
-      // the show it watched.
-      if (s.begun && isControllerRef.current) {
+      // Only the device that runs the show keeps one, and a viewer neither writes nor
+      // clears it: it has nothing to resume (it picks the show up from its device
+      // again), a viewer's snapshot outlived the show it watched, and the key is shared
+      // by this browser's tabs - a viewer tab clearing it left the tab running the show
+      // with nothing to come back to after a crash.
+      if (!isControllerRef.current) return;
+      if (s.begun) {
         localStorage.setItem(
           `cueiq:live:${eventId}`,
           JSON.stringify({
@@ -526,6 +545,20 @@ export function LiveMode({
   const writeLiveSnapshotRef = useRef(writeLiveSnapshot);
   writeLiveSnapshotRef.current = writeLiveSnapshot;
 
+  // While two runs are up, neither side re-asserts (nobody is to yield), so each re-sends
+  // its own state now and then: that keeps the warning on BOTH screens true, and it drops
+  // once the other run has gone quiet (its page closed) or said it stopped (a reset).
+  useEffect(() => {
+    if (!inConflict) return;
+    const id = setInterval(() => {
+      if (stateRef.current.begun && isControllerRef.current) {
+        channelRef.current?.send({ type: "broadcast", event: "state", payload: statePayload(stateRef.current) });
+      }
+    }, 10_000);
+    return () => clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [inConflict]);
+
   // persist the running show (debounced); a reset (begun=false) clears it
   useEffect(() => {
     if (!liveRestoredRef.current) return;
@@ -542,23 +575,6 @@ export function LiveMode({
     // step-down that arrives without any state change would otherwise leave a
     // snapshot on disk still claiming this device drives the show.
   }, [state, isController, eventId]);
-
-  // The page's own tick. It notices this page being AWAY - timers stop while a phone
-  // sleeps or a tab is frozen, so a long gap between two ticks is the time it was gone
-  // (absenceRef; 90 s, not less: a desktop browser runs a hidden tab's timers once a
-  // minute). And it refreshes the running show's snapshot, so its savedAt says when
-  // this device was last alive rather than when the show last moved - a Manual show can
-  // sit on one cue for twenty minutes, and a reload's absence starts at savedAt.
-  useEffect(() => {
-    let last = Date.now();
-    const id = setInterval(() => {
-      const now = Date.now();
-      if (now - last > ABSENT_GAP_MS) absenceRef.current = { from: last, to: now };
-      last = now;
-      if (stateRef.current.begun && isControllerRef.current) writeLiveSnapshotRef.current();
-    }, 15_000);
-    return () => clearInterval(id);
-  }, []);
 
   // Both persists above are debounced, and a phone can outrun the debounce: iOS
   // Safari never acts on `beforeunload`, so a pull-to-refresh or a tab close within
@@ -1372,72 +1388,92 @@ export function LiveMode({
       const skew =
         typeof payload.sentAt === "number" ? Date.now() - payload.sentAt : 0;
       const sender = String(payload.sender ?? "");
-      // Another device says it controls: settle who does. The loser steps down to a
-      // viewer, which goes quiet and only watches (see "A VIEWER NEVER SOUNDS").
-      // Before any show nobody controls anything: two open pages mirror each other's
-      // pre-show settings, both keep START, and the first to press it is the first
-      // device - no page is made a viewer of a show that does not exist.
+      const theirRun =
+        typeof payload.run === "number"
+          ? payload.run
+          : typeof payload.controllerSince === "number"
+            ? payload.controllerSince
+            : null;
+      // Another device says it controls: settle who does (lib/live-arbitration.ts - the
+      // device that STARTED the show keeps it, พี่ 2026-10-04). Before any show nobody
+      // controls anything: two open pages mirror each other's pre-show settings and
+      // both keep START.
       if (fromController && isControllerRef.current && (stateRef.current.begun || theirBegun)) {
-        // Two devices both think they're the controller (both pressed "เริ่มโชว์",
-        // or one started while it could not hear the other, or one is back from a
-        // reload or a sleep). Settled by shouldYieldControl - pure + tested in
-        // lib/live-arbitration.ts - which keeps the show with the device that STARTED
-        // it (พี่ 2026-10-04), and never leaves the show with nobody driving it.
-        const mine = controllerSinceRef.current;
-        const theirs =
-          typeof payload.controllerSince === "number" ? payload.controllerSince : null;
-        const hasSentAt = typeof payload.sentAt === "number";
-        const iYield = shouldYieldControl({
-          mine,
-          theirs,
+        const verdict = settleControl({
+          mine: controllerSinceRef.current,
+          theirs: typeof payload.controllerSince === "number" ? payload.controllerSince : null,
           myId: meId.current,
           theirId: sender,
-          // A RUNNING show outranks the id coin-flip. Without this, a phone that
-          // had merely opened the page could win the tie against a PA that had
-          // reloaded mid-show, re-assert its own empty INITIAL state as the
-          // authority, and stop the music.
+          // A RUNNING show outranks everything: a page that merely opened must never
+          // re-assert its empty INITIAL state over the PA and stop the music.
           mineBegun: stateRef.current.begun,
           theirsBegun: theirBegun,
-          // a show still on outranks one that was ended (an old run-through)
-          mineEnded: showEndedRef.current,
-          theirsEnded: !!payload.ended,
-          // their claim on OUR clock: a PA whose clock drifted minutes must not lose
-          // the show to a phone that started after it
-          theirsAtMyClock: theirs != null && hasSentAt ? theirs + skew : null,
-          // a run started while the other device was away beats its old claim
-          myAbsence: absenceRef.current,
-          theirAbsenceAtMyClock:
-            hasSentAt && typeof payload.absentFrom === "number" && typeof payload.absentUntil === "number"
-              ? { from: payload.absentFrom + skew, to: payload.absentUntil + skew }
-              : null,
-          // it kept the show too and is re-asserting AT this device: settle on raw stamps
-          theyInsistOnMe: payload.reassertTo === meId.current,
+          // the same run on two tabs: the one playing it keeps it
+          mineSounding: audioPlayingRef.current && soundOutputRef.current,
+          theirsSounding: !!payload.sounding,
         });
-        if (!iYield) {
-          // I hold the stronger claim → keep control and re-assert AT the other device
-          // so it steps down. Don't adopt its state — I'm the authority. At most once
-          // per 2 s per device: one re-assert settles any current peer, but a page
-          // still running the OLD rule ("the newer claim wins", ขอควบคุม) never yields
-          // to an earlier claim, and answering each of its answers would be a
-          // broadcast storm for as long as that tab stays open.
+        if (verdict === "conflict") {
+          // TWO DIFFERENT RUNS: nobody is moved - not the first device, not this one.
+          // Say so on screen (a person resets the one that is not the show) and take
+          // nothing from it: not its state, not its cues.
+          setRunConflict({
+            label: typeof payload.deviceLabel === "string" ? payload.deviceLabel : null,
+            startedAt: typeof payload.startedAt === "number" ? payload.startedAt + skew : null,
+            heardAt: Date.now(),
+          });
+          return;
+        }
+        if (verdict === "keep") {
+          // the other run stopped (a reset, or a page that is not running anything)
+          if (!theirBegun) setRunConflict(null);
+          // I hold the show → keep control and re-assert so the OTHER device steps
+          // down. Don't adopt its state — I'm the authority. At most once per 2 s per
+          // device: one re-assert settles a peer on this build, but a page still
+          // running the OLD rule ("the newer claim wins", ขอควบคุม) never yields, and
+          // answering each of its answers would be a broadcast storm.
           const last = reassertAtRef.current[sender] ?? 0;
           if (Date.now() - last < 2000) return;
           reassertAtRef.current[sender] = Date.now();
-          // a losing START upserted show_main over this device's row; take it back now
-          // rather than at the next heartbeat
+          // a page that STARTED a show and then stepped down here upserted show_main
+          // over this device's row first; take it back now, not at the next heartbeat
           reclaimMainRef.current?.();
           channelRef.current?.send({
             type: "broadcast",
             event: "state",
-            payload: { ...statePayload(stateRef.current), reassertTo: sender },
+            payload: statePayload(stateRef.current),
           });
           return;
         }
+        // yield: this page was idle, or it ran the same show as a copy (two tabs)
         isControllerRef.current = false;
         setIsController(false);
-        // the loser of the claim goes quiet: the viewer effects pause it and turn its
-        // sound off for this show (a verdict, never its saved preference)
+        // the viewer effects pause it and turn its sound off for this show (a verdict,
+        // never its saved preference)
         audioRef2.current?.pause();
+      }
+      if (!isControllerRef.current && stateRef.current.begun) {
+        // A viewer watches ONE run. Another run's word (a second device that started its
+        // own show, a phone back with an old one) is not taken up while the watched run
+        // is still being heard - the screen does not flick between two shows.
+        if (
+          theirBegun &&
+          theirRun != null &&
+          followingRunRef.current != null &&
+          theirRun !== followingRunRef.current &&
+          Date.now() - followedHeardAtRef.current < FOLLOWED_RUN_STALE_MS
+        ) {
+          return;
+        }
+        if (!theirBegun) {
+          // No show on the other side. Only the RESET of the watched run frees this page
+          // (START comes back, as if it had just opened); a page that merely opened, or
+          // a reset of some other run, changes nothing here.
+          if (!fromController || payload.resetRun == null || payload.resetRun !== followingRunRef.current) return;
+          followingRunRef.current = null;
+          controllerSinceRef.current = null;
+          isControllerRef.current = true;
+          setIsController(true);
+        }
       }
       // Picking up a show that is already running makes this device a VIEWER — whatever
       // claim it holds (one left from a run it reset belongs to that run), and even when
@@ -1449,15 +1485,9 @@ export function LiveMode({
         isControllerRef.current = false;
         setIsController(false);
       }
-      // Whose show this device is watching…
-      if (fromController && theirBegun && !isControllerRef.current) followingRef.current = sender;
-      // …and when that device RESETS it, there is no show any more: this page is free
-      // again (its START comes back), as if it had just opened.
-      if (fromController && !theirBegun && !isControllerRef.current && followingRef.current === sender) {
-        followingRef.current = null;
-        controllerSinceRef.current = null;
-        isControllerRef.current = true;
-        setIsController(true);
+      if (!isControllerRef.current && theirBegun) {
+        if (theirRun != null) followingRunRef.current = theirRun;
+        followedHeardAtRef.current = Date.now();
       }
       setState({
         running: payload.running,
@@ -1495,8 +1525,8 @@ export function LiveMode({
       if (!payload || payload.sender === meId.current) return;
       const s = stateRef.current;
       if (s.begun) {
-        // the same payload as any broadcast (statePayload: the claim, the ended flag, the
-        // absence, and the audio intent incl. the real-position anchor - see audioFields)
+        // the same payload as any broadcast (statePayload: the claim, the run, the ended
+        // flag, and the audio intent incl. the real-position anchor - see audioFields)
         ch.send({
           type: "broadcast",
           event: "state",
@@ -1676,9 +1706,15 @@ export function LiveMode({
       // that is exactly the lifetime the lock follows. So the band went home with
       // eight phones that never slept. It rides the broadcast now.
       ended: showEndedRef.current,
-      // this device's last absence, on its clock: a run started inside it beats ours
-      absentFrom: absenceRef.current?.from ?? null,
-      absentUntil: absenceRef.current?.to ?? null,
+      // The RUN this state belongs to: the controller's claim, or the run a viewer
+      // watches (a viewer's own claim is null). Viewers follow a run, not a device.
+      run: isControllerRef.current ? controllerSinceRef.current : followingRunRef.current,
+      // set only on the broadcast of a reset: the run that just stopped existing
+      resetRun: resetRunRef.current,
+      // for the two-runs warning on the other device
+      deviceLabel: deviceLabel(),
+      // is this device the one making the show's sound (the same run on two tabs)
+      sounding: isControllerRef.current && audioPlayingRef.current && soundOutputRef.current,
       ...audioFields(s),
     };
   }
@@ -2149,7 +2185,7 @@ export function LiveMode({
   }
 
   function clearLastRun() {
-    if (!canEdit) return;
+    if (!canEdit || watchingOnly()) return;
     setLastRun(null);
     persistLastRun(eventId, null, null).catch(() => {});
     channelRef.current?.send({
@@ -2895,7 +2931,8 @@ export function LiveMode({
    * controller phone in a pocket with a suspended socket cannot answer. That
    * silence used to read as "no show is running": START lit up, and pressing it
    * stamped a newer claim that the real controller then yielded to — adopting item
-   * 0 and a fresh clock, and going silent. show_authority is the persisted mirror
+   * 0 and a fresh clock, and going silent (today it would be a second run beside it,
+   * which moves nobody but plays twice). show_authority is the persisted mirror
    * of exactly that fact, and a suspended device's row is still fresh (the ghost
    * threshold is GHOST_MS 90s + CLOCK_SKEW_GRACE_MS 120s = 3.5 นาที — see
    * lib/show-authority.ts; it quoted the bare 90s for two review waves after the
@@ -3180,11 +3217,14 @@ export function LiveMode({
     setAudioCurrent(0);
     setAudioDuration(0);
     markShowEnded(false); // a reset show is a fresh one — it may be run again
-    // …and the claim goes with it: a claim is a run's START, and an earlier claim wins
-    // (lib/live-arbitration.ts) - one kept from a run that was reset would outrank the
-    // next show anyone starts.
+    // …and the claim goes with it: a claim is a run's identity (lib/live-arbitration.ts),
+    // and the run is over. The viewers watching it are freed by the broadcast that
+    // names it.
+    resetRunRef.current = controllerSinceRef.current;
     controllerSinceRef.current = null;
     apply({ ...INITIAL, mode: state.mode }); // keep chosen mode after reset
+    resetRunRef.current = null;
+    setRunConflict(null);
   }
 
   // in Auto mode, advance to the next item when the countdown (duration + buffers)
@@ -3781,6 +3821,23 @@ export function LiveMode({
 
       {/* Audio needs a tap to (re)start — after a reload / autoplay block. The one
           allowed fill on this screen, because it IS the action. */}
+      {/* Two runs at once: nothing was moved, so a person has to say which one is the
+          show - by resetting the other. Both screens carry it. */}
+      {inConflict && state.begun && isController && (
+        <div
+          role="alert"
+          data-testid="run-conflict"
+          className="flex min-h-[52px] shrink-0 items-center gap-2 rounded-[2px] bg-warning px-4 py-2 text-[14px] font-semibold text-warning-foreground [@media(orientation:landscape)_and_(max-height:599.98px)_and_(pointer:coarse)]:basis-full stage:mx-5 stage:mb-2"
+        >
+          <AlertTriangle aria-hidden className="size-5 shrink-0" />
+          <span className="min-w-0">
+            อีกเครื่องก็รันโชว์อีกชุดอยู่
+            {runConflict?.label ? ` (${runConflict.label})` : ""}
+            {runConflict?.startedAt ? ` · เริ่ม ${nowClock(new Date(runConflict.startedAt)).slice(0, 5)}` : ""}
+            {" — "}ไม่มีเครื่องไหนถูกย้าย: เครื่องที่ไม่ได้เปิดเพลงจริง ให้กดรีเซ็ตที่เครื่องนั้น
+          </span>
+        </div>
+      )}
       {needsAudioResume && (
         <button
           type="button"
@@ -4305,7 +4362,7 @@ export function LiveMode({
         <LastRunRecord
           seconds={lastRun.seconds}
           at={lastRun.at}
-          onClear={canEdit ? clearLastRun : null}
+          onClear={canEdit && !(state.begun && !isController) ? clearLastRun : null}
           className="shrink-0 [@media(orientation:landscape)_and_(max-height:599.98px)_and_(pointer:coarse)]:order-3 [@media(orientation:landscape)_and_(max-height:599.98px)_and_(pointer:coarse)]:basis-full stage:hidden"
         />
       )}
@@ -4582,7 +4639,7 @@ export function LiveMode({
             <LastRunRecord
               seconds={lastRun.seconds}
               at={lastRun.at}
-              onClear={canEdit ? clearLastRun : null}
+              onClear={canEdit && !(state.begun && !isController) ? clearLastRun : null}
               className="mt-2"
             />
           )}

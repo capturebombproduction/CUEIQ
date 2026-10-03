@@ -121,10 +121,10 @@ export const GHOST_MS = 90_000;
 // raises the amber "MAIN เดิมหลุด" badge on the desk running the sound, and
 // otherDeviceHoldsShow() filters the live holder out with `!isGhost(r)` and returns
 // null, so pressing เริ่มโชว์ on the PA skips the "โชว์กำลังรันอยู่บนเครื่อง X" refusal
-// and starts a second show. Since 2026-10-04 that second show loses the arbitration
-// (the EARLIER claim keeps the show, judged across clocks - lib/live-arbitration.ts),
-// so the phone keeps it - but the skip is still the failure otherDeviceHoldsShow was
-// written to prevent, and the reason the grace stays.
+// and starts a second show. Since 2026-10-04 two different runs move nobody (both keep
+// running and both warn - lib/live-arbitration.ts "conflict"), so the phone keeps its
+// show - but the skip is still the failure otherDeviceHoldsShow was written to
+// prevent, and the reason the grace stays.
 //
 // So the exit condition is: the trigger alone is not sufficient — keep a grace, OR
 // give isGhost a server-derived `now` (e.g. the Date header off a Supabase response,
@@ -145,11 +145,10 @@ export const GHOST_MS = 90_000;
 // other direction — a working PA declared dead in front of the crew mid-show — is the
 // failure being removed, and it is the worse of the two.
 //
-// The control path had its own uncorrected comparison: live-mode.tsx passed the
-// peer's claim RAW into shouldYieldControl, the call that decides WHO DRIVES THE SHOW.
-// Fixed 2026-10-04 with the first-device rule: it now also passes `theirsAtMyClock`
-// (their stamp + (our now - their sentAt)), and a gap wider than CLAIM_SKEW_TRUST_MS is
-// judged on corrected clocks (lib/live-arbitration.ts rule 2).
+// The control path had its own uncorrected comparison: live-mode.tsx compared two
+// devices' claim stamps RAW to decide WHO DRIVES THE SHOW. Gone 2026-10-04 with the
+// first-device rule: claims are compared only for EQUALITY now (the same run on two
+// tabs); two different runs are never settled by their times (lib/live-arbitration.ts).
 export const CLOCK_SKEW_GRACE_MS = 120_000;
 
 /**
