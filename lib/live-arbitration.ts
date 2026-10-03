@@ -16,8 +16,9 @@
 //  - A device RUNNING a show against one with nothing: the idle one steps down (it is
 //    a page that merely opened - it becomes a viewer of the show).
 //  - The SAME run on two devices (two tabs restored from one snapshot; equal stamps)
-//    or two runs nobody can tell apart (no stamps): one steps down - the one NOT
-//    sounding the show, else by id - and watches the very same show.
+//    or two runs nobody can tell apart (no stamps): one steps down and watches the
+//    very same show - the tab that OPENED later (the copy; both tabs share one clock,
+//    so the comparison is exact), else by id.
 //  - TWO DIFFERENT RUNS (a phone back with this afternoon's rehearsal; a phone that
 //    started its own show while it could not hear the PA; two STARTs at once): NOBODY
 //    steps down. "conflict" - both keep what they run and both say so on screen, and a
@@ -47,10 +48,10 @@ export interface ControllerClaim {
   mineBegun?: boolean;
   /** Is one running on theirs? */
   theirsBegun?: boolean;
-  /** Is THIS device sounding the show right now? (the same run on two tabs) */
-  mineSounding?: boolean;
-  /** Is theirs? */
-  theirsSounding?: boolean;
+  /** When THIS page opened (epoch ms) - the same run on two tabs: the first keeps it. */
+  mineOpenedAt?: number | null;
+  /** When theirs did. */
+  theirsOpenedAt?: number | null;
 }
 
 /**
@@ -71,8 +72,8 @@ export function settleControl({
   theirId,
   mineBegun = false,
   theirsBegun = false,
-  mineSounding = false,
-  theirsSounding = false,
+  mineOpenedAt = null,
+  theirsOpenedAt = null,
 }: ControllerClaim): ControlVerdict {
   if (mineBegun !== theirsBegun) return theirsBegun ? "yield" : "keep";
   // before any show nobody controls a show: both keep START, the first to press it is first
@@ -80,8 +81,11 @@ export function settleControl({
   if (mine != null && theirs != null && mine !== theirs) return "conflict";
   if (mine == null && theirs != null) return "yield";
   if (mine != null && theirs == null) return "keep";
-  // the same run on two devices, or no claim on either: the one sounding it keeps it
-  // (the other tab would have to be tapped to sound), else one id
-  if (mineSounding !== theirsSounding) return mineSounding ? "keep" : "yield";
+  // the same run on two tabs, or no claim on either: the page that opened FIRST keeps it
+  // (the one the operator has been using; "who is sounding" is false on every MC row
+  // and Manual cue), else one id
+  if (mineOpenedAt != null && theirsOpenedAt != null && mineOpenedAt !== theirsOpenedAt) {
+    return theirsOpenedAt < mineOpenedAt ? "yield" : "keep";
+  }
   return theirId > myId ? "yield" : "keep";
 }

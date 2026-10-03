@@ -543,10 +543,24 @@ describe("LiveMode · two devices: the first one keeps the show", () => {
     expect(document.querySelector("[data-cueiq-live]")!.getAttribute("data-cueiq-live-index")).toBe("0");
     // nobody is to yield, so nobody is told to: no re-assert
     expect(stateSends()).toHaveLength(1);
-    // the warning names the other device and when its run began
+    // the warning names the other device, when its run began, and that ours began first
     const warning = screen.getByTestId("run-conflict");
     expect(warning).toHaveTextContent("iPhone ของมุก");
     expect(warning).toHaveTextContent("รีเซ็ต");
+    expect(warning).toHaveTextContent("โชว์ของเครื่องนี้เริ่มก่อน");
+  });
+
+  // Both are controllers while two runs are up, and the setlist is one table: the second
+  // run's reorder would move the first run's NEXT. No live edits on either side.
+  it("while two runs are up, neither side edits the setlist", async () => {
+    await mountLive();
+    const ts = await startShowFromUi();
+    expect(screen.getAllByTitle(/ไฟล์เพลง/).length).toBeGreaterThan(0);
+    await act(async () => {
+      live().emit("state", otherRun(ts + 10_000));
+    });
+    expect(screen.queryByTitle(/ไฟล์เพลง/)).toBeNull();
+    expect(screen.queryByTitle(/แสดงปุ่มแก้ไขของแต่ละแถว/)).toBeNull();
   });
 
   // The review of 93d4979: under "the earlier claim wins", a phone back with this
@@ -612,27 +626,27 @@ describe("LiveMode · two devices: the first one keeps the show", () => {
   // Two tabs restored from ONE snapshot hold the SAME run: either may drive it, so one
   // steps down and watches the very same show - the one NOT making the sound (the other
   // would have to be tapped to sound), else by id.
-  it("the SAME run on another tab that is sounding it: this silent tab steps down", async () => {
+  it("the SAME run on a tab that opened EARLIER: this one (the copy) steps down, whatever the ids", async () => {
     await mountLive();
     const ts = await startShowFromUi();
     await act(async () => {
-      live().emit("state", otherRun(ts, { sender: "aaaa-other-tab", currentIndex: 0, sounding: true }));
+      live().emit("state", otherRun(ts, { sender: "0000-first-tab", currentIndex: 0, openedAt: Date.now() - 600_000 }));
     });
     expect(screen.getByTestId("viewer-banner")).toBeInTheDocument();
   });
 
-  it("the SAME run on a silent copy tab: this tab, sounding it, keeps it whatever the ids", async () => {
+  it("the SAME run on a copy tab that opened LATER: this tab keeps it, whatever the ids", async () => {
     h.saved = [{ itemId: "item-1", blob: new Blob(["audio"]), name: "track-1.wav", path: null }];
     await mountLive();
     const ts = await startShowFromUi();
     await act(async () => {
-      live().emit("state", otherRun(ts, { sender: "zzzzzzzz-other-tab", currentIndex: 0, sounding: false }));
+      live().emit("state", otherRun(ts, { sender: "zzzzzzzz-copy-tab", currentIndex: 0, openedAt: Date.now() + 5_000 }));
     });
     expect(screen.queryByTestId("viewer-banner")).not.toBeInTheDocument();
     expect(media.state(media.first()!).paused).toBe(false);
   });
 
-  it("the SAME run, both tabs sounding, the other with the higher id: this tab steps down and goes quiet", async () => {
+  it("the SAME run, no opening times (an older build), the other with the higher id: this tab steps down and goes quiet", async () => {
     // this tab is SOUNDING its first track when it learns the other tab holds the run
     h.saved = [{ itemId: "item-1", blob: new Blob(["audio"]), name: "track-1.wav", path: null }];
     await mountLive();
@@ -941,13 +955,40 @@ describe("LiveMode · before a show, and after one is reset", () => {
       });
     });
     expect(screen.queryByTestId("viewer-banner")).not.toBeInTheDocument();
+    // not at once: it asks again whether a show is up, and gives the answer time
+    expect(screen.getByTestId("start-show")).toBeDisabled();
+    expect(live().lastSent("sync-request")).toBeTruthy();
     await act(async () => {
-      vi.advanceTimersByTime(6_000);
+      vi.advanceTimersByTime(2_000);
     });
     expect(screen.getByTestId("start-show")).toBeEnabled();
   });
 
-  it("a fresh page does not pick up an ENDED show from another viewer's reply", async () => {
+  it("a fresh page takes nothing from another viewer's reply - not a running show, not an ended one", async () => {
+    await mountLive();
+    await act(async () => {
+      live().emit("state", {
+        sender: "phone-that-slept-through-a-reset",
+        sentAt: Date.now(),
+        fromController: false,
+        begun: true,
+        running: true,
+        startedAt: Date.now() - 3600_000,
+        itemStartedAt: Date.now() - 60_000,
+        itemElapsedAtPause: null,
+        currentIndex: 4,
+        mode: "manual",
+        controllerSince: null,
+        run: Date.now() - 3600_000,
+        ended: false,
+      });
+    });
+    const root = document.querySelector("[data-cueiq-live]")!;
+    expect(root.getAttribute("data-cueiq-live-begun")).toBe("0");
+    expect(root.getAttribute("data-cueiq-live-controller")).toBe("1");
+  });
+
+  it("…and the ended one is not taken either", async () => {
     await mountLive();
     await act(async () => {
       live().emit("state", {
@@ -1192,18 +1233,18 @@ describe("LiveMode · the crash-recovery snapshot restores the device's ROLE", (
     expect(root.getAttribute("data-cueiq-live-controller")).toBe("1");
   });
 
-  it("a viewer answers a sync-request as a viewer, and writes no snapshot of its own", async () => {
+  // Only the device running a show answers for it: a phone that slept through a reset
+  // answered for the dead run and made an idle PA its viewer, for good.
+  it("a viewer does not answer a sync-request, and writes no snapshot of its own", async () => {
     await mountViewer({}, 1);
+    const before = live().sent.length;
     let delivered = 0;
     await act(async () => {
       delivered = live().emit("sync-request", { sender: "joining-phone" });
     });
     // 0 handlers would mean the component never registered — the failure this is hunting.
     expect(delivered).toBe(1);
-    const reply = live().lastSent("state");
-    expect(reply).toBeTruthy();
-    expect(reply!.payload.fromController).toBe(false);
-    expect(reply!.payload.currentIndex).toBe(1);
+    expect(live().sent.length).toBe(before);
     await act(async () => {
       vi.advanceTimersByTime(1_000);
     });

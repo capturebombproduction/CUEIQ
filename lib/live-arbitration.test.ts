@@ -78,10 +78,10 @@ describe("settleControl", () => {
     expect(settle(1000, 1000, true, true, "zzz", "aaa")).toEqual({ a: "keep", b: "yield" });
   });
 
-  it("the same run on two tabs: the one SOUNDING it keeps it, whatever the ids", () => {
+  it("the same run on two tabs: the one that OPENED first keeps it, whatever the ids", () => {
     for (const [aId, bId] of [["aaa", "zzz"], ["zzz", "aaa"]] as const) {
-      const a = settleControl({ mine: 1000, theirs: 1000, myId: aId, theirId: bId, mineBegun: true, theirsBegun: true, mineSounding: true, theirsSounding: false });
-      const b = settleControl({ mine: 1000, theirs: 1000, myId: bId, theirId: aId, mineBegun: true, theirsBegun: true, mineSounding: false, theirsSounding: true });
+      const a = settleControl({ mine: 1000, theirs: 1000, myId: aId, theirId: bId, mineBegun: true, theirsBegun: true, mineOpenedAt: 500, theirsOpenedAt: 900 });
+      const b = settleControl({ mine: 1000, theirs: 1000, myId: bId, theirId: aId, mineBegun: true, theirsBegun: true, mineOpenedAt: 900, theirsOpenedAt: 500 });
       expect([a, b]).toEqual(["keep", "yield"]);
     }
   });

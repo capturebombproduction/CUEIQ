@@ -287,6 +287,8 @@ export function LiveMode({
   const followedHeardAtRef = useRef(0);
   // set for the one broadcast that resets a run, so the viewers watching it are freed
   const resetRunRef = useRef<number | null>(null);
+  // when this page opened (the same run on two tabs stays with the first - see settleControl)
+  const openedAtRef = useRef(Date.now());
   const meId = useRef<string>(
     typeof crypto !== "undefined" && "randomUUID" in crypto
       ? crypto.randomUUID()
@@ -330,8 +332,6 @@ export function LiveMode({
   // (the show item can outlast the file via buffer_after). Cleared on the next command.
   const endedItemRef = useRef<string | null>(null);
   const [audioPlaying, setAudioPlaying] = useState(false);
-  const audioPlayingRef = useRef(audioPlaying);
-  audioPlayingRef.current = audioPlaying;
   // A REAL media failure on THIS device (a dangling cached blob, an evicted file, a
   // codec this device can't decode) — as opposed to the benign autoplay block, which
   // the "แตะเพื่อเล่นเสียงต่อ" banner already handles. Kept on screen because the
@@ -346,8 +346,6 @@ export function LiveMode({
   // actually makes sound (e.g. plugged into the PA)? A remote/control device sets
   // this OFF so it stays silent without muting the PA device. Default ON.
   const [soundOutput, setSoundOutput] = useState(true);
-  const soundOutputRef = useRef(soundOutput);
-  soundOutputRef.current = soundOutput;
   // Set just before an ARBITRATION mute so the persist effect below can tell a
   // verdict apart from the operator flipping the switch. Cleared as it is read.
   const mutedByStepDownRef = useRef(false);
@@ -402,6 +400,8 @@ export function LiveMode({
     heardAt: number;
   } | null>(null);
   const inConflict = runConflict != null && now - runConflict.heardAt < CONFLICT_STALE_MS;
+  const inConflictRef = useRef(inConflict);
+  inConflictRef.current = inConflict;
 
   // Live tools sheet (presentation only): open/closed + where focus goes.
   const [toolsOpen, setToolsOpen] = useState(false);
@@ -1372,16 +1372,11 @@ export function LiveMode({
       setSyncSettled(true); // heard live show state — the first sync has landed
       const fromController = !!payload.fromController;
       const theirBegun = !!(payload.begun ?? payload.startedAt != null);
-      // A viewer's sync-reply (fromController=false) is only useful to a device that
-      // hasn't picked up the show yet — never let it overwrite or demote an active
-      // session. This is what keeps the controller in control after a reconnect:
-      // its own sync-request gets viewer replies, which we now ignore.
-      if (!fromController && stateRef.current.begun) return;
-      // …nor to pick up a show that was ENDED. A viewer's word that a finished show
-      // exists, with its device gone, made this page a viewer of nothing (START is gone
-      // while begun) - and nobody would ever reset it. From its own device an ended
-      // show is still picked up: that device can reset it.
-      if (!fromController && payload.ended) return;
+      // Only the device RUNNING a show speaks for it. A viewer's word (older builds
+      // still answer sync-requests as viewers) is never taken up: a phone that slept
+      // through a reset still believes the old run is on, and answering for it made an
+      // idle PA a viewer of a show nobody would ever reset - START gone, for good.
+      if (!fromController) return;
       // Correct for clock differences between devices: the sender stamps its own
       // Date.now() as sentAt; we shift its absolute timestamps into OUR clock so
       // both screens count down in step even if their system clocks disagree.
@@ -1408,9 +1403,9 @@ export function LiveMode({
           // re-assert its empty INITIAL state over the PA and stop the music.
           mineBegun: stateRef.current.begun,
           theirsBegun: theirBegun,
-          // the same run on two tabs: the one playing it keeps it
-          mineSounding: audioPlayingRef.current && soundOutputRef.current,
-          theirsSounding: !!payload.sounding,
+          // the same run on two tabs: the one that opened first keeps it
+          mineOpenedAt: openedAtRef.current,
+          theirsOpenedAt: typeof payload.openedAt === "number" ? payload.openedAt : null,
         });
         if (verdict === "conflict") {
           // TWO DIFFERENT RUNS: nobody is moved - not the first device, not this one.
@@ -1473,6 +1468,12 @@ export function LiveMode({
           controllerSinceRef.current = null;
           isControllerRef.current = true;
           setIsController(true);
+          // …but look again before START comes back: another run may be up (the one
+          // this page did not follow), and its device has to get the chance to say so.
+          setSyncSettled(false);
+          ch.send({ type: "broadcast", event: "sync-request", payload: { sender: meId.current } });
+          if (settleTimer) clearTimeout(settleTimer);
+          settleTimer = setTimeout(() => setSyncSettled(true), 2000);
         }
       }
       // Picking up a show that is already running makes this device a VIEWER — whatever
@@ -1524,7 +1525,8 @@ export function LiveMode({
     ch.on("broadcast", { event: "sync-request" }, ({ payload }) => {
       if (!payload || payload.sender === meId.current) return;
       const s = stateRef.current;
-      if (s.begun) {
+      // only the device running the show answers for it (see the state handler)
+      if (s.begun && isControllerRef.current) {
         // the same payload as any broadcast (statePayload: the claim, the run, the ended
         // flag, and the audio intent incl. the real-position anchor - see audioFields)
         ch.send({
@@ -1713,8 +1715,8 @@ export function LiveMode({
       resetRun: resetRunRef.current,
       // for the two-runs warning on the other device
       deviceLabel: deviceLabel(),
-      // is this device the one making the show's sound (the same run on two tabs)
-      sounding: isControllerRef.current && audioPlayingRef.current && soundOutputRef.current,
+      // when this page opened: the same run on two tabs stays with the first
+      openedAt: openedAtRef.current,
       ...audioFields(s),
     };
   }
@@ -1908,8 +1910,11 @@ export function LiveMode({
 
   // A viewer of a running show only watches (พี่ 2026-10-04): no keys, no sound, and
   // no edits either - a reorder, a loop flag or a new file would reach the device
-  // that started the show. Read through refs: the row keys are memoized.
-  const watchingOnly = () => stateRef.current.begun && !isControllerRef.current;
+  // that started the show. Nor while TWO RUNS are up: both are controllers then, and
+  // the setlist is one table - the second run's reorder would move the first run's
+  // NEXT. Read through refs: the row keys are memoized.
+  const watchingOnly = () =>
+    (stateRef.current.begun && !isControllerRef.current) || inConflictRef.current;
 
   // audio controls
   function openFilePicker(itemId: string) {
@@ -3472,7 +3477,7 @@ export function LiveMode({
                   )}
                   {/* the track sounding right now (static: no pulse on this screen) */}
                   {isPlayingThis && <Volume2 aria-hidden className="size-3.5 shrink-0 text-primary-ink" />}
-                  {busy && !(canEdit && !(state.begun && !isController)) && (
+                  {busy && !(canEdit && !(state.begun && !isController) && !inConflict) && (
                     <Loader2 aria-hidden className="size-3.5 shrink-0 animate-spin text-muted-foreground" />
                   )}
                   {i === state.currentIndex + 1 && (
@@ -3495,7 +3500,7 @@ export function LiveMode({
                 file holds an empty loop slot), so the keys and the lengths line up
                 down the list. Stage: only in edit mode, at 36 px. */}
             {/* a viewer of a running show edits nothing (watchingOnly) */}
-            {canEdit && !(state.begun && !isController) && (
+            {canEdit && !(state.begun && !isController) && !inConflict && (
               <div className="flex shrink-0 items-center gap-1 stage:hidden stage:group-data-[edit=on]/ro:flex">
                 {/* quick reorder — Admin + Manual + controller only (detailed edits = setlist editor).
                     Stage only (CQ-17): on a phone the two 22 px keys took ~28 px from a title that
@@ -3577,7 +3582,7 @@ export function LiveMode({
         );
       }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [items, state, playingId, audioPlaying, audioUrls, audioBusy, isController, plannedStarts, songCovers]
+    [items, state, playingId, audioPlaying, audioUrls, audioBusy, isController, inConflict, plannedStarts, songCovers]
   );
 
   if (items.length === 0) {
@@ -3834,7 +3839,12 @@ export function LiveMode({
             อีกเครื่องก็รันโชว์อีกชุดอยู่
             {runConflict?.label ? ` (${runConflict.label})` : ""}
             {runConflict?.startedAt ? ` · เริ่ม ${nowClock(new Date(runConflict.startedAt)).slice(0, 5)}` : ""}
-            {" — "}ไม่มีเครื่องไหนถูกย้าย: เครื่องที่ไม่ได้เปิดเพลงจริง ให้กดรีเซ็ตที่เครื่องนั้น
+            {runConflict?.startedAt != null && state.startedAt != null
+              ? state.startedAt <= runConflict.startedAt
+                ? " · โชว์ของเครื่องนี้เริ่มก่อน"
+                : " · เครื่องนั้นเริ่มก่อน"
+              : ""}
+            {" — "}ไม่มีเครื่องไหนถูกย้าย: เครื่องที่ไม่ใช่เครื่องเปิดเพลงของโชว์นี้ ให้กดรีเซ็ตที่เครื่องนั้น
           </span>
         </div>
       )}
@@ -4337,7 +4347,7 @@ export function LiveMode({
             </span>
             {/* Stage only (phones always show their row keys): the admin's reorder,
                 Loop and file keys stay out of the running order until asked for. */}
-            {canEdit && !(state.begun && !isController) && (
+            {canEdit && !(state.begun && !isController) && !inConflict && (
               <button
                 type="button"
                 aria-pressed={orderEdit}
@@ -4741,7 +4751,7 @@ export function LiveMode({
                     <VolumeX aria-hidden className="size-3.5 shrink-0" />
                     <span className="min-w-0">เครื่องนี้ไม่มีไฟล์ของรายการนี้ — รายการนี้จะไม่มีเสียง</span>
                   </p>
-                  {canEdit && (
+                  {canEdit && !inConflict && (
                   <Button
                     type="button"
                     variant="outline"
@@ -4762,7 +4772,7 @@ export function LiveMode({
               <Loader2 aria-hidden className="size-3.5 shrink-0 animate-spin" />
               กำลังเตรียมไฟล์เพลงจากคลาวด์…
             </p>
-          ) : current && canEdit && !(state.begun && !isController) ? (
+          ) : current && canEdit && !(state.begun && !isController) && !inConflict ? (
             <Button
               type="button"
               variant="outline"
