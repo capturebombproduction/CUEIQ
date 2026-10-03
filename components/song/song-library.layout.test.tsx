@@ -209,24 +209,29 @@ describe("SongLibrary — tablet table, phone meta line, chip row", () => {
 
   // CQ-39: a label admin's table (Song + Length + Audio + Rights + ▶ + manage + Band)
   // was ~886 px wide at 768, so edit / delete sat off-screen in a hint-less scroller.
-  it("the Band column is lg-and-up only: below lg it is a meta line under the title", () => {
+  // 2026-10-04: from 1150 px, not lg - at 1024 the fixed columns left the Song column ~100 px
+  it("the Band column is 1150 px-and-up only: below it is a meta line under the title", () => {
     mountBands(
       [song("s1", "Akai Hana", { group_id: "g2", file_name: FILE })],
       twoBands,
       makePerms("admin")
     );
     const head = screen.getByRole("columnheader", { name: "Band" });
-    expect(cls(head)).toEqual(expect.arrayContaining(["hidden", "lg:table-cell"]));
+    expect(cls(head)).toEqual(expect.arrayContaining(["hidden", "[@media(min-width:1150px)]:table-cell"]));
+    // and Language with it
+    expect(cls(screen.getByRole("columnheader", { name: "Language" }))).toEqual(
+      expect.arrayContaining(["hidden", "[@media(min-width:1150px)]:table-cell"])
+    );
 
     const row = screen.getAllByRole("row")[1];
     const cells = within(row).getAllByRole("cell");
     // the Band cell is the one holding the band name and nothing else
     const bandCell = cells.find((c) => c.textContent === "Capture Bomb")!;
-    expect(cls(bandCell)).toEqual(expect.arrayContaining(["hidden", "lg:table-cell"]));
+    expect(cls(bandCell)).toEqual(expect.arrayContaining(["hidden", "[@media(min-width:1150px)]:table-cell"]));
 
     // the same name, as a muted line in the Song cell, shown only below lg
     const meta = within(cells[0]).getByText("Capture Bomb").parentElement!;
-    expect(cls(meta)).toContain("lg:hidden");
+    expect(cls(meta)).toContain("[@media(min-width:1150px)]:hidden");
     expect(cls(meta)).not.toContain("hidden");
     expect(cls(meta)).toContain("text-muted-foreground");
   });
@@ -247,13 +252,13 @@ describe("SongLibrary — tablet table, phone meta line, chip row", () => {
     expect(name.getAttribute("title")).toBe(FILE);
   });
 
-  it("Length and Audio are narrower below lg, so the Song column keeps its room", () => {
+  it("Length and Audio are narrower below lg (Audio below 1150 px), so the Song column keeps its room", () => {
     mountBands([song("s1", "Akai Hana")], twoBands, makePerms("admin"));
     expect(cls(screen.getByRole("columnheader", { name: "Length" }))).toEqual(
       expect.arrayContaining(["w-20", "lg:w-24"])
     );
     expect(cls(screen.getByRole("columnheader", { name: "Audio" }))).toEqual(
-      expect.arrayContaining(["w-32", "lg:w-[10rem]"])
+      expect.arrayContaining(["w-32", "[@media(min-width:1150px)]:w-[10rem]"])
     );
   });
 

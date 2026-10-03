@@ -1805,17 +1805,21 @@ export function SongLibrary({
                 {/* Length and Audio are narrower below lg: their content (a time, one
                     or two badges, nowrap) is well under the lg widths, and the room goes
                     to the Song column — 144 px of it at 768 made every title wrap per
-                    word. A column never goes below its content, so nothing is cut. */}
+                    word. A column never goes below its content, so nothing is cut.
+                    Language, Band and Audio's wider width wait for 1150 px, not lg (1024):
+                    at 1024 a label admin's fixed columns came to ~830 px and left the Song
+                    column ~100 px - every title on three lines, file names broken mid-word
+                    (measured 2026-10-04). 1180 (an iPad Air across) keeps the full table. */}
                 <TableHead className="w-20 text-right lg:w-24">Length</TableHead>
-                <TableHead className="w-32 lg:w-[10rem]">Audio</TableHead>
-                <TableHead className="hidden w-24 lg:table-cell">Language</TableHead>
+                <TableHead className="w-32 [@media(min-width:1150px)]:w-[10rem]">Audio</TableHead>
+                <TableHead className="hidden w-24 [@media(min-width:1150px)]:table-cell">Language</TableHead>
                 <TableHead className="hidden w-28 xl:table-cell">Category</TableHead>
                 <TableHead className="w-32">Rights</TableHead>
                 {/* Band is its own column from lg only. At 768-1023 a label admin's
                     row (Song + Length + Audio + Rights + ▶ + manage) already takes the
                     whole slab, and the table scrolled sideways with the edit / delete
                     keys off-screen — below lg the band is a meta line under the title. */}
-                {groups.length > 1 && <TableHead className="hidden w-36 lg:table-cell">Band</TableHead>}
+                {groups.length > 1 && <TableHead className="hidden w-36 [@media(min-width:1150px)]:table-cell">Band</TableHead>}
                 <TableHead className="w-14">
                   <span className="sr-only">ตัวอย่าง</span>
                 </TableHead>
@@ -1879,7 +1883,7 @@ export function SongLibrary({
                             </div>
                           )}
                           {groups.length > 1 && band && (
-                            <div className="flex items-center gap-1.5 text-xs text-muted-foreground lg:hidden">
+                            <div className="flex items-center gap-1.5 text-xs text-muted-foreground [@media(min-width:1150px)]:hidden">
                               <span
                                 aria-hidden
                                 className="h-2 w-2 shrink-0 rounded-[1px] bg-muted-foreground"
@@ -1902,7 +1906,7 @@ export function SongLibrary({
                         {localSourceControls(song)}
                       </div>
                     </TableCell>
-                    <TableCell className="hidden text-muted-foreground lg:table-cell">
+                    <TableCell className="hidden text-muted-foreground [@media(min-width:1150px)]:table-cell">
                       {song.language
                         ? SONG_LANGUAGE_LABELS[song.language] ?? song.language
                         : "—"}
@@ -1912,7 +1916,7 @@ export function SongLibrary({
                     </TableCell>
                     <TableCell>{copyrightControl(song)}</TableCell>
                     {groups.length > 1 && (
-                      <TableCell className="hidden text-muted-foreground lg:table-cell">
+                      <TableCell className="hidden text-muted-foreground [@media(min-width:1150px)]:table-cell">
                         {band ? (
                           <span className="flex items-center gap-2">
                             <span
