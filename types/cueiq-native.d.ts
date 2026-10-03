@@ -26,8 +26,11 @@ interface CueiqUpdateState {
   latest: string | null;
   /** download progress 0-100 while "downloading" */
   percent: number | null;
-  /** macOS only: the .dmg the press opens */
+  /** macOS only: this Mac's .dmg of the newer version */
   url: string | null;
+  /** macOS only: true when the press can only open that .dmg (the app cannot replace
+   *  itself here — see desktop/electron/main.cjs checkMacFeed); false = in-app update */
+  manual?: boolean;
   platform: string;
 }
 

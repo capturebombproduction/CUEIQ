@@ -133,6 +133,19 @@ jobs:
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: false
 
+      # The Mac updates ITSELF from v0.1.26 on (desktop/electron/mac-update.cjs): it reads
+      # latest-mac.yml (written by desktop/build/rename-mac-arch.cjs), downloads its .dmg,
+      # checks the sha512, copies CueIQ.app out and swaps it in once the app has quit. A
+      # wrong feed or a swap that breaks the bundle would surface as a Mac that can no
+      # longer open CueIQ — so run every step here, with the real hdiutil/ditto/codesign,
+      # against the very .dmg files this leg is about to upload. A failure fails the leg,
+      # and a failed leg uploads nothing (see `Upload installer`).
+      - name: Mac in-app update (feed, download, stage, swap)
+        if: runner.os == 'macOS' # see the note on the feed check below
+        shell: bash
+        timeout-minutes: 10
+        run: node desktop/scripts/mac-update-smoke.mjs desktop/release
+
       # `--publish never` means "don't UPLOAD", not "don't generate": electron-builder
       # still writes the update feed next to the installer because a publish provider
       # is configured for win. Auto-update is silently dead without it, and a missing
@@ -572,13 +585,14 @@ jobs:
           cat > notes.md <<'NOTES'
           **Windows** — ดาวน์โหลด `.exe` แล้วเปิดติดตั้งได้เลย
           เครื่องที่ลง CueIQ ไว้อยู่แล้ว: เปิดโปรแกรมครั้งถัดไปมันจะ**เด้งถาม**ว่าจะโหลดเวอร์ชันนี้ไหม
-          กด「โหลดเลย」แล้วมันจะติดตั้งให้ตอน**ปิด**โปรแกรม — ไม่มีทางเด้งใส่ระหว่างโชว์
+          (หรือกดปุ่ม「อัปเดต」ที่แถบด้านบนเมื่อไหร่ก็ได้) — โหลดเสร็จแล้วกด「เปิดใหม่เลย」/「ติดตั้ง」แอปจะติดตั้งทับของเดิมแล้วเปิดใหม่เอง ไม่ต้องถอนตัวเก่า — ไม่มีทางติดตั้งระหว่างโชว์
           ถ้ากด「ไว้ก่อน」จะ**ไม่โหลดอะไรเลย** แล้วถามใหม่รอบหน้า (ถ้าติ๊ก「ไม่ต้องถามเรื่องเวอร์ชันนี้อีก」ไว้ ต้องมาโหลด `.exe` จากหน้านี้เอง)
 
           **Mac** — ดาวน์โหลด `.dmg` ให้ตรงเครื่อง (Apple Silicon หรือ Intel) แล้วลากลง Applications
           แอปยังไม่ได้เซ็นใบรับรอง เปิดครั้งแรกให้รัน `xattr -cr /Applications/CueIQ.app`
           ถ้ายังไม่ยอมเปิด (แมคชิป M ที่ลงเวอร์ชันเก่ากว่านี้) ให้รันเพิ่ม `codesign --force --deep --sign - /Applications/CueIQ.app`
-          ฝั่ง Mac ยังไม่มีอัปเดตอัตโนมัติ (ต้องเซ็นใบรับรองก่อน) — โหลด `.dmg` ใหม่เอาเอง
+          เครื่อง Mac ที่ลง **0.1.26 ขึ้นไป** ไว้ใน Applications แล้ว: กดปุ่ม「อัปเดต」ที่แถบด้านบนของแอป → โหลดเสร็จกด「เปิดใหม่เลย」 จบ (ไม่ต้องโหลด `.dmg` เอง)
+          เครื่องที่ยังเป็น 0.1.25 หรือเก่ากว่า: ลาก `.dmg` นี้ลง Applications ทับของเดิม**ครั้งสุดท้าย**
           NOTES
           if [ "$decision" = no ]; then
             printf '\n> ⚠️ เวอร์ชันนี้**ไม่ได้**ถูกตั้งเป็น Latest — เครื่องที่ลง CueIQ ไว้แล้วจะ**ไม่เด้งถาม**ถึงเวอร์ชันนี้ ต้องมาโหลด `.exe` จากหน้านี้เอง\n' >> notes.md

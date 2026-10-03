@@ -1,9 +1,11 @@
 // The desktop header's update control (พี่, 2026-10-03: "อยากให้เวอร์ชันเดสก์ท็อปและแมคกดอัปเดตได้").
+// พี่ again (2026-10-03): "กดอัพเดทเหมือนอัพเดทเกมส์" — on both platforms the chip is
+// "อัปเดต" → n% → "ติดตั้ง"; when the download finishes main itself asks "เปิดใหม่เลย?".
 // It shows only when there is something to press — a newer version, its download, or one
 // ready to install — and reads/drives the one state the main process keeps
-// (desktop/electron/main.cjs checkForUpdates / applyUpdate). Every confirmation (install now?
-// the .dmg steps on a Mac, "a show is running") is a native dialog in main, so nothing here
-// can quit the app by accident. Not mounted on Live / the show-caller (no header there).
+// (desktop/electron/main.cjs checkForUpdates / applyUpdate). Every decision that can quit the
+// app (a show running, an unsaved edit, the .dmg steps on a Mac that cannot update itself)
+// is made in main, never here. Not mounted on Live / the show-caller (no header there).
 import { useEffect, useState } from "react";
 import { Download, Loader2, RotateCw } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -47,7 +49,8 @@ export function UpdateChip() {
       () => setBusy(false)
     );
   };
-  const mac = s.platform === "darwin";
+  // a Mac that cannot replace itself (run from the .dmg, older release…): the press opens the .dmg
+  const manual = s.platform === "darwin" && s.manual === true;
 
   if (s.state === "available") {
     return (
@@ -58,13 +61,13 @@ export function UpdateChip() {
         data-testid="update-chip"
         className={cn(CHIP, "bg-primary text-primary-foreground hover:bg-primary/90")}
         title={
-          mac
+          manual
             ? `เวอร์ชันใหม่ ${s.latest} — กดเพื่อโหลดไฟล์ติดตั้ง (.dmg) สำหรับ Mac เครื่องนี้`
-            : `เวอร์ชันใหม่ ${s.latest} — กดเพื่อโหลด (ราว 100 MB) แล้วกดติดตั้งเมื่อโหลดเสร็จ`
+            : `เวอร์ชันใหม่ ${s.latest} — กดเพื่อโหลด (ราว 100 MB) โหลดเสร็จแล้วแอปจะถามก่อนเปิดใหม่`
         }
       >
         <Download className="h-3.5 w-3.5" aria-hidden />
-        {mac ? "ดาวน์โหลด" : "อัปเดต"} <span className="num">{s.latest}</span>
+        {manual ? "ดาวน์โหลด" : "อัปเดต"} <span className="num">{s.latest}</span>
       </button>
     );
   }
@@ -88,7 +91,7 @@ export function UpdateChip() {
         disabled={busy}
         data-testid="update-chip"
         className={cn(CHIP, "bg-primary text-primary-foreground hover:bg-primary/90")}
-        title={`ติดตั้งเวอร์ชัน ${s.latest} — แอปจะปิดแล้วเปิดใหม่เอง (ถามก่อน)`}
+        title={`ติดตั้งเวอร์ชัน ${s.latest} — แอปจะปิดแล้วเปิดใหม่เป็นเวอร์ชันใหม่เอง (ไม่ติดตั้งระหว่างโชว์)`}
       >
         <RotateCw className="h-3.5 w-3.5" aria-hidden />
         ติดตั้ง <span className="num">{s.latest}</span>

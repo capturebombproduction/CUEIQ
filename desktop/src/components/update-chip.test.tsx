@@ -74,8 +74,22 @@ describe("UpdateChip", () => {
     await waitFor(() => expect(apply).toHaveBeenCalledTimes(2));
   });
 
-  it("Mac: the press is a download of the .dmg, worded as such", async () => {
-    install({ state: "available", latest: "0.1.25", platform: "darwin", url: "https://example.test/x.dmg" });
+  it("Mac that can replace itself: the same อัปเดต → n% → ติดตั้ง as Windows", async () => {
+    install({ state: "available", latest: "0.1.26", platform: "darwin", url: "https://example.test/x.dmg", manual: false });
+    render(<UpdateChip />);
+    const chip = await screen.findByRole("button", { name: /อัปเดต\s*0\.1\.26/ });
+    expect(chip.getAttribute("title")).not.toMatch(/\.dmg/);
+    fireEvent.click(chip);
+    await waitFor(() => expect(apply).toHaveBeenCalledTimes(1));
+    push({ state: "downloading", percent: 7 });
+    expect(screen.getByRole("status").textContent).toMatch(/กำลังโหลด\s*7%/);
+    push({ state: "ready", percent: 100 });
+    fireEvent.click(screen.getByRole("button", { name: /ติดตั้ง\s*0\.1\.26/ }));
+    await waitFor(() => expect(apply).toHaveBeenCalledTimes(2));
+  });
+
+  it("Mac that cannot (run from the .dmg, an older release…): the press is a download of the .dmg, worded as such", async () => {
+    install({ state: "available", latest: "0.1.25", platform: "darwin", url: "https://example.test/x.dmg", manual: true });
     render(<UpdateChip />);
     const chip = await screen.findByRole("button", { name: /ดาวน์โหลด\s*0\.1\.25/ });
     expect(chip.getAttribute("title")).toMatch(/\.dmg/);
