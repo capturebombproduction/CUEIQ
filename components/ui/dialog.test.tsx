@@ -42,6 +42,13 @@ describe("Dialog", () => {
     expect(c).toEqual(expect.arrayContaining(["max-h-[85vh]", "sm:max-h-[85vh]", "overflow-y-auto"]));
   });
 
+  it("its one column cannot grow past the panel, so a long unbreakable line never scrolls it sideways", () => {
+    // the implicit `auto` track let a grid child's min-width:auto size the column to a
+    // 100-character file name: 832 px of content in a 512 px panel (Add Song, 2026-10-03)
+    render(<Sheet />);
+    expect(classes(screen.getByRole("dialog"))).toContain("grid-cols-[minmax(0,1fr)]");
+  });
+
   it("clears the home indicator: bottom padding includes the safe area", () => {
     render(<Sheet />);
     expect(classes(screen.getByRole("dialog")).some((k) => k.includes("safe-area-inset-bottom"))).toBe(true);

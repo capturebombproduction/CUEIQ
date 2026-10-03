@@ -309,3 +309,26 @@ describe("SongLibrary — tablet table, phone meta line, chip row", () => {
     expect(src).not.toContain("[scrollbar-width:none]");
   });
 });
+
+describe("SongLibrary — the Add Song dialog with a real master's file name", () => {
+  // Found adding Seishin's 36 masters through the app (2026-10-03): the picked file's name
+  // sat in a flex row without min-w-0, so it never truncated; the dialog scrolled sideways
+  // and the language field and the save button slid out of view. jsdom has no layout, so the
+  // contract that prevents it is pinned instead: the name may shrink, the button may not.
+  it("the file name can shrink and truncate (min-w-0), the button keeps its size, the full name is the title", () => {
+    mount([], makePerms("admin"));
+    fireEvent.click(screen.getAllByRole("button", { name: /เพิ่มเพลง/ })[0]);
+    const dialog = screen.getByRole("dialog");
+    const name = within(dialog).getByTestId("song-file-name");
+    const cls = name.className.split(" ");
+    expect(cls).toContain("min-w-0");
+    expect(cls).toContain("truncate");
+    expect(within(dialog).getByRole("button", { name: /เลือกไฟล์/ }).className.split(" ")).toContain("shrink-0");
+
+    const long = "LIVE - Intoxicated Mirage of Riko 【リコの酔いしれた蜃気楼】 (Riko no Yoishireta Shinkirō) - Seishin Kakumei.wav";
+    const input = dialog.querySelector('input[type="file"][accept="audio/*"]') as HTMLInputElement;
+    fireEvent.change(input, { target: { files: [new File(["x"], long, { type: "audio/wav" })] } });
+    expect(name.textContent).toBe(long);
+    expect(name.getAttribute("title")).toBe(long);
+  });
+});

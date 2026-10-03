@@ -2202,6 +2202,7 @@ export function SongLibrary({
                   variant="outline"
                   onClick={() => fileRef.current?.click()}
                   disabled={detecting}
+                  className="shrink-0"
                 >
                   {detecting ? (
                     <Loader2 className="h-4 w-4 animate-spin" />
@@ -2210,7 +2211,15 @@ export function SongLibrary({
                   )}
                   เลือกไฟล์
                 </Button>
-                <span className="truncate text-sm text-muted-foreground">
+                {/* min-w-0: a flex item will not shrink below its text without it, so a real
+                    master's name ("LIVE - Intoxicated Mirage of Riko 【…】 (…) - Seishin
+                    Kakumei.wav") held the row at its full width, the whole dialog scrolled
+                    sideways and the language field and the save button slid off screen. */}
+                <span
+                  data-testid="song-file-name"
+                  title={form.file_name || undefined}
+                  className="min-w-0 truncate text-sm text-muted-foreground"
+                >
                   {form.file_name || "ยังไม่ได้เลือกไฟล์"}
                 </span>
               </div>

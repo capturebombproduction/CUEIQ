@@ -82,7 +82,12 @@ const DialogContent = React.forwardRef<
           // was un-saveable rather than ugly. The sheet uses 88dvh (the SMALL viewport,
           // clear of iOS's toolbars) where the engine knows dvh, and 85vh where it does
           // not — an unknown unit would drop the cap entirely.
-          "fixed inset-x-0 bottom-0 z-50 mx-auto grid w-full max-w-lg gap-4",
+          // grid-cols-[minmax(0,1fr)]: the one column may never grow past the panel. With
+          // the implicit `auto` track a grid child's min-width:auto made the column as wide
+          // as its longest unbreakable line (a master's file name in Add Song was 832 px in
+          // a 512 px panel), so the whole panel scrolled sideways and its fields and Save
+          // button slid out of view. A 0 minimum lets each child shrink to the panel.
+          "fixed inset-x-0 bottom-0 z-50 mx-auto grid w-full max-w-lg grid-cols-[minmax(0,1fr)] gap-4",
           "max-h-[85vh] supports-[height:1dvh]:max-h-[88dvh] overflow-y-auto overscroll-contain",
           "rounded-t-[12px] bg-popover text-popover-foreground shadow-elev-2",
           "px-5 pb-[calc(env(safe-area-inset-bottom)+20px)] pt-2",
