@@ -132,6 +132,14 @@ function blockSeconds(it: SetlistItem) {
   );
 }
 
+// Where a row's FILE starts on its own clock, for everything that DRAWS it (the NOW card's
+// waveform and sections, CONSOLE's clips, bar grid and sections): always 0:00, because the
+// player starts the file the moment the item starts - every seek is the item's elapsed time.
+// A positive buffer_before (legacy rows only; the builder now takes 0 or an overlap lead) is
+// counted in the block but is no delay; a negative one pre-rolls the file under the previous
+// item and starts this item's clock |lead| in, so file time still equals item time.
+const FILE_START_SEC = 0;
+
 /** What a non-admin may and may not do here — the โหมดซ้อม chip's title and the
  *  first line of Live tools. */
 const REHEARSAL_NOTE =
@@ -2497,7 +2505,7 @@ export function LiveMode({
   // its waveform across the block, the practice room's sections, its loudness, its beat.
   const songMarkers = useSongMarkers(useMemo(() => items.map((it) => it.song_id), [items]));
   const currentSongSignal = current?.song_id ? songSignal?.[current.song_id] : undefined;
-  const nowAudioStart = Math.max(0, current?.buffer_before_seconds || 0);
+  const nowAudioStart = FILE_START_SEC;
   const nowWaveLevels = useMemo(() => decodeWaveform(currentSongSignal?.peaks), [currentSongSignal?.peaks]);
   // laid on the item's own clock (lib/song-signal.ts waveOverBlock): the file's real length, looped
   // where the row loops, silent after its end - a row's length is the plan, not the file
@@ -2552,7 +2560,7 @@ export function LiveMode({
           kind: (it.kind as SetlistKind | undefined) ?? null,
           title: it.title,
           block: blockSeconds(it),
-          audioStart: Math.max(0, it.buffer_before_seconds || 0),
+          audioStart: FILE_START_SEC,
           // the FILE's length (an MC can play a 5-minute track in a 2:30 slot); the row's where unknown
           audioLen: sig?.duration ?? (it.duration_seconds || 0),
           loop: !!it.loop_audio,

@@ -2126,6 +2126,17 @@ describe("LiveMode · the NOW waveform is the file on the item's clock", () => {
     await mountLive({ items: [makeItem(1, { song_id: "song-1", duration_seconds: 240 }), ITEMS[1]], songSignal: signal(120) });
     expect(heights().slice(100).every((x) => x < 10)).toBe(true);
   });
+
+  it("a legacy row's positive buffer-before is no delay: the player starts the file at the item's 0:00", async () => {
+    // 60 + 240 = a 300 s block; the 240 s file sounds from 0:00, so 0:00-2:00 is its loud half
+    await mountLive({
+      items: [makeItem(1, { song_id: "song-1", duration_seconds: 240, buffer_before_seconds: 60 }), ITEMS[1]],
+      songSignal: signal(240),
+    });
+    const h = heights();
+    expect(h.slice(0, 80).every((x) => x === 100)).toBe(true);
+    expect(h.slice(80, 160).every((x) => x < 10)).toBe(true);
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2182,5 +2193,15 @@ describe("LiveMode · CONSOLE's clip is the file on the item's clock", () => {
     looped.unmount();
     await mountLive({ items: [makeItem(1, { song_id: "song-1", duration_seconds: 240 }), ITEMS[1]], songSignal: signal(120) });
     expect(levels().slice(100).every((x) => x < 0.1)).toBe(true);
+  });
+
+  it("a legacy row's positive buffer-before is no delay here either: the file from the clip's 0:00", async () => {
+    await mountLive({
+      items: [makeItem(1, { song_id: "song-1", duration_seconds: 240, buffer_before_seconds: 60 }), ITEMS[1]],
+      songSignal: signal(240),
+    });
+    const l = levels();
+    expect(l.slice(0, 80).every((x) => x === 1)).toBe(true);
+    expect(l.slice(80, 160).every((x) => x < 0.1)).toBe(true);
   });
 });
