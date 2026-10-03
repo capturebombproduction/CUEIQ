@@ -19,6 +19,7 @@ function item(n: number, over: Partial<ConsoleItem> = {}): ConsoleItem {
     block: 240,
     audioStart: 0,
     audioLen: 240,
+    loop: false,
     notes: null,
     songId: `song-${n}`,
     lufs: -14,
@@ -182,6 +183,19 @@ describe("the clip editor", () => {
     unmount();
     mount({ items: [item(1, { peaks: null }), ...ITEMS.slice(1)] });
     expect(screen.getByText("ยังไม่ได้วัดรูปคลื่นของเพลงนี้")).toBeTruthy();
+  });
+
+  it("draws the FILE on the item's clock: a short file falls silent after its end, a looping row repeats it", () => {
+    // a 120 s file in a 240 s block; PEAKS is silent for its first 10 %
+    const floorBars = () =>
+      [...screen.getByTestId("console-wave").querySelectorAll("path")].map((p) => p.getAttribute("d") ?? "").join("").split("v2.88").length - 1;
+    const { unmount } = mount({ items: [item(1, { audioLen: 120 }), ...ITEMS.slice(1)] });
+    // 200 columns: the file's quiet first 10 % (20 of its 100) + the 100 after it ends
+    expect(floorBars()).toBe(110);
+    unmount();
+    mount({ items: [item(1, { audioLen: 120, loop: true }), ...ITEMS.slice(1)] });
+    // looped: the quiet opening twice, no silence after
+    expect(floorBars()).toBe(20);
   });
 
   it("an item with no library song says it has none", () => {

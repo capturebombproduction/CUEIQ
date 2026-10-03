@@ -2058,3 +2058,36 @@ describe("LiveMode · STAGE | CONSOLE", () => {
     expect(screen.getAllByTestId("console-clip")[0]).toBeDisabled();
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// (z2) THE NOW CARD'S WAVEFORM RUNS ON THE ITEM'S CLOCK
+//
+// A row's length is the plan; the file is the file. An MC row that plays a 5:12 backing
+// track in a 2:32 slot hears only the track's first 2:32, so that is what the waveform
+// must draw - the whole file squeezed into the slot put its chorus where its intro plays.
+// ─────────────────────────────────────────────────────────────────────────────
+describe("LiveMode · the NOW waveform is the file on the item's clock", () => {
+  // a file loud for its first half, silent for its second ("_" = full scale, "A" = the floor)
+  const PEAKS = "_".repeat(100) + "A".repeat(100);
+  const heights = () =>
+    Array.from(document.querySelectorAll<HTMLElement>('[data-testid="now-wave"] > div > span')).map((b) =>
+      parseFloat(b.style.height)
+    );
+  const signal = (duration: number | null) => ({
+    "song-1": { lufs: -9, peaks: PEAKS, beatOffset: null, bpm: null, duration },
+  });
+
+  it("a file twice the slot: only its first half - the loud half - is drawn", async () => {
+    await mountLive({ items: [makeItem(1, { song_id: "song-1", duration_seconds: 120 }), ITEMS[1]], songSignal: signal(240) });
+    const h = heights();
+    expect(h).toHaveLength(200);
+    expect(h.every((x) => x === 100)).toBe(true);
+  });
+
+  it("a file as long as the slot: drawn whole, loud then quiet", async () => {
+    await mountLive({ items: [makeItem(1, { song_id: "song-1", duration_seconds: 120 }), ITEMS[1]], songSignal: signal(120) });
+    const h = heights();
+    expect(h.slice(0, 100).every((x) => x === 100)).toBe(true);
+    expect(h.slice(100).every((x) => x < 10)).toBe(true);
+  });
+});

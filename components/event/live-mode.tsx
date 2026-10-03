@@ -75,7 +75,7 @@ import { SignalStrip } from "@/components/live/signal-strip";
 import { useShowOutput } from "@/components/live/use-show-output";
 import { SignalTap, signalTapSupported, type SilenceVerdict } from "@/lib/live-signal";
 import { decodeWaveform } from "@/lib/song-analysis";
-import { loudnessDelta, type SongSignalMap } from "@/lib/song-signal";
+import { loudnessDelta, waveOverBlock, type SongSignalMap } from "@/lib/song-signal";
 import { useSongMarkers } from "@/lib/song-markers-live";
 import { BeatLight } from "@/components/live/beat-light";
 import { ConsoleBoard, type ConsoleItem } from "@/components/live/console-board";
@@ -2493,13 +2493,21 @@ export function LiveMode({
   const currentSongSignal = current?.song_id ? songSignal?.[current.song_id] : undefined;
   const nowAudioStart = Math.max(0, current?.buffer_before_seconds || 0);
   const nowWaveLevels = useMemo(() => decodeWaveform(currentSongSignal?.peaks), [currentSongSignal?.peaks]);
-  const nowWave = useMemo(
-    () =>
-      current && nowWaveLevels.length > 0 && current.duration_seconds > 0
-        ? { levels: nowWaveLevels, start: nowAudioStart, length: current.duration_seconds }
-        : null,
-    [current, nowWaveLevels, nowAudioStart]
-  );
+  // laid on the item's own clock (lib/song-signal.ts waveOverBlock): the file's real length, looped
+  // where the row loops, silent after its end - a row's length is the plan, not the file
+  const nowFileLen = currentSongSignal?.duration ?? null;
+  const nowWave = useMemo(() => {
+    const block = current ? blockSeconds(current) : 0;
+    if (!current || nowWaveLevels.length === 0 || !(block > 0)) return null;
+    const levels = waveOverBlock(nowWaveLevels, {
+      block,
+      start: nowAudioStart,
+      fileLen: nowFileLen ?? current.duration_seconds,
+      loop: !!current.loop_audio,
+      columns: nowWaveLevels.length,
+    });
+    return { levels, start: 0, length: block };
+  }, [current, nowWaveLevels, nowAudioStart, nowFileLen]);
   const nowSections = useMemo(
     () =>
       (current?.song_id ? songMarkers[current.song_id] ?? [] : []).map((m) => ({
@@ -2539,7 +2547,9 @@ export function LiveMode({
           title: it.title,
           block: blockSeconds(it),
           audioStart: Math.max(0, it.buffer_before_seconds || 0),
-          audioLen: it.duration_seconds || 0,
+          // the FILE's length (an MC can play a 5-minute track in a 2:30 slot); the row's where unknown
+          audioLen: sig?.duration ?? (it.duration_seconds || 0),
+          loop: !!it.loop_audio,
           notes: it.notes ?? null,
           songId: it.song_id ?? null,
           lufs: sig?.lufs ?? null,

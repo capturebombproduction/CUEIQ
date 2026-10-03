@@ -1,7 +1,7 @@
 // lib/song-signal.ts - what the NOW card says about where the song is, and what NEXT says
 // about how loud the next song is against this one.
 import { describe, it, expect } from "vitest";
-import { sectionAt, loudnessDelta, songSignalMap, beatAt } from "./song-signal";
+import { sectionAt, loudnessDelta, songSignalMap, beatAt, waveOverBlock } from "./song-signal";
 
 const marks = [
   { label: "INTRO", at: 0 },
@@ -41,8 +41,50 @@ describe("songSignalMap", () => {
       { id: "a", lufs: -7.3, peaks: "ABC", beat_offset: 0.32, bpm: 171 },
       { id: "b", lufs: undefined, peaks: undefined, beat_offset: undefined, bpm: undefined },
     ]);
-    expect(m.a).toEqual({ lufs: -7.3, peaks: "ABC", beatOffset: 0.32, bpm: 171 });
-    expect(m.b).toEqual({ lufs: null, peaks: null, beatOffset: null, bpm: null });
+    expect(m.a).toEqual({ lufs: -7.3, peaks: "ABC", beatOffset: 0.32, bpm: 171, duration: null });
+    expect(m.b).toEqual({ lufs: null, peaks: null, beatOffset: null, bpm: null, duration: null });
+  });
+
+  it("carries the file's own length; a 0 length is unknown", () => {
+    const m = songSignalMap([
+      { id: "a", lufs: null, peaks: null, beat_offset: null, bpm: null, duration_seconds: 312 },
+      { id: "b", lufs: null, peaks: null, beat_offset: null, bpm: null, duration_seconds: 0 },
+    ]);
+    expect(m.a.duration).toBe(312);
+    expect(m.b.duration).toBeNull();
+  });
+});
+
+describe("waveOverBlock (the waveform on the item's own clock)", () => {
+  const L = [0.1, 0.2, 0.3, 0.4]; // a 4-point file
+
+  it("a file as long as the block: one point per column, as before", () => {
+    expect(waveOverBlock(L, { block: 40, start: 0, fileLen: 40, columns: 4 })).toEqual(L);
+  });
+
+  it("a 5-minute backing track in a 2:30 MC slot: only its first half is heard, so only that is drawn", () => {
+    // file 80 s, block 40 s: the four columns cover the file's first 40 s = its first two points
+    expect(waveOverBlock(L, { block: 40, start: 0, fileLen: 80, columns: 4 })).toEqual([0.1, 0.1, 0.2, 0.2]);
+  });
+
+  it("a file shorter than its slot falls silent after its end - unless the item loops", () => {
+    // each column is read at the middle of its slice: 5 s and 15 s into a 20 s file
+    expect(waveOverBlock(L, { block: 40, start: 0, fileLen: 20, columns: 4 })).toEqual([0.2, 0.4, 0, 0]);
+    expect(waveOverBlock(L, { block: 40, start: 0, fileLen: 20, loop: true, columns: 4 })).toEqual([0.2, 0.4, 0.2, 0.4]);
+  });
+
+  it("before the audio starts, silence", () => {
+    expect(waveOverBlock(L, { block: 40, start: 20, fileLen: 20, columns: 4 })).toEqual([0, 0, 0.2, 0.4]);
+  });
+
+  it("no file length known: the file fills the block after its start (the old drawing)", () => {
+    expect(waveOverBlock(L, { block: 40, start: 0, fileLen: null, columns: 4 })).toEqual(L);
+    expect(waveOverBlock(L, { block: 40, start: 0, fileLen: 0, columns: 4 })).toEqual(L);
+  });
+
+  it("nothing to draw: no levels, or no block", () => {
+    expect(waveOverBlock([], { block: 40, start: 0, fileLen: 40 })).toEqual([]);
+    expect(waveOverBlock(L, { block: 0, start: 0, fileLen: 40 })).toEqual([]);
   });
 });
 

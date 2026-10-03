@@ -22,7 +22,7 @@ import { formatCountdown, formatDuration, formatOvertime } from "@/lib/time";
 import { thresholds, type LiveZone } from "@/lib/live-zone";
 import { CLIP_LEVEL, METER_FLOOR_DB, meterPos, toDb, type OutputKind, type SignalTap } from "@/lib/live-signal";
 import { decodeWaveform } from "@/lib/song-analysis";
-import { beatAt, sectionAt, type LiveMarker } from "@/lib/song-signal";
+import { beatAt, sectionAt, waveOverBlock, type LiveMarker } from "@/lib/song-signal";
 import {
   arrangementWindow,
   barBeat,
@@ -48,9 +48,12 @@ export interface ConsoleItem {
   title: string;
   /** the whole block, buffers included (seconds): what the countdown counts */
   block: number;
-  /** where the audio starts in the block and how long it is: the waveform's span */
+  /** where the audio starts in the block, and the FILE's own length (the song's; the row's
+   *  length where the file's is unknown) - the waveform and the bar grid run on the file */
   audioStart: number;
   audioLen: number;
+  /** the row loops its file to fill the block (setlist_items.loop_audio) */
+  loop: boolean;
   notes: string | null;
   songId: string | null;
   /** the song's 0045 analysis and tempo (null = unmeasured / no song) */
@@ -580,7 +583,9 @@ const Arrangement = memo(function Arrangement({
     () =>
       items.map((it) => {
         const lv = decodeWaveform(it.peaks);
-        return lv.length > 0 ? waveBars(resample(lv, 56), 0.7, 0.04) : null;
+        // the file on the row's own clock (lib/song-signal.ts waveOverBlock), across the whole clip
+        const over = lv.length > 0 ? waveOverBlock(lv, { block: it.block, start: it.audioStart, fileLen: it.audioLen, loop: it.loop, columns: 200 }) : [];
+        return over.length > 0 ? waveBars(resample(over, 56), 0.7, 0.04) : null;
       }),
     [items]
   );
@@ -680,14 +685,7 @@ const Arrangement = memo(function Arrangement({
                   {wave && it.block > 0 && (
                     // a box for the svg to fill: placed by top + bottom alone, an svg takes its
                     // height from its viewBox and spills out of the clip
-                    <span
-                      aria-hidden
-                      className="absolute bottom-1 top-4"
-                      style={{
-                        left: `${(it.audioStart / it.block) * 100}%`,
-                        width: `${(Math.min(it.audioLen, it.block - it.audioStart) / it.block) * 100}%`,
-                      }}
-                    >
+                    <span aria-hidden className="absolute inset-x-0 bottom-1 top-4">
                       <svg
                         viewBox="0 0 56 100"
                         preserveAspectRatio="none"
@@ -765,20 +763,29 @@ const ClipEditor = memo(function ClipEditor({
   sections: readonly { label: string; at: number }[];
   section: { now: string | null; next: string | null } | null;
 }) {
-  const levels = useMemo(() => decodeWaveform(item?.peaks), [item?.peaks]);
   const block = item?.block ?? 0;
+  // the file on the item's own clock, one column per 200th of the block: its real length, looped
+  // or silent after its end (lib/song-signal.ts waveOverBlock)
+  const levels = useMemo(
+    () =>
+      item
+        ? waveOverBlock(decodeWaveform(item.peaks), { block: item.block, start: item.audioStart, fileLen: item.audioLen, loop: item.loop, columns: 200 })
+        : [],
+    [item]
+  );
   const regions = useMemo(() => sectionRegions(sections, block), [sections, block]);
   const grid = useMemo(
-    () => (item ? barLines(item.bpm, item.beatOffset, item.audioStart, item.audioLen) : []),
+    // the grid over the file's first pass, inside the block
+    () => (item ? barLines(item.bpm, item.beatOffset, item.audioStart, Math.min(item.audioLen, item.block - item.audioStart)) : []),
     [item]
   );
   if (!item) return null;
   const at = (sec: number) => `${block > 0 ? (sec / block) * 100 : 0}%`;
   const progress = block > 0 ? Math.min(100, Math.max(0, (elapsed / block) * 100)) : 0;
   const warnFrom = block - thresholds(block).warn;
-  // bar index of the playhead, and of the warn stretch, on the waveform's own columns
+  // column of the playhead, and of the warn stretch (the columns span the block)
   const n = levels.length;
-  const col = (sec: number) => (item.audioLen > 0 ? Math.round(((sec - item.audioStart) / item.audioLen) * n) : 0);
+  const col = (sec: number) => (block > 0 ? Math.round((sec / block) * n) : 0);
   const playedTo = Math.max(0, Math.min(n, col(elapsed)));
   const warnAt = Math.max(playedTo, Math.min(n, col(warnFrom)));
   const ticks = block > 0 ? rulerMarks({ start: 0, span: block }) : [];
@@ -836,8 +843,7 @@ const ClipEditor = memo(function ClipEditor({
           <div
             data-testid="console-wave"
             aria-hidden
-            className="absolute bottom-4 top-6"
-            style={{ left: at(item.audioStart), width: at(Math.min(item.audioLen, block - item.audioStart)) }}
+            className="absolute inset-x-0 bottom-4 top-6"
           >
             <svg viewBox={`0 0 ${n} 100`} preserveAspectRatio="none" className="block size-full">
               <path className="fill-foreground" d={waveBars(levels, 0.72, 0.03, 0, playedTo)} />
