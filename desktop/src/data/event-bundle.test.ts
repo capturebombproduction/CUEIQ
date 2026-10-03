@@ -32,6 +32,7 @@ import {
   type ScriptResult,
   type SupabaseFake,
 } from "@/test/fakes/supabase";
+import { SONG_SHOW_COLUMNS } from "@/lib/song-columns";
 
 const h = vi.hoisted(() => ({ supa: null as unknown, ops: [] as unknown[] }));
 vi.mock("@/lib/supabase/client", () => ({ createClient: () => h.supa }));
@@ -567,6 +568,18 @@ describe("loadEventBundle — the happy path the bound must be invisible on", ()
     expect(stored.event.name).toBe("fresh show");
     expect(stored.setlist).toHaveLength(2);
     expect(stored.songs[0].title).toBe("ลาก่อน");
+  });
+
+  it("reads the songs WITHOUT their cover pictures, so the cache stays small", async () => {
+    // 0044 puts a ~10 K-char cover on each song row; read with "*", every show
+    // opened wrote ~360 K of Seishin's pictures into localStorage — the store the
+    // saved sign-in lives in too — and nothing on a show screen draws them.
+    await loadEventBundle(EVENT_ID);
+
+    const reads = supa.query.callsTo("songs", "select");
+    expect(reads).toHaveLength(1);
+    expect(reads[0].columns).toBe(SONG_SHOW_COLUMNS);
+    expect(reads[0].eq).toEqual({ group_id: GROUP_ID });
   });
 
   it("still reports a genuine deletion as gone once the session is proven live", async () => {

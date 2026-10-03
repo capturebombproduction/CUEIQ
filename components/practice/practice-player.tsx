@@ -229,6 +229,35 @@ export function PracticePlayer({
   const [drillOpen, setDrillOpen] = useState(false);
 
   const current = currentId ? songsById.get(currentId) ?? null : null;
+  // The Now Playing cover. The songs this room is handed come from the event bundle,
+  // which leaves the cover pictures out (lib/song-columns.ts), so the hero reads the
+  // one it needs when a song starts: one small row per song, kept for the visit.
+  // Decoration only — a failed read just leaves the band tile.
+  const [covers, setCovers] = useState<Record<string, string | null>>({});
+  useEffect(() => {
+    if (!currentId || current?.cover || currentId in covers) return;
+    let alive = true;
+    try {
+      createClient()
+        .from("songs")
+        .select("id, cover")
+        .eq("id", currentId)
+        .then(
+          ({ data, error }) => {
+            if (!alive || error || !data) return;
+            const row = (data as { id: string; cover: string | null }[])[0];
+            setCovers((prev) => ({ ...prev, [currentId]: row?.cover ?? null }));
+          },
+          () => {}
+        );
+    } catch {
+      /* no client (a test, a broken build): the band tile it is */
+    }
+    return () => {
+      alive = false;
+    };
+  }, [currentId, current?.cover, covers]);
+  const currentCover = current ? current.cover ?? covers[current.id] ?? null : null;
   const curMarkers = useMemo(
     () =>
       (currentId ? markers[currentId] ?? [] : [])
@@ -715,12 +744,12 @@ export function PracticePlayer({
         style={{ "--cut": "22px" } as CSSProperties}
       >
         <div className="flex items-center gap-3.5">
-          {current?.cover ? (
+          {currentCover ? (
             // the song's own cover (songs.cover, 0044) — a 192 px data URL, so 84 px
             // stays sharp on a 2x screen
             // eslint-disable-next-line @next/next/no-img-element -- data-URL thumbnail: next/image adds nothing
             <img
-              src={current.cover}
+              src={currentCover}
               alt=""
               aria-hidden
               className="h-[84px] w-[84px] flex-none rounded-[2px] bg-muted object-cover"

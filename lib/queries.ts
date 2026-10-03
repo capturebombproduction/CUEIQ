@@ -13,6 +13,7 @@ import type {
 } from "@/lib/types";
 import { makePerms, type GroupRoleRow, type Perms } from "@/lib/permissions";
 import { assertReadsSucceeded, readFailure } from "@/lib/read-guard";
+import { SONG_SHOW_COLUMNS } from "@/lib/song-columns";
 
 export interface Workspace {
   user: { id: string; email: string | null; name: string | null } | null;
@@ -506,7 +507,7 @@ export const getEventBundle = cache(async (
       .order("sort_order", { ascending: true }),
     supabase
       .from("songs")
-      .select("*")
+      .select(SONG_SHOW_COLUMNS) // not "*": no cover pictures (lib/song-columns.ts)
       .eq("group_id", event.group_id)
       .order("title", { ascending: true }),
     supabase

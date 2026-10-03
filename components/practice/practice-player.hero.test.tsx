@@ -16,7 +16,12 @@ type FakeEngine = {
   onTime: (t: number) => void;
   onDuration: (d: number) => void;
 };
-const h = vi.hoisted(() => ({ engines: [] as FakeEngine[] }));
+const h = vi.hoisted(() => ({
+  engines: [] as FakeEngine[],
+  // the songs table as the cover read sees it (filtered by its .eq("id", …))
+  coverRows: [] as { id: string; cover: string | null }[],
+  coverReads: [] as string[],
+}));
 
 vi.mock("@/lib/practice-audio", () => ({
   PracticeAudioEngine: class {
@@ -71,14 +76,22 @@ vi.mock("@/lib/auth-session", () => ({ hasLiveSession: async () => true }));
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn(), info: vi.fn() } }));
 vi.mock("@/lib/supabase/client", () => ({
   createClient: () => ({
-    from: () => {
-      // no shows → the setlist card stays out of the way
+    from: (table: string) => {
+      // no shows → the setlist card stays out of the way; songs answers the cover read
+      let id: unknown = null;
       const b = {
         select: () => b,
-        eq: () => b,
+        eq: (col: string, v: unknown) => {
+          if (col === "id") id = v;
+          return b;
+        },
         gte: () => b,
         insert: () => b,
-        then: (res: (v: unknown) => unknown) => Promise.resolve({ data: [], error: null }).then(res),
+        then: (res: (v: unknown) => unknown) => {
+          if (table === "songs") h.coverReads.push(String(id));
+          const data = table === "songs" ? h.coverRows.filter((r) => r.id === id) : [];
+          return Promise.resolve({ data, error: null }).then(res);
+        },
       };
       return b;
     },
@@ -126,6 +139,8 @@ async function pick(title: string, path: string) {
 
 beforeEach(() => {
   h.engines = [];
+  h.coverRows = [];
+  h.coverReads = [];
 });
 
 describe("PracticePlayer — the Now Playing hero", () => {
@@ -149,6 +164,22 @@ describe("PracticePlayer — the Now Playing hero", () => {
     } finally {
       delete songs[1].cover;
     }
+  });
+
+  it("reads the cover the room was not handed (the event bundle leaves covers out), once per song", async () => {
+    const COVER = "data:image/webp;base64,UklGRg==";
+    h.coverRows = [{ id: "c", cover: COVER }];
+    mount();
+    await pick("Neon Samurai", "b.wav");
+    await waitFor(() => expect(h.coverReads).toEqual(["b"]));
+    expect(hero().querySelector("img")).toBeNull();
+    await pick("Akai Hana", "c.wav");
+    await waitFor(() => expect(hero().querySelector("img")?.getAttribute("src")).toBe(COVER));
+    // back to a song already asked about: no second read
+    fireEvent.click(within(hero()).getByRole("button", { name: /เพลงก่อนหน้า/ }));
+    await waitFor(() => expect(engine().loads).toEqual(["b.wav", "c.wav", "b.wav"]));
+    await waitFor(() => expect(hero().querySelector("img")).toBeNull());
+    expect(h.coverReads).toEqual(["b", "c"]);
   });
 
   it("⏭ loads the next song on the list, and is off on the last one", async () => {

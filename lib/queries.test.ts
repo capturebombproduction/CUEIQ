@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { eventBundleReadFailure, getWorkspace, isEventIdShaped } from "@/lib/queries";
+import { eventBundleReadFailure, getEventBundle, getWorkspace, isEventIdShaped } from "@/lib/queries";
+import { SONG_SHOW_COLUMNS } from "@/lib/song-columns";
 import {
   makeSupabaseFake,
   makeSession,
@@ -402,5 +403,26 @@ describe("getWorkspace", () => {
     expect(ws.user).toBeNull();
     expect(ws.membership).toBeNull();
     expect(supa.calls).toHaveLength(0);
+  });
+});
+
+// 0044 put each song's cover picture ON the row (~10 K chars each; Seishin's 36 came
+// to ~360 K, 14x the rest of their rows). The bundle read "*", so every event page,
+// every Live Mode load and every router.refresh() of either shipped all of them to
+// draw none. It reads the explicit list instead.
+describe("getEventBundle — the songs it reads", () => {
+  const EID = "9f3a1c8e-2b4d-4a91-8c7e-1f2a3b4c5d6e";
+  it("leaves the cover pictures out", async () => {
+    const supa = makeSupabaseFake({
+      session: makeSession(),
+      script: { events: ok([{ id: EID, tenant_id: "t1", group_id: "g1", groups: null }]) },
+    });
+    h.supa = supa;
+    const bundle = await getEventBundle(EID);
+    expect(bundle?.event.id).toBe(EID); // positive control: the bundle was built
+    const reads = supa.query.callsTo("songs", "select");
+    expect(reads).toHaveLength(1);
+    expect(reads[0].columns).toBe(SONG_SHOW_COLUMNS);
+    expect(reads[0].eq).toEqual({ group_id: "g1" });
   });
 });

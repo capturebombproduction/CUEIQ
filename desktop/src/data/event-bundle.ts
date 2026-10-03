@@ -9,6 +9,7 @@ import { applyPendingChildren, materializeEventRow } from "@/lib/mgmt-outbox";
 import { callTimeOf } from "@/lib/next-show";
 import { nextTicketShow } from "@/components/event/events-list";
 import { bkkTodayKey } from "@/lib/time";
+import { SONG_SHOW_COLUMNS } from "@/lib/song-columns";
 import { hasCache, isOffline, readCache, readCacheKeys, writeCache } from "~/data/cache";
 import { hasLiveSession } from "@/lib/auth-session";
 import { listMgmtConflicts, pendingMgmtOps } from "~/data/mgmt-outbox";
@@ -275,7 +276,7 @@ export async function loadEventBundleStatus(eventId: string): Promise<EventBundl
           .order("sort_order", { ascending: true }),
         supabase
           .from("songs")
-          .select("*")
+          .select(SONG_SHOW_COLUMNS) // not "*": covers would fill this cache (lib/song-columns.ts)
           .eq("group_id", event.group_id)
           .order("title", { ascending: true }),
         supabase
