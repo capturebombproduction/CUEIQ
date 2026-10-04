@@ -124,6 +124,16 @@ const INITIAL: LiveState = {
   mode: "manual",
 };
 
+/** Another device's per-track levels (itemId → 0–100), or null if it sent none. */
+function cleanVolumes(raw: unknown): Record<string, number> | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const out: Record<string, number> = {};
+  for (const [id, v] of Object.entries(raw as Record<string, unknown>)) {
+    if (typeof v === "number" && Number.isFinite(v)) out[id] = Math.min(100, Math.max(0, v));
+  }
+  return out;
+}
+
 function blockSeconds(it: SetlistItem) {
   // A negative buffer_before is a lead-in for overlapping the PREVIOUS track, not
   // part of this item's own countdown — clamp it to 0 here.
@@ -439,17 +449,20 @@ export function LiveMode({
   function writeVolumePreset() {
     if (!volumesLoadedRef.current) return; // don't overwrite before the restore runs
     try {
-      // A loop item's end-fade (loopFadeRef, declared with its effect further down)
-      // is TRANSIENT: it dips that track to 0 so the BGM lands on time and restores
-      // once the show moves off it. When it never moves off (last item, or the
-      // operator leaves it running) the restore never fires, and persisting that 0
-      // would re-open the event with the row muted. Save the operator's INTENDED
-      // level for a track that's mid-fade — the audible fade itself is untouched.
-      const lf = loopFadeRef.current;
-      const vols = volumesRef.current;
-      const preset = lf ? { ...vols, [lf.id]: lf.prevVol } : vols;
-      localStorage.setItem(`cueiq:vol:${eventId}`, JSON.stringify(preset));
+      localStorage.setItem(`cueiq:vol:${eventId}`, JSON.stringify(intendedVolumes()));
     } catch {}
+  }
+  // The operator's INTENDED per-track levels - what is saved, and what the device
+  // running the show tells its viewers. A loop item's end-fade (loopFadeRef, declared
+  // with its effect further down) is TRANSIENT: it dips that track to 0 so the BGM
+  // lands on time and restores once the show moves off it. When it never moves off
+  // (last item, or the operator leaves it running) the restore never fires, and
+  // persisting that 0 would re-open the event with the row muted. So a track that's
+  // mid-fade counts at its intended level - the audible fade itself is untouched.
+  function intendedVolumes(): Record<string, number> {
+    const lf = loopFadeRef.current;
+    const vols = volumesRef.current;
+    return lf ? { ...vols, [lf.id]: lf.prevVol } : vols;
   }
   const writeVolumePresetRef = useRef(writeVolumePreset);
   writeVolumePresetRef.current = writeVolumePreset;
@@ -1517,6 +1530,22 @@ export function LiveMode({
         if (theirRun != null) followingRunRef.current = theirRun;
         followedHeardAtRef.current = Date.now();
       }
+      // A viewer takes the levels of the device running the show as a whole: one that
+      // joined late knew only its own saved levels, and the volume messages carry only
+      // what changes after it joined (พี่ 2026-10-04: the device that came later syncs
+      // to the master). Absent from an older build → its own levels, as before.
+      if (!isControllerRef.current && theirBegun) {
+        const levels = cleanVolumes(payload.volumes);
+        if (levels) setVolumes(levels);
+      }
+      // The row the show stands on, by ID first: a viewer whose list is a step behind
+      // (a reorder it has not re-read yet) showed whatever sat at that index here - a
+      // different song from the one on the PA. The index is the fallback (an older
+      // build, a row this device does not have yet).
+      const byId =
+        typeof payload.currentItemId === "string"
+          ? itemsRef.current.findIndex((it) => it.id === payload.currentItemId)
+          : -1;
       setState({
         running: payload.running,
         begun: payload.begun ?? payload.startedAt != null,
@@ -1524,7 +1553,7 @@ export function LiveMode({
         itemStartedAt:
           payload.itemStartedAt != null ? payload.itemStartedAt + skew : null,
         itemElapsedAtPause: payload.itemElapsedAtPause ?? null,
-        currentIndex: payload.currentIndex,
+        currentIndex: byId >= 0 ? byId : payload.currentIndex,
         mode: payload.mode ?? "manual",
       });
       // Follow the controller's จบโชว์ / a fresh เริ่มโชว์, so a viewer's screen is
@@ -1742,6 +1771,8 @@ export function LiveMode({
       resetRun: resetRunRef.current,
       // for the two-runs warning on the other device
       deviceLabel: deviceLabel(),
+      // the per-track levels it plays at - a viewer that joined late shows these
+      volumes: intendedVolumes(),
       // when this page opened: the same run on two tabs stays with the first
       openedAt: openedAtRef.current,
       ...audioFields(s),

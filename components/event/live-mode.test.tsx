@@ -2829,3 +2829,103 @@ describe("LiveMode · a show left running long ago comes back paused", () => {
     expect(Date.now() - after).toBeLessThanOrEqual(30_000);
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// (z6) A DEVICE THAT CAME LATER SHOWS WHAT THE MASTER PLAYS
+//
+// พี่ 2026-10-04: the first device is the master; a device that opens later syncs to
+// it. Two things a late viewer used to take from ITSELF: the row (by index into its
+// own list - one step behind a reorder, it named a different song than the PA) and
+// the per-track levels (its own saved ones; the volume messages carry only changes).
+// ─────────────────────────────────────────────────────────────────────────────
+describe("LiveMode · a late viewer follows the master's row and levels", () => {
+  const paState = (over: Record<string, unknown> = {}) => {
+    const t = Date.now();
+    return {
+      sender: "pa-device",
+      sentAt: t,
+      fromController: true,
+      begun: true,
+      running: true,
+      startedAt: t - 60_000,
+      itemStartedAt: t - 10_000,
+      itemElapsedAtPause: null,
+      currentIndex: 0,
+      mode: "manual",
+      controllerSince: t - 60_000,
+      ended: false,
+      ...over,
+    };
+  };
+  const index = () => document.querySelector("[data-cueiq-live]")!.getAttribute("data-cueiq-live-index");
+  const nowTitle = () =>
+    within(document.querySelector("section[data-zone]") as HTMLElement).getByRole("heading", { level: 2 }).textContent;
+  const savedLevels = () => JSON.parse(localStorage.getItem(`cueiq:vol:${EVENT_ID}`) ?? "null");
+
+  it("the row is the master's SONG: index 0 on the PA's reordered list is Track 3 here", async () => {
+    await mountLive();
+    await act(async () => {
+      live().emit("state", paState({ currentIndex: 0, currentItemId: "item-3" }));
+    });
+    expect(index()).toBe("2");
+    expect(nowTitle()).toContain("Track 3");
+  });
+
+  it("without an id (an older build) or with one this list lacks, the index stands", async () => {
+    await mountLive();
+    await act(async () => {
+      live().emit("state", paState({ currentIndex: 1 }));
+    });
+    expect(index()).toBe("1");
+    await act(async () => {
+      live().emit("state", paState({ currentIndex: 2, currentItemId: "item-new" }));
+    });
+    expect(index()).toBe("2");
+  });
+
+  it("a viewer takes the master's levels whole - its own saved ones give way", async () => {
+    localStorage.setItem(`cueiq:vol:${EVENT_ID}`, JSON.stringify({ "item-1": 90, "item-2": 10 }));
+    h.saved = [{ itemId: "item-1", blob: new Blob(["audio"]), name: "track-1.wav", path: null }];
+    await mountLive();
+    await act(async () => {
+      live().emit("state", paState({ currentItemId: "item-1", volumes: { "item-1": 40, bad: "x" } }));
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(600);
+    });
+    expect(savedLevels()).toEqual({ "item-1": 40 });
+    expect(screen.getAllByRole("slider").some((s) => (s as HTMLInputElement).value === "40")).toBe(true);
+  });
+
+  it("a device running its own show keeps its levels whatever another one says", async () => {
+    localStorage.setItem(`cueiq:vol:${EVENT_ID}`, JSON.stringify({ "item-1": 70 }));
+    await mountLive();
+    const ts = await startShowFromUi();
+    await act(async () => {
+      live().emit("state", paState({ sender: "phone", controllerSince: ts + 5_000, volumes: { "item-1": 5 } }));
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(600);
+    });
+    expect(savedLevels()).toEqual({ "item-1": 70 });
+  });
+
+  it("before any show, another open page's levels change nothing here", async () => {
+    localStorage.setItem(`cueiq:vol:${EVENT_ID}`, JSON.stringify({ "item-1": 70 }));
+    await mountLive();
+    await act(async () => {
+      live().emit("state", paState({ sender: "laptop-2", begun: false, running: false, startedAt: null, itemStartedAt: null, controllerSince: null, volumes: { "item-1": 5 } }));
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(600);
+    });
+    expect(savedLevels()).toEqual({ "item-1": 70 });
+  });
+
+  it("the device running the show sends its levels with every state", async () => {
+    localStorage.setItem(`cueiq:vol:${EVENT_ID}`, JSON.stringify({ "item-1": 55 }));
+    await mountLive();
+    await startShowFromUi();
+    expect(stateSends().at(-1)!.payload.volumes).toEqual({ "item-1": 55 });
+  });
+});
