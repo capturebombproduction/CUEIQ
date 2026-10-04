@@ -124,6 +124,36 @@ function macBundleBlocker(bundlePath) {
   return null;
 }
 
+/**
+ * States in which the feed is read again by the long-running re-check. "available" is one
+ * of them: the chip names the version it found when it last looked, and on a desk machine
+ * that stays open that can be hours and releases ago - พี่'s Mac showed 0.1.29 while 0.1.30
+ * was out, installed 0.1.29, and only the restart's check found 0.1.30 (2026-10-04: "มันอัพ
+ * ทีละเวอชันไล่เลขไปเรื่อย ๆ ... กดสองรอบ"). Never while a download runs or one waits.
+ */
+const RECHECK_STATES = ["idle", "uptodate", "error", "available"];
+function shouldRecheck(state) {
+  return RECHECK_STATES.includes(state);
+}
+
+/**
+ * The header chip's press (and Help → ตรวจหาอัปเดต's "อัปเดตเลย"). With an update on offer it
+ * reads the feed AGAIN first and installs whatever is newest NOW - one press, however many
+ * releases came out since the chip appeared; a failed or "nothing newer" re-check downloads
+ * nothing (the chip shows that state). Nothing found yet → look; downloaded → install.
+ * `state` is read after each await: the re-check changes it.
+ */
+async function pressUpdate({ state, recheck, download, install }) {
+  const s = state();
+  if (s === "error" || s === "uptodate" || s === "idle") return recheck();
+  if (s === "available") {
+    await recheck();
+    if (state() === "available") await download();
+    return;
+  }
+  if (s === "ready") await install();
+}
+
 module.exports = {
   REPO,
   LATEST_YML_URL,
@@ -139,4 +169,7 @@ module.exports = {
   macAssetFor,
   macBundleFromExe,
   macBundleBlocker,
+  RECHECK_STATES,
+  shouldRecheck,
+  pressUpdate,
 };

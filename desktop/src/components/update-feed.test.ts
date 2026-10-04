@@ -26,6 +26,14 @@ const feed = require("../../electron/update-feed.cjs") as {
   ) => FeedFile | null;
   macBundleFromExe: (p: unknown) => string | null;
   macBundleBlocker: (p: string | null) => string | null;
+  RECHECK_STATES: string[];
+  shouldRecheck: (s: string) => boolean;
+  pressUpdate: (d: {
+    state: () => string;
+    recheck: () => Promise<unknown>;
+    download: () => Promise<unknown>;
+    install: () => Promise<unknown>;
+  }) => Promise<unknown>;
 };
 type FeedFile = { url: string; sha512: string; size: number };
 
@@ -156,3 +164,98 @@ describe("can this Mac copy replace itself?", () => {
     expect(feed.macBundleBlocker(null)).toBe("not-bundle");
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ONE PRESS, THE NEWEST RELEASE
+//
+// พี่ 2026-10-04 on his Mac: "มันอัพทีละเวอชันไล่เลขไปเรื่อย ๆ ... กดสองรอบกว่าจะล่าสุด". The chip
+// named the version it found at launch (0.1.29), the 6-hour re-check skipped "available",
+// and 0.1.30 came out meanwhile: the press installed 0.1.29 and only the restart found 0.1.30.
+// ─────────────────────────────────────────────────────────────────────────────
+describe("pressUpdate", () => {
+  /** A fake updater: `feed` is what a check finds now; the log is the order things ran in. */
+  function rig(start: string, feedSays: "available" | "uptodate" | "error") {
+    let st = start;
+    const log: string[] = [];
+    return {
+      log,
+      deps: {
+        state: () => st,
+        recheck: async () => {
+          log.push("recheck");
+          st = feedSays;
+        },
+        download: async () => {
+          log.push("download");
+          st = "downloading";
+        },
+        install: async () => {
+          log.push("install");
+        },
+      },
+    };
+  }
+
+  it("an update on offer: the feed is read again FIRST, then the newest is downloaded", async () => {
+    const r = rig("available", "available");
+    await feed.pressUpdate(r.deps);
+    expect(r.log).toEqual(["recheck", "download"]);
+  });
+
+  it("the re-check fails (offline) or finds nothing newer: nothing is downloaded", async () => {
+    for (const now of ["error", "uptodate"] as const) {
+      const r = rig("available", now);
+      await feed.pressUpdate(r.deps);
+      expect(r.log, now).toEqual(["recheck"]);
+    }
+  });
+
+  it("nothing found yet (idle / up to date / an error): the press looks, and only looks", async () => {
+    for (const s of ["idle", "uptodate", "error"]) {
+      const r = rig(s, "available");
+      await feed.pressUpdate(r.deps);
+      expect(r.log, s).toEqual(["recheck"]);
+    }
+  });
+
+  it("downloaded and waiting: the press installs; mid-check or mid-download it does nothing", async () => {
+    const r = rig("ready", "available");
+    await feed.pressUpdate(r.deps);
+    expect(r.log).toEqual(["install"]);
+    for (const s of ["checking", "downloading", "unsupported"]) {
+      const q = rig(s, "available");
+      await feed.pressUpdate(q.deps);
+      expect(q.log, s).toEqual([]);
+    }
+  });
+});
+
+describe("shouldRecheck", () => {
+  it("re-reads the feed while an update is on offer, so the chip names the newest", () => {
+    expect(feed.shouldRecheck("available")).toBe(true);
+    for (const s of ["idle", "uptodate", "error"]) expect(feed.shouldRecheck(s), s).toBe(true);
+  });
+  it("never while a check or a download runs, or one waits to install", () => {
+    for (const s of ["checking", "downloading", "ready", "unsupported"]) expect(feed.shouldRecheck(s), s).toBe(false);
+  });
+});
+
+// The two rules above only help if the app's main process runs them (a "fix that never
+// runs" was Round 10's commonest defect, and main.cjs has no test harness of its own).
+describe("main.cjs uses them", () => {
+  const main = fs.readFileSync(path.resolve(__dirname, "../../electron/main.cjs"), "utf8");
+  const body = (name: string) => {
+    const at = main.indexOf(name);
+    expect(at, name).toBeGreaterThan(-1);
+    // to the function's closing brace at column 0 (main.cjs may be checked out with CRLF)
+    const end = main.slice(at).search(/\r?\n\}\r?\n/);
+    return main.slice(at, at + end);
+  };
+  it("the press goes through pressUpdate", () => {
+    expect(body("async function applyUpdate()")).toContain("updateFeed.pressUpdate(");
+  });
+  it("the 6-hour re-check asks shouldRecheck", () => {
+    expect(body("function initAutoUpdate()")).toContain("updateFeed.shouldRecheck(updateState.state)");
+  });
+});
+

@@ -471,25 +471,27 @@ async function checkMacFeed() {
   });
 }
 
-/** The header's press (and the menu's): download, or install what is ready. */
+/** The header's press (and the menu's): look, download the NEWEST (the feed is read again
+ *  first - update-feed.cjs pressUpdate), or install what is ready. */
 async function applyUpdate() {
-  const s = updateState.state;
-  if (s === "error" || s === "uptodate" || s === "idle") return checkForUpdates();
-  if (s === "available") {
-    if (process.platform === "darwin") {
-      if (macPlan) macDownload(macPlan).catch((e) => console.log("AUTOUPDATE_MAC_FAIL " + String(e))); // runs on; the chip follows its state
-      else await openMacDmg();
-      return updateState;
-    }
-    if (!winUpdater) return updateState;
-    setUpdateState({ state: "downloading", percent: 0 });
-    winUpdater.downloadUpdate().catch((e) => {
-      console.log("AUTOUPDATE_DL_FAIL " + String(e));
-      setUpdateState({ state: "error" });
-    });
-    return updateState;
-  }
-  if (s === "ready") await installUpdate();
+  await updateFeed.pressUpdate({
+    state: () => updateState.state,
+    recheck: () => checkForUpdates(),
+    download: async () => {
+      if (process.platform === "darwin") {
+        if (macPlan) macDownload(macPlan).catch((e) => console.log("AUTOUPDATE_MAC_FAIL " + String(e))); // runs on; the chip follows its state
+        else await openMacDmg();
+        return;
+      }
+      if (!winUpdater) return;
+      setUpdateState({ state: "downloading", percent: 0 });
+      winUpdater.downloadUpdate().catch((e) => {
+        console.log("AUTOUPDATE_DL_FAIL " + String(e));
+        setUpdateState({ state: "error" });
+      });
+    },
+    install: () => installUpdate(),
+  });
   return updateState;
 }
 
@@ -822,7 +824,8 @@ function initAutoUpdate() {
   const recheckLater = () =>
     // a long-running desk machine hears about a release without a restart; quiet, no prompt
     setInterval(() => {
-      if (["idle", "uptodate", "error"].includes(updateState.state)) checkForUpdates();
+      // "available" too: the chip's version number stays the newest (update-feed.cjs)
+      if (updateFeed.shouldRecheck(updateState.state)) checkForUpdates();
     }, UPDATE_RECHECK_MS).unref?.();
   if (process.platform === "darwin") {
     powerMonitor.on("shutdown", () => {
