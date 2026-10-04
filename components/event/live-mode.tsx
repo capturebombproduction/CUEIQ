@@ -413,6 +413,8 @@ export function LiveMode({
   const [runConflict, setRunConflict] = useState<{
     label: string | null;
     startedAt: number | null;
+    /** is the other run playing right now (null: an older build did not say) */
+    running: boolean | null;
     heardAt: number;
   } | null>(null);
   const inConflict = runConflict != null && now - runConflict.heardAt < CONFLICT_STALE_MS;
@@ -1474,8 +1476,12 @@ export function LiveMode({
                 : typeof payload.startedAt === "number"
                   ? payload.startedAt + skew
                   : null,
+            running: typeof payload.running === "boolean" ? payload.running : null,
             heardAt: Date.now(),
           });
+          // now, not at the next render: the restore announce (announceRestored) reads it
+          // when the reply window closes, and an answer landing just before that must count
+          inConflictRef.current = true;
           return;
         }
         if (verdict === "keep") {
@@ -3954,11 +3960,14 @@ export function LiveMode({
             อีกเครื่องก็รันโชว์อีกชุดอยู่
             {runConflict?.label ? ` (${runConflict.label})` : ""}
             {runConflict?.startedAt ? ` · เริ่ม ${nowClock(new Date(runConflict.startedAt)).slice(0, 5)}` : ""}
-            {runConflict?.startedAt != null && (controllerSinceRef.current ?? state.startedAt) != null
-              ? (controllerSinceRef.current ?? state.startedAt)! <= runConflict.startedAt
-                ? " · โชว์ของเครื่องนี้เริ่มก่อน"
-                : " · เครื่องนั้นเริ่มก่อน"
-              : ""}
+            {/* Whether the other run is PLAYING - not which began first: a rehearsal from
+                this afternoon always began first, and "เครื่องนั้นเริ่มก่อน" on the PA
+                invited a reset of the show itself. The one playing is the show. */}
+            {runConflict?.running === true
+              ? " · เครื่องนั้นกำลังเล่นอยู่"
+              : runConflict?.running === false
+                ? " · เครื่องนั้นหยุดอยู่"
+                : ""}
             {" — "}ไม่มีเครื่องไหนถูกย้าย: เครื่องที่ไม่ใช่เครื่องเปิดเพลงของโชว์นี้ ให้กดรีเซ็ตที่เครื่องนั้น
           </span>
         </div>

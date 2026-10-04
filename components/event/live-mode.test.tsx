@@ -571,11 +571,11 @@ describe("LiveMode · two devices: the first one keeps the show", () => {
     expect(document.querySelector("[data-cueiq-live]")!.getAttribute("data-cueiq-live-index")).toBe("0");
     // nobody is to yield, so nobody is told to: no re-assert
     expect(stateSends()).toHaveLength(1);
-    // the warning names the other device, when its run began, and that ours began first
+    // the warning names the other device, when its run began, and that it is playing
     const warning = screen.getByTestId("run-conflict");
     expect(warning).toHaveTextContent("iPhone ของมุก");
     expect(warning).toHaveTextContent("รีเซ็ต");
-    expect(warning).toHaveTextContent("โชว์ของเครื่องนี้เริ่มก่อน");
+    expect(warning).toHaveTextContent("เครื่องนั้นกำลังเล่นอยู่");
   });
 
   // Both are controllers while two runs are up, and the setlist is one table: the second
@@ -2860,6 +2860,37 @@ describe("LiveMode · a show left running long ago comes back paused", () => {
     expect(stateSends()).toHaveLength(0);
   });
 
+  it("an answer landing in the same tick the window closes still counts (no render between)", async () => {
+    seedSnapshot(runningSnap(3 * 60 * 60 * 1000, 50));
+    await mountLive();
+    await act(async () => {
+      live().setStatus("SUBSCRIBED");
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(1_900);
+    });
+    const t = Date.now();
+    // one act: the PA's answer and the window's end, with no render in between
+    await act(async () => {
+      live().emit("state", {
+        sender: "pa-device",
+        sentAt: t,
+        fromController: true,
+        begun: true,
+        running: true,
+        startedAt: t - 600_000,
+        itemStartedAt: t - 30_000,
+        itemElapsedAtPause: null,
+        currentIndex: 2,
+        mode: "manual",
+        controllerSince: t - 600_000,
+        ended: false,
+      });
+      vi.advanceTimersByTime(200);
+    });
+    expect(stateSends()).toHaveLength(0);
+  });
+
   it("a page that restored nothing announces nothing", async () => {
     await mountLive();
     await act(async () => {
@@ -2990,7 +3021,19 @@ describe("LiveMode · a late viewer follows the master's row and levels", () => 
     });
     const warning = screen.getByTestId("run-conflict");
     expect(warning).toHaveTextContent(`เริ่ม ${nowClock(new Date(rehearsal)).slice(0, 5)}`);
-    expect(warning).toHaveTextContent("เครื่องนั้นเริ่มก่อน");
+  });
+
+  it("the two-runs warning says whether the other run is PLAYING, never which began first", async () => {
+    // a rehearsal from this afternoon always "began first" - on the PA that hint pointed
+    // the operator at resetting the show itself. The one playing is the show.
+    await mountLive();
+    const ts = await startShowFromUi();
+    await act(async () => {
+      live().emit("state", paState({ sender: "phone", controllerSince: ts - 6 * 60 * 60 * 1000, running: false }));
+    });
+    const warning = screen.getByTestId("run-conflict");
+    expect(warning).toHaveTextContent("เครื่องนั้นหยุดอยู่");
+    expect(warning.textContent).not.toContain("เริ่มก่อน");
   });
 
   it("a viewer joining mid-fade is told the level the fade is going to", async () => {
