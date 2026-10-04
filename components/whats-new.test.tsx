@@ -247,3 +247,44 @@ describe("readerFor — the rules the nav and the banner already use", () => {
     expect(readerFor(MEMBER_PERMS, true).canEdit).toBe(true);
   });
 });
+
+// 2026-10-04 (v0.1.30 / v0.1.31): the show-day changes. A device that closed the 10-02
+// round holds "2026-10-02" and must be told again; label staff (no Live screen of their
+// own) are not; the one-press update is said in the desktop app only.
+describe("the 2026-10-04 round", () => {
+  const FIRST_DEVICE = "เครื่องที่กดเริ่มโชว์เป็นเครื่องเดียว";
+  const HARD_OUT = "แถบด้านบนบอก Hard Out";
+  const PAUSED = "นานเกิน 10 นาที กลับมาแบบหยุดรอ";
+  const UPDATE = "กดปุ่มอัปเดตมุมขวาบนครั้งเดียว";
+
+  it("comes back on a device that closed the 2026-10-02 round, with the Live changes first", async () => {
+    expect(WHATS_NEW_ROUND).toBe("2026-10-04");
+    localStorage.setItem(KEY, "2026-10-02");
+    await mount(false);
+    const card = screen.getByTestId("whats-new");
+    expect(card).toHaveTextContent(FIRST_DEVICE);
+    expect(card).toHaveTextContent(HARD_OUT);
+    expect(card).toHaveTextContent(PAUSED);
+  });
+
+  it("band people hear the Live changes; label staff do not", () => {
+    for (const r of [MEMBER, ADMIN]) {
+      const items = whatsNewItems(r);
+      expect(has(items, FIRST_DEVICE)).toBe(true);
+      expect(has(items, HARD_OUT)).toBe(true);
+      expect(has(items, PAUSED)).toBe(true);
+    }
+    const staff = whatsNewItems(STAFF);
+    expect(has(staff, FIRST_DEVICE) || has(staff, HARD_OUT) || has(staff, PAUSED)).toBe(false);
+  });
+
+  it("the one-press update is said in the desktop app only", () => {
+    expect(has(whatsNewItems(MEMBER), UPDATE)).toBe(false);
+    (window as unknown as { cueiqNative?: unknown }).cueiqNative = {};
+    try {
+      expect(has(whatsNewItems(MEMBER), UPDATE)).toBe(true);
+    } finally {
+      delete (window as unknown as { cueiqNative?: unknown }).cueiqNative;
+    }
+  });
+});

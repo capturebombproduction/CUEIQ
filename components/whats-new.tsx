@@ -35,7 +35,11 @@ import { canEditAnyGroup, canLiveEdit, canViewLibrary, type Perms } from "@/lib/
 // only. So: a new ROUND, with where everything went — the More tab below lg, the
 // name button top right on a wide screen and in the desktop app, ⋯ on the two show
 // screens. The older items stay below for anyone who never saw them.
-const ROUND = "2026-10-02";
+// 2026-10-04 (v0.1.30 / v0.1.31): what changed for the people who run or watch a show -
+// the first device is the show and every other device only watches (and follows its
+// song, clock and levels), Live reads the Hard Out, a show left open for long comes
+// back paused, and the desktop app's one-press update. The 10-02 items stay below.
+const ROUND = "2026-10-04";
 /** For tests that need "this device already read the current round". */
 export const WHATS_NEW_ROUND = ROUND;
 const KEY = "cueiq:whats-new-seen";
@@ -89,6 +93,12 @@ export function readerFor(perms: Perms, canEdit = canEditAnyGroup(perms)): Reade
 type Item = { text: string; who?: (r: Reader) => boolean; only?: () => boolean };
 
 const editors = (r: Reader) => r.canEdit;
+/** People in a band - who open a show's Live screen (label staff work from Overview;
+ *  canPractice is the same "not label staff" the nav uses). */
+const bandPeople = (r: Reader) => r.canPractice;
+
+/** The desktop app (its own update button), never a browser. */
+const desktopApp = () => !!(window as unknown as { cueiqNative?: unknown }).cueiqNative;
 
 /** The web below lg — where the bottom tab bar (and its More tab) exists. Not the
  *  desktop app (its own shell) and not a wide browser (the tools sit behind the
@@ -98,6 +108,22 @@ const phoneWeb = () =>
   window.matchMedia?.("(max-width: 1023px)").matches === true;
 
 const ITEMS: Item[] = [
+  {
+    text: "Live: เครื่องที่กดเริ่มโชว์เป็นเครื่องเดียวที่คุมโชว์และมีเสียง — เครื่องที่เปิดตามมาดูได้อย่างเดียว เพลง เวลา และระดับเสียงตามเครื่องนั้น",
+    who: bandPeople,
+  },
+  {
+    text: "Live: แถบด้านบนบอก Hard Out ของงาน — เหลือก่อน Hard Out เท่าไหร่ และขึ้นเตือนเมื่อคาดว่าจะเกิน",
+    who: bandPeople,
+  },
+  {
+    text: "Live: โชว์ที่เปิดค้างไว้นานเกิน 10 นาที กลับมาแบบหยุดรอ — เพลงไม่ขึ้นเอง กดเล่นเมื่อพร้อม",
+    who: bandPeople,
+  },
+  {
+    text: "แอป CueIQ: กดปุ่มอัปเดตมุมขวาบนครั้งเดียว ได้เวอร์ชันล่าสุดเลย ไม่ต้องไล่กดทีละเวอร์ชัน",
+    only: desktopApp,
+  },
   {
     // 2026-10-01 said "⋯ มุมขวาบน"; the redesign moved these to the More tab, and a
     // card that points at a button that no longer exists is worse than no card.
