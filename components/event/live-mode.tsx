@@ -124,6 +124,15 @@ const INITIAL: LiveState = {
   mode: "manual",
 };
 
+/**
+ * START is one intention. START and NEXT share the dock's centre key, so the second tap
+ * of a double-tap on START landed on NEXT and skipped the first song before it was
+ * heard; a second Space paused the show it had just started. For this long after the
+ * show starts, NEXT (key + N / →) and Space's pause do nothing. A deliberate NEXT this
+ * soon after START does not happen at a show; a double-tap is ~0.3 s.
+ */
+const START_SETTLE_MS = 800;
+
 /** Another device's per-track levels (itemId → 0–100), or null if it sent none. */
 function cleanVolumes(raw: unknown): Record<string, number> | null {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
@@ -3098,6 +3107,9 @@ export function LiveMode({
   // replays item 0, audibly restarting the show seconds after it began.
   const startingRef = useRef(false);
   const [starting, setStarting] = useState(false);
+  // when THIS device's START landed (the centre key turned into NEXT) - see START_SETTLE_MS
+  const startLandedAtRef = useRef(0);
+  const justStarted = () => Date.now() - startLandedAtRef.current < START_SETTLE_MS;
 
   async function start() {
     // First sync still pending — we don't yet know whether a show is already
@@ -3132,6 +3144,7 @@ export function LiveMode({
   function startShow() {
     markShowEnded(false);
     const ts = Date.now();
+    startLandedAtRef.current = ts;
     controllerSinceRef.current = ts; // this device began the show → it is the controller as of now
     // Read through the refs, not the render closure: start() now awaits the
     // authority probe first, so a mode change or a setlist refetch can have landed
@@ -3446,11 +3459,11 @@ export function LiveMode({
       e.preventDefault();
       if (e.repeat) return;
       if (!s.begun) void start();
-      else toggleShowRun();
+      else if (!justStarted()) toggleShowRun();
     } else if (e.key === "ArrowRight" || e.key === "n" || e.key === "N") {
       if (s.begun && s.mode === "manual" && s.currentIndex < n - 1) {
         e.preventDefault();
-        if (e.repeat) return;
+        if (e.repeat || justStarted()) return;
         goto(s.currentIndex + 1);
       }
     } else if (e.key === "ArrowLeft") {
@@ -4565,7 +4578,11 @@ export function LiveMode({
               variant="next"
               data-testid="next"
               className={cn("min-w-0 flex-1", zone === "over" && !nextLocked && "next-invite")}
-              onClick={() => goto(state.currentIndex + 1)}
+              onClick={() => {
+                // the second tap of a double-tap on START lands here (START_SETTLE_MS)
+                if (justStarted()) return;
+                goto(state.currentIndex + 1);
+              }}
               disabled={nextLocked}
               title={state.mode === "auto" ? "สลับเป็น Manual เพื่อข้ามเอง" : "รายการถัดไป"}
             >

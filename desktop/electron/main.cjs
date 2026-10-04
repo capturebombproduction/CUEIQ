@@ -1666,6 +1666,9 @@ async function driveLiveScenario(win) {
     // be. Moving the PA to item 2 is what turns that assertion into the fingerprint
     // of the bug it is looking for.
     smokeAt("live:main:advancing");
+    // as an operator would: NEXT right after START is the second tap of a double-tap on
+    // START, and Live ignores it for START_SETTLE_MS (live-mode.tsx)
+    await new Promise((r) => setTimeout(r, 1200));
     for (let i = 0; i < 2; i++) {
       const advanced = await win.webContents.executeJavaScript(
         `(() => { const b = document.querySelector('[data-testid=next]');

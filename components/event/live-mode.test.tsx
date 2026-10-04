@@ -1149,6 +1149,10 @@ describe("LiveMode · จบโชว์ stops the sound", () => {
     expect(media.state(primary).src).toBeTruthy();
     expect(media.state(primary).paused).toBe(false);
 
+    // an operator's NEXT, not the second tap of START (START_SETTLE_MS)
+    await act(async () => {
+      vi.advanceTimersByTime(1_000);
+    });
     // NEXT cues item 2 FROZEN and leaves item 1 playing — by design.
     await act(async () => {
       fireEvent.click(screen.getByTestId("next"));
@@ -3279,5 +3283,64 @@ describe("LiveMode · only the master ends the show", () => {
   it("a viewer has no จบโชว์ at all", async () => {
     await mountViewer();
     expect(screen.queryByTestId("end-show")).toBeNull();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// (z9) START IS ONE INTENTION
+//
+// START and NEXT share the dock's centre key: the second tap of a double-tap on START
+// landed on NEXT and skipped the first song before anyone heard it; a second Space
+// paused the show it had just started. For START_SETTLE_MS (0.8 s) after START, NEXT
+// (key, N, →) and Space's pause do nothing - and then they work as before.
+// ─────────────────────────────────────────────────────────────────────────────
+describe("LiveMode · a double-tap on START does not skip the first song", () => {
+  const index = () => document.querySelector("[data-cueiq-live]")!.getAttribute("data-cueiq-live-index");
+  const runLabel = () => screen.getByTestId("run-toggle").textContent ?? "";
+
+  it("the second tap lands on NEXT and is ignored; a NEXT a second later moves on", async () => {
+    await mountLive();
+    await startShowFromUi();
+    await act(async () => {
+      vi.advanceTimersByTime(300); // a double-tap's second tap
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("next"));
+    });
+    expect(index()).toBe("0");
+    expect(stateSends().every((s) => s.payload.currentIndex === 0)).toBe(true);
+    await act(async () => {
+      vi.advanceTimersByTime(1_000);
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("next"));
+    });
+    expect(index()).toBe("1");
+  });
+
+  it("Space, Space: the show starts and keeps running; N right after does not skip", async () => {
+    await mountLive();
+    await act(async () => {
+      live().setStatus("SUBSCRIBED");
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(2_000);
+    });
+    pressKey(window, { code: "Space", key: " " });
+    await act(async () => {});
+    expect(runLabel()).toContain("Pause"); // started, running
+    await act(async () => {
+      vi.advanceTimersByTime(250);
+    });
+    pressKey(window, { code: "Space", key: " " });
+    pressKey(window, { key: "n" });
+    expect(runLabel()).toContain("Pause"); // still running
+    expect(index()).toBe("0");
+    // a second later both keys are themselves again
+    await act(async () => {
+      vi.advanceTimersByTime(1_000);
+    });
+    pressKey(window, { key: "n" });
+    expect(index()).toBe("1");
   });
 });
