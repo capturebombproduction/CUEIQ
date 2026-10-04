@@ -440,6 +440,34 @@ describe("LiveMode · the START gate", () => {
     expect(start()).toBeEnabled();
   });
 
+  it("only the device RUNNING a show opens it early: an older build's viewer reply does not", async () => {
+    await mountLive();
+    await act(async () => {
+      live().setStatus("SUBSCRIBED");
+    });
+    await act(async () => {
+      live().emit("state", {
+        sender: "old-build-viewer",
+        sentAt: Date.now(),
+        fromController: false,
+        begun: true,
+        running: true,
+        startedAt: Date.now() - 60_000,
+        itemStartedAt: Date.now() - 10_000,
+        itemElapsedAtPause: null,
+        currentIndex: 2,
+        mode: "manual",
+        controllerSince: null,
+        ended: false,
+      });
+    });
+    expect(start()).toBeDisabled();
+    await act(async () => {
+      vi.advanceTimersByTime(SETTLE_AFTER_SUBSCRIBED_MS);
+    });
+    expect(start()).toBeEnabled();
+  });
+
   // พี่ 2026-10-04: the device that started the show keeps it. START here while another
   // device holds it (its heartbeat is fresh) used to ASK "reset that show and silence
   // that device?" - a take-over by confirm. Now it is refused.

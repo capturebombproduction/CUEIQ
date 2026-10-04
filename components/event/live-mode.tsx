@@ -1369,9 +1369,13 @@ export function LiveMode({
     const ch = privateChannel(supabase, liveTopic(eventId));
     ch.on("broadcast", { event: "state" }, ({ payload }) => {
       if (!payload || payload.sender === meId.current) return;
-      setSyncSettled(true); // heard live show state — the first sync has landed
       const fromController = !!payload.fromController;
       const theirBegun = !!(payload.begun ?? payload.startedAt != null);
+      // The first sync has landed only when the device RUNNING a show has spoken. A
+      // message ignored below (an older build's viewer reply) or a page with no show
+      // running proves nothing about the show, so it must not open START early - the
+      // reply window (or a running controller's word) does.
+      if (fromController && theirBegun) setSyncSettled(true);
       // Only the device RUNNING a show speaks for it. A viewer's word (older builds
       // still answer sync-requests as viewers) is never taken up: a phone that slept
       // through a reset still believes the old run is on, and answering for it made an
