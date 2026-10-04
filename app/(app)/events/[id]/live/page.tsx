@@ -42,6 +42,9 @@ export default async function LivePage({
       canEdit={canEdit}
       lastRunSeconds={bundle.event.last_run_seconds ?? null}
       lastRunAt={bundle.event.last_run_at ?? null}
+      eventDate={bundle.event.event_date ?? null}
+      showStartTime={bundle.event.show_start_time ?? null}
+      hardOutTime={bundle.event.hard_out_time ?? null}
       userId={ws.user?.id ?? null}
       tenantId={ws.membership?.tenant_id ?? null}
     />

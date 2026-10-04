@@ -101,6 +101,7 @@ import {
 import { formatDuration, nowClock, pad2 } from "@/lib/time";
 import { liveZone } from "@/lib/live-zone";
 import { restoreShow, SNAPSHOT_ALIVE_MS, STALE_RESTORE_MS } from "@/lib/live-restore";
+import { hardOutGap, hardOutReading } from "@/lib/live-hard-out";
 
 type ShowMode = "manual" | "auto";
 
@@ -237,6 +238,9 @@ export function LiveMode({
   userId,
   tenantId,
   songSignal,
+  eventDate,
+  showStartTime,
+  hardOutTime,
 }: {
   eventId: string;
   groupId: string;
@@ -255,6 +259,11 @@ export function LiveMode({
   /** song_id → the 0045 analysis + tempo (lib/song-signal.ts): the NOW card's waveform,
    *  the Signal strip's expected-quiet check, NEXT's loudness. Optional: absent = no extras. */
   songSignal?: SongSignalMap;
+  /** The event's day, show start and Hard Out ("YYYY-MM-DD", "HH:MM:SS"): the projected
+   *  end is read against the Hard Out on the show's day (lib/live-hard-out.ts). */
+  eventDate?: string | null;
+  showStartTime?: string | null;
+  hardOutTime?: string | null;
 }) {
   const [state, setState] = useState<LiveState>(INITIAL);
   // The setlist is held in state (seeded from the server prop) so edits made on
@@ -2826,6 +2835,10 @@ export function LiveMode({
   // after it. (The slot / Hard Out version needs the show's times — not passed here.)
   const showRemaining = Math.max(0, remaining) + futureSec;
   const projectedEnd = nowClock(new Date(now + showRemaining * 1000)).slice(0, 5);
+  // ...and against the event's Hard Out, once the show runs, on its day only
+  const hardOut = state.begun
+    ? hardOutReading({ eventDate, showStartTime, hardOutTime, projectedEndMs: now + showRemaining * 1000, nowMs: now })
+    : null;
   const itemEndClock = nowClock(new Date(now + Math.max(0, remaining) * 1000));
   // the dock strip's playhead: where the show is in its PLAN, not wall-clock time
   const playheadSec = Math.min(plannedTotal, plannedBefore + Math.min(Math.max(0, elapsedItem), zoneBlock));
@@ -3920,6 +3933,13 @@ export function LiveMode({
             <Stat label="คาดจบ" suppress>
               {projectedEnd}
             </Stat>
+            {hardOut && (
+              <Stat label={`Hard Out ${hardOut.clock}`} suppress>
+                <span data-testid="hard-out-gap" className={hardOut.over ? "text-warning-ink" : undefined}>
+                  {hardOutGap(hardOut)}
+                </span>
+              </Stat>
+            )}
             <div aria-hidden className="h-10 w-[3px] bg-foreground/15" />
           </div>
           <div className="shrink-0 pr-1 text-right stage:flex stage:flex-col-reverse">
@@ -3964,6 +3984,21 @@ export function LiveMode({
 
       {/* Audio needs a tap to (re)start — after a reload / autoplay block. The one
           allowed fill on this screen, because it IS the action. */}
+      {/* Past the Hard Out, by the projection: say it once, plainly, on every screen of
+          the show (the stats carry the figure too). Warning, never the destructive red. */}
+      {hardOut?.over && (
+        <div
+          role="status"
+          data-testid="over-hard-out"
+          className="flex min-h-[44px] shrink-0 items-center gap-2 rounded-[2px] bg-warning px-4 py-2 text-[14px] font-semibold text-warning-foreground [@media(orientation:landscape)_and_(max-height:599.98px)_and_(pointer:coarse)]:basis-full stage:mx-5 stage:mb-2"
+          suppressHydrationWarning
+        >
+          <AlertTriangle aria-hidden className="size-5 shrink-0" />
+          <span className="min-w-0">
+            คาดจบ {projectedEnd} — เกิน Hard Out {hardOut.clock} ไป {formatDuration(-hardOut.marginSec)} · ย่อหรือตัดรายการท้ายโชว์
+          </span>
+        </div>
+      )}
       {/* Two runs at once: nothing was moved, so a person has to say which one is the
           show - by resetting the other. Both screens carry it. */}
       {inConflict && state.begun && isController && (
@@ -4220,6 +4255,14 @@ export function LiveMode({
           <div className="num text-[25px] leading-[1.05]" suppressHydrationWarning>
             {projectedEnd}
           </div>
+          {hardOut && (
+            <div
+              className={cn("truncate text-[11px]", hardOut.over ? "font-semibold text-warning-ink" : "text-muted-foreground")}
+              suppressHydrationWarning
+            >
+              Hard Out {hardOut.clock} · {hardOutGap(hardOut)}
+            </div>
+          )}
         </div>
       </div>
 
@@ -4466,6 +4509,14 @@ export function LiveMode({
                 <div className="num text-[32px] leading-[1.05]" suppressHydrationWarning>
                   {projectedEnd}
                 </div>
+                {hardOut && (
+                  <div
+                    className={cn("truncate text-[12px]", hardOut.over ? "font-semibold text-warning-ink" : "text-muted-foreground")}
+                    suppressHydrationWarning
+                  >
+                    Hard Out {hardOut.clock} · {hardOutGap(hardOut)}
+                  </div>
+                )}
               </div>
               <div className="well min-w-0 px-3 py-1.5">
                 <div className="truncate text-[11px] text-muted-foreground">เหลือทั้งโชว์</div>

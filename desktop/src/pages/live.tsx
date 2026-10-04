@@ -111,6 +111,9 @@ export function LivePage() {
         canEdit={canEdit}
         lastRunSeconds={event.last_run_seconds ?? null}
         lastRunAt={event.last_run_at ?? null}
+        eventDate={event.event_date ?? null}
+        showStartTime={event.show_start_time ?? null}
+        hardOutTime={event.hard_out_time ?? null}
         userId={ws?.user?.id ?? null}
         tenantId={ws?.membership?.tenant_id ?? null}
       />

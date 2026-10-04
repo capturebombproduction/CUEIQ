@@ -3344,3 +3344,59 @@ describe("LiveMode · a double-tap on START does not skip the first song", () =>
     expect(index()).toBe("1");
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// (z10) LIVE KNOWS THE HARD OUT
+//
+// พี่ 2026-10-04: the band's shows are slots with a Hard Out, and Live projected the end
+// without ever knowing it. Now the projected end is read against it - on the show's day,
+// once the show runs - and a projection past it says so on every screen.
+// ─────────────────────────────────────────────────────────────────────────────
+describe("LiveMode · the projected end against the Hard Out", () => {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const ymd = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  const clockIn = (min: number) => {
+    const d = new Date(Date.now() + min * 60_000);
+    return `${pad(d.getHours())}:${pad(d.getMinutes())}:00`;
+  };
+  // three 4:00 rows → started now, the show ends in 12 minutes
+  const props = (hardOutInMin: number, dayOffset = 0) => {
+    const day = new Date(Date.now() + dayOffset * 86_400_000);
+    return { eventDate: ymd(day), showStartTime: null, hardOutTime: clockIn(hardOutInMin) };
+  };
+
+  // (startShowFromUi presses START 2 s after the mount the props were reckoned at)
+  it("ends 3 minutes before it: the top bar says so, no warning", async () => {
+    await mountLive(props(15));
+    await startShowFromUi();
+    expect(screen.getByTestId("hard-out-gap").textContent).toBe("ก่อน 2:58");
+    expect(screen.queryByTestId("over-hard-out")).toBeNull();
+  });
+
+  it("projected 2 minutes past it: the warning, on every screen of the show", async () => {
+    await mountLive(props(10));
+    await startShowFromUi();
+    expect(screen.getByTestId("hard-out-gap").textContent).toBe("เกิน 2:02");
+    const banner = screen.getByTestId("over-hard-out");
+    expect(banner).toHaveTextContent("เกิน Hard Out");
+    expect(banner).toHaveTextContent("2:02");
+  });
+
+  it("before START: nothing", async () => {
+    await mountLive(props(10));
+    expect(screen.queryByTestId("hard-out-gap")).toBeNull();
+    expect(screen.queryByTestId("over-hard-out")).toBeNull();
+  });
+
+  it("on another day (a rehearsal days before the show): nothing", async () => {
+    await mountLive(props(10, 3));
+    await startShowFromUi();
+    expect(screen.queryByTestId("hard-out-gap")).toBeNull();
+    expect(screen.queryByTestId("over-hard-out")).toBeNull();
+  });
+
+  it("a viewer of the show sees it too", async () => {
+    await mountViewer(props(5));
+    expect(screen.getByTestId("over-hard-out")).toBeInTheDocument();
+  });
+});

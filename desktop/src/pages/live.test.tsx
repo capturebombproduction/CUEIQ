@@ -36,6 +36,8 @@ const h = vi.hoisted(() => ({
   bundle: null as unknown,
   ws: null as unknown,
   readiness: [] as Record<string, unknown>[],
+  /** every render's props of the mocked Live Mode */
+  live: [] as Record<string, unknown>[],
   /** The load never answers — a joined-but-black-holed venue network. */
   hang: false,
 }));
@@ -61,7 +63,10 @@ vi.mock("@/components/event/show-readiness-check", () => ({
 // `live-root` is the real root's class (pinned in components/event/live-mode.test.tsx):
 // the page sizes Live Mode through it at stage size.
 vi.mock("@/components/event/live-mode", () => ({
-  LiveMode: () => <div data-testid="live-mode" className="live-root" />,
+  LiveMode: (props: Record<string, unknown>) => {
+    h.live.push(props);
+    return <div data-testid="live-mode" className="live-root" />;
+  },
 }));
 
 import { LivePage } from "./live";
@@ -203,6 +208,7 @@ beforeEach(() => {
   h.bundle = BUNDLE;
   h.ws = memberOf(GROUP_ID);
   h.readiness = [];
+  h.live = [];
   h.hang = false;
 });
 
@@ -245,6 +251,18 @@ describe("desktop Show Runner — what the preflight is actually handed", () => 
   it("mounts Live Mode for a viewer of the band", async () => {
     renderLive();
     expect(await screen.findByTestId("live-mode")).toBeInTheDocument();
+  });
+
+  // Live reads the projected end against the Hard Out (lib/live-hard-out.ts) - only if
+  // the page hands it the event's day and times.
+  it("hands Live Mode the event's day, show start and Hard Out", async () => {
+    h.bundle = { ...BUNDLE, event: { ...EVENT, hard_out_time: "18:30:00" } };
+    renderLive();
+    await screen.findByTestId("live-mode");
+    const props = h.live[h.live.length - 1];
+    expect(props.eventDate).toBe("2026-08-20");
+    expect(props.showStartTime).toBe("18:00:00");
+    expect(props.hardOutTime).toBe("18:30:00");
   });
 });
 
