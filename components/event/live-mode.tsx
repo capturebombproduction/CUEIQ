@@ -1466,7 +1466,14 @@ export function LiveMode({
           // nothing from it: not its state, not its cues.
           setRunConflict({
             label: typeof payload.deviceLabel === "string" ? payload.deviceLabel : null,
-            startedAt: typeof payload.startedAt === "number" ? payload.startedAt + skew : null,
+            // when that run was STARTED - its claim. Its show clock (startedAt) is moved on
+            // by a stale restore (lib/live-restore.ts) and would hide "this afternoon".
+            startedAt:
+              typeof payload.controllerSince === "number"
+                ? payload.controllerSince + skew
+                : typeof payload.startedAt === "number"
+                  ? payload.startedAt + skew
+                  : null,
             heardAt: Date.now(),
           });
           return;
@@ -1623,6 +1630,21 @@ export function LiveMode({
       if (isControllerRef.current && stateRef.current.begun) return;
       fadeVolumeForRef.current(payload.itemId, payload.target, payload.ms ?? 0);
     });
+    // A page that came back with its show (the crash-recovery restore) says where the
+    // show is now - paused, if it had been gone too long - instead of leaving the viewers
+    // on what they last heard until someone presses something. Only once the reply
+    // window has passed, so any device running a show has answered first: announced
+    // before it, a rehearsal that came back in a pocket took the band's phones (a viewer
+    // takes up a run it has not heard from for 60 s) and the PA's answer was then the
+    // "other" run. If another run did answer, this page is in conflict (both warn, both
+    // re-send) or has become a viewer - nothing to announce.
+    const announceRestored = () => {
+      if (!announceRestoreRef.current) return;
+      announceRestoreRef.current = false;
+      if (stateRef.current.begun && isControllerRef.current && !inConflictRef.current) {
+        ch.send({ type: "broadcast", event: "state", payload: statePayload(stateRef.current) });
+      }
+    };
     // set immediately so SDK can queue messages sent before SUBSCRIBED
     channelRef.current = ch;
     let settleTimer: ReturnType<typeof setTimeout> | null = null;
@@ -1634,15 +1656,6 @@ export function LiveMode({
       const ready = status === "SUBSCRIBED";
       setSyncReady(ready);
       if (ready) {
-        // A page that came back with its show (the crash-recovery restore) says where
-        // the show is now - paused, if it had been gone too long - instead of leaving
-        // the viewers on what they last heard until someone presses something.
-        if (announceRestoreRef.current) {
-          announceRestoreRef.current = false;
-          if (stateRef.current.begun && isControllerRef.current) {
-            ch.send({ type: "broadcast", event: "state", payload: statePayload(stateRef.current) });
-          }
-        }
         // request current show state from any device already running
         ch.send({
           type: "broadcast",
@@ -1661,7 +1674,10 @@ export function LiveMode({
         refetchRef.current();
         // no reply within the window → no show running elsewhere → START allowed
         if (settleTimer) clearTimeout(settleTimer);
-        settleTimer = setTimeout(() => setSyncSettled(true), 2000);
+        settleTimer = setTimeout(() => {
+          setSyncSettled(true);
+          announceRestored();
+        }, 2000);
       } else if (
         status === "CHANNEL_ERROR" ||
         status === "TIMED_OUT" ||
@@ -3938,8 +3954,8 @@ export function LiveMode({
             อีกเครื่องก็รันโชว์อีกชุดอยู่
             {runConflict?.label ? ` (${runConflict.label})` : ""}
             {runConflict?.startedAt ? ` · เริ่ม ${nowClock(new Date(runConflict.startedAt)).slice(0, 5)}` : ""}
-            {runConflict?.startedAt != null && state.startedAt != null
-              ? state.startedAt <= runConflict.startedAt
+            {runConflict?.startedAt != null && (controllerSinceRef.current ?? state.startedAt) != null
+              ? (controllerSinceRef.current ?? state.startedAt)! <= runConflict.startedAt
                 ? " · โชว์ของเครื่องนี้เริ่มก่อน"
                 : " · เครื่องนั้นเริ่มก่อน"
               : ""}

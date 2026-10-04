@@ -2812,12 +2812,16 @@ describe("LiveMode · a show left running long ago comes back paused", () => {
     expect(screen.getByText(/แตะเพื่อเล่นเสียงต่อ/)).toBeTruthy();
   });
 
-  it("the page tells the viewers where the show is as soon as its channel is up", async () => {
+  it("the page tells the viewers where the show is once the reply window has passed", async () => {
     seedSnapshot(runningSnap(3 * 60 * 60 * 1000, 50));
     await mountLive();
-    expect(stateSends()).toHaveLength(0);
     await act(async () => {
       live().setStatus("SUBSCRIBED");
+    });
+    // not before a device running a show has had its chance to answer
+    expect(stateSends()).toHaveLength(0);
+    await act(async () => {
+      vi.advanceTimersByTime(2_000);
     });
     const sent = stateSends();
     expect(sent).toHaveLength(1);
@@ -2826,10 +2830,43 @@ describe("LiveMode · a show left running long ago comes back paused", () => {
     expect(sent[0].payload.fromController).toBe(true);
   });
 
+  it("another run answered: no announce - the band's phones stay on the PA's run", async () => {
+    seedSnapshot(runningSnap(3 * 60 * 60 * 1000, 50));
+    await mountLive();
+    await act(async () => {
+      live().setStatus("SUBSCRIBED");
+    });
+    const t = Date.now();
+    await act(async () => {
+      live().emit("state", {
+        sender: "pa-device",
+        sentAt: t,
+        fromController: true,
+        begun: true,
+        running: true,
+        startedAt: t - 600_000,
+        itemStartedAt: t - 30_000,
+        itemElapsedAtPause: null,
+        currentIndex: 2,
+        mode: "manual",
+        controllerSince: t - 600_000,
+        ended: false,
+      });
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(2_500);
+    });
+    expect(screen.getByTestId("run-conflict")).toBeInTheDocument();
+    expect(stateSends()).toHaveLength(0);
+  });
+
   it("a page that restored nothing announces nothing", async () => {
     await mountLive();
     await act(async () => {
       live().setStatus("SUBSCRIBED");
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(2_000);
     });
     expect(stateSends()).toHaveLength(0);
   });
@@ -2942,6 +2979,18 @@ describe("LiveMode · a late viewer follows the master's row and levels", () => 
       vi.advanceTimersByTime(600);
     });
     expect(savedLevels()).toEqual({ "item-1": 70 });
+  });
+
+  it("the two-runs warning says when the other run was STARTED, not its restored clock", async () => {
+    await mountLive();
+    const ts = await startShowFromUi();
+    const rehearsal = ts - 6 * 60 * 60 * 1000;
+    await act(async () => {
+      live().emit("state", paState({ sender: "phone", controllerSince: rehearsal, startedAt: ts - 600_000 }));
+    });
+    const warning = screen.getByTestId("run-conflict");
+    expect(warning).toHaveTextContent(`เริ่ม ${nowClock(new Date(rehearsal)).slice(0, 5)}`);
+    expect(warning).toHaveTextContent("เครื่องนั้นเริ่มก่อน");
   });
 
   it("a viewer joining mid-fade is told the level the fade is going to", async () => {
