@@ -2746,3 +2746,86 @@ describe("LiveMode · a looping row resumes inside its file", () => {
     expect(seeks.at(-1)?.value).toBe(200);
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// (z5) A SHOW LEFT RUNNING HOURS AGO COMES BACK PAUSED
+//
+// The snapshot carries the first device's show on after a crash. A rehearsal closed
+// while running leaves the same snapshot, and opened again at the venue it came back
+// RUNNING - on the desktop app (no autoplay block) a track started out of the PA by
+// itself. Gone longer than STALE_RESTORE_MS it comes back paused where it stood.
+// ─────────────────────────────────────────────────────────────────────────────
+describe("LiveMode · a show left running long ago comes back paused", () => {
+  const runningSnap = (savedAgo: number, intoRow: number) => {
+    const savedAt = Date.now() - savedAgo;
+    return {
+      state: {
+        running: true,
+        begun: true,
+        startedAt: savedAt - 300_000,
+        itemStartedAt: savedAt - intoRow * 1000,
+        itemElapsedAtPause: null,
+        currentIndex: 0,
+        mode: "auto",
+      },
+      committed: { id: "item-1", anchor: savedAt - intoRow * 1000 },
+      isController: true,
+      controllerSince: savedAt - 300_000,
+      savedAt,
+    };
+  };
+  const plays = (media: MediaInstrumentation) => media.calls.filter((c) => c.type === "play").length;
+
+  it("three hours later: paused on the same row, nothing plays until RUN, then from where it stood", async () => {
+    const media = instrumentMediaElements();
+    h.saved = [{ itemId: "item-1", blob: new Blob(["audio"]), name: "song.wav", path: null }];
+    seedSnapshot(runningSnap(3 * 60 * 60 * 1000, 50));
+    await mountLive();
+    await act(async () => {
+      vi.advanceTimersByTime(3000);
+    });
+    expect(plays(media)).toBe(0);
+    expect(screen.getByTestId("run-toggle").textContent).not.toContain("Pause");
+    // not even the tap-to-resume offer: there is nothing to resume until RUN
+    expect(screen.queryByText(/แตะเพื่อเล่นเสียงต่อ/)).toBeNull();
+    // the snapshot on disk now says paused too
+    const snap = JSON.parse(localStorage.getItem(SNAPSHOT_KEY)!);
+    expect(snap.state.running).toBe(false);
+    expect(snap.committed).toEqual({ id: null, anchor: null });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("run-toggle"));
+    });
+    expect(plays(media)).toBeGreaterThan(0);
+    const seeks = media.callsFor(media.first()!).filter((c) => c.type === "currentTime");
+    expect(seeks.at(-1)?.value).toBe(50);
+  });
+
+  it("a minute after a crash: the show carries on running, as before", async () => {
+    h.saved = [{ itemId: "item-1", blob: new Blob(["audio"]), name: "song.wav", path: null }];
+    seedSnapshot(runningSnap(60_000, 50));
+    await mountLive();
+    await act(async () => {
+      vi.advanceTimersByTime(3000);
+    });
+    expect(screen.getByTestId("run-toggle").textContent).toContain("Pause");
+    // the sound waits for one tap (no gesture after a reload), at the live position
+    expect(screen.getByText(/แตะเพื่อเล่นเสียงต่อ/)).toBeTruthy();
+  });
+
+  it("a running show re-writes its snapshot while alive, so its age is the page's", async () => {
+    seedSnapshot(runningSnap(60_000, 50));
+    await mountLive();
+    // past the mount's own writes (the restore, the 500 ms debounce)
+    await act(async () => {
+      vi.advanceTimersByTime(5_000);
+    });
+    const before = JSON.parse(localStorage.getItem(SNAPSHOT_KEY)!).savedAt;
+    await act(async () => {
+      vi.advanceTimersByTime(31_000);
+    });
+    const after = JSON.parse(localStorage.getItem(SNAPSHOT_KEY)!).savedAt;
+    expect(after - before).toBeGreaterThan(20_000);
+    // the page is alive now, so the snapshot is at most one interval old
+    expect(Date.now() - after).toBeLessThanOrEqual(30_000);
+  });
+});

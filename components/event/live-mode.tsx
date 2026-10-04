@@ -100,6 +100,7 @@ import {
 } from "@/lib/types";
 import { formatDuration, nowClock, pad2 } from "@/lib/time";
 import { liveZone } from "@/lib/live-zone";
+import { restoreShow, SNAPSHOT_ALIVE_MS, STALE_RESTORE_MS } from "@/lib/live-restore";
 
 type ShowMode = "manual" | "auto";
 
@@ -479,8 +480,14 @@ export function LiveMode({
         // is a fresh page that picks the show up from its device again - restoring it
         // as a viewer outlived the show and could leave a device stuck watching nothing.
         if (snap?.state?.begun && fresh && snap.isController !== false) {
-          committedRef.current = snap.committed ?? { id: null, anchor: null };
-          setState(snap.state as LiveState);
+          // Gone longer than STALE_RESTORE_MS (a rehearsal closed while running), the
+          // show comes back PAUSED where it stopped, with nothing sounding - see
+          // lib/live-restore.ts. A crash a minute ago carries on as before.
+          const { state: restored, stale } = restoreShow(snap.state as LiveState, snap.savedAt);
+          committedRef.current = stale
+            ? { id: null, anchor: null }
+            : (snap.committed ?? { id: null, anchor: null });
+          setState(restored);
           // The claim comes back with the show: it is the run's identity, so the first
           // device is the same run again after a reload.
           if (typeof snap.controllerSince === "number") {
@@ -493,9 +500,15 @@ export function LiveMode({
           // ended:false and re-light the wake lock on every phone that had
           // already gone to sleep, with no controller left to correct it.
           if (snap.ended) markShowEnded(true);
-          toast.message("กู้คืนสถานะโชว์ที่ค้างไว้", {
-            description: "เวลาเดินต่อจากเดิม — กดรีเซ็ตถ้าจะเริ่มใหม่",
-          });
+          if (stale && !snap.ended) {
+            toast.message("กู้คืนโชว์ที่ค้างไว้ — หยุดรอไว้ก่อน", {
+              description: `ค้างมานานเกิน ${STALE_RESTORE_MS / 60_000} นาที เพลงจะไม่เล่นเอง — กดเล่นเมื่อพร้อม หรือกดรีเซ็ตถ้าจะเริ่มใหม่`,
+            });
+          } else {
+            toast.message("กู้คืนสถานะโชว์ที่ค้างไว้", {
+              description: "เวลาเดินต่อจากเดิม — กดรีเซ็ตถ้าจะเริ่มใหม่",
+            });
+          }
         }
       }
     } catch {}
@@ -575,6 +588,16 @@ export function LiveMode({
     // step-down that arrives without any state change would otherwise leave a
     // snapshot on disk still claiming this device drives the show.
   }, [state, isController, eventId]);
+
+  // Keep `savedAt` meaning "this page was last alive": the debounce above writes only
+  // when the show CHANGES, and one long song is minutes with nothing written. The
+  // restore reads its age to tell a crash a minute ago from a rehearsal closed hours
+  // ago (lib/live-restore.ts).
+  useEffect(() => {
+    if (!(state.begun && isController)) return;
+    const id = setInterval(() => writeLiveSnapshotRef.current(), SNAPSHOT_ALIVE_MS);
+    return () => clearInterval(id);
+  }, [state.begun, isController]);
 
   // Both persists above are debounced, and a phone can outrun the debounce: iOS
   // Safari never acts on `beforeunload`, so a pull-to-refresh or a tab close within

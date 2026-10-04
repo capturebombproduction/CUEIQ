@@ -639,6 +639,68 @@ describe("Quick Show — restore after a relaunch", () => {
   });
 });
 
+describe("Quick Show — a show left running long ago comes back paused", () => {
+  // A rehearsal closed with the show running leaves the same snapshot a crash does.
+  // Gone longer than STALE_RESTORE_MS (lib/live-restore.ts) it comes back PAUSED
+  // where it stood - nothing starts out of the PA by itself; a crash a minute ago
+  // carries on running as before.
+  const runningSnap = (savedAgo: number, intoRow: number) => {
+    const savedAt = Date.now() - savedAgo;
+    return JSON.stringify({
+      state: {
+        running: true,
+        begun: true,
+        startedAt: savedAt - 300_000,
+        itemStartedAt: savedAt - intoRow * 1000,
+        itemElapsedAtPause: null,
+        currentIndex: 1,
+        mode: "manual",
+      },
+      ended: false,
+      savedAt,
+    });
+  };
+  const plays = () => media.calls.filter((c) => c.type === "play").length;
+
+  it("three hours later: paused on the same row, the clock still, RUN plays from where it stood", async () => {
+    window.localStorage.setItem(SNAPSHOT_KEY, runningSnap(3 * 60 * 60 * 1000, 50));
+    await boot(threeUp());
+    expect(positionLabel()).toBe("2 / 3");
+    const frozen = countdown();
+    await tick(5_000);
+    expect(countdown()).toBe(frozen);
+    expect(plays()).toBe(0);
+    const snap = JSON.parse(window.localStorage.getItem(SNAPSHOT_KEY) as string);
+    expect(snap.state.running).toBe(false);
+    expect(snap.state.itemElapsedAtPause).toBe(50);
+
+    await click(transport().run);
+    await tick(1_000);
+    expect(plays()).toBeGreaterThan(0);
+    expect(countdown()).not.toBe(frozen);
+  });
+
+  it("a minute after a crash: the clock carries on running", async () => {
+    window.localStorage.setItem(SNAPSHOT_KEY, runningSnap(60_000, 50));
+    await boot(threeUp());
+    expect(positionLabel()).toBe("2 / 3");
+    const before = countdown();
+    await tick(5_000);
+    expect(countdown()).not.toBe(before);
+  });
+
+  it("a begun show re-writes its snapshot while alive", async () => {
+    window.localStorage.setItem(SNAPSHOT_KEY, runningSnap(60_000, 50));
+    await boot(threeUp());
+    await tick(5_000); // past the mount's own debounced write
+    const before = JSON.parse(window.localStorage.getItem(SNAPSHOT_KEY) as string).savedAt;
+    await tick(31_000);
+    const after = JSON.parse(window.localStorage.getItem(SNAPSHOT_KEY) as string).savedAt;
+    expect(after - before).toBeGreaterThan(20_000);
+    expect(Date.now() - after).toBeLessThanOrEqual(30_000);
+  });
+});
+
 // ─────────────────────────────────────────────────────────────────────────────
 // 3. The store as the page uses it: the boot migration and a failed write
 // ─────────────────────────────────────────────────────────────────────────────

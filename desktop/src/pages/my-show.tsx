@@ -55,6 +55,7 @@ import { StageLight } from "@/components/stage-light";
 import { cn } from "@/lib/utils";
 import { formatCountdown, formatDuration, isSettled, nowClock } from "@/lib/time";
 import { liveZone, zoneCaption } from "@/lib/live-zone";
+import { restoreShow, SNAPSHOT_ALIVE_MS, STALE_RESTORE_MS } from "@/lib/live-restore";
 import {
   deleteSoloItem,
   getSoloLastRun,
@@ -486,7 +487,10 @@ export function MyShow() {
           typeof snap?.savedAt === "number" &&
           Date.now() - snap.savedAt < 6 * 60 * 60 * 1000;
         if (snap?.state?.begun && fresh) {
-          const s = snap.state as ShowState;
+          // Gone longer than STALE_RESTORE_MS (a rehearsal closed while running), the
+          // show comes back PAUSED where it stopped - nothing starts out of the PA by
+          // itself (lib/live-restore.ts). A crash a minute ago carries on as before.
+          const { state: s, stale } = restoreShow(snap.state as ShowState, snap.savedAt);
           s.currentIndex = Math.min(s.currentIndex, Math.max(0, itemsRef.current.length - 1));
           setState(s);
           // Restore "the show already ended" too — the same fix, for the same
@@ -497,9 +501,15 @@ export function MyShow() {
           // is over — holding the venue laptop's display awake until รีเซ็ต,
           // navigate-away or quit.
           if (snap.ended) markShowEnded(true);
-          toast.message("กู้คืนสถานะโชว์ที่ค้างไว้", {
-            description: "เวลาเดินต่อจากเดิม — กดรีเซ็ตถ้าจะเริ่มใหม่",
-          });
+          if (stale && !snap.ended) {
+            toast.message("กู้คืนโชว์ที่ค้างไว้ — หยุดรอไว้ก่อน", {
+              description: `ค้างมานานเกิน ${STALE_RESTORE_MS / 60_000} นาที เพลงจะไม่เล่นเอง — กดเล่นเมื่อพร้อม หรือกดรีเซ็ตถ้าจะเริ่มใหม่`,
+            });
+          } else {
+            toast.message("กู้คืนสถานะโชว์ที่ค้างไว้", {
+              description: "เวลาเดินต่อจากเดิม — กดรีเซ็ตถ้าจะเริ่มใหม่",
+            });
+          }
         }
       }
     } catch {
@@ -548,6 +558,15 @@ export function MyShow() {
     const id = setTimeout(() => writeLiveSnapshotRef.current(), 500);
     return () => clearTimeout(id);
   }, [state, showEnded]);
+
+  // Keep `savedAt` meaning "this page was last alive" - the debounce above writes only
+  // when the show changes, and one long song is minutes with nothing written. The
+  // restore reads its age (lib/live-restore.ts), the same as live-mode.tsx's.
+  useEffect(() => {
+    if (!state.begun) return;
+    const id = setInterval(() => writeLiveSnapshotRef.current(), SNAPSHOT_ALIVE_MS);
+    return () => clearInterval(id);
+  }, [state.begun]);
 
   // The persist above is debounced by half a second, and the operator can outrun
   // it: จบโชว์ followed straight away by a quit, an app kill or a navigation left
