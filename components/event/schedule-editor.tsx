@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 import { toast } from "sonner";
 import {
   GripVertical,
@@ -457,7 +458,7 @@ export function ScheduleEditor({
         <div
           key={it.id}
           className={cn(
-            "slab p-3 sm:p-4",
+            "slab relative p-3 sm:p-4",
             dragOverIndex === idx && "shadow-[inset_0_0_0_2px_hsl(var(--primary))]"
           )}
           onDragOver={(e) => {
@@ -475,7 +476,10 @@ export function ScheduleEditor({
               rows: start 99% filled, end 45%, label 41%, location 10%, notes 6%. So
               below sm the two times share a line right under the type, and location
               / notes fold behind one small button until a row actually uses them.
-              From sm up the order and layout are exactly what they were. */}
+              From sm up they fold too (2026-10-05): on an iPad or a Mac every row was
+              two lines, 188px, the second one empty nine times in ten. There the
+              button rides in the caption line above ▲▼ — the only free spot, the
+              actions cell has no room for a fourth key (measured 135-193px). */}
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-12">
             <div className="order-1 col-span-2 space-y-1 sm:order-none sm:col-span-3">
               <Label htmlFor={`sc-${it.id}-kind`} className="text-[13px] font-medium text-muted-foreground">Type</Label>
@@ -625,13 +629,19 @@ export function ScheduleEditor({
             {!showExtra(it) && (
               <button
                 type="button"
-                onClick={() => setExtraOpen((prev) => new Set(prev).add(it.id))}
-                className="order-5 col-span-1 self-center justify-self-start min-h-11 rounded-[2px] px-2 text-[13px] text-muted-foreground underline-offset-2 hover:text-foreground hover:underline sm:hidden"
+                onClick={() => {
+                  // The button unmounts with this press, so focus would drop to the
+                  // page; hand it to Location instead. flushSync keeps the focus()
+                  // inside the tap, or iPadOS opens no keyboard.
+                  flushSync(() => setExtraOpen((prev) => new Set(prev).add(it.id)));
+                  document.getElementById(`sc-${it.id}-location`)?.focus();
+                }}
+                className="order-5 col-span-1 self-center justify-self-start min-h-11 rounded-[2px] px-2 text-[13px] text-muted-foreground underline-offset-2 hover:text-foreground hover:underline sm:absolute sm:right-4 sm:top-2 sm:h-8 sm:min-h-0 sm:pb-0 sm:pt-3"
               >
                 + สถานที่ / โน้ต
               </button>
             )}
-            <div className={`order-7 col-span-2 space-y-1 sm:order-none sm:col-span-6 ${showExtra(it) ? "" : "hidden sm:block"}`}>
+            <div className={`order-7 col-span-2 space-y-1 sm:order-none sm:col-span-6 ${showExtra(it) ? "" : "hidden"}`}>
               <Label htmlFor={`sc-${it.id}-location`} className="text-[13px] font-medium text-muted-foreground">Location</Label>
               <Input
                 id={`sc-${it.id}-location`}
@@ -644,7 +654,7 @@ export function ScheduleEditor({
                 }
               />
             </div>
-            <div className={`order-8 col-span-2 space-y-1 sm:order-none sm:col-span-6 ${showExtra(it) ? "" : "hidden sm:block"}`}>
+            <div className={`order-8 col-span-2 space-y-1 sm:order-none sm:col-span-6 ${showExtra(it) ? "" : "hidden"}`}>
               <Label htmlFor={`sc-${it.id}-notes`} className="text-[13px] font-medium text-muted-foreground">Notes</Label>
               <Input
                 id={`sc-${it.id}-notes`}

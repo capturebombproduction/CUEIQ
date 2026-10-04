@@ -155,7 +155,9 @@ describe("ScheduleEditor · the receipt", () => {
 // line on every card. jsdom has no layout, so what is pinned here is the one
 // regression that would actually cost something: a value somebody TYPED being
 // folded out of sight. The look itself was checked in a real browser at 390px.
-describe("ScheduleEditor · folding the rarely-used fields on a phone", () => {
+// 2026-10-05: wide screens fold too (an empty row was 188px there, now 104px —
+// measured 640-1440 in Chrome).
+describe("ScheduleEditor · folding the rarely-used fields", () => {
   const folded = (input: HTMLElement) =>
     input.closest("div.space-y-1")!.className.split(" ").includes("hidden");
 
@@ -175,6 +177,43 @@ describe("ScheduleEditor · folding the rarely-used fields on a phone", () => {
     expect(folded(locations()[0])).toBe(true);
     fireEvent.click(screen.getByRole("button", { name: /\+ สถานที่ \/ โน้ต/ }));
     expect(folded(locations()[0])).toBe(false);
+  });
+
+  it("folds them on an iPad or a Mac too — no breakpoint brings an empty row's fields back", () => {
+    mount([row("a", { kind: "stage" })]);
+    const boxes = [
+      screen.getAllByPlaceholderText("e.g. Main Stage")[0],
+      document.getElementById("sc-a-notes")!,
+    ].map((input) => input.closest("div.space-y-1")!.className.split(" "));
+    for (const cls of boxes) {
+      expect(cls).toContain("hidden");
+      expect(cls.filter((c) => /^(sm|md|lg|xl|2xl):(block|grid|flex)$/.test(c))).toEqual([]);
+    }
+  });
+
+  it("puts the cursor in Location — the button it was pressed on is gone", () => {
+    // A real browser can't focus a display:none field and jsdom can, so record what
+    // the field's box looked like at the moment of focus(): it must be unfolded
+    // ALREADY (flushSync), not a render later.
+    const boxAtFocus: string[][] = [];
+    const focus = HTMLElement.prototype.focus;
+    const spy = vi.spyOn(HTMLElement.prototype, "focus").mockImplementation(function (
+      this: HTMLElement,
+      ...args: Parameters<HTMLElement["focus"]>
+    ) {
+      boxAtFocus.push(this.closest("div.space-y-1")?.className.split(" ") ?? []);
+      return focus.apply(this, args);
+    });
+    try {
+      mount([row("a", { kind: "stage" })]);
+      fireEvent.click(screen.getByRole("button", { name: /\+ สถานที่ \/ โน้ต/ }));
+      expect(screen.queryByRole("button", { name: /\+ สถานที่ \/ โน้ต/ })).toBeNull();
+      expect(document.activeElement).toBe(document.getElementById("sc-a-location"));
+      expect(boxAtFocus).toHaveLength(1);
+      expect(boxAtFocus[0]).not.toContain("hidden");
+    } finally {
+      spy.mockRestore();
+    }
   });
 });
 
