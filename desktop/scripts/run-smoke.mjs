@@ -279,6 +279,31 @@ const SCENARIOS = [
     },
   },
   {
+    // TWO DIFFERENT RUNS (lib/live-arbitration.ts "conflict"): a second device comes
+    // back with ANOTHER run - a rehearsal's crash-recovery snapshot, planted - while
+    // the PA runs the show. Every automatic answer to "which run is the show" once
+    // moved the first device somewhere, so nobody yields: both screens warn, the PA
+    // keeps its show, item and sound, and the second device keeps its own run (item 0,
+    // not the PA's 2). A person then resets the second device, which must end as a
+    // silent viewer of the PA, and the PA's warning must go away. The end state gets
+    // the same five pair checks as the scenarios above.
+    name: "two-device-conflict",
+    what: "a second device comes back with another run: both warn, nobody moves, a reset settles it",
+    pair: {
+      a: { role: "main-conflict", expect: "live-controller" },
+      b: { role: "peer-conflict", expect: "live-viewer" },
+      controller: "a",
+      conflict: true,
+    },
+    seed: false,
+    backend: true,
+    timeoutSec: 240,
+    env: {
+      CUEIQ_SMOKE_REALTIME: "1",
+      CUEIQ_SMOKE_EXPECT: "live-controller", // per-device value; overridden below
+    },
+  },
+  {
     // THE ONE พี่ HAS ALWAYS HAD TO DO WITH HIS EARS.
     //
     // Every other scenario asserts on state: a screen, a flag, an index. This one
@@ -768,6 +793,28 @@ async function runTwoDeviceScenario(s) {
           claims.map((c) => c.device_id).join(", ") || "none"
         }), expected exactly one for ${drivingName} (${driving.deviceId})`
       );
+    }
+    // 6. TWO RUNS: while both were up, BOTH warned and NEITHER moved. Each half
+    //    asserted its own reading before it went on (main.cjs); this re-reads what
+    //    they reported, so a half that stopped checking cannot pass in silence.
+    if (s.pair.conflict) {
+      const aDuring = main?.liveReport?.during;
+      const bDuring = peer?.liveReport?.during;
+      if (!aDuring?.conflict || !aDuring.controller || aDuring.index !== 2 || !aDuring.sound) {
+        pairFailures.push(
+          `while two runs were up the PA did not keep its show and warn: ${JSON.stringify(aDuring ?? null)}`
+        );
+      }
+      if (!bDuring?.conflict || !bDuring.controller || bDuring.index !== 0) {
+        pairFailures.push(
+          `while two runs were up the second device did not keep its own run and warn: ${JSON.stringify(bDuring ?? null)}`
+        );
+      }
+      if (aState.conflict || bState.conflict) {
+        pairFailures.push(
+          `a warning outlived the reset: PA=${aState.conflict}, second device=${bState.conflict}`
+        );
+      }
     }
   }
 

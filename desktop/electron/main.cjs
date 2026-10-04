@@ -1404,6 +1404,8 @@ const SMOKE_LIVE_STATE = `(() => {
     sound: el.getAttribute('data-cueiq-live-sound') === '1',
     sync: el.getAttribute('data-cueiq-live-sync'),
     settled: el.getAttribute('data-cueiq-live-settled') === '1',
+    // the two-runs warning (live-mode.tsx's run-conflict banner) is on this screen
+    conflict: !!document.querySelector('[data-testid=run-conflict]'),
     // Who this device IS, as the app itself knows it (lib/device-id.ts). The
     // two-device runner compares it against the device_id on the surviving
     // show_authority row — which is how "one device holds the show" becomes an
@@ -1467,6 +1469,25 @@ async function driveLiveScenario(win) {
       }
       await new Promise((r) => setTimeout(r, 250));
     }
+  }
+  if (SMOKE_LIVE === "peer-conflict") {
+    // A device coming back with ANOTHER run - this afternoon's rehearsal, still on
+    // its disk: the crash-recovery snapshot live-mode.tsx restores on mount, planted
+    // before the page opens. Its own claim (two hours ago), its own item (0, where the
+    // PA is at 2), paused. Fresh, so it comes back as the run it was.
+    smokeAt("live:peer-conflict:planting-another-run");
+    await win.webContents.executeJavaScript(`(() => {
+      const t = Date.now();
+      localStorage.setItem(${JSON.stringify(`cueiq:live:${SMOKE_LIVE_EVENT}`)}, JSON.stringify({
+        state: { running: false, begun: true, startedAt: t - 7200000, itemStartedAt: null,
+                 itemElapsedAtPause: 0, currentIndex: 0, mode: "manual" },
+        committed: { id: null, anchor: null },
+        ended: false,
+        isController: true,
+        controllerSince: t - 7200000,
+        savedAt: t,
+      }));
+    })()`);
   }
   // In-page navigation, because the app is a HashRouter behind file:// — a
   // loadURL would restart the whole renderer and throw away the session.
@@ -1626,7 +1647,7 @@ async function driveLiveScenario(win) {
     return { role: "audible", after: started, audio: heard, signal, console: consoleReading, mountedSync: mounted.sync };
   }
 
-  if (SMOKE_LIVE === "main") {
+  if (SMOKE_LIVE === "main" || SMOKE_LIVE === "main-conflict") {
     smokeAt(`live:${SMOKE_LIVE}:starting`);
     const clicked = await win.webContents.executeJavaScript(
       `(() => { const b = document.querySelector('[data-testid=start-show]');
@@ -1659,6 +1680,25 @@ async function driveLiveScenario(win) {
     // Tell the runner it may launch the second device — and only then.
     await smokeMark("main-started", { set: true });
     smokeAt(`live:${SMOKE_LIVE}:holding`);
+    if (SMOKE_LIVE === "main-conflict") {
+      // TWO DIFFERENT RUNS: the second device comes back with another one. Nothing may
+      // move here - the show, the item, the sound - and THIS screen has to say so too.
+      await waitForMark("peer-conflict-seen", 90_000);
+      smokeAt("live:main-conflict:warned");
+      const during = await pollLive(
+        win,
+        "the PA never showed the two-runs warning",
+        (l) => l.conflict && l.controller && l.begun && l.index === 2 && l.sound,
+        15_000
+      );
+      await smokeMark("main-conflict-seen", { set: true });
+      // ...until the second device resets its run: then it is a viewer of this one and
+      // the warning has nothing left to say.
+      await waitForMark("peer-settled", 90_000);
+      smokeAt("live:main-conflict:cleared");
+      const after = await pollLive(win, "the PA's two-runs warning never went away", (l) => !l.conflict, 15_000);
+      return { role: SMOKE_LIVE, atStart: started, during, after, mountedSync: mounted.sync };
+    }
     // Released by the RUNNER once the second device has written its verdict - in
     // both scenarios the show stays here (พี่ 2026-10-04: the device that started the
     // show keeps it; there is no take-over).
@@ -1718,8 +1758,42 @@ async function driveLiveScenario(win) {
     return { role: "peer-try", adopted, after, mountedSync: mounted.sync };
   }
 
+  if (SMOKE_LIVE === "peer-conflict") {
+    // Its own run came back with the page (planted above). Hearing the PA's show it
+    // must NOT become a viewer of it and must not move the PA: both keep what they
+    // run and both show the warning (lib/live-arbitration.ts "conflict").
+    smokeAt("live:peer-conflict:warned");
+    const during = await pollLive(
+      win,
+      "this device never showed the two-runs warning",
+      (l) => l.conflict && l.controller && l.begun && l.index === 0,
+      45_000
+    );
+    await smokeMark("peer-conflict-seen", { set: true });
+    await waitForMark("main-conflict-seen", 60_000);
+    // A person settles it: รีเซ็ต on the device that is not the show. The reset asks
+    // first (window.confirm) - answered yes here, as the operator would.
+    smokeAt("live:peer-conflict:resetting");
+    const reset = await win.webContents.executeJavaScript(
+      `(() => { window.confirm = () => true;
+        const b = document.querySelector('[data-testid=reset]');
+        if (!b) return 'no reset button'; if (b.disabled) return 'reset disabled';
+        b.click(); return 'clicked'; })()`
+    );
+    if (reset !== "clicked") throw new Error(`could not reset this device's run: ${reset}`);
+    // ...after which it is a page with nothing running, and the PA's show makes it a
+    // silent viewer on the PA's item.
+    const after = await pollLive(
+      win,
+      "after its reset this device never became a viewer of the PA's show",
+      (l) => !l.controller && l.begun && l.index === 2 && !l.sound && !l.conflict,
+      30_000
+    );
+    return { role: "peer-conflict", during, after, mountedSync: mounted.sync };
+  }
+
   throw new Error(
-    `CUEIQ_SMOKE_LIVE must be main / peer / peer-try / audible, got "${SMOKE_LIVE}"`
+    `CUEIQ_SMOKE_LIVE must be main / main-conflict / peer / peer-try / peer-conflict / audible, got "${SMOKE_LIVE}"`
   );
 }
 

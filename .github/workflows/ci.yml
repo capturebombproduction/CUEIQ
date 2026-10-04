@@ -136,6 +136,9 @@ jobs:
       # (the sound key, ขอควบคุม, START) and every one must fail - the first device
       # keeps the show (พี่ 2026-10-04). Both end with exactly one controller (the
       # device that started), one sound host and both screens on the same item ·
+      # two-device-conflict -> the second device comes back with ANOTHER run (a planted
+      # rehearsal snapshot): both screens warn, nobody moves, and after its reset it
+      # is a silent viewer and the PA's warning is gone ·
       # audible -> plants a real WAV in the app's own audio cache, starts the show,
       # and MEASURES THE WAVEFORM coming out of the player (a silent file fails it
       # while every other reading stays green) · Quick Show -> opens with no account
