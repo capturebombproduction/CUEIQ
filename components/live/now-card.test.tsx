@@ -675,8 +675,9 @@ describe("NowCard · the stage countdown's cq overrides are gated on support, wi
     expect(wrapperClasses().filter((t) => t.includes("@supports_not_"))).toHaveLength(0);
   });
 
-  it("the stage's 236 px cap is still set, whatever the engine", () => {
-    expect(wrapperClasses()).toContain("stage:[&_.cd]:![--cd-max:236px]");
+  // พี่ 2026-10-04: "ขยายขนาดตัวหนังสืออันเวลาหลัก" - 236 -> 340 px; the box's own fit still decides below it
+  it("the stage's 340 px cap is set, whatever the engine", () => {
+    expect(wrapperClasses()).toContain("stage:[&_.cd]:![--cd-max:340px]");
   });
 });
 

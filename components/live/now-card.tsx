@@ -368,8 +368,11 @@ export function NowCard({
           squeezed the numerals toward nothing: 4 px at 600 px tall with one banner. Below 334 px
           of card content the volume row goes (live-mode.tsx), below 300 the cue note row: the
           box keeps 60 px or more (the font 75 and up) even in a 600 px window with a banner.
-          Live tools carries both. No container queries (Safari < 16): the rows always show. */}
-      <div className="mt-2 [@media(orientation:landscape)_and_(max-height:599.98px)_and_(pointer:coarse)]:mt-1 stage:mt-1 stage:grid stage:min-h-0 stage:flex-1 stage:[&_.cd-wrap]:!h-auto stage:[&_.cd-wrap]:[container-type:size] stage:[&_.cd]:![--cd-max:236px] stage:supports-[width:1cqi]:[&_.cd]:![font-size:min(var(--cd-max),calc(100cqi/var(--cd-em,1.84)),calc(100cqb/0.8))] [--cd-col:min(80vw,100vw_-_72px,600px)] [@media(orientation:landscape)_and_(max-height:599.98px)_and_(pointer:coarse)]:[--cd-col:calc(50vw_-_68px)] stage:[--cd-col:calc(100vw_-_760px)] stage:[--cd-h:max(48px,calc(100vh_-_600px))] [@media(orientation:landscape)_and_(max-height:599.98px)_and_(pointer:coarse)]:[&_.cd-wrap]:!h-[96px] [@media(orientation:landscape)_and_(max-height:599.98px)_and_(pointer:coarse)]:[&_.cd]:![--cd-max:120px]">
+          Live tools carries both. No container queries (Safari < 16): the rows always show.
+          The cap is 340 px (พี่ 2026-10-04: "ขยายขนาดตัวหนังสืออันเวลาหลัก" - it was 236, and the
+          box held far more: at 1440 x 900 the numerals are ~48 mm tall now, ~33 before). Below it
+          the width and height fit decide, as they always did. */}
+      <div className="mt-2 [@media(orientation:landscape)_and_(max-height:599.98px)_and_(pointer:coarse)]:mt-1 stage:mt-1 stage:grid stage:min-h-0 stage:flex-1 stage:[&_.cd-wrap]:!h-auto stage:[&_.cd-wrap]:[container-type:size] stage:[&_.cd]:![--cd-max:340px] stage:supports-[width:1cqi]:[&_.cd]:![font-size:min(var(--cd-max),calc(100cqi/var(--cd-em,1.84)),calc(100cqb/0.8))] [--cd-col:min(80vw,100vw_-_72px,600px)] [@media(orientation:landscape)_and_(max-height:599.98px)_and_(pointer:coarse)]:[--cd-col:calc(50vw_-_68px)] stage:[--cd-col:calc(100vw_-_760px)] stage:[--cd-h:max(48px,calc(100vh_-_600px))] [@media(orientation:landscape)_and_(max-height:599.98px)_and_(pointer:coarse)]:[&_.cd-wrap]:!h-[96px] [@media(orientation:landscape)_and_(max-height:599.98px)_and_(pointer:coarse)]:[&_.cd]:![--cd-max:120px]">
         <Countdown seconds={Math.round(remaining)} max={164} />
       </div>
 
@@ -380,9 +383,11 @@ export function NowCard({
         {/* STAGE WAVEFORM (0045): the song's level across the block, played part lit, the
             last WARN seconds amber, the practice room's sections marked. It takes the thin
             track's place ONLY when the card has height to spare: 500 px of card content is
-            the other rows (265.6 px) + the countdown at its 236 px cap (188.8 px of numerals)
-            + this strip's extra 34 px, rounded up. Below that the thin track stays, so the
-            countdown is never smaller for it (พี่: "เลขเวลาใดๆ ใหญ่เหมือนเดิม"). */}
+            the other rows (265.6 px) + the countdown at the old 236 px cap (188.8 px of
+            numerals) + this strip's extra 34 px, rounded up. Below that the thin track stays,
+            so with the strip the numerals are never smaller than that old cap (พี่: "เลขเวลาใดๆ
+            ใหญ่เหมือนเดิม"); above it they grow toward the 340 px cap with what the box has
+            (a 1280 x 800 window keeps its waveform: ~275 px numerals, 236 before). */}
         {waveOn && wave && (
           <div
             data-testid="now-wave"
