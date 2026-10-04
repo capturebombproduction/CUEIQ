@@ -2812,6 +2812,28 @@ describe("LiveMode · a show left running long ago comes back paused", () => {
     expect(screen.getByText(/แตะเพื่อเล่นเสียงต่อ/)).toBeTruthy();
   });
 
+  it("the page tells the viewers where the show is as soon as its channel is up", async () => {
+    seedSnapshot(runningSnap(3 * 60 * 60 * 1000, 50));
+    await mountLive();
+    expect(stateSends()).toHaveLength(0);
+    await act(async () => {
+      live().setStatus("SUBSCRIBED");
+    });
+    const sent = stateSends();
+    expect(sent).toHaveLength(1);
+    expect(sent[0].payload.begun).toBe(true);
+    expect(sent[0].payload.running).toBe(false);
+    expect(sent[0].payload.fromController).toBe(true);
+  });
+
+  it("a page that restored nothing announces nothing", async () => {
+    await mountLive();
+    await act(async () => {
+      live().setStatus("SUBSCRIBED");
+    });
+    expect(stateSends()).toHaveLength(0);
+  });
+
   it("a running show re-writes its snapshot while alive, so its age is the page's", async () => {
     seedSnapshot(runningSnap(60_000, 50));
     await mountLive();
@@ -2897,7 +2919,7 @@ describe("LiveMode · a late viewer follows the master's row and levels", () => 
     expect(screen.getAllByRole("slider").some((s) => (s as HTMLInputElement).value === "40")).toBe(true);
   });
 
-  it("a device running its own show keeps its levels whatever another one says", async () => {
+  it("a device running its own show keeps its levels whatever another (different) run says", async () => {
     localStorage.setItem(`cueiq:vol:${EVENT_ID}`, JSON.stringify({ "item-1": 70 }));
     await mountLive();
     const ts = await startShowFromUi();
@@ -2920,6 +2942,34 @@ describe("LiveMode · a late viewer follows the master's row and levels", () => 
       vi.advanceTimersByTime(600);
     });
     expect(savedLevels()).toEqual({ "item-1": 70 });
+  });
+
+  it("a viewer joining mid-fade is told the level the fade is going to", async () => {
+    h.saved = [{ itemId: "item-1", blob: new Blob(["audio"]), name: "track-1.wav", path: null }];
+    await mountLive();
+    await startShowFromUi();
+    await act(async () => {
+      fireEvent.click(screen.getAllByRole("button", { name: /^MC$/ })[0]);
+    });
+    await act(async () => {
+      live().emit("sync-request", { sender: "phone-late" });
+    });
+    expect(stateSends().at(-1)!.payload.volumes["item-1"]).toBe(30);
+  });
+
+  it("the PA on a row this list does not have yet: found the moment the list re-reads", async () => {
+    await mountLive();
+    await act(async () => {
+      live().emit("state", paState({ currentIndex: 1, currentItemId: "item-4" }));
+    });
+    expect(index()).toBe("1"); // not here yet: the index stands
+    supa.setTable("setlist_items", ok([makeItem(4, { sort_order: 0 }), ...ITEMS]));
+    await act(async () => {
+      live().emit("setlist-changed", { sender: "pa-device" });
+    });
+    await act(async () => {});
+    expect(index()).toBe("0");
+    expect(nowTitle()).toContain("Track 4");
   });
 
   it("the device running the show sends its levels with every state", async () => {

@@ -296,6 +296,8 @@ export function LiveMode({
   // device's reload, which a broadcast id does not) and when it was last heard.
   const followingRunRef = useRef<number | null>(null);
   const followedHeardAtRef = useRef(0);
+  // the row the device running the show stands on, by id (a viewer follows the song)
+  const followItemIdRef = useRef<string | null>(null);
   // set for the one broadcast that resets a run, so the viewers watching it are freed
   const resetRunRef = useRef<number | null>(null);
   // when this page opened (the same run on two tabs stays with the first - see settleControl)
@@ -371,6 +373,9 @@ export function LiveMode({
   const volumesRef = useRef(volumes); // stable read for the overlap pre-roll effect
   volumesRef.current = volumes;
   const fadeRef = useRef<number | null>(null); // rAF id for the volume fade animation
+  // where the running fade is going: a viewer that joins mid-fade is told the level the
+  // track is fading TO (intendedVolumes) - the fade's own message went out before it came
+  const fadeTargetRef = useRef<{ itemId: string; target: number } | null>(null);
   // throttle state for volume broadcasts (slider drag would otherwise flood the channel)
   const volBcastRef = useRef<{
     last: number;
@@ -458,10 +463,14 @@ export function LiveMode({
   // lands on time and restores once the show moves off it. When it never moves off
   // (last item, or the operator leaves it running) the restore never fires, and
   // persisting that 0 would re-open the event with the row muted. So a track that's
-  // mid-fade counts at its intended level - the audible fade itself is untouched.
+  // mid-fade counts at its intended level - the audible fade itself is untouched. Any
+  // other running fade (MC / Auto Mute) counts at where it is going: that is the level
+  // the track will sit at, and a viewer joining mid-fade never heard the fade's message.
   function intendedVolumes(): Record<string, number> {
     const lf = loopFadeRef.current;
-    const vols = volumesRef.current;
+    const ft = fadeTargetRef.current;
+    let vols = volumesRef.current;
+    if (ft) vols = { ...vols, [ft.itemId]: ft.target };
     return lf ? { ...vols, [lf.id]: lf.prevVol } : vols;
   }
   const writeVolumePresetRef = useRef(writeVolumePreset);
@@ -480,6 +489,7 @@ export function LiveMode({
   // timestamps are absolute, so the clock resumes as if nothing happened; a live
   // controller on another device still overrides this via the realtime sync.
   const liveRestoredRef = useRef(false);
+  const announceRestoreRef = useRef(false);
   useEffect(() => {
     try {
       const raw = localStorage.getItem(`cueiq:live:${eventId}`);
@@ -497,6 +507,9 @@ export function LiveMode({
           // show comes back PAUSED where it stopped, with nothing sounding - see
           // lib/live-restore.ts. A crash a minute ago carries on as before.
           const { state: restored, stale } = restoreShow(snap.state as LiveState, snap.savedAt);
+          // ...and tells the viewers once its channel is up: the phones still watching
+          // this run last heard it RUNNING, and a restore is not a broadcast
+          announceRestoreRef.current = true;
           committedRef.current = stale
             ? { id: null, anchor: null }
             : (snap.committed ?? { id: null, anchor: null });
@@ -1542,6 +1555,7 @@ export function LiveMode({
       // (a reorder it has not re-read yet) showed whatever sat at that index here - a
       // different song from the one on the PA. The index is the fallback (an older
       // build, a row this device does not have yet).
+      followItemIdRef.current = typeof payload.currentItemId === "string" ? payload.currentItemId : null;
       const byId =
         typeof payload.currentItemId === "string"
           ? itemsRef.current.findIndex((it) => it.id === payload.currentItemId)
@@ -1620,6 +1634,15 @@ export function LiveMode({
       const ready = status === "SUBSCRIBED";
       setSyncReady(ready);
       if (ready) {
+        // A page that came back with its show (the crash-recovery restore) says where
+        // the show is now - paused, if it had been gone too long - instead of leaving
+        // the viewers on what they last heard until someone presses something.
+        if (announceRestoreRef.current) {
+          announceRestoreRef.current = false;
+          if (stateRef.current.begun && isControllerRef.current) {
+            ch.send({ type: "broadcast", event: "state", payload: statePayload(stateRef.current) });
+          }
+        }
         // request current show state from any device already running
         ch.send({
           type: "broadcast",
@@ -1932,6 +1955,20 @@ export function LiveMode({
   // ref so the realtime subscription (registered once) always calls the latest
   const refetchRef = useRef(refetchItems);
   refetchRef.current = refetchItems;
+
+  // The row a viewer follows, by ID (the state handler): it resolved that id against the
+  // rows it could see, and a re-read can land new rows in the very tick a state message
+  // arrives - or the PA can be on a row this list does not have yet. Whenever the rows
+  // change, find the followed row again on the rows now on screen.
+  useEffect(() => {
+    if (isControllerRef.current || !stateRef.current.begun) return;
+    const id = followItemIdRef.current;
+    if (!id) return;
+    const at = items.findIndex((it) => it.id === id);
+    if (at >= 0 && at !== stateRef.current.currentIndex) {
+      setState((prev) => ({ ...prev, currentIndex: at }));
+    }
+  }, [items]);
 
   // Auto pick-up library audio: when this tab regains focus (e.g. you just
   // uploaded a file in the library on another tab), re-fetch songs + setlist so
@@ -2464,11 +2501,14 @@ export function LiveMode({
   // the local buttons/slider and by the viewer mirroring a remote volume command.
   function fadeVolumeFor(itemId: string, target: number, ms: number) {
     if (fadeRef.current) cancelAnimationFrame(fadeRef.current);
+    fadeTargetRef.current = null;
     const start = volumesRef.current[itemId] ?? 100;
     if (ms <= 0 || start === target) {
       setVolumes((prev) => ({ ...prev, [itemId]: target }));
       return;
     }
+    const going = { itemId, target };
+    fadeTargetRef.current = going;
     const t0 = performance.now();
     let lastSet = 0;
     const step = (t: number) => {
@@ -2484,6 +2524,7 @@ export function LiveMode({
         lastSet = t;
         setVolumes((prev) => ({ ...prev, [itemId]: v }));
       }
+      if (p >= 1 && fadeTargetRef.current === going) fadeTargetRef.current = null;
       fadeRef.current = p < 1 ? requestAnimationFrame(step) : null;
     };
     fadeRef.current = requestAnimationFrame(step);
