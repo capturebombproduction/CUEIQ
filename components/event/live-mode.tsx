@@ -2237,7 +2237,11 @@ export function LiveMode({
   // apart from the live state so a normal Reset Show doesn't erase it). Not a real
   // end: the show just pauses; Reset Show later clears it for the next run.
   function endShow() {
-    if (!canEdit) return;
+    // Only the device running THE show ends it (พี่ 2026-10-04: "มาสเตอร์กดได้เครื่องเดียว").
+    // While two runs are up nobody can say which device that is - the rehearsal's จบโชว์
+    // wrote its run time over the real show's last-run record - so it waits for a person
+    // to reset the one that is not the show (the run-conflict banner says so).
+    if (!canEdit || watchingOnly()) return;
     const s = stateRef.current;
     const seconds = s.startedAt ? Math.round((Date.now() - s.startedAt) / 1000) : 0;
     const at = Date.now();
@@ -4747,11 +4751,19 @@ export function LiveMode({
               data-testid="end-show"
               className="h-12 w-full justify-start"
               onClick={endShow}
+              disabled={inConflict}
               title="หยุดนับเวลาสะสม + บันทึกเป็นเวลาโชว์ล่าสุด (ไม่ใช่รีเซ็ต)"
             >
               <Flag aria-hidden />
               จบโชว์ · บันทึกเวลาสะสม
             </Button>
+          )}
+          {/* two runs up: only the device that is THE show may end it, and only a person can
+              say which one that is */}
+          {state.begun && isController && canEdit && inConflict && (
+            <p data-testid="end-show-locked" className="mt-1 text-[13px] text-muted-foreground">
+              จบโชว์ได้ที่เครื่องเปิดเพลงเครื่องเดียว — กดรีเซ็ตเครื่องที่ไม่ใช่เครื่องเปิดเพลงก่อน
+            </p>
           )}
           {state.begun && (
             <Button

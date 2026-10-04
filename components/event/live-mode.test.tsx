@@ -3215,3 +3215,69 @@ describe("LiveMode · restore and announce edges", () => {
     expect(stateSends(ch)).toHaveLength(0);
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// (z8) จบโชว์ IS THE MASTER'S ALONE
+//
+// พี่ 2026-10-04: "มาสเตอร์กดได้เครื่องเดียว". A viewer never had the key. While two runs
+// are up nobody can say which device is the master, and the rehearsal's จบโชว์ wrote its
+// run time over the real show's last-run record - so both wait for a person to reset
+// the one that is not the show; then the master ends it as before.
+// ─────────────────────────────────────────────────────────────────────────────
+describe("LiveMode · only the master ends the show", () => {
+  const other = (claim: number, over: Record<string, unknown> = {}) => ({
+    sender: "phone",
+    sentAt: Date.now(),
+    fromController: true,
+    begun: true,
+    running: false,
+    startedAt: claim,
+    itemStartedAt: null,
+    itemElapsedAtPause: 0,
+    currentIndex: 0,
+    mode: "manual",
+    controllerSince: claim,
+    ended: false,
+    ...over,
+  });
+  const lastRunSends = () => live().sent.filter((s) => s.event === "lastrun");
+
+  it("two runs up: the key is locked, says why, and a press records nothing", async () => {
+    await mountLive();
+    const ts = await startShowFromUi();
+    await act(async () => {
+      live().emit("state", other(ts - 6 * 60 * 60 * 1000));
+    });
+    const key = screen.getByTestId("end-show") as HTMLButtonElement;
+    expect(key.disabled).toBe(true);
+    expect(screen.getByTestId("end-show-locked")).toHaveTextContent("เครื่องเปิดเพลงเครื่องเดียว");
+    await act(async () => {
+      fireEvent.click(key);
+    });
+    expect(lastRunSends()).toHaveLength(0);
+  });
+
+  it("once the other device resets, the master ends the show as before", async () => {
+    await mountLive();
+    const ts = await startShowFromUi();
+    const rehearsal = ts - 6 * 60 * 60 * 1000;
+    await act(async () => {
+      live().emit("state", other(rehearsal));
+    });
+    await act(async () => {
+      live().emit("state", other(rehearsal, { begun: false, startedAt: null, controllerSince: null, resetRun: rehearsal }));
+    });
+    expect(screen.queryByTestId("end-show-locked")).toBeNull();
+    const key = screen.getByTestId("end-show") as HTMLButtonElement;
+    expect(key.disabled).toBe(false);
+    await act(async () => {
+      fireEvent.click(key);
+    });
+    expect(lastRunSends()).toHaveLength(1);
+  });
+
+  it("a viewer has no จบโชว์ at all", async () => {
+    await mountViewer();
+    expect(screen.queryByTestId("end-show")).toBeNull();
+  });
+});
