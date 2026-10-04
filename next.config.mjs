@@ -14,6 +14,12 @@ const nextConfig = {
     // locally. See lib/app-version.ts.
     NEXT_PUBLIC_COMMIT: (process.env.VERCEL_GIT_COMMIT_SHA || "dev").slice(0, 7),
   },
+  // Nothing here uses next/image (song covers are data-URL thumbnails, feedback
+  // shots are presigned R2 URLs — all plain <img>), so the /_next/image optimizer
+  // was a public endpoint serving no one —
+  // and the one Next.js shipped a critical RCE in (GHSA-2xp9-vwfh-vxw4). Off, it
+  // answers 404.
+  images: { unoptimized: true },
   // Conservative security headers on every response. (A full Content-Security-Policy
   // is intentionally deferred: the no-flash bootstrap <script> in app/layout.tsx is
   // inline and would need a per-request nonce or hash — revisit when we add CSP.)
