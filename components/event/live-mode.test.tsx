@@ -3071,3 +3071,147 @@ describe("LiveMode · a late viewer follows the master's row and levels", () => 
     expect(stateSends().at(-1)!.payload.volumes).toEqual({ "item-1": 55 });
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// (z7) RESTORE + ANNOUNCE EDGES the reviews named and nothing pinned
+// ─────────────────────────────────────────────────────────────────────────────
+describe("LiveMode · restore and announce edges", () => {
+  const HOURS_3 = 3 * 60 * 60 * 1000;
+  const paused = (over: Record<string, unknown> = {}) => ({
+    running: false,
+    begun: true,
+    startedAt: Date.now() - 4 * 60 * 60 * 1000,
+    itemStartedAt: null,
+    itemElapsedAtPause: 0,
+    currentIndex: 0,
+    mode: "manual",
+    ...over,
+  });
+  const snapNow = () => JSON.parse(localStorage.getItem(SNAPSHOT_KEY) ?? "null");
+
+  it("a tab that yielded to the same run's first tab never re-writes the snapshot after", async () => {
+    seedSnapshot({ controllerSince: 1_000 });
+    await mountLive();
+    await act(async () => {
+      live().emit("state", {
+        sender: "0000-first-tab",
+        sentAt: Date.now(),
+        fromController: true,
+        ...paused(),
+        controllerSince: 1_000,
+        openedAt: Date.now() - 600_000,
+        ended: false,
+      });
+    });
+    expect(screen.getByTestId("viewer-banner")).toBeInTheDocument();
+    // what the first tab (the one running the show) has on disk now
+    const theirs = JSON.stringify({ state: paused({ currentIndex: 2 }), controllerSince: 1_000, isController: true, savedAt: Date.now() });
+    localStorage.setItem(SNAPSHOT_KEY, theirs);
+    await act(async () => {
+      vi.advanceTimersByTime(65_000); // two of the alive re-writes, had it still been the controller
+    });
+    expect(localStorage.getItem(SNAPSHOT_KEY)).toBe(theirs);
+  });
+
+  it("a viewer never re-writes the snapshot, however long it watches", async () => {
+    const { run } = await mountViewer();
+    const theirs = JSON.stringify({ state: { begun: true }, controllerSince: run, isController: true, savedAt: Date.now() });
+    localStorage.setItem(SNAPSHOT_KEY, theirs);
+    await act(async () => {
+      vi.advanceTimersByTime(65_000);
+    });
+    expect(localStorage.getItem(SNAPSHOT_KEY)).toBe(theirs);
+  });
+
+  it("a show that ENDED, restored hours later: still ended, still paused, clock stopped for the gap", async () => {
+    const savedAt = Date.now() - HOURS_3;
+    seedSnapshot({ state: paused({ startedAt: savedAt - 3_600_000, itemElapsedAtPause: 200 }), ended: true, savedAt });
+    await mountLive();
+    await act(async () => {
+      vi.advanceTimersByTime(1_000);
+    });
+    expect(screen.getByTestId("run-toggle").textContent).not.toContain("Pause");
+    expect(screen.queryByText(/แตะเพื่อเล่นเสียงต่อ/)).toBeNull();
+    const snap = snapNow();
+    expect(snap.ended).toBe(true);
+    expect(snap.state.running).toBe(false);
+    expect(snap.state.itemElapsedAtPause).toBe(200);
+    // the hour that ran before it closed - not four
+    expect(Math.round((Date.now() - snap.state.startedAt) / 60_000)).toBe(60);
+  });
+
+  describe("a Manual cue (the previous track still sounding, running:false)", () => {
+    const cued = (savedAgo: number) => {
+      const savedAt = Date.now() - savedAgo;
+      return {
+        state: paused({ currentIndex: 1, startedAt: savedAt - 600_000 }),
+        committed: { id: "item-1", anchor: savedAt - 100_000 },
+        savedAt,
+      };
+    };
+    const announced = async () => {
+      await act(async () => {
+        live().setStatus("SUBSCRIBED");
+      });
+      await act(async () => {
+        vi.advanceTimersByTime(2_000);
+      });
+      return stateSends().at(-1)?.payload;
+    };
+
+    it("hours later: the previous track is dropped - nothing is said to be sounding", async () => {
+      seedSnapshot(cued(HOURS_3));
+      await mountLive();
+      const p = await announced();
+      expect(p?.audioItemId).toBe("item-2");
+      expect(p?.audioPlaying).toBe(false);
+    });
+
+    it("a minute after a crash: the previous track is still the one sounding, as before", async () => {
+      seedSnapshot(cued(60_000));
+      await mountLive();
+      const p = await announced();
+      expect(p?.audioItemId).toBe("item-1");
+      expect(p?.audioPlaying).toBe(true);
+    });
+  });
+
+  it("the channel fails inside the reply window: no announce until it is back, then once", async () => {
+    seedSnapshot({ state: paused(), savedAt: Date.now() - HOURS_3 });
+    await mountLive();
+    await act(async () => {
+      live().setStatus("SUBSCRIBED");
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(1_000);
+    });
+    await act(async () => {
+      live().setStatus("CHANNEL_ERROR");
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(4_000);
+    });
+    expect(stateSends()).toHaveLength(0);
+    await act(async () => {
+      live().setStatus("SUBSCRIBED");
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(2_000);
+    });
+    expect(stateSends()).toHaveLength(1);
+  });
+
+  it("the page closes inside the reply window: nothing is sent after", async () => {
+    seedSnapshot({ state: paused(), savedAt: Date.now() - HOURS_3 });
+    const view = await mountLive();
+    await act(async () => {
+      live().setStatus("SUBSCRIBED");
+    });
+    const ch = live();
+    view.unmount();
+    await act(async () => {
+      vi.advanceTimersByTime(3_000);
+    });
+    expect(stateSends(ch)).toHaveLength(0);
+  });
+});
