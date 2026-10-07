@@ -3794,6 +3794,56 @@ describe("LiveMode · a run restored paused after a long gap holds nobody until 
   });
 });
 
+// 2026-10-08 review: จบโชว์ left MAIN (and its heartbeat) on the device until a reset, so
+// another device's START stayed refused - with a message telling its operator to press
+// จบโชว์ on that device - and an idle page that opened became a viewer of a show that was
+// over. A second จบโชว์ saved the run plus the time since (the show clock runs on).
+describe("LiveMode · an ended show holds nothing, and records its run once", () => {
+  it("จบโชว์ lets go of MAIN and takes nobody new - playing on claims it again", async () => {
+    await mountLive();
+    await startShowFromUi();
+    const claims = () => supa.callsTo("show_authority", "upsert").length;
+    expect(claims()).toBeGreaterThan(0);
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("end-show"));
+    });
+    expect(supa.callsTo("show_authority", "delete").length).toBeGreaterThan(0);
+    const last = stateSends().at(-1)!.payload;
+    expect(last.ended).toBe(true);
+    expect(last.held).toBe(true);
+    const after = claims();
+    await act(async () => {
+      vi.advanceTimersByTime(65_000); // two heartbeats' worth: none claims it back
+    });
+    expect(claims()).toBe(after);
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("run-toggle")); // the encore
+    });
+    expect(stateSends().at(-1)!.payload.held).toBeUndefined();
+    expect(claims()).toBeGreaterThan(after);
+  });
+
+  it("จบโชว์ records the run once - a second press is not possible", async () => {
+    await mountLive();
+    await startShowFromUi();
+    await act(async () => {
+      vi.advanceTimersByTime(90_000);
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("end-show"));
+    });
+    expect(screen.getByTestId("end-show")).toBeDisabled();
+    await act(async () => {
+      vi.advanceTimersByTime(600_000);
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("end-show"));
+    });
+    const writes = supa.callsTo("events", "update").filter((c) => "last_run_seconds" in (c.values as object));
+    expect(writes).toHaveLength(1);
+  });
+});
+
 // 2026-10-07 review: Auto moved on at the next 500 ms tick after a row's end, and the
 // next row's clock started from then - ~0.25 s lost per row, never made up (an
 // exactly-full slot read "เกิน Hard Out" at the end). It moves on AT the end now.

@@ -608,9 +608,9 @@ export function LiveMode({
           // already gone to sleep, with no controller left to correct it.
           if (snap.ended) markShowEnded(true);
           if (snap.ended) {
-            // its clock is frozen where จบโชว์ left it - nothing "carries on"
+            // nothing "carries on": its run time was saved when จบโชว์ was pressed
             toast.message("กู้คืนโชว์ที่จบไปแล้ว", {
-              description: "เวลาหยุดไว้ตามที่จบ — กดรีเซ็ตถ้าจะเริ่มรอบใหม่",
+              description: "บันทึกเวลาโชว์ไว้แล้ว — กดรีเซ็ตถ้าจะเริ่มรอบใหม่",
             });
           } else if (held) {
             toast.message("กู้คืนโชว์ที่ค้างไว้ — หยุดรอไว้ก่อน", {
@@ -1429,7 +1429,10 @@ export function LiveMode({
   // claims show_main again for this device - set while it is the begun controller
   const reclaimMainRef = useRef<(() => void) | null>(null);
   useEffect(() => {
-    if (!(isController && state.begun) || restoreHeld) return;
+    // An ENDED show holds no MAIN either - another device's refused START tells its
+    // operator to press จบโชว์ here, and จบโชว์ used to leave the claim and its heartbeat
+    // in place until a reset. Playing on (an encore) claims it again.
+    if (!(isController && state.begun) || restoreHeld || showEnded) return;
     const tenantId = itemsRef.current[0]?.tenant_id;
     if (!tenantId) return; // no setlist → nothing to run / claim
     const did = deviceIdRef.current;
@@ -1452,7 +1455,7 @@ export function LiveMode({
       // the new main is left intact (releaseAuthority matches on our device_id).
       releaseAuthority(eventId, "show_main", did);
     };
-  }, [isController, state.begun, eventId, restoreHeld]);
+  }, [isController, state.begun, eventId, restoreHeld, showEnded]);
 
   // negative buffer (Auto): pre-roll the NEXT track on the secondary element so it
   // overlaps the current one — current keeps playing, next "เล่นสวนขึ้นมา" |lead| sec early.
@@ -1942,8 +1945,9 @@ export function LiveMode({
       volumes: intendedVolumes(),
       // when this page opened: the same run on two tabs stays with the first
       openedAt: openedAtRef.current,
-      // a show restored paused after a long gap that nobody has played yet (restoreHeld)
-      held: isControllerRef.current && restoreHeldRef.current ? true : undefined,
+      // a show restored paused after a long gap that nobody has played yet (restoreHeld),
+      // or one that has ended: either way it takes no page not already watching it
+      held: isControllerRef.current && (restoreHeldRef.current || showEndedRef.current) ? true : undefined,
       ...audioFields(s),
     };
   }
@@ -2381,6 +2385,9 @@ export function LiveMode({
     // wrote its run time over the real show's last-run record - so it waits for a person
     // to reset the one that is not the show (the run-conflict banner says so).
     if (!canEdit || watchingOnly()) return;
+    // Once is the record. The show clock (startedAt) runs on after จบโชว์, so pressing it
+    // again saved the run plus however long the page had sat there since.
+    if (showEndedRef.current) return;
     const s = stateRef.current;
     const seconds = s.startedAt ? Math.round((Date.now() - s.startedAt) / 1000) : 0;
     const at = Date.now();
@@ -5041,8 +5048,12 @@ export function LiveMode({
               data-testid="end-show"
               className="h-12 w-full justify-start"
               onClick={endShow}
-              disabled={inConflict}
-              title="หยุดนับเวลาสะสม + บันทึกเป็นเวลาโชว์ล่าสุด (ไม่ใช่รีเซ็ต)"
+              disabled={inConflict || showEnded}
+              title={
+                showEnded
+                  ? "บันทึกเวลาโชว์แล้ว — กดเล่นต่อหรือรีเซ็ตก่อน"
+                  : "หยุดนับเวลาสะสม + บันทึกเป็นเวลาโชว์ล่าสุด (ไม่ใช่รีเซ็ต)"
+              }
             >
               <Flag aria-hidden />
               จบโชว์ · บันทึกเวลาสะสม

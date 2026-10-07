@@ -387,6 +387,22 @@ describe("Quick Show — the running order and the clock", () => {
     expect(media.callsFor(primary).filter((c) => c.type === "pause").length).toBeGreaterThan(0);
   });
 
+  // 2026-10-08: the show clock runs on after จบโชว์, so a second press saved the run plus
+  // the time the page had sat there since - over the right record.
+  it("จบโชว์ records the run once - a second press is not possible", async () => {
+    await boot(threeUp());
+    await click(startButton());
+    await tick(90_000);
+    await click(endShowButton());
+    await settle();
+    expect(endShowButton()).toBeDisabled();
+    await tick(600_000);
+    await click(endShowButton());
+    await settle();
+    expect(store.lastRunWrites).toHaveLength(1);
+    expect(store.lastRunWrites[0]!.seconds).toBe(90);
+  });
+
   it("จบโชว์ stops the sound even between Manual cues", async () => {
     // The pause used to sit inside endShow's `if (state.running)` branch, and
     // Manual deliberately leaves the previous track sounding while the next row is

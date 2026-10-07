@@ -514,9 +514,9 @@ export function MyShow() {
             if (Object.keys(now).length) setVolumes((v) => ({ ...v, ...now }));
           }
           if (snap.ended) {
-            // its clock is frozen where จบโชว์ left it - nothing "carries on"
+            // nothing "carries on": its run time was saved when จบโชว์ was pressed
             toast.message("กู้คืนโชว์ที่จบไปแล้ว", {
-              description: "เวลาหยุดไว้ตามที่จบ — กดรีเซ็ตถ้าจะเริ่มรอบใหม่",
+              description: "บันทึกเวลาโชว์ไว้แล้ว — กดรีเซ็ตถ้าจะเริ่มรอบใหม่",
             });
           } else if (stale) {
             toast.message("กู้คืนโชว์ที่ค้างไว้ — หยุดรอไว้ก่อน", {
@@ -1061,6 +1061,9 @@ export function MyShow() {
   }
 
   function endShow() {
+    // Once is the record. The show clock (startedAt) runs on after จบโชว์, so pressing it
+    // again saved the run plus however long the page had sat there since.
+    if (showEndedRef.current) return;
     const s = stateRef.current;
     const seconds = s.startedAt ? Math.round((Date.now() - s.startedAt) / 1000) : 0;
     const rec = { seconds, at: Date.now() };
@@ -1915,7 +1918,12 @@ export function MyShow() {
                   data-testid="end-show"
                   className="mt-2 w-full"
                   onClick={endShow}
-                  title="หยุดนับเวลาสะสม + บันทึกเป็นเวลาโชว์ล่าสุด (ไม่ใช่รีเซ็ต)"
+                  disabled={showEnded}
+                  title={
+                    showEnded
+                      ? "บันทึกเวลาโชว์แล้ว — กดเล่นต่อหรือรีเซ็ตก่อน"
+                      : "หยุดนับเวลาสะสม + บันทึกเป็นเวลาโชว์ล่าสุด (ไม่ใช่รีเซ็ต)"
+                  }
                 >
                   <Flag className="h-4 w-4" /> จบโชว์ · บันทึกเวลาสะสม
                 </Button>
