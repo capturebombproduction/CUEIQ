@@ -17,10 +17,21 @@
 // So a big WAV that's only ever played at full speed is never decoded; the
 // decode cost (and the spinner for it, via onPreparing) is paid only on the
 // first slow-down. The decoded buffer is cached for the loaded song, so toggling
-// speed back and forth doesn't re-decode. Only one song is in memory at a time.
+// speed back and forth doesn't re-decode. Only one song is in memory at a time —
+// except in a set played slowed down, which holds the next song decoded ahead
+// (preload) and, through an overlap, the last one's tail: up to ~3 songs briefly.
 //
 // The player talks ONLY to this class. Slow-down is Practice-Mode-only — Live
 // Mode never uses this.
+//
+// "เล่นซ้อน" (a set's next song coming in N seconds before this one ends, the
+// way Live Mode plays the show): handOff() lets the song now sounding play on to
+// its own end, untracked — a TAIL — and frees the engine for the next load().
+// A native tail keeps its element; the next song plays on a SPARE element that
+// unlock() primed inside a tap, because WebKit grants play permission per element
+// and the hand-off happens with no tap at all. A stretch tail keeps its shifter
+// on the shared gain node. Pausing silences tails too; a tail that ends hands its
+// element back as the next spare.
 // ---------------------------------------------------------------------------
 
 import type { PitchShifter } from "soundtouchjs";
@@ -52,6 +63,14 @@ async function loadShifterCtor(): Promise<PitchShifterCtor> {
 
 type Backend = "native" | "stretch";
 
+// A zero-length WAV: playing it inside a tap is what lets an element play later
+// with no tap (the same priming Live Mode does for its overlap element).
+const SILENT_WAV =
+  "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAgD4AAAB9AAACABAAZGF0YQAAAAA=";
+
+// A song handed off by handOff(), sounding out its last seconds on its own.
+type Tail = { owner: object; stop: () => void; setVolume: (v: number) => void };
+
 // What one prepare-for-stretch attempt ended up doing. "stale" means the attempt
 // lost its claim on the transport while it was decoding — a newer song loaded, or
 // the engine was destroyed — and the caller must then do NOTHING at all.
@@ -63,12 +82,20 @@ export class PracticeAudioEngine {
   private _volume = 1; // 0..1
   private _playing = false;
   private _duration = 0;
+  private _durationGen = -1; // the loadGen `_duration` was measured for
   private _time = 0;
   private active: Backend = "native";
 
   // native backend
   private audio: HTMLAudioElement | null = null;
   private objectUrl: string | null = null;
+  // the element the next hand-off plays on, and which elements were primed
+  private spare: HTMLAudioElement | null = null;
+  private primed = new WeakSet<HTMLAudioElement>();
+  private priming = new WeakSet<HTMLAudioElement>();
+  private tails = new Set<Tail>();
+  // the next song of a set, decoded ahead at a slowed speed (see preload)
+  private pre: { blob: Blob; buffer: Promise<AudioBuffer | null> } | null = null;
 
   // stretch backend (lazy)
   private ctx: AudioContext | null = null;
@@ -103,6 +130,25 @@ export class PracticeAudioEngine {
   get currentTime() {
     return this._time;
   }
+  /** The loaded song's length — 0 until THIS song's is known. `duration` keeps the
+   *  last song's until the new one's metadata arrives (the scrubber is fine with
+   *  that); an overlap timed off it would fire at the next song's first second. */
+  get songDuration() {
+    return this._durationGen === this.loadGen ? this._duration : 0;
+  }
+  /** A song sounding out its end under the next one, which has not started yet. */
+  get handingOff() {
+    return this.tails.size > 0 && !this._playing;
+  }
+  /** Whether handOff() can let this song play on: it is playing, and the next one
+   *  has somewhere to play — an element WebKit has let play before (a native song),
+   *  or the Web Audio context (slowed down). Without one an overlap would start the
+   *  next song silent on iOS, so the set just waits for this one to end. */
+  get canHandOff() {
+    if (!this._playing) return false;
+    if (this.active === "stretch") return !!this.shifter;
+    return !!this.spare && this.primed.has(this.spare);
+  }
   get duration() {
     return this._duration;
   }
@@ -115,40 +161,79 @@ export class PracticeAudioEngine {
 
   // --- native element -------------------------------------------------------
 
+  // Every element reports only while it is THE element: a tail sounding out, or
+  // the spare playing its silent prime, must not move the scrubber or end the song.
+  private makeAudio(): HTMLAudioElement {
+    const a = new Audio();
+    a.preload = "auto";
+    a.volume = this._volume;
+    const mine = () => this.audio === a && this.active === "native";
+    a.addEventListener("timeupdate", () => {
+      if (!mine()) return;
+      this._time = a.currentTime;
+      this.onTime(a.currentTime);
+    });
+    a.addEventListener("loadedmetadata", () => {
+      if (!mine()) return;
+      this.setDuration(a.duration);
+      this.onDuration(a.duration);
+    });
+    a.addEventListener("play", () => {
+      if (!mine()) return;
+      this._playing = true;
+      this.onPlayingChange(true);
+    });
+    a.addEventListener("pause", () => {
+      if (!mine()) return;
+      this._playing = false;
+      this.onPlayingChange(false);
+    });
+    a.addEventListener("ended", () => {
+      if (!mine()) return;
+      this._playing = false;
+      this.onPlayingChange(false);
+      this.onEnded();
+    });
+    return a;
+  }
+
+  private setDuration(d: number) {
+    this._duration = d;
+    this._durationGen = this.loadGen;
+  }
+
   private ensureAudio(): HTMLAudioElement {
-    if (!this.audio) {
-      const a = new Audio();
-      a.preload = "auto";
-      a.volume = this._volume;
-      a.addEventListener("timeupdate", () => {
-        if (this.active !== "native") return;
-        this._time = a.currentTime;
-        this.onTime(a.currentTime);
-      });
-      a.addEventListener("loadedmetadata", () => {
-        if (this.active !== "native") return;
-        this._duration = a.duration;
-        this.onDuration(a.duration);
-      });
-      a.addEventListener("play", () => {
-        if (this.active !== "native") return;
-        this._playing = true;
-        this.onPlayingChange(true);
-      });
-      a.addEventListener("pause", () => {
-        if (this.active !== "native") return;
-        this._playing = false;
-        this.onPlayingChange(false);
-      });
-      a.addEventListener("ended", () => {
-        if (this.active !== "native") return;
-        this._playing = false;
-        this.onPlayingChange(false);
-        this.onEnded();
-      });
-      this.audio = a;
-    }
+    if (!this.audio) this.audio = this.makeAudio();
     return this.audio;
+  }
+
+  /** Play a silent clip on `el` — called inside a tap, so WebKit lets it play later.
+   *  It counts as primed only once that play went through: one refused (a call from
+   *  outside a tap) is tried again at the next tap. */
+  private prime(el: HTMLAudioElement) {
+    if (this.primed.has(el) || this.priming.has(el) || (el.src && el.src !== SILENT_WAV)) return;
+    this.priming.add(el);
+    const settle = (ok: boolean) => {
+      this.priming.delete(el);
+      if (ok) this.primed.add(el);
+      try {
+        // a real song may have been loaded onto it meanwhile — leave that alone
+        if (el.src === SILENT_WAV) {
+          el.pause();
+          el.removeAttribute("src");
+        }
+      } catch {
+        /* best-effort */
+      }
+    };
+    try {
+      el.src = SILENT_WAV;
+      const p = el.play() as Promise<void> | undefined;
+      if (p && typeof p.then === "function") p.then(() => settle(true), () => settle(false));
+      else settle(true);
+    } catch {
+      settle(false); // without it, canHandOff stays false and the set just doesn't overlap
+    }
   }
 
   private setNativeTime(a: HTMLAudioElement, t: number) {
@@ -193,6 +278,9 @@ export class PracticeAudioEngine {
    * it here keeps the context running through the later async decode/play.
    */
   unlock() {
+    // the element a set's overlapping song will play on, primed while we have the tap
+    if (!this.spare && !this._destroyed) this.spare = this.makeAudio();
+    if (this.spare) this.prime(this.spare);
     const ctx = this.ensureCtx();
     if (ctx.state === "suspended") void ctx.resume().catch(() => {});
     if (!this._kicked) {
@@ -228,10 +316,13 @@ export class PracticeAudioEngine {
     await ctx.resume().catch(() => {});
     if (gen !== this.loadGen) return; // a new song was loaded meanwhile
     if (!this.buffer) {
+      // decoded ahead by preload() (a set's next song) — the wait is over, or shorter
+      const pre = this.pre?.blob === blob ? this.pre : null;
+      if (pre) this.pre = null;
       this.onPreparing(true);
       try {
-        const arr = await blob.arrayBuffer();
-        const decoded = await this.decode(ctx, arr);
+        const decoded =
+          (pre && (await pre.buffer)) || (await this.decode(ctx, await blob.arrayBuffer()));
         if (gen !== this.loadGen) return; // stale decode — the new load owns the cache
         this.buffer = decoded;
       } finally {
@@ -239,7 +330,7 @@ export class PracticeAudioEngine {
         if (gen === this.loadGen) this.onPreparing(false);
       }
     }
-    this._duration = this.buffer.duration;
+    this.setDuration(this.buffer.duration);
     await this.ensureShifterCtor();
     if (gen !== this.loadGen) return;
     this.buildShifter(startSec);
@@ -291,7 +382,7 @@ export class PracticeAudioEngine {
       // to re-report; the listener now fires with active === "native" and covers it.)
       const d = this.audio?.duration;
       if (d && isFinite(d)) {
-        this._duration = d;
+        this.setDuration(d);
         this.onDuration(d);
       }
       this.onStretchFailed(err);
@@ -308,14 +399,16 @@ export class PracticeAudioEngine {
     const ctx = this.ensureCtx();
     if (!this.buffer || !this.shifterCtor) return;
     this.teardownShifter();
-    const shifter = new this.shifterCtor(ctx, this.buffer, BUFFER_SIZE, () => this.handleEnd());
+    const shifter: PitchShifter = new this.shifterCtor(ctx, this.buffer, BUFFER_SIZE, () =>
+      this.handleEnd(shifter)
+    );
     shifter.tempo = this._tempo;
     shifter.pitch = 1; // keep the key — slow down only
     if (startSec > 0 && this._duration > 0) {
       shifter.percentagePlayed = Math.min(0.999, startSec / this._duration);
     }
     shifter.on("play", (d) => {
-      if (this.active !== "stretch") return;
+      if (this.active !== "stretch" || this.shifter !== shifter) return; // not a tail's
       this._time = d.timePlayed;
       this.onTime(d.timePlayed);
     });
@@ -338,7 +431,14 @@ export class PracticeAudioEngine {
   }
 
   // SoundTouch's onEnd fires on EVERY audioprocess tick once exhausted — guard.
-  private handleEnd() {
+  private handleEnd(shifter: PitchShifter) {
+    if (shifter !== this.shifter) {
+      // a handed-off song sounding out its end: done, let it go
+      this.tails.forEach((t) => {
+        if (t.owner === shifter) t.stop();
+      });
+      return;
+    }
     if (this._ended || this.active !== "stretch") return;
     this._ended = true;
     this._playing = false;
@@ -361,6 +461,7 @@ export class PracticeAudioEngine {
     this.loadGen++; // invalidate any decode still in flight for the previous song
     this.teardownShifter();
     this.buffer = null; // force a fresh decode for the new song
+    if (this.pre && (this.pre.blob !== blob || this._tempo >= 1)) this.pre = null; // not this song's
     this.blob = blob;
     this._time = 0;
     this._ended = false;
@@ -386,6 +487,106 @@ export class PracticeAudioEngine {
     }
   }
 
+  /**
+   * "เล่นซ้อน": the song now playing plays on to its own end by itself, and the
+   * engine is free for load() of the next one — which then sounds on top of it.
+   * Returns false (and changes nothing) when nothing is playing to hand off.
+   */
+  handOff(): boolean {
+    if (!this._playing) return false;
+    if (this.active === "native") {
+      const a = this.audio;
+      if (!a || a.paused) return false;
+      const url = this.objectUrl;
+      const onEnd = () => tail.stop();
+      const tail: Tail = {
+        owner: a,
+        setVolume: (v) => {
+          a.volume = v;
+        },
+        stop: () => {
+          if (!this.tails.delete(tail)) return;
+          a.removeEventListener("ended", onEnd);
+          a.removeEventListener("error", onEnd);
+          try {
+            a.pause();
+            a.removeAttribute("src");
+            a.load(); // let go of the decoder and the file
+          } catch {
+            /* ignore */
+          }
+          if (url) URL.revokeObjectURL(url);
+          // It played a real song, so WebKit lets it play again: the next spare.
+          this.primed.add(a);
+          if (!this.spare && !this._destroyed) this.spare = a;
+        },
+      };
+      a.addEventListener("ended", onEnd);
+      a.addEventListener("error", onEnd); // a file that dies mid-tail never 'ends'
+      this.tails.add(tail);
+      this.objectUrl = null; // the tail's now — load() must not revoke it
+      this.audio = this.spare; // null → load() makes a fresh one
+      this.spare = null;
+      if (this.audio) this.audio.volume = this._volume;
+    } else {
+      const s = this.shifter;
+      if (!s) return false;
+      const tail: Tail = {
+        owner: s,
+        setVolume: () => {}, // it plays through the engine's own gain node
+        stop: () => {
+          if (!this.tails.delete(tail)) return;
+          try {
+            s.disconnect();
+            (s.node as unknown as ScriptProcessorNode).onaudioprocess = null;
+          } catch {
+            /* ignore */
+          }
+        },
+      };
+      this.tails.add(tail);
+      this.shifter = null; // so load()'s teardown leaves it sounding
+    }
+    this._playing = false;
+    this._ended = false;
+    this.onPlayingChange(false);
+    return true;
+  }
+
+  /** Silence every handed-off song still sounding out its end. */
+  stopTails() {
+    Array.from(this.tails).forEach((t) => t.stop());
+  }
+
+  /**
+   * A set's next song, ahead of its turn: at a slowed speed it can only start
+   * once decoded — seconds for a big file — so decode it now and the overlap
+   * comes in on its second. At 1× there is nothing to do (the element streams).
+   */
+  preload(blob: Blob): void {
+    if (this._tempo >= 1 || this._destroyed || this.pre?.blob === blob) return;
+    const ctx = this.ensureCtx();
+    this.pre = {
+      blob,
+      buffer: blob
+        .arrayBuffer()
+        .then((arr) => this.decode(ctx, arr))
+        .catch(() => null), // load() decodes it itself then
+    };
+  }
+
+  /** Let go of a song preload() decoded ahead — the set it was for stopped. */
+  clearPreload() {
+    this.pre = null;
+  }
+
+  /** The playhead right now — a native song's read off the element, which moves
+   *  between its ~4 Hz timeupdate reports. */
+  get position(): number {
+    if (this.active === "native" && this._playing && this.audio) return this.audio.currentTime;
+    return this._time;
+  }
+
   /** Decode (once) and return the current song's buffer — used for BPM detection.
    *  Shares the cache with the stretch backend so we never decode the same song
    *  twice. Heavy for a big WAV, but it's paid only when the user asks. */
@@ -399,7 +600,7 @@ export class PracticeAudioEngine {
     const decoded = await this.decode(ctx, arr);
     if (gen !== this.loadGen) return null; // song changed mid-decode — don't cache it
     this.buffer = decoded;
-    this._duration = decoded.duration;
+    this.setDuration(decoded.duration);
     return decoded;
   }
 
@@ -439,6 +640,12 @@ export class PracticeAudioEngine {
   }
 
   pause() {
+    // pause means quiet — a song sounding out its end included; and said so, since
+    // with only a tail sounding nothing else here would report it
+    if (this.tails.size > 0) {
+      this.stopTails();
+      if (!this._playing) this.onPlayingChange(false);
+    }
     if (this.active === "native") {
       this.audio?.pause(); // 'pause' listener flips state
       return;
@@ -488,14 +695,26 @@ export class PracticeAudioEngine {
     this._volume = Math.min(1, Math.max(0, volume));
     if (this.audio) this.audio.volume = this._volume;
     if (this.gain) this.gain.gain.value = this._volume;
+    this.tails.forEach((t) => t.setVolume(this._volume));
   }
 
   destroy() {
     this._destroyed = true; // whatever the teardown below rejects must no-op from here
     this.loadGen++; // drop any decode still in flight
+    this.stopTails();
     this.teardownShifter();
     this.buffer = null;
     this.blob = null;
+    this.pre = null;
+    if (this.spare) {
+      try {
+        this.spare.pause();
+      } catch {
+        /* ignore */
+      }
+      this.spare.src = "";
+      this.spare = null;
+    }
     if (this.audio) {
       try {
         this.audio.pause();
@@ -576,7 +795,7 @@ export class PracticeAudioEngine {
       const a = this.ensureAudio();
       a.playbackRate = 1;
       this.setNativeTime(a, at);
-      if (a.duration) this._duration = a.duration;
+      if (a.duration) this.setDuration(a.duration);
       this.onTime(at);
       if (wasPlaying) await a.play().catch(() => {});
       else this.onPlayingChange(false);

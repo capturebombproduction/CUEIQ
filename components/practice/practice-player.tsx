@@ -226,6 +226,20 @@ export function PracticePlayer({
     null
   );
   const onEndedRef = useRef<() => void>(() => {});
+  // "เล่นซ้อน" — the run's next song coming in N seconds before this one ends
+  // (see overlapTickRef). The timer is armed for the exact second once it is
+  // close; overlapDoneRef is the "show:pos" whose next song has been started.
+  const overlapTickRef = useRef<() => void>(() => {});
+  const startOverlapRef = useRef<(key: string) => void>(() => {});
+  const overlapTimerRef = useRef<number | null>(null);
+  const overlapDoneRef = useRef<string | null>(null);
+  // The run's next song's file, fetched while this one plays, so its turn — an
+  // overlap's above all, which has a second to land on — never waits on a read.
+  const nextFileRef = useRef<{ songId: string; blob: Promise<Blob | null> } | null>(null);
+  // The main key pressed while an overlap is handing over (the last song sounding out
+  // its end, the next one still loading): quiet now, and the next song waits paused.
+  // Holds the select token of THAT load, so it can never hold back a later one.
+  const holdNextRef = useRef<number | null>(null);
   // Phone-only fold of the section-drilling tools (see the note at the fold).
   const [drillOpen, setDrillOpen] = useState(false);
 
@@ -304,9 +318,11 @@ export function PracticePlayer({
       setCur(t);
       const { a: la, b: lb, on } = loopRef.current;
       if (on && la != null && lb != null && lb > la && t >= lb) engine.seek(la);
+      overlapTickRef.current();
     };
     engine.onPlayingChange = (p) => {
       setPlaying(p);
+      overlapTickRef.current(); // a pause disarms it, a play re-arms it
       const r = runRef.current;
       if (p) {
         if (r.startedAt == null) r.startedAt = Date.now();
@@ -327,6 +343,7 @@ export function PracticePlayer({
       });
     };
     return () => {
+      if (overlapTimerRef.current != null) window.clearTimeout(overlapTimerRef.current);
       flushRun(); // log whatever was playing when we leave
       engine.destroy();
       engineRef.current = null;
@@ -365,13 +382,29 @@ export function PracticePlayer({
   // the song the user picked LAST (nor zero its run accounting).
   const selectTokenRef = useRef(0);
 
-  async function selectSong(song: Song, opts?: { fromRun?: boolean }) {
+  /** Where a song's bytes come from: this device's own file first, else the library
+   *  (cache-first). null = neither — no master and no local copy left. */
+  async function songFile(song: Song): Promise<Blob | null> {
+    // Source order: a per-device local override (desktop "ใช้ไฟล์ในเครื่องนี้")
+    // wins; otherwise cache-first — a prefetched song opens instantly, else
+    // download once (and the cache keeps it for next time).
+    const local = await getLocalSource(song.id);
+    if (local) return local.blob;
+    return song.audio_path ? getSongBlob(song.audio_path) : null;
+  }
+
+  /**
+   * `overlap`: a set's next song coming in over the end of this one ("เล่นซ้อน") —
+   * the song now playing is handed off to sound out its end on its own instead of
+   * being cut, and the same song twice in a row starts again on top of itself.
+   */
+  async function selectSong(song: Song, opts?: { fromRun?: boolean; overlap?: boolean }) {
     const engine = engineRef.current;
     // A song with no online master is still playable when THIS device holds the
     // file (⭐#1 step 7) — the local-source read below is the one that finds it.
     if (!engine || !(song.audio_path || localSongIds.has(song.id))) return;
     engine.unlock(); // sync, inside the tap — unlocks audio on iOS Safari
-    if (song.id === currentId) {
+    if (song.id === currentId && !opts?.overlap) {
       engine.toggle(); // pausing mid-set is not leaving the set
       return;
     }
@@ -381,23 +414,28 @@ export function PracticePlayer({
     flushRun(); // finalize the previous song's practice time
     setLoadingId(song.id);
     try {
-      // Source order: a per-device local override (desktop "ใช้ไฟล์ในเครื่องนี้")
-      // wins; otherwise cache-first — a prefetched song opens instantly, else
-      // download once (and the cache keeps it for next time).
-      const local = await getLocalSource(song.id);
+      // the run's next song was fetched while the last one played — take it once
+      const ahead = nextFileRef.current?.songId === song.id ? nextFileRef.current : null;
+      if (ahead) nextFileRef.current = null;
+      const blob = await (ahead ? ahead.blob : songFile(song));
       if (token !== selectTokenRef.current) return; // a newer tap took over
       // No master AND no local bytes left. This is the narrow window after the
       // upload queue flushed: the override is gone, the file IS online now, but
       // the `songs` snapshot this page was rendered from still says null — so we
       // have no key to fetch it with. Say so instead of leaving a dead tap.
-      if (!local && !song.audio_path) {
+      if (!blob) {
         toast.info("ไฟล์เพิ่งอัปขึ้นคลังแล้ว", {
           description: "รีเฟรชหน้านี้อีกครั้งเพื่อเล่นจากคลัง",
         });
+        // the run already points at this song: left running, the song still
+        // playing would end into the one after it and this one be skipped unsaid
+        if (opts?.fromRun) setRun(null);
         return;
       }
-      const blob = local?.blob ?? (await getSongBlob(song.audio_path!));
-      if (token !== selectTokenRef.current) return;
+      // An overlap lets the song now playing sound out its end under the next one;
+      // anything else replaces it outright, and silences an earlier overlap's tail.
+      if (opts?.overlap) engine.handOff();
+      else engine.stopTails();
       await engine.load(blob); // decode happens here, inside the spinner
       if (token !== selectTokenRef.current) return;
       setCurrentId(song.id);
@@ -408,6 +446,10 @@ export function PracticePlayer({
       setLoopB(null);
       setLoopOn(false);
       setEditMarkers(false);
+      if (holdNextRef.current === token) {
+        holdNextRef.current = null; // paused mid hand-off: it waits for ▶
+        return;
+      }
       await engine.play(); // engine already carries the current speed (tempo)
     } catch (err) {
       if (token !== selectTokenRef.current) return; // superseded — don't toast
@@ -433,6 +475,7 @@ export function PracticePlayer({
     const entry = queue[index];
     if (!entry) return;
     setRun({ showId, queue, pos: index });
+    overlapDoneRef.current = null; // a set played again overlaps again
     const engine = engineRef.current;
     if (engine && entry.song.id === currentId) {
       // already loaded — start it over rather than toggling it off. Clear an A-B
@@ -446,12 +489,87 @@ export function PracticePlayer({
       setLoopB(null);
       setLoopOn(false);
       engine.unlock();
+      engine.stopTails();
       engine.seek(0);
       void engine.play();
       return;
     }
     void selectSong(entry.song, { fromRun: true });
   }
+
+  /** An edited "เล่นซ้อน" reaches a set already playing, from its next song on. */
+  function setRunOverlap(itemId: string, seconds: number) {
+    setRun((r) =>
+      r
+        ? {
+            ...r,
+            queue: r.queue.map((q) =>
+              q.itemId === itemId && q.adjacent ? { ...q, overlap: seconds } : q
+            ),
+          }
+        : r
+    );
+  }
+
+  // The run's next song, read ahead while this one plays (see nextFileRef). A read
+  // that fails is not kept: the song's own turn reads again and says why it can't.
+  const runSongId = run?.queue[run.pos]?.song.id ?? null;
+  const runNextSong = run?.queue[run.pos + 1]?.song ?? null;
+  useEffect(() => {
+    if (!runNextSong) {
+      nextFileRef.current = null;
+      engineRef.current?.clearPreload();
+      return;
+    }
+    if (currentId !== runSongId || nextFileRef.current?.songId === runNextSong.id) return;
+    const entry = { songId: runNextSong.id, blob: songFile(runNextSong) };
+    nextFileRef.current = entry;
+    entry.blob.catch(() => {
+      if (nextFileRef.current === entry) nextFileRef.current = null;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- songFile reads no state
+  }, [runNextSong, runSongId, currentId]);
+
+  // "เล่นซ้อน" (พี่ 2026-10-07): the next song comes in `overlap` seconds before
+  // this one ends — measured on the SONG's clock, so at 0.5× it overlaps the same
+  // bars it does in the show, for twice as long. Re-pointed every render and run on
+  // every time report and play/pause: timeupdate is ~4 Hz, so within 1.5 s a timer
+  // is armed for the exact moment, re-armed each tick (a seek or a speed change
+  // moves it) and disarmed by a pause, a loop, or the run moving on.
+  overlapTickRef.current = () => {
+    if (overlapTimerRef.current != null) {
+      window.clearTimeout(overlapTimerRef.current);
+      overlapTimerRef.current = null;
+    }
+    const engine = engineRef.current;
+    if (!run || !engine || !engine.playing || loadingId || loopRef.current.on) return;
+    const here = run.queue[run.pos];
+    const next = run.queue[run.pos + 1];
+    const length = engine.songDuration; // 0 until this song's own is known
+    if (!here || !next || here.song.id !== currentId || !(length > 0)) return;
+    const wait = length - engine.position - next.overlap; // song seconds to go
+    // slowed down, the next song can only start once decoded — do that ahead too
+    const ahead = nextFileRef.current;
+    if (speed < 1 && wait < 30 && ahead?.songId === next.song.id) {
+      void ahead.blob.then((b) => b && engineRef.current?.preload(b), () => {});
+    }
+    const key = `${run.showId}:${run.pos}`;
+    if (next.overlap <= 0 || overlapDoneRef.current === key || wait > 1.5) return;
+    overlapTimerRef.current = window.setTimeout(() => {
+      overlapTimerRef.current = null;
+      startOverlapRef.current(key);
+    }, Math.max(0, (wait / speed) * 1000));
+  };
+  startOverlapRef.current = (key) => {
+    const engine = engineRef.current;
+    if (!run || `${run.showId}:${run.pos}` !== key || !engine?.playing || loadingId) return;
+    const next = run.queue[run.pos + 1];
+    if (!next || loopRef.current.on) return;
+    if (!engine.canHandOff) return; // nowhere to play it yet — it follows the end instead
+    overlapDoneRef.current = key;
+    setRun({ ...run, pos: run.pos + 1 });
+    void selectSong(next.song, { fromRun: true, overlap: true });
+  };
 
   // Re-pointed every render so the once-registered engine.onEnded always sees the
   // current run and the current selectSong.
@@ -474,6 +592,16 @@ export function PracticePlayer({
     const engine = engineRef.current;
     if (!engine || !currentId) return;
     engine.unlock();
+    if (engine.handingOff && loadingId) {
+      // "เล่นซ้อน" mid hand-over: the old song is sounding out its end and the next
+      // one is loading. Playing would start nothing new (and slowed down, decode the
+      // next song twice) — so this press means quiet: the tail stops, the next song
+      // loads and waits paused at its start. (With nothing loading — the next song
+      // loaded but was refused a start — the press is ▶ and plays it, below.)
+      holdNextRef.current = selectTokenRef.current;
+      engine.pause();
+      return;
+    }
     engine.toggle();
   }
 
@@ -1146,11 +1274,20 @@ export function PracticePlayer({
         songsById={songsById}
         playable={playable}
         running={
-          run ? { showId: run.showId, index: run.pos, total: run.queue.length } : null
+          run
+            ? {
+                showId: run.showId,
+                index: run.pos,
+                total: run.queue.length,
+                nextOverlap: run.queue[run.pos + 1]?.overlap ?? 0,
+              }
+            : null
         }
         loadingSongId={loadingId}
         onPlay={playFromRun}
         onStop={() => setRun(null)}
+        canEdit={canManage}
+        onOverlapChange={setRunOverlap}
       />
 
       {/* Practice list — only the songs chosen for this room. Any band member

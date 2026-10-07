@@ -39,7 +39,9 @@ import { canEditAnyGroup, canLiveEdit, canViewLibrary, type Perms } from "@/lib/
 // the first device is the show and every other device only watches (and follows its
 // song, clock and levels), Live reads the Hard Out, a show left open for long comes
 // back paused, and the desktop app's one-press update. The 10-02 items stay below.
-const ROUND = "2026-10-04";
+// 2026-10-07: the practice room's set run overlaps songs the way the show's setlist
+// says ("เล่นซ้อน"), and the band's editors set those seconds from the room.
+const ROUND = "2026-10-07";
 /** For tests that need "this device already read the current round". */
 export const WHATS_NEW_ROUND = ROUND;
 const KEY = "cueiq:whats-new-seen";
@@ -108,6 +110,15 @@ const phoneWeb = () =>
   window.matchMedia?.("(max-width: 1023px)").matches === true;
 
 const ITEMS: Item[] = [
+  {
+    text: "ห้องซ้อม: เล่นทั้งเซ็ตแล้วเพลงซ้อนกันตาม “เล่นซ้อน” ในเซ็ตลิสต์ของงาน — เพลงถัดไปเข้าก่อนเพลงก่อนหน้าจบกี่วินาที เหมือนใน Live",
+    who: (r) => r.canPractice,
+  },
+  {
+    // the button is the band editor's (setlist_items is theirs to write)
+    text: "ห้องซ้อม: ปุ่ม “ตั้งเล่นซ้อน” ใต้เซ็ตลิสต์ — กด − / + ตั้งวินาที บันทึกลงเซ็ตลิสต์ของงาน (Live ใช้ค่าเดียวกัน)",
+    who: (r) => r.canEdit && r.canPractice,
+  },
   {
     text: "Live: เครื่องที่กดเริ่มโชว์เป็นเครื่องเดียวที่คุมโชว์และมีเสียง — เครื่องที่เปิดตามมาดูได้อย่างเดียว เพลง เวลา และระดับเสียงตามเครื่องนั้น",
     who: bandPeople,

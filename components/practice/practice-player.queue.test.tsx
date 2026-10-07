@@ -19,6 +19,12 @@ vi.mock("@/lib/practice-audio", () => ({
     onPreparing = () => {};
     onStretchFailed = () => {};
     unlock() {}
+    stopTails() {}
+    handOff() {
+      return false;
+    }
+    preload() {}
+    clearPreload() {}
     async load() {}
     async play() {}
     pause() {}

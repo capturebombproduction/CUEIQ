@@ -1,6 +1,11 @@
 import { describe, it, expect } from "vitest";
 import type { Song } from "@/lib/types";
-import { orderShowsForPractice, setlistQueue, type SetlistShow } from "./practice-setlist";
+import {
+  orderShowsForPractice,
+  overlapLead,
+  setlistQueue,
+  type SetlistShow,
+} from "./practice-setlist";
 
 const row = (id: string, sort: number, song_id: string | null, kind = "song", title = id) => ({
   id,
@@ -84,5 +89,51 @@ describe("setlistQueue", () => {
     const { queue, missing } = setlistQueue(s, songs, playable);
     expect(queue.map((q) => q.song.id)).toEqual(["boot"]);
     expect(missing).toEqual(["Overclock Strike", "Out of Control"]);
+  });
+
+  // "เล่นซ้อน" — the show's own buffer_before_seconds, read as a lead.
+  const bb = (r: ReturnType<typeof row>, buffer_before_seconds: number | null) => ({
+    ...r,
+    buffer_before_seconds,
+  });
+
+  it("carries the show's overlap onto the song it brings in early", () => {
+    const s = show("x", "2026-10-03", [
+      bb(row("r1", 1, "boot"), -2), // the first song has nothing before it to overlap
+      bb(row("r2", 2, "neon"), -5),
+      bb(row("r3", 3, "iam"), 0),
+    ]);
+    const { queue } = setlistQueue(s, songs, playable);
+    expect(queue.map((q) => [q.song.id, q.adjacent, q.overlap])).toEqual([
+      ["boot", false, 0],
+      ["neon", true, 5],
+      ["iam", true, 0],
+    ]);
+  });
+
+  it("does not lay a song over the one before when an MC — or a song left out — sits between", () => {
+    const s = show("x", "2026-10-03", [
+      row("r1", 1, "boot"),
+      bb(row("mc", 2, null, "mc", "MC"), -5),
+      bb(row("r2", 3, "neon"), -3), // in the show this overlaps the MC
+      bb(row("r3", 4, "nofile"), -3),
+      bb(row("r4", 5, "iam"), -4), // …and this the song the run can't play
+    ]);
+    const { queue } = setlistQueue(s, songs, playable);
+    expect(queue.map((q) => [q.song.id, q.adjacent, q.overlap])).toEqual([
+      ["boot", false, 0],
+      ["neon", false, 0],
+      ["iam", false, 0],
+    ]);
+  });
+
+  it("reads gaps, nothing, and out-of-range values as the builder would", () => {
+    expect(overlapLead(-5)).toBe(5);
+    expect(overlapLead(-2.6)).toBe(3);
+    expect(overlapLead(0)).toBe(0);
+    expect(overlapLead(8)).toBe(0); // a legacy wait — practice never waits
+    expect(overlapLead(null)).toBe(0);
+    expect(overlapLead(undefined)).toBe(0);
+    expect(overlapLead(-900)).toBe(300);
   });
 });

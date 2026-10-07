@@ -13,6 +13,9 @@ export type SetlistRow = {
   kind: string;
   song_id: string | null;
   sort_order: number;
+  /** Live Mode's "เล่นซ้อน": negative = starts that many seconds before the row
+   *  above it ends. Optional so a caller that never asked for it reads as 0. */
+  buffer_before_seconds?: number | null;
 };
 
 export type SetlistShow = {
@@ -43,7 +46,35 @@ export function orderShowsForPractice(
   return [...upcoming, ...past].slice(0, max);
 }
 
-export type QueueEntry = { itemId: string; song: Song };
+export type QueueEntry = {
+  itemId: string;
+  song: Song;
+  /**
+   * "เล่นซ้อน" — how many seconds this song comes in BEFORE the previous entry
+   * ends (พี่ 2026-10-07: "เพลงต่อไป เล่นซ้อนเพลงก่อนหน้าจบได้ ตั้งเป็นวินาทีเหมือน
+   * ไลฟ์โหมด"). It is the show's own number, the one Live Mode plays, so the band
+   * rehearses the set the way it will run. 0 = after the previous one ends.
+   */
+  overlap: number;
+  /**
+   * Whether the show plays this song straight after the previous ENTRY. With an
+   * MC (or a song the run leaves out) between them, the show's overlap is onto
+   * that row, not onto the song before, so the run plays it after the previous
+   * one ends as it always has — and there is no overlap here to show or to set.
+   */
+  adjacent: boolean;
+};
+
+/** The longest lead the setlist builder accepts (its OverlapInput clamps to -300). */
+export const MAX_OVERLAP_SECONDS = 300;
+
+/** A setlist row's buffer_before_seconds read as a lead: -5 → 5; 0, a positive
+ *  (legacy wait), or nothing → 0. */
+export function overlapLead(bufferBefore: number | null | undefined): number {
+  const n = Number(bufferBefore);
+  if (!Number.isFinite(n) || n >= 0) return 0;
+  return Math.min(MAX_OVERLAP_SECONDS, Math.round(-n));
+}
 
 /**
  * The show's playable songs in running order. A row with no song link (MC,
@@ -60,13 +91,21 @@ export function setlistQueue(
   const queue: QueueEntry[] = [];
   const missing: string[] = [];
   const rows = show.setlist_items.slice().sort((a, b) => a.sort_order - b.sort_order);
-  for (const row of rows) {
+  let lastQueued = -2; // index in `rows` of the entry pushed last
+  rows.forEach((row, i) => {
     const song = row.song_id ? songsById.get(row.song_id) : undefined;
     if (song && playable(song)) {
-      queue.push({ itemId: row.id, song });
+      const adjacent = queue.length > 0 && lastQueued === i - 1;
+      queue.push({
+        itemId: row.id,
+        song,
+        adjacent,
+        overlap: adjacent ? overlapLead(row.buffer_before_seconds) : 0,
+      });
+      lastQueued = i;
     } else if (row.song_id || row.kind === "song") {
       missing.push(song?.title ?? row.title?.trim() ?? "—");
     }
-  }
+  });
   return { queue, missing };
 }

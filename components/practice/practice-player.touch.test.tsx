@@ -28,6 +28,12 @@ vi.mock("@/lib/practice-audio", () => ({
       h.engines.push(this);
     }
     unlock() {}
+    stopTails() {}
+    handOff() {
+      return false;
+    }
+    preload() {}
+    clearPreload() {}
     async load(b: { path: string }) {
       this.loads.push(b.path);
     }

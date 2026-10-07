@@ -257,8 +257,7 @@ describe("the 2026-10-04 round", () => {
   const PAUSED = "นานเกิน 10 นาที กลับมาแบบหยุดรอ";
   const UPDATE = "กดปุ่มอัปเดตมุมขวาบนครั้งเดียว";
 
-  it("comes back on a device that closed the 2026-10-02 round, with the Live changes first", async () => {
-    expect(WHATS_NEW_ROUND).toBe("2026-10-04");
+  it("comes back on a device that closed the 2026-10-02 round, with the Live changes", async () => {
     localStorage.setItem(KEY, "2026-10-02");
     await mount(false);
     const card = screen.getByTestId("whats-new");
@@ -286,5 +285,31 @@ describe("the 2026-10-04 round", () => {
     } finally {
       delete (window as unknown as { cueiqNative?: unknown }).cueiqNative;
     }
+  });
+});
+
+// 2026-10-07: the practice room's set run overlaps songs by the show's "เล่นซ้อน". A device
+// that closed the 10-04 round must hear it; only the band's editors hear about the
+// button that sets it (a member never sees it); label staff have no practice room.
+describe("the 2026-10-07 round", () => {
+  const OVERLAP = "ห้องซ้อม: เล่นทั้งเซ็ตแล้วเพลงซ้อนกัน";
+  const SET_BUTTON = "ปุ่ม “ตั้งเล่นซ้อน”";
+
+  it("comes back on a device that closed the 2026-10-04 round, overlap first", async () => {
+    expect(WHATS_NEW_ROUND).toBe("2026-10-07");
+    localStorage.setItem(KEY, "2026-10-04");
+    await mount(false);
+    const card = screen.getByTestId("whats-new");
+    expect(card).toHaveTextContent(OVERLAP);
+    expect(whatsNewItems(MEMBER)[0]).toContain(OVERLAP);
+  });
+
+  it("band people hear about the overlap; only editors about the button; staff about neither", () => {
+    expect(has(whatsNewItems(MEMBER), OVERLAP)).toBe(true);
+    expect(has(whatsNewItems(MEMBER), SET_BUTTON)).toBe(false);
+    expect(has(whatsNewItems(ADMIN), OVERLAP)).toBe(true);
+    expect(has(whatsNewItems(ADMIN), SET_BUTTON)).toBe(true);
+    expect(has(whatsNewItems({ ...MEMBER, canEdit: true }), SET_BUTTON)).toBe(true); // an Ar
+    expect(has(whatsNewItems(STAFF), OVERLAP) || has(whatsNewItems(STAFF), SET_BUTTON)).toBe(false);
   });
 });
