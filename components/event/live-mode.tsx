@@ -380,6 +380,10 @@ export function LiveMode({
   // Set just before an ARBITRATION mute so the persist effect below can tell a
   // verdict apart from the operator flipping the switch. Cleared as it is read.
   const mutedByStepDownRef = useRef(false);
+  // This page went quiet because it was watching someone else's show (the viewer mute
+  // below), not because the operator said so. Held until the page is its own device
+  // again - the reset of the run it watched gives the sound back with START.
+  const viewerMutedRef = useRef(false);
   // Per-device OUTPUT ROUTING (desktop): pin the show audio to a chosen output
   // device via setSinkId ("" = system default = today's behavior), so a Bluetooth
   // headset / HDMI screen connecting mid-show can't silently steal the PA feed.
@@ -408,7 +412,10 @@ export function LiveMode({
   // Distinct from currentIndex: in Manual you can cue/browse another row while THIS
   // keeps playing. Broadcast so a remote (file-less) controller can still tell the
   // speaker device what should be playing. Updated only on play/commit, not on cue.
-  const committedRef = useRef<{ id: string | null; anchor: number | null }>({
+  // `pausedAt`: the show was PAUSED on it at that moment (toggleShowRun) - how far into
+  // it the show stands is then pausedAt - anchor, not now - anchor. Cleared by the next
+  // commit (apply on a running state writes a fresh object).
+  const committedRef = useRef<{ id: string | null; anchor: number | null; pausedAt?: number | null }>({
     id: null,
     anchor: null,
   });
@@ -883,6 +890,7 @@ export function LiveMode({
   useEffect(() => {
     if (isController || !state.begun || !soundOutput) return;
     mutedByStepDownRef.current = true;
+    viewerMutedRef.current = true;
     setSoundOutput(false);
   }, [isController, state.begun, soundOutput]);
 
@@ -1552,6 +1560,14 @@ export function LiveMode({
           controllerSinceRef.current = null;
           isControllerRef.current = true;
           setIsController(true);
+          // The viewer mute was a verdict for the show it watched. Its own device again,
+          // it gets its sound back - else its START ran the real show silent, under a
+          // grey chip and with the NO SIGNAL watch unmounted. (The levels it took stay:
+          // a later device syncs to the master's, พี่ 2026-10-04.)
+          if (viewerMutedRef.current) {
+            viewerMutedRef.current = false;
+            setSoundOutput(true);
+          }
           // …but look again before START comes back: another run may be up (the one
           // this page did not follow), and its device has to get the chance to say so.
           setSyncSettled(false);
@@ -2604,10 +2620,15 @@ export function LiveMode({
     const cur = items[state.currentIndex];
     if (state.running) {
       // PAUSE — freeze the item countdown (accumulated keeps running via startedAt)
+      const pausedAt = Date.now();
       const frozenItem = state.itemStartedAt
-        ? (Date.now() - state.itemStartedAt) / 1000
+        ? (pausedAt - state.itemStartedAt) / 1000
         : (state.itemElapsedAtPause ?? 0);
       apply({ ...state, running: false, itemElapsedAtPause: frozenItem });
+      // The committed row stops counting here too. Auto and a tap back on that row read
+      // "how far in" from its anchor, and the anchor alone counted the pause: paused at
+      // 1:40 for a minute, Auto went on at 2:40 - and past the song's end, it was skipped.
+      if (committedRef.current.id) committedRef.current = { ...committedRef.current, pausedAt };
       audio?.pause();
       setAudioPlaying(false);
       if (state.mode === "auto") {
@@ -2677,6 +2698,11 @@ export function LiveMode({
       apply({ ...state, itemStartedAt: Date.now() - pos * 1000, itemElapsedAtPause: null });
     } else {
       apply({ ...state, itemStartedAt: null, itemElapsedAtPause: pos });
+      // paused: the committed row now stands where the scrub left it, still paused
+      if (committedRef.current.id === cur.id) {
+        const now = Date.now();
+        committedRef.current = { id: cur.id, anchor: now - pos * 1000, pausedAt: now };
+      }
     }
   }
 
@@ -2835,8 +2861,10 @@ export function LiveMode({
   // after it. (The slot / Hard Out version needs the show's times — not passed here.)
   const showRemaining = Math.max(0, remaining) + futureSec;
   const projectedEnd = nowClock(new Date(now + showRemaining * 1000)).slice(0, 5);
-  // ...and against the event's Hard Out, once the show runs, on its day only
-  const hardOut = state.begun
+  // ...and against the event's Hard Out, once the show runs, on its day only - and not
+  // after จบโชว์ (begun stays true): "ย่อหรือตัดรายการท้ายโชว์" grew on every screen of a
+  // show already over, until someone pressed Reset
+  const hardOut = state.begun && !showEnded
     ? hardOutReading({ eventDate, showStartTime, hardOutTime, projectedEndMs: now + showRemaining * 1000, nowMs: now })
     : null;
   const itemEndClock = nowClock(new Date(now + Math.max(0, remaining) * 1000));
@@ -3206,7 +3234,7 @@ export function LiveMode({
           ? haveLocalAudio
             ? audio!.currentTime // resume from the live audio position
             : committed.anchor != null
-              ? (Date.now() - committed.anchor) / 1000 // remote sounding position
+              ? ((committed.pausedAt ?? Date.now()) - committed.anchor) / 1000 // sounding position (frozen by a pause)
               : 0
           : state.running
             ? state.itemStartedAt
@@ -3265,11 +3293,11 @@ export function LiveMode({
       const pos = haveLocalAudio
         ? audio!.currentTime
         : committed.anchor != null
-          ? (Date.now() - committed.anchor) / 1000
+          ? ((committed.pausedAt ?? Date.now()) - committed.anchor) / 1000
           : 0;
-      // a locally-held track follows its own paused state; a track sounding on a
-      // remote (committed but not held here) is, by definition, still playing.
-      const playing = haveLocalAudio ? !audio!.paused : true;
+      // a locally-held track follows its own paused state; a committed row not held
+      // here (an MC, a row with no file) is still running unless the show was paused on it.
+      const playing = haveLocalAudio ? !audio!.paused : committed.pausedAt == null;
       apply({
         ...state,
         currentIndex: index,

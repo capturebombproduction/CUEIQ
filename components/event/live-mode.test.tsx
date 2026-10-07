@@ -3399,4 +3399,161 @@ describe("LiveMode · the projected end against the Hard Out", () => {
     await mountViewer(props(5));
     expect(screen.getByTestId("over-hard-out")).toBeInTheDocument();
   });
+
+  it("after จบโชว์: gone - there is nothing left to shorten", async () => {
+    await mountLive(props(10));
+    await startShowFromUi();
+    expect(screen.getByTestId("over-hard-out")).toBeInTheDocument();
+    await act(async () => {
+      vi.advanceTimersByTime(1_000);
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("end-show"));
+    });
+    expect(screen.queryByTestId("over-hard-out")).toBeNull();
+    expect(screen.queryByTestId("hard-out-gap")).toBeNull();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// (2026-10-07 review) WHAT A PAGE TAKES ON AS A VIEWER, AND A PAUSE THAT COUNTED ON
+//
+// A viewer is muted - a verdict for the show it watches, never the device's preference.
+// The reset that frees the page did not give the sound back: the PA that had watched a
+// phone's run-through pressed START for the real show silent (a grey chip, the NO SIGNAL
+// watch unmounted).
+// And the committed row's anchor kept counting through a pause, so Auto (and a tap back
+// on that row) went on ahead of where the show had stopped by the whole pause.
+// ─────────────────────────────────────────────────────────────────────────────
+describe("LiveMode · after watching another device's run, this device is itself again", () => {
+  it("the reset that frees it gives back its sound: its START is heard", async () => {
+    const media = instrumentMediaElements();
+    h.saved = [{ itemId: "item-1", blob: new Blob(["audio"]), name: "track-1.wav", path: null }];
+    localStorage.setItem("cueiq:soundOutput", "1");
+
+    const { run } = await mountViewer();
+    expect(media.state(media.first()!).muted).toBe(true);
+
+    // the phone resets its run → this page is free
+    await act(async () => {
+      live().emit("state", {
+        sender: "pa-device",
+        sentAt: Date.now(),
+        fromController: true,
+        begun: false,
+        running: false,
+        startedAt: null,
+        itemStartedAt: null,
+        itemElapsedAtPause: null,
+        currentIndex: 0,
+        mode: "manual",
+        controllerSince: null,
+        ended: false,
+        resetRun: run,
+      });
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(2_000);
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("start-show"));
+    });
+
+    const primary = media.first()!;
+    expect(media.state(primary).paused).toBe(false);
+    expect(media.state(primary).muted).toBe(false);
+    expect(document.querySelector("[data-cueiq-live]")!.getAttribute("data-cueiq-live-sound")).toBe("1");
+    expect(localStorage.getItem("cueiq:soundOutput")).toBe("1");
+  });
+
+  it("an operator who had turned its sound off keeps it off", async () => {
+    const media = instrumentMediaElements();
+    localStorage.setItem("cueiq:soundOutput", "0");
+    const { run } = await mountViewer();
+    await act(async () => {
+      live().emit("state", {
+        sender: "pa-device",
+        sentAt: Date.now(),
+        fromController: true,
+        begun: false,
+        running: false,
+        startedAt: null,
+        itemStartedAt: null,
+        itemElapsedAtPause: null,
+        currentIndex: 0,
+        mode: "manual",
+        controllerSince: null,
+        ended: false,
+        resetRun: run,
+      });
+    });
+    expect(screen.queryByTestId("viewer-banner")).not.toBeInTheDocument();
+    expect(media.state(media.first()!).muted).toBe(true);
+    expect(localStorage.getItem("cueiq:soundOutput")).toBe("0");
+  });
+});
+
+describe("LiveMode · a pause stops the clock of the row it stopped", () => {
+  it("paused at 0:30 for a minute, Auto goes on at 0:30 - not at 1:30", async () => {
+    const media = instrumentMediaElements();
+    h.saved = [{ itemId: "item-1", blob: new Blob(["audio"]), name: "track-1.wav", path: null }];
+    await mountLive();
+    await startShowFromUi();
+    const primary = media.first()!;
+    expect(media.state(primary).paused).toBe(false);
+
+    await act(async () => {
+      vi.advanceTimersByTime(30_000);
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("run-toggle")); // pause
+    });
+    expect(media.state(primary).paused).toBe(true);
+    await act(async () => {
+      vi.advanceTimersByTime(60_000);
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /^Auto$/ }));
+    });
+
+    const last = stateSends().at(-1)!.payload;
+    expect(last.mode).toBe("auto");
+    expect(last.running).toBe(true);
+    expect(last.currentIndex).toBe(0);
+    // the row stands where it was paused: 30 s in, not 90
+    expect((Date.now() - (last.itemStartedAt as number)) / 1000).toBeCloseTo(30, 0);
+    expect(media.state(primary).currentTime).toBeCloseTo(30, 0);
+  });
+
+  it("an MC paused, the next row cued, then a tap back on the MC: still paused where it stopped", async () => {
+    const items = [makeItem(1, { kind: "mc", title: "MC", duration_seconds: 59 }), makeItem(2, { kind: "mc", title: "ถ่ายรูป", duration_seconds: 0 })];
+    // the refetch on SUBSCRIBED has to answer with these rows, not the three songs
+    supa = makeSupabaseFake({
+      session: makeSession(),
+      script: { setlist_items: ok(items), songs: ok([]), show_authority: ok([]) },
+    });
+    h.supa = supa;
+    await mountLive({ items });
+    await startShowFromUi();
+    await act(async () => {
+      vi.advanceTimersByTime(20_000);
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("run-toggle")); // pause the MC at 0:20
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(45_000);
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("next")); // cue the photo row
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("prev")); // back to the MC
+    });
+
+    const last = stateSends().at(-1)!.payload;
+    expect(last.currentIndex).toBe(0);
+    expect(last.running).toBe(false);
+    expect(last.itemElapsedAtPause as number).toBeCloseTo(20, 0);
+  });
 });
