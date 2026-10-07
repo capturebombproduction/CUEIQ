@@ -930,3 +930,78 @@ describe("Quick Show — the warning ladder", () => {
     expect(countdownCard()).toHaveClass("alarm-plate", "settled");
   });
 });
+
+// พี่ 2026-10-07 (the same rule as Live Mode's fadeKey): the fade keys ride the track
+// that is SOUNDING - in Manual a cued row is not it - and only for that moment.
+describe("Quick Show — the fade keys ride the track that is sounding", () => {
+  // jsdom draws no frames: let each fade land on its first one, through the fake clock
+  beforeEach(() => {
+    vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback) =>
+      setTimeout(() => cb(performance.now() + 60_000), 16)
+    );
+    vi.stubGlobal("cancelAnimationFrame", (id: number) => clearTimeout(id));
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("Auto: an MC on a loop BGM, its end fade, then the next row - the BGM's own level is what stays", async () => {
+    const bgm = song("BGM", { loop: true, durationSeconds: 60, sortOrder: 1 });
+    await boot([bgm, { ...SECOND }, { ...MC }]);
+    await click(screen.getByRole("button", { name: "Auto" }));
+    await click(startButton());
+    await click(screen.getByRole("button", { name: /^MC$/ }));
+    await tick(58_000); // into its last 3 s: the end fade starts
+    await tick(3_000); // its block ends: Auto moves on to Second, in one go with the fade's undo
+    await tick(1_000);
+    await tick(1_000); // the level save (600 ms)
+    expect(store.items.find((it) => it.title === "BGM")?.volume ?? 100).toBe(100);
+  });
+
+  it("the snapshot carries a duck the moment the key is pressed", async () => {
+    await boot(threeUp());
+    await click(startButton());
+    await click(screen.getByRole("button", { name: /^MC$/ }));
+    expect(JSON.parse(localStorage.getItem(SNAPSHOT_KEY)!).ducks).toEqual({ "id-Opening": { prev: 100, now: 30 } });
+  });
+
+  it("a relaunch mid-MC comes back ducked - and the song's own level is still what is saved", async () => {
+    const view = await boot(threeUp());
+    await click(startButton());
+    await click(screen.getByRole("button", { name: /^MC$/ }));
+    await tick(3_000);
+    await act(async () => {
+      window.dispatchEvent(new Event("pagehide"));
+    });
+    expect(JSON.parse(localStorage.getItem(SNAPSHOT_KEY)!).ducks).toEqual({ "id-Opening": { prev: 100, now: 30 } });
+    view.unmount();
+    await boot(store.items.map((it) => ({ ...it })));
+    const level = screen.getByTitle("ความดังของแทร็คนี้ (จำค่าไว้ให้)") as HTMLInputElement;
+    expect(level.value).toBe("30");
+    await tick(1_000);
+    expect(store.items.find((it) => it.title === "Opening")?.volume ?? 100).toBe(100);
+  });
+
+  it("Manual, Second cued under Opening: Auto Mute fades Opening, and Second still comes in at its level", async () => {
+    await boot(threeUp());
+    const primary = media.first() as HTMLMediaElement;
+    await click(startButton());
+    await click(transport().next); // cue Second; Opening plays on
+    await click(screen.getByRole("button", { name: /Auto Mute/ }));
+    await tick(4_000);
+    expect(media.state(primary).volume).toBeCloseTo(0); // Opening, faded out
+    await tick(1_000); // the level save waits 600 ms after the fade has landed
+    // still sounding, ducked - and its saved level is still its own
+    expect(store.items.find((it) => it.title === "Opening")?.volume ?? 100).toBe(100);
+    await click(transport().run); // รันโชว์ on Second
+    await tick(1_000);
+    expect(media.state(media.first() as HTMLMediaElement).volume).toBeCloseTo(1);
+    // …and the duck was never saved as Opening's level
+    const opening = store.items.find((it) => it.title === "Opening");
+    expect(opening?.volume ?? 100).toBe(100);
+    // …and with Opening no longer sounding, its own level is back: cue it again and look
+    await click(transport().back);
+    const level = screen.getByTitle("ความดังของแทร็คนี้ (จำค่าไว้ให้)") as HTMLInputElement;
+    expect(level.value).toBe("100");
+  });
+});

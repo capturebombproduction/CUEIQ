@@ -86,8 +86,10 @@ describe("liveZone — the ladder on real items", () => {
     }
   });
 
-  it("an empty block (no duration) is over the moment it runs — as before", () => {
-    expect(zoneAt(0, 0)).toBe("over");
+  // Until 2026-10-07 this was "over the moment it runs" (kept as-is by the redesign).
+  // A photo slot set to 0:00 then flashed the overtime alarm for its whole length.
+  it("an empty block (no time set) never alarms: it counts its time up", () => {
+    expect(zoneAt(0, 0)).toBe("ok");
   });
 
   it("not running → ok, even past the end — a paused or cued card stays neutral", () => {
@@ -118,5 +120,22 @@ describe("zoneCaption", () => {
   it("over and ok keep today's wording", () => {
     expect(zoneCaption("over", 228)).toBe("เลยเวลาแล้ว");
     expect(zoneCaption("ok", 228)).toBe("เวลาคงเหลือของรายการ");
+  });
+});
+
+// 2026-10-07: Reninisce's "ถ่ายรูป" row is 0:00 - it went straight to the overtime alarm.
+describe("an item with no time set", () => {
+  it("never warns or alarms while it runs: it counts its time up", () => {
+    for (const remaining of [0, -1, -90]) {
+      expect(liveZone({ running: true, remaining, blockSec: 0 })).toBe("ok");
+    }
+    expect(liveZone({ running: true, remaining: -5, blockSec: Number.NaN })).toBe("ok");
+  });
+  it("says it has no time set, not 'time left'", () => {
+    expect(zoneCaption("ok", 0)).toBe("ไม่ได้ตั้งเวลา · นับเวลาที่ใช้");
+    expect(zoneCaption("ok", 240)).toBe("เวลาคงเหลือของรายการ");
+  });
+  it("a 1-second item still runs over as before", () => {
+    expect(liveZone({ running: true, remaining: 0, blockSec: 1 })).toBe("over");
   });
 });

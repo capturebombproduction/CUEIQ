@@ -757,7 +757,8 @@ export function SetlistBuilder({
               .from("setlist_items")
               .select("*")
               .eq("event_id", eventId)
-              .order("sort_order", { ascending: true });
+              .order("sort_order", { ascending: true })
+              .order("id", { ascending: true }); // ties read the same as Live (lib/queries.ts)
             if (current) {
               // These rows are now authoritative — any that were still marked
               // local-only have a server counterpart, so a future batch write
@@ -884,7 +885,8 @@ export function SetlistBuilder({
       .from("setlist_items")
       .select("*")
       .eq("event_id", eventId)
-      .order("sort_order", { ascending: true });
+      .order("sort_order", { ascending: true })
+      .order("id", { ascending: true }); // ties read the same as Live (lib/queries.ts)
     if (!data) return;
     const server = data as SetlistItem[];
     const serverIds = new Set(server.map((it) => it.id));

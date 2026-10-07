@@ -2506,6 +2506,30 @@ describe("LiveMode · STAGE | CONSOLE", () => {
     expect(volumeSends().at(-1)).toMatchObject({ itemId: "item-1", target: 0, ms: 3000 });
   });
 
+  // 2026-10-07 review: CONSOLE's keys kept the old rule after STAGE's moved to fadeKey
+  it("CONSOLE's Mute rides the SOUNDING track too: song 2 cued under song 1 - song 1 fades", async () => {
+    instrumentMediaElements();
+    h.saved = [
+      { itemId: "item-1", blob: new Blob(["a"]), name: "track-1.wav", path: null },
+      { itemId: "item-2", blob: new Blob(["b"]), name: "track-2.wav", path: null },
+    ];
+    await mountLive();
+    await startShowFromUi();
+    await act(async () => {
+      vi.advanceTimersByTime(1_000);
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("next")); // cue song 2; song 1 plays on
+    });
+    fireEvent.click(screen.getByTestId("live-view-console"));
+    fireEvent.click(screen.getByRole("button", { name: "Mute" }));
+    await act(async () => {
+      vi.advanceTimersByTime(300);
+    });
+    const sends = live().sent.filter((x) => x.event === "volume").map((x) => x.payload);
+    expect(sends.at(-1)).toMatchObject({ itemId: "item-1", target: 0 });
+  });
+
   it("a device that chose CONSOLE opens on it; under the stage size it is STAGE with no switch", async () => {
     localStorage.setItem("cueiq:liveView", "console");
     const first = await mountLive();
@@ -2977,7 +3001,9 @@ describe("LiveMode · a late viewer follows the master's row and levels", () => 
     expect(index()).toBe("2");
   });
 
-  it("a viewer takes the master's levels whole - its own saved ones give way", async () => {
+  // พี่ 2026-10-07: shown whole, never saved over this device's own - its soundcheck
+  // comes back when it is its own device again (see "this device is itself again").
+  it("a viewer SHOWS the master's levels whole - and keeps its own saved ones", async () => {
     localStorage.setItem(`cueiq:vol:${EVENT_ID}`, JSON.stringify({ "item-1": 90, "item-2": 10 }));
     h.saved = [{ itemId: "item-1", blob: new Blob(["audio"]), name: "track-1.wav", path: null }];
     await mountLive();
@@ -2987,8 +3013,8 @@ describe("LiveMode · a late viewer follows the master's row and levels", () => 
     await act(async () => {
       vi.advanceTimersByTime(600);
     });
-    expect(savedLevels()).toEqual({ "item-1": 40 });
     expect(screen.getAllByRole("slider").some((s) => (s as HTMLInputElement).value === "40")).toBe(true);
+    expect(savedLevels()).toEqual({ "item-1": 90, "item-2": 10 });
   });
 
   it("a device running its own show keeps its levels whatever another (different) run says", async () => {
@@ -3426,13 +3452,39 @@ describe("LiveMode · the projected end against the Hard Out", () => {
 // on that row) went on ahead of where the show had stopped by the whole pause.
 // ─────────────────────────────────────────────────────────────────────────────
 describe("LiveMode · after watching another device's run, this device is itself again", () => {
-  it("the reset that frees it gives back its sound: its START is heard", async () => {
+  const VOL_KEY = `cueiq:vol:${EVENT_ID}`;
+
+  it("the reset that frees it gives back its sound and its own levels: its START is heard", async () => {
     const media = instrumentMediaElements();
     h.saved = [{ itemId: "item-1", blob: new Blob(["audio"]), name: "track-1.wav", path: null }];
     localStorage.setItem("cueiq:soundOutput", "1");
+    // this device's soundcheck: track 1 at 40 %
+    localStorage.setItem(VOL_KEY, JSON.stringify({ "item-1": 40 }));
 
     const { run } = await mountViewer();
+    // the phone running the show sends its levels: track 1 at 100 %
+    await act(async () => {
+      live().emit("state", {
+        sender: "pa-device",
+        sentAt: Date.now(),
+        fromController: true,
+        begun: true,
+        running: true,
+        startedAt: run,
+        itemStartedAt: Date.now() - 10_000,
+        itemElapsedAtPause: null,
+        currentIndex: 0,
+        mode: "manual",
+        controllerSince: run,
+        ended: false,
+        volumes: { "item-1": 100 },
+      });
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(1_000); // past the 400 ms save debounce
+    });
     expect(media.state(media.first()!).muted).toBe(true);
+    expect(JSON.parse(localStorage.getItem(VOL_KEY)!)).toEqual({ "item-1": 40 });
 
     // the phone resets its run → this page is free
     await act(async () => {
@@ -3462,8 +3514,10 @@ describe("LiveMode · after watching another device's run, this device is itself
     const primary = media.first()!;
     expect(media.state(primary).paused).toBe(false);
     expect(media.state(primary).muted).toBe(false);
+    expect(media.state(primary).volume).toBeCloseTo(0.4);
     expect(document.querySelector("[data-cueiq-live]")!.getAttribute("data-cueiq-live-sound")).toBe("1");
     expect(localStorage.getItem("cueiq:soundOutput")).toBe("1");
+    expect(JSON.parse(localStorage.getItem(VOL_KEY)!)).toEqual({ "item-1": 40 });
   });
 
   it("an operator who had turned its sound off keeps it off", async () => {
@@ -3555,5 +3609,394 @@ describe("LiveMode · a pause stops the clock of the row it stopped", () => {
     expect(last.currentIndex).toBe(0);
     expect(last.running).toBe(false);
     expect(last.itemElapsedAtPause as number).toBeCloseTo(20, 0);
+  });
+});
+
+// พี่ 2026-10-07: the NOW card's keys (Auto Mute / MC / Auto Loudness) act on the track
+// that is SOUNDING, and only for that moment. In Manual they used to fade the cued row
+// (nothing heard; a cued song came in silent), and a duck was saved as the song's level -
+// a run-through's MC left that song at 30 % for the real show.
+describe("LiveMode · the fade keys ride the track that is sounding, for that moment", () => {
+  const VOL_KEY = `cueiq:vol:${EVENT_ID}`;
+  const volumeSends = () => live().sent.filter((s) => s.event === "volume").map((s) => s.payload);
+  const startCueSecond = async () => {
+    h.saved = [
+      { itemId: "item-1", blob: new Blob(["a"]), name: "track-1.wav", path: null },
+      { itemId: "item-2", blob: new Blob(["b"]), name: "track-2.wav", path: null },
+    ];
+    await mountLive();
+    await startShowFromUi();
+    await act(async () => {
+      vi.advanceTimersByTime(1_000);
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("next")); // cue song 2; song 1 plays on
+    });
+  };
+
+  it("Manual, song 2 cued under song 1: Auto Mute fades song 1 - not the cued row", async () => {
+    const media = instrumentMediaElements();
+    await startCueSecond();
+    expect(media.state(media.first()!).paused).toBe(false);
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /Auto Mute/ }));
+    });
+    expect(volumeSends().at(-1)).toMatchObject({ itemId: "item-1", target: 0 });
+  });
+
+  it("the duck is never saved as the song's level", async () => {
+    instrumentMediaElements();
+    await startCueSecond();
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /^MC$/ }));
+    });
+    await act(async () => {
+      window.dispatchEvent(new Event("pagehide")); // the flush that saves the levels
+    });
+    const saved = JSON.parse(localStorage.getItem(VOL_KEY) ?? "{}");
+    expect(saved["item-1"] ?? 100).toBe(100);
+  });
+
+  it("once song 1 stops sounding, its own level comes back", async () => {
+    instrumentMediaElements();
+    await startCueSecond();
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /Auto Mute/ }));
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("run-toggle")); // รันโชว์ on song 2
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(500); // volume messages are spaced 120 ms apart
+    });
+    expect(volumeSends().at(-1)).toMatchObject({ itemId: "item-1", target: 100 });
+  });
+});
+
+// พี่ 2026-10-07: a phone that rehearsed in Live this afternoon and was closed mid-run
+// comes back paused (STALE_RESTORE_MS) - and used to take the idle PA as a viewer (its
+// START gone, its sound off) and hold MAIN so the PA's START was refused. Until someone
+// presses play on it, such a HELD run takes no page that was not already watching it.
+describe("LiveMode · a run restored paused after a long gap holds nobody until it plays", () => {
+  const heldState = (run: number, over: Record<string, unknown> = {}) => ({
+    sender: "phone",
+    sentAt: Date.now(),
+    fromController: true,
+    begun: true,
+    running: false,
+    startedAt: run,
+    itemStartedAt: null,
+    itemElapsedAtPause: 50,
+    currentIndex: 2,
+    mode: "auto",
+    controllerSince: run,
+    ended: false,
+    held: true,
+    deviceLabel: "iPhone ของมุก",
+    ...over,
+  });
+  const staleSnap = () => {
+    const savedAt = Date.now() - 3 * 60 * 60 * 1000;
+    return {
+      state: {
+        running: true,
+        begun: true,
+        startedAt: savedAt - 300_000,
+        itemStartedAt: savedAt - 50_000,
+        itemElapsedAtPause: null,
+        currentIndex: 0,
+        mode: "auto",
+      },
+      committed: { id: "item-1", anchor: savedAt - 50_000 },
+      isController: true,
+      controllerSince: savedAt - 300_000,
+      savedAt,
+    };
+  };
+
+  it("an idle PA is not taken as a viewer: it keeps START", async () => {
+    await mountLive();
+    await act(async () => {
+      live().setStatus("SUBSCRIBED");
+    });
+    await act(async () => {
+      live().emit("state", heldState(Date.now() - 4 * 60 * 60 * 1000));
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(2_000);
+    });
+    expect(screen.queryByTestId("viewer-banner")).not.toBeInTheDocument();
+    expect(screen.getByTestId("start-show")).toBeEnabled();
+  });
+
+  it("a running show is not dragged into a two-runs warning by it", async () => {
+    await mountLive();
+    const ts = await startShowFromUi();
+    await act(async () => {
+      live().emit("state", heldState(ts - 4 * 60 * 60 * 1000));
+    });
+    expect(screen.queryByTestId("run-conflict")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("viewer-banner")).not.toBeInTheDocument();
+  });
+
+  it("a viewer that was watching that run keeps following it", async () => {
+    const { run } = await mountViewer();
+    await act(async () => {
+      live().emit("state", heldState(run, { sender: "pa-device", currentIndex: 2 }));
+    });
+    expect(document.querySelector("[data-cueiq-live]")!.getAttribute("data-cueiq-live-index")).toBe("2");
+  });
+
+  it("the held page says so, claims no MAIN - and does both once it is played", async () => {
+    h.saved = [{ itemId: "item-1", blob: new Blob(["audio"]), name: "song.wav", path: null }];
+    seedSnapshot(staleSnap());
+    await mountLive();
+    await act(async () => {
+      live().setStatus("SUBSCRIBED");
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(2_000);
+    });
+    expect(stateSends().at(-1)!.payload.held).toBe(true);
+    expect(supa.callsTo("show_authority", "upsert")).toHaveLength(0);
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("run-toggle")); // RUN: it is a show again
+    });
+    expect(stateSends().at(-1)!.payload.held).toBeUndefined();
+    expect(supa.callsTo("show_authority", "upsert").length).toBeGreaterThan(0);
+  });
+});
+
+// 2026-10-07 review: Auto moved on at the next 500 ms tick after a row's end, and the
+// next row's clock started from then - ~0.25 s lost per row, never made up (an
+// exactly-full slot read "เกิน Hard Out" at the end). It moves on AT the end now.
+describe("LiveMode · Auto moves on at the row's end, not at the next tick", () => {
+  it("the next row starts within a few ms of the planned end", async () => {
+    await mountLive();
+    await act(async () => {
+      live().setStatus("SUBSCRIBED");
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(2_250); // START lands between two ticks of the 500 ms clock
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /^Auto$/ }));
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("start-show"));
+    });
+    const ts = stateSends().find((s) => s.payload.begun)!.payload.startedAt as number;
+    await act(async () => {
+      vi.advanceTimersByTime(240_000 - (Date.now() - ts) + 20); // 20 ms past track 1's end
+    });
+    const last = stateSends().at(-1)!.payload;
+    expect(last.currentIndex).toBe(1);
+    expect(last.itemStartedAt as number).toBeLessThanOrEqual(ts + 240_000 + 20);
+  });
+});
+
+// 2026-10-07 review: two rows with the SAME sort_order (added at once from two devices) -
+// ▲▼ swapped the two equal numbers, wrote nothing that changed, told every device the
+// setlist changed, and the next read put the rows back. It renumbers the list now.
+describe("LiveMode · ▲▼ on two rows with the same sort_order", () => {
+  it("renumbers the whole list with the two rows exchanged", async () => {
+    const tied = [makeItem(1, { sort_order: 1 }), makeItem(2, { sort_order: 1 }), makeItem(3, { sort_order: 3 })];
+    supa = makeSupabaseFake({
+      session: makeSession(),
+      script: { setlist_items: ok(tied), songs: ok([]), show_authority: ok([]) },
+    });
+    h.supa = supa;
+    await mountLive({ items: tied });
+    await act(async () => {
+      fireEvent.click(screen.getAllByTitle("เลื่อนขึ้น")[1]); // Track 2 up
+    });
+    const writes = supa
+      .callsTo("setlist_items", "update")
+      .map((c) => [(c.eq as Record<string, unknown>).id, (c.values as { sort_order: number }).sort_order]);
+    expect(writes).toEqual([
+      ["item-2", 1],
+      ["item-1", 2],
+      ["item-3", 3],
+    ]);
+  });
+});
+
+// 2026-10-07 review of the fixes above: a HELD page that reloads stays held; a duck
+// survives a reload; a reset gives a duck back on this device only; a loop BGM's end
+// fade does not keep an MC duck as the track's level.
+describe("LiveMode · held and ducks across a reload, a reset and a loop's end", () => {
+  const VOL_KEY = `cueiq:vol:${EVENT_ID}`;
+  const volumeSends = () => live().sent.filter((x) => x.event === "volume").map((x) => x.payload);
+  const staleSnap = () => {
+    const savedAt = Date.now() - 3 * 60 * 60 * 1000;
+    return {
+      state: { running: true, begun: true, startedAt: savedAt - 300_000, itemStartedAt: savedAt - 50_000, itemElapsedAtPause: null, currentIndex: 0, mode: "auto" },
+      committed: { id: "item-1", anchor: savedAt - 50_000 },
+      isController: true,
+      controllerSince: savedAt - 300_000,
+      savedAt,
+    };
+  };
+  // jsdom draws no frames: each fade lands on its first one, through the fake clock
+  beforeEach(() => {
+    vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback) =>
+      setTimeout(() => cb(performance.now() + 60_000), 16)
+    );
+    vi.stubGlobal("cancelAnimationFrame", (id: number) => clearTimeout(id));
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("a held page that reloads (its snapshot freshly re-written) is still held", async () => {
+    seedSnapshot(staleSnap());
+    const first = await mountLive();
+    await act(async () => {
+      vi.advanceTimersByTime(1_000);
+    });
+    await act(async () => {
+      window.dispatchEvent(new Event("pagehide")); // the snapshot, re-written now
+    });
+    const written = JSON.parse(localStorage.getItem(SNAPSHOT_KEY)!);
+    expect(written.held).toBe(true);
+    first.unmount();
+    supa = makeSupabaseFake({
+      session: makeSession(),
+      script: { setlist_items: ok(ITEMS), songs: ok([]), show_authority: ok([]) },
+    });
+    h.supa = supa;
+    await mountLive();
+    await act(async () => {
+      live().setStatus("SUBSCRIBED");
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(2_000);
+    });
+    expect(stateSends().at(-1)!.payload.held).toBe(true);
+    expect(supa.callsTo("show_authority", "upsert")).toHaveLength(0);
+  });
+
+  it("a reload mid-MC comes back ducked - and the song's own level is still what is saved", async () => {
+    instrumentMediaElements();
+    h.saved = [{ itemId: "item-1", blob: new Blob(["a"]), name: "track-1.wav", path: null }];
+    const first = await mountLive();
+    await startShowFromUi();
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /^MC$/ }));
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(3_000);
+    });
+    await act(async () => {
+      window.dispatchEvent(new Event("pagehide"));
+    });
+    expect(JSON.parse(localStorage.getItem(SNAPSHOT_KEY)!).ducks).toEqual({ "item-1": { prev: 100, now: 30 } });
+    first.unmount();
+    await mountLive();
+    const levels = screen.getAllByTitle(/^ความดังของแทร็คนี้/) as HTMLInputElement[];
+    expect(levels.some((l) => l.value === "30")).toBe(true);
+    await act(async () => {
+      window.dispatchEvent(new Event("pagehide"));
+    });
+    expect(JSON.parse(localStorage.getItem(VOL_KEY) ?? "{}")["item-1"] ?? 100).toBe(100);
+  });
+
+  it("the snapshot carries a duck the moment the key is pressed, not at the next cue", async () => {
+    instrumentMediaElements();
+    h.saved = [{ itemId: "item-1", blob: new Blob(["a"]), name: "track-1.wav", path: null }];
+    await mountLive();
+    await startShowFromUi();
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /^MC$/ }));
+    });
+    expect(JSON.parse(localStorage.getItem(SNAPSHOT_KEY)!).ducks).toEqual({ "item-1": { prev: 100, now: 30 } });
+  });
+
+  it("a reset during a loop BGM's end fade sends no level to the devices it just freed", async () => {
+    const loopItems = [makeItem(1, { loop_audio: true, duration_seconds: 60 }), makeItem(2), makeItem(3)];
+    supa = makeSupabaseFake({
+      session: makeSession(),
+      script: { setlist_items: ok(loopItems), songs: ok([]), show_authority: ok([]) },
+    });
+    h.supa = supa;
+    instrumentMediaElements();
+    h.saved = [{ itemId: "item-1", blob: new Blob(["a"]), name: "bgm.wav", path: null }];
+    await mountLive({ items: loopItems });
+    await startShowFromUi();
+    await act(async () => {
+      vi.advanceTimersByTime(58_000); // into its last 3 s: the end fade is on
+    });
+    const before = volumeSends().length;
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("reset"));
+    });
+    confirm.mockRestore();
+    await act(async () => {
+      vi.advanceTimersByTime(500);
+    });
+    expect(volumeSends().slice(before)).toEqual([]);
+  });
+
+  it("a reset gives a duck back here, and sends no level to the devices it just freed", async () => {
+    instrumentMediaElements();
+    h.saved = [{ itemId: "item-1", blob: new Blob(["a"]), name: "track-1.wav", path: null }];
+    await mountLive();
+    await startShowFromUi();
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /^MC$/ }));
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(3_000);
+    });
+    const before = volumeSends().length;
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("reset"));
+    });
+    confirm.mockRestore();
+    await act(async () => {
+      vi.advanceTimersByTime(500);
+    });
+    expect(volumeSends().slice(before)).toEqual([]);
+  });
+
+  it("an MC on a loop BGM, then its end fade and the next row: the BGM's own level comes back", async () => {
+    const loopItems = [makeItem(1, { loop_audio: true, duration_seconds: 60 }), makeItem(2), makeItem(3)];
+    supa = makeSupabaseFake({
+      session: makeSession(),
+      script: { setlist_items: ok(loopItems), songs: ok([]), show_authority: ok([]) },
+    });
+    h.supa = supa;
+    instrumentMediaElements();
+    h.saved = [
+      { itemId: "item-1", blob: new Blob(["a"]), name: "bgm.wav", path: null },
+      { itemId: "item-2", blob: new Blob(["b"]), name: "track-2.wav", path: null },
+    ];
+    await mountLive({ items: loopItems });
+    await startShowFromUi();
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /^MC$/ })); // BGM under the talking
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(58_000); // into the BGM's last 3 s: its end fade starts
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(3_000);
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("next"));
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("run-toggle")); // song 2 on
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(1_000);
+      window.dispatchEvent(new Event("pagehide"));
+    });
+    const lastForBgm = volumeSends().filter((p) => p.itemId === "item-1").at(-1);
+    expect(lastForBgm).toMatchObject({ target: 100 });
+    expect(JSON.parse(localStorage.getItem(VOL_KEY) ?? "{}")["item-1"] ?? 100).toBe(100);
   });
 });

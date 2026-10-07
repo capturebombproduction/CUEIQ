@@ -461,6 +461,7 @@ export function MyShow() {
       const changed = itemsRef.current.filter(
         (it) =>
           it.id !== loopFadeRef.current?.id && // mid-loop-end-fade — transient, skip
+          !(it.id in duckRef.current) && // a fade key on the sounding track — for that moment
           (volumes[it.id] ?? 100) !== (it.volume ?? 100)
       );
       if (changed.length === 0) return;
@@ -501,6 +502,17 @@ export function MyShow() {
           // is over — holding the venue laptop's display awake until รีเซ็ต,
           // navigate-away or quit.
           if (snap.ended) markShowEnded(true);
+          // a fresh restore of a show mid-duck comes back ducked, its own level kept aside
+          if (!stale && snap.ducks && typeof snap.ducks === "object") {
+            const now: Record<string, number> = {};
+            for (const [id, d] of Object.entries(snap.ducks as Record<string, { prev?: unknown; now?: unknown }>)) {
+              if (typeof d?.prev !== "number" || typeof d?.now !== "number") continue;
+              duckRef.current[id] = d.prev;
+              duckNowRef.current[id] = d.now;
+              now[id] = d.now;
+            }
+            if (Object.keys(now).length) setVolumes((v) => ({ ...v, ...now }));
+          }
           if (stale && !snap.ended) {
             toast.message("กู้คืนโชว์ที่ค้างไว้ — หยุดรอไว้ก่อน", {
               description: `ค้างมานานเกิน ${STALE_RESTORE_MS / 60_000} นาที เพลงจะไม่เล่นเอง — กดเล่นเมื่อพร้อม หรือกดรีเซ็ตถ้าจะเริ่มใหม่`,
@@ -538,7 +550,22 @@ export function MyShow() {
           // above brings the show back as still-on. Read off the REF, for the
           // same reason live-mode.tsx reads it off one: endShow() flips it and
           // flushes here in the same tick, when the state value is still stale.
-          JSON.stringify({ state: s, ended: showEndedRef.current, savedAt: Date.now() })
+          JSON.stringify({
+            state: s,
+            ended: showEndedRef.current,
+            // the fade keys' moves on the sounding track (fadeKey): where each is now and
+            // the level it goes back to - a relaunch mid-MC must not come back at full
+            // level under the talking
+            ducks: Object.keys(duckRef.current).length
+              ? Object.fromEntries(
+                  Object.entries(duckRef.current).map(([id, prev]) => [
+                    id,
+                    { prev, now: duckNowRef.current[id] ?? volumesRef.current[id] ?? prev },
+                  ])
+                )
+              : undefined,
+            savedAt: Date.now(),
+          })
         );
       } else {
         localStorage.removeItem(LIVE_SNAPSHOT_KEY);
@@ -765,6 +792,27 @@ export function MyShow() {
     if (!cur) return;
     fadeVolumeFor(cur.id, target, ms);
   }
+
+  // The fade keys (Auto Mute / MC / Auto Loudness) - the same rule as Live Mode's
+  // fadeKey (พี่ 2026-10-07): they ride the track that is SOUNDING (in Manual a cued row
+  // is not it), and on it the move is for that moment - its own level comes back once
+  // it stops sounding, and is never saved as the song's level.
+  const duckRef = useRef<Record<string, number>>({});
+  // where each ducked track is going (the key's target) - what the snapshot records,
+  // so it can be written the moment the key is pressed, before the fade has landed
+  const duckNowRef = useRef<Record<string, number>>({});
+  function fadeKey(target: number, ms = 2000) {
+    const audio = audioRef.current;
+    const sounding = playingId && audio && !audio.paused ? playingId : null;
+    const id = sounding ?? items[state.currentIndex]?.id;
+    if (!id) return;
+    if (sounding && !(id in duckRef.current)) duckRef.current[id] = volumesRef.current[id] ?? 100;
+    if (sounding) duckNowRef.current[id] = target;
+    fadeVolumeFor(id, target, ms);
+    // now, not at the next state change: a crash in between came back at full level
+    if (sounding) writeLiveSnapshotRef.current();
+  }
+
 
   // native loop flag follows the sounding item
   useEffect(() => {
@@ -1132,6 +1180,26 @@ export function MyShow() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [now, remaining, playingId, state.running, audioPlaying]);
+
+  // A track the fade keys moved while it sounded (fadeKey) gets its own level back once
+  // it is no longer the one sounding. AFTER the loop end-fade's effect on purpose: that
+  // one puts back the level it found (the duck's), and this one, running next, the
+  // track's own - the other order left a ducked loop BGM at 30 % and saved it.
+  useEffect(() => {
+    // the track sounding - or, after a relaunch before its audio is back, the running row
+    const sounding = playingId ?? (state.running ? items[state.currentIndex]?.id : null);
+    let gaveBack = false;
+    for (const id of Object.keys(duckRef.current)) {
+      if (state.begun && id === sounding) continue;
+      const prev = duckRef.current[id];
+      delete duckRef.current[id];
+      delete duckNowRef.current[id];
+      fadeVolumeFor(id, prev, 0);
+      gaveBack = true;
+    }
+    if (gaveBack) writeLiveSnapshotRef.current(); // the snapshot's ducks, now
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [playingId, state.begun, state.running, state.currentIndex]);
 
   // scrubber (Manual): drag moves the head; release re-locks the countdown
   function seekAudio(e: React.ChangeEvent<HTMLInputElement>) {
@@ -1597,7 +1665,11 @@ export function MyShow() {
                       max={100}
                       step={1}
                       value={volumes[current.id] ?? 100}
-                      onChange={(e) => fadeVolumeFor(current.id, Number(e.target.value), 0)}
+                      onChange={(e) => {
+                        delete duckRef.current[current.id]; // a level set by hand is the track's level
+                        delete duckNowRef.current[current.id];
+                        fadeVolumeFor(current.id, Number(e.target.value), 0);
+                      }}
                       title="ความดังของแทร็คนี้ (จำค่าไว้ให้)"
                       className="flex-1 cursor-pointer"
                     />
@@ -1611,7 +1683,7 @@ export function MyShow() {
                     <Button
                       type="button"
                       variant="secondary"
-                      onClick={() => fadeVolumeTo(0, 3000)}
+                      onClick={() => fadeKey(0, 3000)}
                       title="ค่อย ๆ ปิดเสียงเป็น 0% ใน 3 วินาที"
                       className="en h-11 min-w-0 gap-1.5 rounded-[2px] px-1 !text-[14px]"
                     >
@@ -1620,7 +1692,7 @@ export function MyShow() {
                     <Button
                       type="button"
                       variant="secondary"
-                      onClick={() => fadeVolumeTo(30)}
+                      onClick={() => fadeKey(30)}
                       title="ค่อย ๆ ลดเสียงเป็น 30% (ช่วง MC)"
                       className="en h-11 min-w-0 gap-1.5 rounded-[2px] px-1 !text-[14px]"
                     >
@@ -1629,7 +1701,7 @@ export function MyShow() {
                     <Button
                       type="button"
                       variant="secondary"
-                      onClick={() => fadeVolumeTo(100, 2500)}
+                      onClick={() => fadeKey(100, 2500)}
                       title="ค่อย ๆ เพิ่มเสียงกลับเป็น 100%"
                       className="en h-11 min-w-0 gap-1.5 rounded-[2px] px-1 !text-[14px]"
                     >

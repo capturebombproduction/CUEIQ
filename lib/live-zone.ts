@@ -53,6 +53,9 @@ export function liveZone({
   blockSec: number;
 }): LiveZone {
   if (!running) return "ok";
+  // An item with NO time set (a photo slot at 0:00) has nothing to run over: it went
+  // straight to the overtime alarm the second it began. It counts its time up instead.
+  if (!(blockSec > 0)) return "ok";
   if (remaining <= 0) return "over";
   const t = thresholds(blockSec);
   if (remaining <= t.urgent) return "urgent";
@@ -66,6 +69,7 @@ function spokenSeconds(sec: number): string {
 
 /** The Thai line under the countdown for `zone`, naming this item's own threshold. */
 export function zoneCaption(zone: LiveZone, blockSec: number): string {
+  if (zone === "ok" && !(blockSec > 0)) return "ไม่ได้ตั้งเวลา · นับเวลาที่ใช้";
   switch (zone) {
     case "over":
       return "เลยเวลาแล้ว";

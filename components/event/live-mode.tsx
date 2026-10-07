@@ -465,25 +465,41 @@ export function LiveMode({
 
   // restore per-track volume presets for this event (saved on-device, per-device)
   const volumesLoadedRef = useRef(false);
-  useEffect(() => {
+  function readVolumePreset(): Record<string, number> | null {
     try {
       const raw = localStorage.getItem(`cueiq:vol:${eventId}`);
       if (raw) {
         const parsed = JSON.parse(raw);
-        if (parsed && typeof parsed === "object") setVolumes(parsed);
+        if (parsed && typeof parsed === "object") return parsed;
       }
     } catch {}
+    return null;
+  }
+  useEffect(() => {
+    const saved = readVolumePreset();
+    if (saved) setVolumes(saved);
     volumesLoadedRef.current = true;
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- reads this event's key only
   }, [eventId]);
 
   // The single writer for the volume presets — shared by the debounce below and the
   // flush-on-hide further down, so the two can never drift apart.
   function writeVolumePreset() {
     if (!volumesLoadedRef.current) return; // don't overwrite before the restore runs
+    // A viewer SHOWS the levels of the device running the show (it takes them whole,
+    // see the state handler) but never saves them: they are that device's soundcheck,
+    // and saved here they replaced this device's own - a PA that watched a phone's
+    // run-through started the real show on the phone's levels (พี่ 2026-10-07).
+    if (!isControllerRef.current) return;
     try {
-      localStorage.setItem(`cueiq:vol:${eventId}`, JSON.stringify(intendedVolumes()));
+      localStorage.setItem(`cueiq:vol:${eventId}`, JSON.stringify(intendedVolumes(true)));
     } catch {}
   }
+  // track id -> the level it had before the first fade key pressed on it while it
+  // sounded (fadeKey). Given back when it stops sounding; never saved over the preset.
+  const duckRef = useRef<Record<string, number>>({});
+  // set by the crash-recovery restore when it put ducks back (see the duck effect)
+  const ducksRestoredRef = useRef(false);
   // The operator's INTENDED per-track levels - what is saved, and what the device
   // running the show tells its viewers. A loop item's end-fade (loopFadeRef, declared
   // with its effect further down) is TRANSIENT: it dips that track to 0 so the BGM
@@ -493,12 +509,16 @@ export function LiveMode({
   // mid-fade counts at its intended level - the audible fade itself is untouched. Any
   // other running fade (MC / Auto Mute) counts at where it is going: that is the level
   // the track will sit at, and a viewer joining mid-fade never heard the fade's message.
-  function intendedVolumes(): Record<string, number> {
+  // `forSave`: what this device keeps for the event. The NOW card's keys on a SOUNDING
+  // track (duckRef, see fadeKey) are a move for that moment, not a soundcheck level -
+  // saved, a run-through's MC duck left that song at 30 % for the real show.
+  function intendedVolumes(forSave = false): Record<string, number> {
     const lf = loopFadeRef.current;
     const ft = fadeTargetRef.current;
     let vols = volumesRef.current;
     if (ft) vols = { ...vols, [ft.itemId]: ft.target };
-    return lf ? { ...vols, [lf.id]: lf.prevVol } : vols;
+    if (lf) vols = { ...vols, [lf.id]: lf.prevVol };
+    return forSave ? { ...vols, ...duckRef.current } : vols;
   }
   const writeVolumePresetRef = useRef(writeVolumePreset);
   writeVolumePresetRef.current = writeVolumePreset;
@@ -517,6 +537,16 @@ export function LiveMode({
   // controller on another device still overrides this via the realtime sync.
   const liveRestoredRef = useRef(false);
   const announceRestoreRef = useRef(false);
+  // HELD: this page came back with a show gone longer than STALE_RESTORE_MS - paused,
+  // nothing sounding - and nobody here has pressed play on it yet. Most often a
+  // rehearsal closed mid-run on a phone this afternoon, so until it moves again it
+  // takes no device it did not already have (it was capturing an idle PA as a viewer)
+  // and holds no MAIN (it was refusing the PA's START). Cleared by apply() once it runs
+  // again or is reset.
+  const [restoreHeld, setRestoreHeld] = useState(false);
+  const restoreHeldRef = useRef(false);
+  // the held runs on OTHER devices this page has already said something about
+  const heldNotedRef = useRef<Set<number>>(new Set());
   useEffect(() => {
     try {
       const raw = localStorage.getItem(`cueiq:live:${eventId}`);
@@ -537,6 +567,26 @@ export function LiveMode({
           // ...and tells the viewers once its channel is up: the phones still watching
           // this run last heard it RUNNING, and a restore is not a broadcast
           announceRestoreRef.current = true;
+          // held: gone too long now, or already held when it was written (a held page's
+          // snapshot is kept fresh by the alive re-write, so its age says nothing)
+          const held = (stale || snap.held === true) && !snap.ended;
+          if (held) {
+            restoreHeldRef.current = true;
+            setRestoreHeld(true);
+          }
+          // a fresh restore of a show mid-duck comes back ducked, its own level kept aside
+          if (!stale && snap.ducks && typeof snap.ducks === "object") {
+            const now: Record<string, number> = {};
+            for (const [id, d] of Object.entries(snap.ducks as Record<string, { prev?: unknown; now?: unknown }>)) {
+              if (typeof d?.prev !== "number" || typeof d?.now !== "number") continue;
+              duckRef.current[id] = d.prev;
+              now[id] = d.now;
+            }
+            if (Object.keys(now).length) {
+              ducksRestoredRef.current = true;
+              setVolumes((v) => ({ ...v, ...now }));
+            }
+          }
           committedRef.current = stale
             ? { id: null, anchor: null }
             : (snap.committed ?? { id: null, anchor: null });
@@ -553,7 +603,7 @@ export function LiveMode({
           // ended:false and re-light the wake lock on every phone that had
           // already gone to sleep, with no controller left to correct it.
           if (snap.ended) markShowEnded(true);
-          if (stale && !snap.ended) {
+          if (held) {
             toast.message("กู้คืนโชว์ที่ค้างไว้ — หยุดรอไว้ก่อน", {
               description: `ค้างมานานเกิน ${STALE_RESTORE_MS / 60_000} นาที เพลงจะไม่เล่นเอง — กดเล่นเมื่อพร้อม หรือกดรีเซ็ตถ้าจะเริ่มใหม่`,
             });
@@ -600,6 +650,20 @@ export function LiveMode({
             // for an older build reading this snapshot.
             isController: isControllerRef.current,
             controllerSince: controllerSinceRef.current,
+            // a HELD page (restoreHeld) stays held across a reload: the alive re-write
+            // below keeps savedAt fresh, so the age alone would bring it back as a show
+            held: restoreHeldRef.current || undefined,
+            // the fade keys' moves on the sounding track (fadeKey): where each track is
+            // now, and the level it goes back to - a reload mid-MC must not come back
+            // at full level under the talking, nor save the 30 as the song's level
+            ducks: Object.keys(duckRef.current).length
+              ? Object.fromEntries(
+                  Object.entries(duckRef.current).map(([id, prev]) => [
+                    id,
+                    { prev, now: intendedVolumes()[id] ?? prev },
+                  ])
+                )
+              : undefined,
             savedAt: Date.now(),
           })
         );
@@ -1356,7 +1420,7 @@ export function LiveMode({
   // claims show_main again for this device - set while it is the begun controller
   const reclaimMainRef = useRef<(() => void) | null>(null);
   useEffect(() => {
-    if (!(isController && state.begun)) return;
+    if (!(isController && state.begun) || restoreHeld) return;
     const tenantId = itemsRef.current[0]?.tenant_id;
     if (!tenantId) return; // no setlist → nothing to run / claim
     const did = deviceIdRef.current;
@@ -1379,7 +1443,7 @@ export function LiveMode({
       // the new main is left intact (releaseAuthority matches on our device_id).
       releaseAuthority(eventId, "show_main", did);
     };
-  }, [isController, state.begun, eventId]);
+  }, [isController, state.begun, eventId, restoreHeld]);
 
   // negative buffer (Auto): pre-roll the NEXT track on the secondary element so it
   // overlaps the current one — current keeps playing, next "เล่นสวนขึ้นมา" |lead| sec early.
@@ -1470,6 +1534,19 @@ export function LiveMode({
           : typeof payload.controllerSince === "number"
             ? payload.controllerSince
             : null;
+      // A HELD run (restoreHeld on that device: back from a long gap, paused, nobody has
+      // pressed play) takes no page that was not already watching it - not an idle PA as
+      // a viewer, not a running show into a two-runs warning. An idle page is told once.
+      if (payload.held === true && theirBegun && theirRun != null && followingRunRef.current !== theirRun) {
+        if (!stateRef.current.begun && !heldNotedRef.current.has(theirRun)) {
+          heldNotedRef.current.add(theirRun);
+          const who = typeof payload.deviceLabel === "string" ? payload.deviceLabel : "เครื่องอื่น";
+          toast.message(`“${who}” มีโชว์ค้างไว้ (หยุดอยู่)`, {
+            description: "เครื่องนี้เริ่มโชว์ได้ตามปกติ — ถ้าไม่ใช้โชว์นั้นแล้ว ให้กดรีเซ็ตที่เครื่องนั้น",
+          });
+        }
+        return;
+      }
       // Another device says it controls: settle who does (lib/live-arbitration.ts - the
       // device that STARTED the show keeps it, พี่ 2026-10-04). Before any show nobody
       // controls anything: two open pages mirror each other's pre-show settings and
@@ -1562,12 +1639,13 @@ export function LiveMode({
           setIsController(true);
           // The viewer mute was a verdict for the show it watched. Its own device again,
           // it gets its sound back - else its START ran the real show silent, under a
-          // grey chip and with the NO SIGNAL watch unmounted. (The levels it took stay:
-          // a later device syncs to the master's, พี่ 2026-10-04.)
+          // grey chip and with the NO SIGNAL watch unmounted.
           if (viewerMutedRef.current) {
             viewerMutedRef.current = false;
             setSoundOutput(true);
           }
+          // ...and its own saved levels in place of the master's it was shown
+          setVolumes(readVolumePreset() ?? {});
           // …but look again before START comes back: another run may be up (the one
           // this page did not follow), and its device has to get the chance to say so.
           setSyncSettled(false);
@@ -1854,11 +1932,17 @@ export function LiveMode({
       volumes: intendedVolumes(),
       // when this page opened: the same run on two tabs stays with the first
       openedAt: openedAtRef.current,
+      // a show restored paused after a long gap that nobody has played yet (restoreHeld)
+      held: isControllerRef.current && restoreHeldRef.current ? true : undefined,
       ...audioFields(s),
     };
   }
 
   function apply(next: LiveState, broadcast = true) {
+    if (restoreHeldRef.current && (next.running || !next.begun)) {
+      restoreHeldRef.current = false;
+      setRestoreHeld(false);
+    }
     // Anything that puts the show back into motion un-ends it. จบโชว์ only pauses
     // (begun stays true), so the operator can simply press play again — and
     // without this the whole band's screens would stay asleep through the encore.
@@ -1928,7 +2012,9 @@ export function LiveMode({
         .from("setlist_items")
         .select("*")
         .eq("event_id", eventId)
-        .order("sort_order", { ascending: true }),
+        .order("sort_order", { ascending: true })
+        // equal sort_order (two rows added at once) reads the same on every device
+        .order("id", { ascending: true }),
       supabase.from("songs").select("id, audio_path, audio_name").eq("group_id", groupId),
     ]);
     // a newer refetch was issued while this one was in flight — drop this (older)
@@ -2131,15 +2217,24 @@ export function LiveMode({
     const a = arr[index];
     const b = arr[j];
     const curId = arr[stateRef.current.currentIndex]?.id;
-    const reordered = arr
-      .map((it) =>
-        it.id === a.id
-          ? { ...it, sort_order: b.sort_order }
-          : it.id === b.id
-            ? { ...it, sort_order: a.sort_order }
-            : it
-      )
-      .sort((x, y) => x.sort_order - y.sort_order);
+    // Equal sort_order (rows added at once from two devices): swapping two equal numbers
+    // changes nothing on the server - the move "landed", told every device, and came
+    // back unmoved on the next read. Renumber the whole list with the two exchanged, as
+    // the setlist builder does.
+    const tie = a.sort_order === b.sort_order;
+    const reordered = tie
+      ? arr
+          .map((it, i) => (i === index ? b : i === j ? a : it))
+          .map((it, i) => ({ ...it, sort_order: i + 1 }))
+      : arr
+          .map((it) =>
+            it.id === a.id
+              ? { ...it, sort_order: b.sort_order }
+              : it.id === b.id
+                ? { ...it, sort_order: a.sort_order }
+                : it
+          )
+          .sort((x, y) => x.sort_order - y.sort_order);
     // gate concurrent refetches until these UPDATEs land, and invalidate any snapshot
     // already in flight — it predates this write, so it re-reads itself (refetchItems)
     writeEpochRef.current++;
@@ -2157,7 +2252,7 @@ export function LiveMode({
     // and the rest of that order would stay invisible forever — so once there is
     // a network again, the first reorder writes the WHOLE order out and hands the
     // venue a single consistent list.
-    const covering = !!pendingOrderRef.current;
+    const covering = !!pendingOrderRef.current || tie;
     const res = await (covering
       ? writeFullOrder(supabase, reordered)
       : Promise.all([
@@ -2595,8 +2690,31 @@ export function LiveMode({
   // Set one track's volume now (cancels any running fade). Used by the slider.
   function setVolumeFor(itemId: string, to: number) {
     const v = Math.min(100, Math.max(0, Math.round(to)));
+    delete duckRef.current[itemId]; // a level SET by hand is the track's level again
     fadeVolumeFor(itemId, v, 0);
     broadcastVolume(itemId, v, 0);
+  }
+
+  // The NOW card's keys - Auto Mute (0), MC (30), Auto Loudness (100). They ride the
+  // track that is SOUNDING: in Manual that need not be the current row (NEXT cues the
+  // MC while the song plays on), and pressed there they faded the cued row - nothing
+  // heard, and a cued SONG kept the 0 and came in silent on รันโชว์. On a sounding
+  // track the move is for that moment: the level it had comes back once it stops
+  // sounding, and it is never saved as the song's level (intendedVolumes(true)).
+  // Nothing sounding: the current row, as before - a level set ahead of its turn.
+  function fadeKey(target: number, ms = 2000) {
+    const audio = audioRef.current;
+    const sounding = playingId && audio && !audio.paused ? playingId : null;
+    const id = sounding ?? items[state.currentIndex]?.id;
+    if (!id) return;
+    if (sounding && !(id in duckRef.current)) {
+      duckRef.current[id] = intendedVolumes()[id] ?? 100;
+    }
+    fadeVolumeFor(id, target, ms);
+    broadcastVolume(id, target, ms);
+    // now, not at the next state change or 30 s alive write: a crash in between came
+    // back at full level under the talking
+    if (sounding) writeLiveSnapshotRef.current();
   }
 
   // Smoothly fade the CURRENT item's volume to `target` over `ms` (default 2s).
@@ -3411,6 +3529,26 @@ export function LiveMode({
     setRunConflict(null);
   }
 
+  // Auto's two moments - the next row's overlap pre-roll and the row's end - landed on
+  // the 500 ms tick, so each one came up to half a second late and the next row's clock
+  // started from then: ~0.25 s lost on every row, never made up (an exactly-full slot
+  // read "เกิน Hard Out" by the end). Wake the clock AT the next moment instead.
+  useEffect(() => {
+    if (state.mode !== "auto" || !state.running || !state.itemStartedAt) return;
+    if (!isControllerRef.current) return;
+    const cur = items[state.currentIndex];
+    if (!cur || state.currentIndex >= items.length - 1) return;
+    const remMs = blockSeconds(cur) * 1000 - (Date.now() - state.itemStartedAt);
+    const nxt = items[state.currentIndex + 1];
+    const leadMs = nxt ? Math.max(0, -(nxt.buffer_before_seconds ?? 0)) * 1000 : 0;
+    const moments = [remMs - leadMs, remMs].filter((ms) => ms > 0);
+    if (!moments.length) return;
+    // +5 ms: the render then reads the moment as reached, never a hair before it
+    const id = setTimeout(() => setNow(Date.now()), Math.min(...moments) + 5);
+    return () => clearTimeout(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.mode, state.running, state.itemStartedAt, state.currentIndex, items, now]);
+
   // in Auto mode, advance to the next item when the countdown (duration + buffers)
   // reaches 0 — NOT when the audio file ends. Respects the set buffer time.
   // Only the control device (the one holding audio files) advances; viewers follow via sync.
@@ -3464,10 +3602,44 @@ export function LiveMode({
     ) {
       const { id, prevVol } = loopFadeRef.current;
       loopFadeRef.current = null;
-      setVolumeFor(id, prevVol);
+      // not setVolumeFor: that drops a duck entry (fadeKey), and the track would keep
+      // the MC's 30 as its level; the duck effect below gives the pre-duck level back
+      fadeVolumeFor(id, prevVol, 0);
+      // not on a reset: it just freed the viewers, who are their own devices again
+      if (state.begun) broadcastVolume(id, prevVol, 0);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [now, remaining, playingId, state.running, audioPlaying]);
+
+  // A track the fade keys moved while it sounded (fadeKey) gets its own level back
+  // once it is no longer the one sounding - replaced by the next, stopped, or the show
+  // reset - so its next turn starts where its soundcheck put it.
+  useEffect(() => {
+    // Ducks the crash-recovery restore just put back wait for the restored state to
+    // render: the pass right after the restore (and React dev's second mount) still
+    // sees the INITIAL state, begun false, and would hand them all back at once.
+    if (ducksRestoredRef.current) {
+      if (!state.begun) return;
+      ducksRestoredRef.current = false;
+    }
+    // The track sounding - or, before a reloaded page's tap-to-resume, the one the show
+    // is committed to (it sounds again on that tap): a duck brought back by the restore
+    // is not given back just because nothing has been tapped yet.
+    const sounding = playingId ?? committedRef.current.id;
+    let gaveBack = false;
+    for (const id of Object.keys(duckRef.current)) {
+      if (state.begun && id === sounding) continue;
+      const prev = duckRef.current[id];
+      delete duckRef.current[id];
+      // On a reset, here only: the reset just freed the viewers, and a level sent now
+      // would land on devices that are their own again (and be saved there).
+      if (isControllerRef.current && state.begun) setVolumeFor(id, prev);
+      else setVolumes((v) => ({ ...v, [id]: prev }));
+      gaveBack = true;
+    }
+    if (gaveBack) writeLiveSnapshotRef.current(); // the snapshot's ducks, now
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [playingId, state.begun, state.running, state.currentIndex]);
 
   // Operator keyboard shortcuts (controller only): Space = START / run-pause,
   // →/N = next, ← = previous. Ignored while typing in a field. Re-assigned every
@@ -3789,7 +3961,7 @@ export function LiveMode({
       <Button
         type="button"
         variant="secondary"
-        onClick={() => fadeVolumeTo(0, 3000)}
+        onClick={() => fadeKey(0, 3000)}
         disabled={!isController}
         title="ค่อย ๆ ปิดเสียงเป็น 0% ใน 3 วินาที"
         className="en h-11 min-w-0 gap-1.5 rounded-[2px] px-1 !text-[14px] stage:h-12 stage:[@media(min-width:1060px)]:!text-[16px]"
@@ -3800,7 +3972,7 @@ export function LiveMode({
       <Button
         type="button"
         variant="secondary"
-        onClick={() => fadeVolumeTo(30)}
+        onClick={() => fadeKey(30)}
         disabled={!isController}
         title="ค่อย ๆ ลดเสียงลงเป็น 30% ใน 2 วินาที (ช่วง MC)"
         className="en h-11 min-w-0 gap-1.5 rounded-[2px] px-1 !text-[14px] stage:h-12 stage:[@media(min-width:1060px)]:!text-[16px]"
@@ -3811,7 +3983,7 @@ export function LiveMode({
       <Button
         type="button"
         variant="secondary"
-        onClick={() => fadeVolumeTo(100, 2500)}
+        onClick={() => fadeKey(100, 2500)}
         disabled={!isController}
         title="ค่อย ๆ เพิ่มเสียงกลับเป็น 100% ใน 2.5 วินาที"
         className="en h-11 min-w-0 gap-1.5 rounded-[2px] px-1 !text-[14px] stage:h-12 stage:[@media(min-width:1060px)]:!text-[16px]"
@@ -4330,7 +4502,7 @@ export function LiveMode({
           // file, or on the controller riding the speaker device's level by remote
           volume={current && (currentAudioUrl || (isController && state.begun)) ? volumes[current.id] ?? 100 : null}
           onVolume={isController && current ? (v) => setVolumeFor(current.id, v) : null}
-          onFade={isController ? fadeVolumeTo : null}
+          onFade={isController ? fadeKey : null}
           volumeDead={volumeIsDead && soundOutput}
           output={signalTap ? { label: showOutput.label, kind: showOutput.kind } : null}
           soundOn={soundOutput}

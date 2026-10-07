@@ -493,7 +493,9 @@ export const getEventBundle = cache(async (
       .from("setlist_items")
       .select("*")
       .eq("event_id", eventId)
-      .order("sort_order", { ascending: true }),
+      .order("sort_order", { ascending: true })
+      // equal sort_order (two rows added at once) reads the same on every device
+      .order("id", { ascending: true }),
     supabase
       .from("mic_assignments")
       .select("*")
