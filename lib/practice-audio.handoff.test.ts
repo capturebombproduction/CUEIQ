@@ -356,6 +356,29 @@ describe("PracticeAudioEngine.handOff — slowed down (stretch)", () => {
     expect(ctx.decodeAudioData).toHaveBeenCalledTimes(2);
   });
 
+  // 2026-10-07 review: the set reaching its last song clears preloads - which used to
+  // land while load() was still waiting on resume(), and the decode ahead was lost.
+  it("a decode done ahead survives a clearPreload() that lands while load() waits on resume()", async () => {
+    const engine = new PracticeAudioEngine();
+    engine.setTempo(0.5);
+    engine.unlock();
+    await engine.load(song("A"));
+    await engine.play();
+    const b = song("B");
+    engine.preload(b);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(ctx.decodeAudioData).toHaveBeenCalledTimes(2);
+
+    let release!: () => void;
+    ctx.resume = () => new Promise<void>((r) => (release = r));
+    engine.handOff();
+    const loading = engine.load(b);
+    engine.clearPreload(); // the page: no song after this one
+    release();
+    await loading;
+    expect(ctx.decodeAudioData).toHaveBeenCalledTimes(2);
+  });
+
   it("at 1× preload() does nothing — the element streams", async () => {
     const engine = new PracticeAudioEngine();
     engine.preload(song("B"));

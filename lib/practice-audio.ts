@@ -312,13 +312,17 @@ export class PracticeAudioEngine {
     const blob = this.blob;
     if (!blob) return;
     const gen = this.loadGen;
+    // Decoded ahead by preload() (a set's next song) — the wait is over, or shorter.
+    // Taken NOW, before the first await: a set reaching its last song lets go of
+    // preloads (clearPreload), and that could land while resume() was still out (WebKit
+    // answers it on a later task) - the decode ahead was thrown away and done again,
+    // a gap of seconds after the tail.
+    const pre = !this.buffer && this.pre?.blob === blob ? this.pre : null;
+    if (pre) this.pre = null;
     const ctx = this.ensureCtx();
     await ctx.resume().catch(() => {});
     if (gen !== this.loadGen) return; // a new song was loaded meanwhile
     if (!this.buffer) {
-      // decoded ahead by preload() (a set's next song) — the wait is over, or shorter
-      const pre = this.pre?.blob === blob ? this.pre : null;
-      if (pre) this.pre = null;
       this.onPreparing(true);
       try {
         const decoded =

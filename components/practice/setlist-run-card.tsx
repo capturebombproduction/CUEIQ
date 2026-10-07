@@ -37,6 +37,15 @@ import type { Song } from "@/lib/types";
 // are one write, not three racing each other to the server.
 const SAVE_AFTER_MS = 700;
 
+// The Live Mode notices out right now, per show. ONE channel per show at a time:
+// supabase.channel() hands back the channel already open on a topic until
+// removeChannel() has finished with it, and subscribe() on that one never calls back -
+// so a second save (the next transition, a second after the first) sent nothing, and
+// Live Mode kept the old number. A save that lands while a notice is out asks for one
+// more: sent on the same channel if it is still up, else on a fresh one once the old
+// one is gone.
+const liveNotices = new Map<string, { again: boolean }>();
+
 /**
  * Tell a Live Mode screen already open on this show to pull the setlist again — the
  * same "setlist-changed" the setlist builder sends after each save — so it plays the
@@ -44,6 +53,13 @@ const SAVE_AFTER_MS = 700;
  * on its next load.
  */
 function tellLiveMode(eventId: string) {
+  const inFlight = liveNotices.get(eventId);
+  if (inFlight) {
+    inFlight.again = true;
+    return;
+  }
+  const notice = { again: false };
+  liveNotices.set(eventId, notice);
   try {
     const supabase = createClient();
     const ch = privateChannel(supabase, liveTopic(eventId));
@@ -51,20 +67,26 @@ function tellLiveMode(eventId: string) {
     const close = () => {
       if (closed) return;
       closed = true;
-      void supabase.removeChannel(ch);
+      void Promise.resolve(supabase.removeChannel(ch))
+        .catch(() => {})
+        .finally(() => {
+          liveNotices.delete(eventId);
+          if (notice.again) tellLiveMode(eventId);
+        });
+    };
+    const send = () => {
+      notice.again = false;
+      void ch
+        .send({ type: "broadcast", event: "setlist-changed", payload: { at: Date.now() } })
+        .finally(() => (notice.again && !closed ? send() : close()));
     };
     ch.subscribe((status) => {
-      if (status === "SUBSCRIBED") {
-        void ch
-          .send({ type: "broadcast", event: "setlist-changed", payload: { at: Date.now() } })
-          .finally(close);
-      } else {
-        close(); // CHANNEL_ERROR / TIMED_OUT / CLOSED
-      }
+      if (status === "SUBSCRIBED") send();
+      else close(); // CHANNEL_ERROR / TIMED_OUT / CLOSED
     });
     window.setTimeout(close, 10000); // never left open
   } catch {
-    /* see above */
+    liveNotices.delete(eventId); // see above
   }
 }
 

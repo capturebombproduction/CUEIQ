@@ -23,6 +23,7 @@ type FakeEngine = {
   playing: boolean;
   /** false = no element that may play the next song (iOS): canHandOff says no */
   handOffReady: boolean;
+  toggles: number;
 };
 const h = vi.hoisted(() => ({
   engines: [] as FakeEngine[],
@@ -34,6 +35,10 @@ const h = vi.hoisted(() => ({
   /** what reached the server, and when it answered — to see writes never overlap */
   writeLog: [] as string[],
   broadcasts: [] as { topic: string; event: string }[],
+  /** the channels open per topic - supabase.channel() hands back the open one */
+  channels: new Map<string, unknown>(),
+  /** how long removeChannel takes to be done with one (a leave is a round trip) */
+  leaveMs: 0,
   /** while set, load() waits on it — the slowed-down decode of a hand-off */
   loadGate: null as Promise<void> | null,
 }));
@@ -95,7 +100,10 @@ vi.mock("@/lib/practice-audio", () => ({
       this.playing = false;
       this.onPlayingChange(false);
     }
-    toggle() {}
+    toggles = 0;
+    toggle() {
+      this.toggles++;
+    }
     seek() {}
     setTempo() {}
     setVolume() {}
@@ -133,8 +141,15 @@ vi.mock("sonner", () => ({
 vi.mock("@/lib/supabase/client", () => ({
   createClient: () => ({
     channel: (topic: string) => {
+      // as realtime-js does: the channel still open on this topic comes back, and a
+      // subscribe() on a channel already joined never calls back
+      const open = h.channels.get(topic);
+      if (open) return open;
+      let joined = false;
       const ch = {
         subscribe: (cb: (s: string) => void) => {
+          if (joined) return ch;
+          joined = true;
           cb("SUBSCRIBED");
           return ch;
         },
@@ -143,9 +158,14 @@ vi.mock("@/lib/supabase/client", () => ({
           return Promise.resolve("ok");
         },
       };
+      h.channels.set(topic, ch);
       return ch;
     },
-    removeChannel: () => Promise.resolve("ok"),
+    removeChannel: (ch: unknown) =>
+      new Promise((r) => setTimeout(r, h.leaveMs)).then(() => {
+        for (const [t, c] of h.channels) if (c === ch) h.channels.delete(t);
+        return "ok";
+      }),
     from: (table: string) => {
       let update: Record<string, unknown> | null = null;
       const b = {
@@ -208,6 +228,8 @@ beforeEach(() => {
   h.updatePlan = [];
   h.writeLog = [];
   h.broadcasts = [];
+  h.channels.clear();
+  h.leaveMs = 0;
   h.loadGate = null;
   toastSuccess.mockClear();
   toastError.mockClear();
@@ -550,6 +572,31 @@ describe("PracticePlayer — เล่นซ้อน", () => {
     expect(screen.getByLabelText("เล่นซ้อน Neon Lullaby 7 วินาที")).toBeTruthy(); // = the server
   });
 
+  // 2026-10-07 review: the second notice used to ride a channel that was still leaving,
+  // whose subscribe() never called back - nothing was sent for the second transition.
+  it("two transitions saved a second apart: Live Mode hears both", async () => {
+    h.shows = [
+      {
+        id: "show-1",
+        name: "Welcome to friendverse",
+        event_date: bkkTodayKey(),
+        setlist_items: [
+          row("r1", 1, "boot"),
+          { ...row("r2", 2, "neon"), buffer_before_seconds: -5 },
+          { ...row("r3", 3, "iam"), buffer_before_seconds: -3 },
+        ],
+      },
+    ];
+    h.leaveMs = 1500;
+    mount({ canManage: true });
+    fireEvent.click(await screen.findByRole("button", { name: /ตั้งเล่นซ้อน/ }));
+    fireEvent.click(screen.getByRole("button", { name: "เพิ่มเวลาเล่นซ้อน · Neon Lullaby" }));
+    await waitFor(() => expect(h.broadcasts).toHaveLength(1), { timeout: 2000 });
+    fireEvent.click(screen.getByRole("button", { name: "เพิ่มเวลาเล่นซ้อน · I Am Who I Am" }));
+    await waitFor(() => expect(h.broadcasts).toHaveLength(2), { timeout: 4000 });
+    expect(h.broadcasts.every((b) => b.topic === "live:show-1" && b.event === "setlist-changed")).toBe(true);
+  }, 10_000);
+
   it("a saved overlap tells a Live Mode screen open on that show to pull the setlist", async () => {
     mount({ canManage: true });
     fireEvent.click(await screen.findByRole("button", { name: /ตั้งเล่นซ้อน/ }));
@@ -616,5 +663,60 @@ describe("PracticePlayer — เล่นซ้อน", () => {
     open();
     await waitFor(() => expect(engine().loads).toContain("other.wav"));
     await waitFor(() => expect(engine().playing).toBe(true)); // …and plays
+  });
+
+  // 2026-10-07 review: the next song's file can still be on its way at the overlap's
+  // moment (a big master on slow wifi). What is pressed in that wait has to stand.
+  describe("while the next song is still being read", () => {
+    let release!: () => void;
+    beforeEach(() => {
+      blob.special.set(
+        "neon.wav",
+        () => new Promise((r) => (release = () => r({ path: "neon.wav" })))
+      );
+    });
+
+    it("a pause stands: the old song is not handed over, the next waits at its start", async () => {
+      mount();
+      await startSet();
+      at(195.5);
+      await new Promise((r) => setTimeout(r, 30)); // the overlap fired; its read is out
+      fireEvent.click(screen.getByRole("button", { name: "หยุดชั่วคราว" }));
+      expect(engine().playing).toBe(false);
+      release();
+      await waitFor(() => expect(engine().loads).toEqual(["boot.wav", "neon.wav"]));
+      await new Promise((r) => setTimeout(r, 30));
+      expect(engine().handOffs).toEqual([]);
+      expect(engine().playing).toBe(false);
+    });
+
+    it("an old song taken back to its start (⏮) is replaced, not left sounding under the next", async () => {
+      mount();
+      await startSet();
+      at(195.5);
+      await new Promise((r) => setTimeout(r, 30));
+      at(0.4); // ⏮ → seek(0), still playing
+      release();
+      await waitFor(() => expect(engine().loads).toEqual(["boot.wav", "neon.wav"]));
+      expect(engine().handOffs).toEqual([]);
+      await waitFor(() => expect(engine().playing).toBe(true)); // the set goes on
+    });
+
+    it("▶ on an old song that ended meanwhile plays the next - it never restarts the old one", async () => {
+      mount();
+      await startSet();
+      at(195.5);
+      await new Promise((r) => setTimeout(r, 30));
+      act(() => {
+        engine().playing = false; // boot reached its end
+        engine().onPlayingChange(false);
+      });
+      fireEvent.click(screen.getByRole("button", { name: "เล่น" }));
+      expect(engine().toggles).toBe(0);
+      release();
+      await waitFor(() => expect(engine().loads).toEqual(["boot.wav", "neon.wav"]));
+      await waitFor(() => expect(engine().playing).toBe(true));
+      expect(engine().handOffs).toEqual([]);
+    });
   });
 });

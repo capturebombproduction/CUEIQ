@@ -240,6 +240,9 @@ export function PracticePlayer({
   // its end, the next one still loading): quiet now, and the next song waits paused.
   // Holds the select token of THAT load, so it can never hold back a later one.
   const holdNextRef = useRef<number | null>(null);
+  // The select token of the run's overlap whose next song is being read (selectSong
+  // with `overlap`) - a press on the main key before the hand-over is a hold too.
+  const overlapReadRef = useRef<number | null>(null);
   // Phone-only fold of the section-drilling tools (see the note at the fold).
   const [drillOpen, setDrillOpen] = useState(false);
 
@@ -398,7 +401,7 @@ export function PracticePlayer({
    * the song now playing is handed off to sound out its end on its own instead of
    * being cut, and the same song twice in a row starts again on top of itself.
    */
-  async function selectSong(song: Song, opts?: { fromRun?: boolean; overlap?: boolean }) {
+  async function selectSong(song: Song, opts?: { fromRun?: boolean; overlap?: number }) {
     const engine = engineRef.current;
     // A song with no online master is still playable when THIS device holds the
     // file (⭐#1 step 7) — the local-source read below is the one that finds it.
@@ -411,6 +414,7 @@ export function PracticePlayer({
     // Picking some other song by hand leaves the setlist run behind.
     if (!opts?.fromRun) setRun(null);
     const token = ++selectTokenRef.current;
+    if (opts?.overlap) overlapReadRef.current = token;
     flushRun(); // finalize the previous song's practice time
     setLoadingId(song.id);
     try {
@@ -434,7 +438,14 @@ export function PracticePlayer({
       }
       // An overlap lets the song now playing sound out its end under the next one;
       // anything else replaces it outright, and silences an earlier overlap's tail.
-      if (opts?.overlap) engine.handOff();
+      // Only a song still AT its end is handed over: the read above can take a while
+      // (a big master on slow wifi), and a song paused meanwhile, or taken back to its
+      // start by ⏮ or the scrubber, sounded on almost whole under the next one.
+      const atItsEnd =
+        !!opts?.overlap &&
+        engine.playing &&
+        engine.songDuration - engine.position <= opts.overlap + 2;
+      if (atItsEnd) engine.handOff();
       else engine.stopTails();
       await engine.load(blob); // decode happens here, inside the spinner
       if (token !== selectTokenRef.current) return;
@@ -568,7 +579,7 @@ export function PracticePlayer({
     if (!engine.canHandOff) return; // nowhere to play it yet — it follows the end instead
     overlapDoneRef.current = key;
     setRun({ ...run, pos: run.pos + 1 });
-    void selectSong(next.song, { fromRun: true, overlap: true });
+    void selectSong(next.song, { fromRun: true, overlap: next.overlap });
   };
 
   // Re-pointed every render so the once-registered engine.onEnded always sees the
@@ -592,6 +603,21 @@ export function PracticePlayer({
     const engine = engineRef.current;
     if (!engine || !currentId) return;
     engine.unlock();
+    if (loadingId && !engine.handingOff && overlapReadRef.current === selectTokenRef.current) {
+      // "เล่นซ้อน" still READING the next song: the song now playing has not been
+      // handed over yet. A plain pause here was undone - the read landed, the next
+      // song replaced this one and started. So a press on a playing song means quiet,
+      // as mid hand-over below; on one already ended it is ▶ (never a restart of the
+      // old song, which then sounded on whole under the next): the next one plays as
+      // soon as it is read.
+      if (engine.playing) {
+        holdNextRef.current = selectTokenRef.current;
+        engine.pause();
+      } else {
+        holdNextRef.current = null;
+      }
+      return;
+    }
     if (engine.handingOff && loadingId) {
       // "เล่นซ้อน" mid hand-over: the old song is sounding out its end and the next
       // one is loading. Playing would start nothing new (and slowed down, decode the
