@@ -41,7 +41,9 @@ import { canEditAnyGroup, canLiveEdit, canViewLibrary, type Perms } from "@/lib/
 // back paused, and the desktop app's one-press update. The 10-02 items stay below.
 // 2026-10-07: the practice room's set run overlaps songs the way the show's setlist
 // says ("เล่นซ้อน"), and the band's editors set those seconds from the room.
-const ROUND = "2026-10-07";
+// 2026-10-07b (same night, the bug hunt): what changed in hand for the band - the fade
+// keys, an untimed row, and a reviewed song going back to review when it is changed.
+const ROUND = "2026-10-07b";
 /** For tests that need "this device already read the current round". */
 export const WHATS_NEW_ROUND = ROUND;
 const KEY = "cueiq:whats-new-seen";
@@ -110,6 +112,19 @@ const phoneWeb = () =>
   window.matchMedia?.("(max-width: 1023px)").matches === true;
 
 const ITEMS: Item[] = [
+  {
+    text: "Live: ปุ่ม MC / Auto Mute / Auto Loudness ปรับเสียงเพลงที่กำลังดังอยู่ แม้คิวแถวถัดไปไว้แล้ว — ปรับแค่ช่วงนั้น เพลงกลับมาดังเท่าที่ตั้งไว้เมื่อเล่นรอบหน้า",
+    who: bandPeople,
+  },
+  {
+    text: "Live: แถวที่ไม่ได้ตั้งเวลา (0:00 เช่น ถ่ายรูป) ไม่ขึ้นเตือนเกินเวลาแล้ว — นับเวลาที่ใช้ขึ้นแทน",
+    who: bandPeople,
+  },
+  {
+    // only an editor changes a song's file or title (guard_song_update)
+    text: "คลังเพลง: เพลงที่ตรวจลิขสิทธิ์แล้ว ถ้าเปลี่ยนไฟล์เสียงหรือชื่อเพลง จะกลับไป “รอตรวจ” ให้แอดมินตรวจอีกครั้ง",
+    who: (r) => r.canEdit && r.canLibrary,
+  },
   {
     text: "ห้องซ้อม: เล่นทั้งเซ็ตแล้วเพลงซ้อนกันตาม “เล่นซ้อน” ในเซ็ตลิสต์ของงาน — เพลงถัดไปเข้าก่อนเพลงก่อนหน้าจบกี่วินาที เหมือนใน Live",
     who: (r) => r.canPractice,

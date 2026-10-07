@@ -295,13 +295,10 @@ describe("the 2026-10-07 round", () => {
   const OVERLAP = "ห้องซ้อม: เล่นทั้งเซ็ตแล้วเพลงซ้อนกัน";
   const SET_BUTTON = "ปุ่ม “ตั้งเล่นซ้อน”";
 
-  it("comes back on a device that closed the 2026-10-04 round, overlap first", async () => {
-    expect(WHATS_NEW_ROUND).toBe("2026-10-07");
+  it("still on the card for a device that closed the 2026-10-04 round", async () => {
     localStorage.setItem(KEY, "2026-10-04");
     await mount(false);
-    const card = screen.getByTestId("whats-new");
-    expect(card).toHaveTextContent(OVERLAP);
-    expect(whatsNewItems(MEMBER)[0]).toContain(OVERLAP);
+    expect(screen.getByTestId("whats-new")).toHaveTextContent(OVERLAP);
   });
 
   it("band people hear about the overlap; only editors about the button; staff about neither", () => {
@@ -311,5 +308,27 @@ describe("the 2026-10-07 round", () => {
     expect(has(whatsNewItems(ADMIN), SET_BUTTON)).toBe(true);
     expect(has(whatsNewItems({ ...MEMBER, canEdit: true }), SET_BUTTON)).toBe(true); // an Ar
     expect(has(whatsNewItems(STAFF), OVERLAP) || has(whatsNewItems(STAFF), SET_BUTTON)).toBe(false);
+  });
+});
+
+describe("the 2026-10-07b round (the bug hunt)", () => {
+  const FADE = "Live: ปุ่ม MC / Auto Mute / Auto Loudness";
+  const UNTIMED = "แถวที่ไม่ได้ตั้งเวลา";
+  const REVIEW = "กลับไป “รอตรวจ”";
+
+  it("comes back on a device that closed the 2026-10-07 round, the fade keys first", async () => {
+    expect(WHATS_NEW_ROUND).toBe("2026-10-07b");
+    localStorage.setItem(KEY, "2026-10-07");
+    await mount(false);
+    expect(screen.getByTestId("whats-new")).toHaveTextContent(FADE);
+    expect(whatsNewItems(MEMBER)[0]).toContain(FADE);
+  });
+
+  it("band people hear about Live; only those who change songs about review; staff about none", () => {
+    expect(has(whatsNewItems(MEMBER), FADE)).toBe(true);
+    expect(has(whatsNewItems(MEMBER), UNTIMED)).toBe(true);
+    expect(has(whatsNewItems(MEMBER), REVIEW)).toBe(false);
+    expect(has(whatsNewItems({ ...MEMBER, canEdit: true }), REVIEW)).toBe(true); // an Ar
+    expect(has(whatsNewItems(STAFF), FADE) || has(whatsNewItems(STAFF), REVIEW)).toBe(false);
   });
 });
