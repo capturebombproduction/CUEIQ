@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { FEEDBACK_IMAGE_FILE, isPresignOp, planPresign } from "@/lib/presign-authz";
+import { FEEDBACK_IMAGE_FILE, isOwnFeedbackImage, isPresignOp, planPresign } from "@/lib/presign-authz";
 import { FEEDBACK_IMAGE_EXTS, buildFeedbackImagePath } from "@/lib/audio-remote";
 
 // Nothing had ever tested the one door to the R2 bucket. These are the rules the
@@ -178,5 +178,23 @@ describe("the client builder and the server pattern agree", () => {
     const a = buildFeedbackImagePath(TENANT, ME, "a.png");
     const b = buildFeedbackImagePath(TENANT, ME, "a.png");
     expect(a).not.toBe(b);
+  });
+});
+
+describe("isOwnFeedbackImage · what a Dev Inbox delete may take with a note", () => {
+  it("a picture in the author's own feedback folder", () => {
+    expect(isOwnFeedbackImage(feedbackKey(TENANT, ME), ME)).toBe(true);
+    expect(isOwnFeedbackImage(feedbackKey(TENANT, ME.toUpperCase()), ME)).toBe(true);
+  });
+  it("never a band's audio, another author's picture, or a key of another shape", () => {
+    expect(isOwnFeedbackImage(`${TENANT}/${BAND}/songs/s-abc.wav`, ME)).toBe(false);
+    expect(isOwnFeedbackImage(feedbackKey(TENANT, SOMEONE_ELSE), ME)).toBe(false);
+    expect(isOwnFeedbackImage(feedbackKey(TENANT, ME, "notes.txt"), ME)).toBe(false);
+    expect(isOwnFeedbackImage(`${TENANT}/feedback/${ME}/x/abcd1234.png`, ME)).toBe(false);
+  });
+  it("a note whose author's account is gone (user_id NULL): its feedback pictures, never audio", () => {
+    expect(isOwnFeedbackImage(feedbackKey(TENANT, ME), null)).toBe(true);
+    expect(isOwnFeedbackImage(`${TENANT}/${BAND}/songs/s-abc.wav`, null)).toBe(false);
+    expect(isOwnFeedbackImage(`${TENANT}/${BAND}/e/abcd1234.png`, null)).toBe(false);
   });
 });

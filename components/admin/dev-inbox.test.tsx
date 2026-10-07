@@ -1,19 +1,20 @@
 // The Dev Inbox — where five real reports sat unanswered from 27 June to 31 August
 // because there was no way to answer them and no way to tell who had written one.
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, fireEvent, waitFor, cleanup } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, cleanup, within } from "@testing-library/react";
 import { makeSupabaseFake, ok, fail, anonEmpty, type SupabaseFake } from "@/test/fakes/supabase";
 
 const h = vi.hoisted(() => ({
   supa: null as unknown,
   notify: vi.fn(),
   fetchImage: vi.fn(async () => new Blob(["x"], { type: "image/png" })),
+  remove: vi.fn(async (key: string) => void key),
 }));
 vi.mock("@/lib/supabase/client", () => ({ createClient: () => h.supa }));
 vi.mock("@/lib/notify-client", () => ({ notify: h.notify }));
 vi.mock("@/lib/audio-remote", async (orig) => {
   const real = (await orig()) as Record<string, unknown>;
-  return { ...real, fetchImageBlob: h.fetchImage };
+  return { ...real, fetchImageBlob: h.fetchImage, removeEventAudio: h.remove };
 });
 
 import { ConfirmProvider } from "@/components/ui/confirm-dialog";
@@ -52,6 +53,7 @@ function mount(feedbackScript: unknown, names: Record<string, string> = {}) {
 beforeEach(() => {
   h.notify.mockClear();
   h.fetchImage.mockClear();
+  h.remove.mockClear();
 });
 afterEach(() => cleanup());
 
@@ -157,5 +159,26 @@ describe("attachments", () => {
     h.fetchImage.mockRejectedValueOnce(new Error("404"));
     mount(ok([report({ images: ["t/feedback/u/abcd1234abcd1234.png"] })]));
     expect(await screen.findByTestId("feedback-image-missing")).toBeTruthy();
+  });
+});
+
+describe("deleting a note", () => {
+  const TENANT = "11111111-1111-4111-8111-111111111111";
+  const BAND = "22222222-2222-4222-8222-222222222222";
+  const OTHER = "44444444-4444-4444-8444-444444444444";
+  const own = `${TENANT}/feedback/${AUTHOR}/abcd1234abcd1234.png`;
+  // what an author could put in their own row's images[] by hand
+  const master = `${TENANT}/${BAND}/songs/55555555-5555-4555-8555-555555555555-x1y2.wav`;
+  const someoneElses = `${TENANT}/feedback/${OTHER}/abcd1234abcd1234.png`;
+
+  it("deletes the author's own pictures with it - and nothing else the row names", async () => {
+    mount([ok([report({ images: [own, master, someoneElses] })]), ok([])]);
+    await screen.findByText(/งานมี 2 ชุด/);
+    fireEvent.click(screen.getByRole("button", { name: "ลบ" }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "ลบ" }));
+    await waitFor(() => expect(supa.callsTo("feedback", "delete")).toHaveLength(1));
+    await waitFor(() => expect(h.remove).toHaveBeenCalledTimes(1));
+    expect(h.remove).toHaveBeenCalledWith(own);
   });
 });

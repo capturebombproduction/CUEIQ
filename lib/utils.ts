@@ -17,5 +17,9 @@ export function safeInternalPath(
 ): string {
   if (!next || !next.startsWith("/")) return fallback;
   if (next.startsWith("//") || next.startsWith("/\\")) return fallback;
+  // The URL parser drops tab / CR / LF anywhere in a URL, so "/\t/evil.com" passes
+  // both checks above and still lands on //evil.com. No control character, ever.
+  // eslint-disable-next-line no-control-regex
+  if (/[\u0000-\u001f\u007f]/.test(next)) return fallback;
   return next;
 }

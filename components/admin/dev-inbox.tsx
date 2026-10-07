@@ -21,6 +21,7 @@ import { createClient } from "@/lib/supabase/client";
 import { noRowsMessage, wroteNothing } from "@/lib/write-guard";
 import { notify } from "@/lib/notify-client";
 import { removeEventAudio } from "@/lib/audio-remote";
+import { isOwnFeedbackImage } from "@/lib/presign-authz";
 import { FeedbackThumbs } from "@/components/feedback-thumbs";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
@@ -221,7 +222,13 @@ export function DevInbox({
     // setlist-builder); this path predates images and was missed when 0043 added
     // them. Best-effort — a failed cleanup must not stop the delete the admin asked
     // for, and "ลบถาวร" has to be true of the picture too.
-    const keys = fb.find((r) => r.id === id)?.images ?? [];
+    //
+    // ONLY keys in the author's own feedback folder. `images` is whatever the author
+    // inserted (the row is theirs to write), and this delete runs as the admin, whom
+    // the presign route lets delete any band's files - a song master's key in that
+    // list was deleted for good along with the note.
+    const row = fb.find((r) => r.id === id);
+    const keys = (row?.images ?? []).filter((k) => isOwnFeedbackImage(k, row?.user_id));
     setFb((p) => p.filter((r) => r.id !== id));
     await createClient().from("feedback").delete().eq("id", id);
     await Promise.allSettled(keys.map((k) => removeEventAudio(k)));

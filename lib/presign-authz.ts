@@ -24,6 +24,27 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
  *  a general file drop. */
 export const FEEDBACK_IMAGE_FILE = /^[a-z0-9]{4,64}\.(png|jpe?g|webp|gif|heic)$/i;
 
+/**
+ * Is `key` a picture in `authorId`'s own feedback folder -
+ * `<tenant>/feedback/<authorId>/<rand>.<ext>`? feedback.images is written by the
+ * note's author, so an admin acting on that list (the Dev Inbox delete) must not
+ * trust it to name only pictures: anything else in it is not that note's.
+ *
+ * A note whose author's account was deleted keeps user_id NULL (0027: on delete set
+ * null) - nobody can insert one, so its list is what that author wrote while the
+ * account lived. Any feedback picture then: still never a band's audio.
+ */
+export function isOwnFeedbackImage(key: string, authorId: string | null | undefined): boolean {
+  const segs = key.split("/");
+  return (
+    segs.length === 4 &&
+    UUID.test(segs[0]) &&
+    segs[1] === "feedback" &&
+    (authorId ? segs[2].toLowerCase() === authorId.toLowerCase() : UUID.test(segs[2])) &&
+    FEEDBACK_IMAGE_FILE.test(segs[3])
+  );
+}
+
 export type PresignOp = "get" | "put" | "delete";
 
 export type PresignPlan =
