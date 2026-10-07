@@ -4000,3 +4000,56 @@ describe("LiveMode · held and ducks across a reload, a reset and a loop's end",
     expect(JSON.parse(localStorage.getItem(VOL_KEY) ?? "{}")["item-1"] ?? 100).toBe(100);
   });
 });
+
+// 2026-10-07: CI caught it in the loop-BGM test above. The volume messages are spaced
+// 120 ms apart (real time), and a message held back by that gap kept its timer even
+// after a NEWER one went out - landing after it, so a viewer kept a stale level. Also
+// one held-back slot for every track: a second track's level dropped the first's.
+describe("LiveMode · the volume messages keep their order", () => {
+  let clock = 10_000;
+  beforeEach(() => {
+    clock = 10_000;
+    vi.spyOn(performance, "now").mockImplementation(() => clock);
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+  const volumeSends = () => live().sent.filter((x) => x.event === "volume").map((x) => x.payload);
+  const nowLevel = () => screen.getAllByTitle(/^ความดังของแทร็คนี้/)[0] as HTMLInputElement;
+  const nextLevel = () => screen.getByTitle(/^ตั้งระดับเสียงของเพลงถัดไปล่วงหน้า/) as HTMLInputElement;
+
+  it("a newer level of the same track is never overtaken by an older one held back", async () => {
+    await mountLive();
+    await startShowFromUi();
+    const before = volumeSends().length;
+    fireEvent.change(nowLevel(), { target: { value: "50" } }); // sent at once
+    clock += 50;
+    fireEvent.change(nowLevel(), { target: { value: "40" } }); // held back by the gap
+    clock += 150; // the held one's timer is late - this call comes first
+    fireEvent.change(nowLevel(), { target: { value: "20" } });
+    await act(async () => {
+      vi.advanceTimersByTime(500);
+    });
+    const sent = volumeSends().slice(before).map((p) => p.target);
+    expect(sent.at(-1)).toBe(20);
+    expect(sent).not.toContain(40);
+  });
+
+  it("a held-back level of another track still goes out - and before the newer one", async () => {
+    await mountLive();
+    await startShowFromUi();
+    const before = volumeSends().length;
+    fireEvent.change(nowLevel(), { target: { value: "50" } }); // track 1, sent at once
+    clock += 50;
+    fireEvent.change(nextLevel(), { target: { value: "70" } }); // track 2, held back
+    clock += 30;
+    fireEvent.change(nowLevel(), { target: { value: "45" } }); // track 1 again, held back too
+    clock += 150;
+    fireEvent.change(nextLevel(), { target: { value: "60" } }); // track 2, at once
+    await act(async () => {
+      vi.advanceTimersByTime(500);
+    });
+    const sent = volumeSends().slice(before).map((p) => `${p.itemId}=${p.target}`);
+    expect(sent).toEqual(["item-1=50", "item-1=45", "item-2=60"]);
+  });
+});

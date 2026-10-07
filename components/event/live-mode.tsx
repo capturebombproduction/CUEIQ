@@ -402,8 +402,9 @@ export function LiveMode({
   const volBcastRef = useRef<{
     last: number;
     timer: ReturnType<typeof setTimeout> | null;
-    pending: { itemId: string; target: number; ms: number } | null;
-  }>({ last: 0, timer: null, pending: null });
+    /** the messages waiting out the gap - one per track, the newest for each */
+    pending: Map<string, { itemId: string; target: number; ms: number }>;
+  }>({ last: 0, timer: null, pending: new Map() });
   // tracks which "currentId→nextId" pair already had auto-trigger fired
   const autoTriggeredForRef = useRef<string | null>(null);
   // tracks which item already triggered an auto-advance (no-audio items)
@@ -2637,16 +2638,28 @@ export function LiveMode({
     const now = performance.now();
     const GAP = 120;
     if (now - r.last >= GAP) {
+      // What still waits is OLDER than this: it goes first, and its timer goes - left
+      // behind, it landed AFTER this one and a viewer kept the stale level (the timer's
+      // task can run late, behind the very call that outdates it). The same track's
+      // older level is simply superseded.
+      if (r.timer) {
+        clearTimeout(r.timer);
+        r.timer = null;
+      }
+      for (const p of r.pending.values()) if (p.itemId !== itemId) send(p);
+      r.pending.clear();
       r.last = now;
       send({ itemId, target, ms });
     } else {
-      r.pending = { itemId, target, ms };
+      // one per track, newest wins: a second track's level no longer drops the first's
+      r.pending.delete(itemId);
+      r.pending.set(itemId, { itemId, target, ms });
       if (!r.timer) {
         r.timer = setTimeout(() => {
           r.timer = null;
           r.last = performance.now();
-          if (r.pending) send(r.pending);
-          r.pending = null;
+          for (const p of r.pending.values()) send(p);
+          r.pending.clear();
         }, GAP - (now - r.last));
       }
     }
