@@ -154,6 +154,24 @@ async function pressUpdate({ state, recheck, download, install }) {
   if (s === "ready") await install();
 }
 
+/**
+ * Mac: an in-app update of `latest` that already failed this session goes the .dmg route,
+ * however often the feed is read again - its swap on the disk (`swapFailed`, { version,
+ * dmg, result }) or its staging from the checked .dmg (`stageFailed`, { version, dmg }).
+ * Returns { blocker, dmg } for that route, or null. Forgetting the staging failure on a
+ * re-check (every press re-checks first - pressUpdate) sent each press to download the
+ * same ~100 MB again and fail the same way, instead of opening the .dmg already on disk.
+ */
+function macFailedRoute(latest, swapFailed, stageFailed) {
+  if (swapFailed && swapFailed.version === latest) {
+    return { blocker: "swap-failed", dmg: swapFailed.dmg ?? null };
+  }
+  if (stageFailed && stageFailed.version === latest) {
+    return { blocker: "stage", dmg: stageFailed.dmg ?? null };
+  }
+  return null;
+}
+
 module.exports = {
   REPO,
   LATEST_YML_URL,
@@ -172,4 +190,5 @@ module.exports = {
   RECHECK_STATES,
   shouldRecheck,
   pressUpdate,
+  macFailedRoute,
 };

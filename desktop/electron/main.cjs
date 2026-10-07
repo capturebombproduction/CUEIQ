@@ -364,6 +364,9 @@ let macReopen = false;
 /** Mac: the last in-app swap failed on the disk (permissions, App Management, …) — that
  *  version goes the .dmg route from then on ({ version, dmg, result }). */
 let macSwapFailed = null;
+/** Mac: staging this version from its checked .dmg failed - it goes the .dmg route too
+ *  ({ version, dmg }); see update-feed.cjs macFailedRoute. */
+let macStageFailed = null;
 /** Mac: the OS is logging out / shutting down — never start a swap it would kill. */
 let systemShuttingDown = false;
 const UPDATE_PENDING_FILE = () => path.join(app.getPath("userData"), "update-pending.json");
@@ -450,8 +453,8 @@ async function checkMacFeed() {
     return;
   }
   const asset = updateFeed.macAssetFor(feed, process.arch, rosetta);
-  const failedBefore = macSwapFailed && macSwapFailed.version === latest ? macSwapFailed : null;
-  macBlocker = failedBefore ? "swap-failed" : asset ? macSelfUpdateBlocker() : "no-feed";
+  const failedBefore = updateFeed.macFailedRoute(latest, macSwapFailed, macStageFailed);
+  macBlocker = failedBefore ? failedBefore.blocker : asset ? macSelfUpdateBlocker() : "no-feed";
   macPlan = macBlocker
     ? null
     : {
@@ -591,6 +594,7 @@ async function macDownload(plan) {
     macPlan = null;
     macBlocker = "stage";
     macLocalDmg = dmg;
+    macStageFailed = { version: plan.version, dmg }; // a re-check keeps this route
     setUpdateState({ state: "available", percent: null, manual: true });
     const { response } = await backgroundNotice({
       type: "warning",

@@ -28,6 +28,11 @@ const feed = require("../../electron/update-feed.cjs") as {
   macBundleBlocker: (p: string | null) => string | null;
   RECHECK_STATES: string[];
   shouldRecheck: (s: string) => boolean;
+  macFailedRoute: (
+    latest: string,
+    swapFailed: { version: string; dmg?: string | null } | null,
+    stageFailed: { version: string; dmg?: string | null } | null
+  ) => { blocker: string; dmg: string | null } | null;
   pressUpdate: (d: {
     state: () => string;
     recheck: () => Promise<unknown>;
@@ -257,5 +262,28 @@ describe("main.cjs uses them", () => {
   it("the 6-hour re-check asks shouldRecheck", () => {
     expect(body("function initAutoUpdate()")).toContain("updateFeed.shouldRecheck(updateState.state)");
   });
+  it("the feed check keeps a failed version on the .dmg route, and a failed staging is recorded", () => {
+    expect(body("async function checkMacFeed()")).toContain(
+      "updateFeed.macFailedRoute(latest, macSwapFailed, macStageFailed)"
+    );
+    expect(body("async function macDownload(")).toContain("macStageFailed = { version: plan.version, dmg }");
+  });
 });
 
+// 2026-10-07 review: a staging failure was forgotten by the re-check every press makes
+// first, so each press downloaded the same .dmg again instead of opening the one on disk.
+describe("macFailedRoute", () => {
+  const dmg = "/Users/x/Library/Caches/cueiq/CueIQ-0.1.34-arm64.dmg";
+  it("a version whose staging failed stays on the .dmg route, with the file on disk", () => {
+    expect(feed.macFailedRoute("0.1.34", null, { version: "0.1.34", dmg })).toEqual({ blocker: "stage", dmg });
+  });
+  it("a failed swap wins, as before", () => {
+    expect(
+      feed.macFailedRoute("0.1.34", { version: "0.1.34", dmg: null }, { version: "0.1.34", dmg })
+    ).toEqual({ blocker: "swap-failed", dmg: null });
+  });
+  it("a NEWER version is tried in the app again", () => {
+    expect(feed.macFailedRoute("0.1.35", { version: "0.1.34" }, { version: "0.1.34", dmg })).toBeNull();
+    expect(feed.macFailedRoute("0.1.34", null, null)).toBeNull();
+  });
+});
