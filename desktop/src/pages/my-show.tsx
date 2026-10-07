@@ -513,7 +513,12 @@ export function MyShow() {
             }
             if (Object.keys(now).length) setVolumes((v) => ({ ...v, ...now }));
           }
-          if (stale && !snap.ended) {
+          if (snap.ended) {
+            // its clock is frozen where จบโชว์ left it - nothing "carries on"
+            toast.message("กู้คืนโชว์ที่จบไปแล้ว", {
+              description: "เวลาหยุดไว้ตามที่จบ — กดรีเซ็ตถ้าจะเริ่มรอบใหม่",
+            });
+          } else if (stale) {
             toast.message("กู้คืนโชว์ที่ค้างไว้ — หยุดรอไว้ก่อน", {
               description: `ค้างมานานเกิน ${STALE_RESTORE_MS / 60_000} นาที เพลงจะไม่เล่นเอง — กดเล่นเมื่อพร้อม หรือกดรีเซ็ตถ้าจะเริ่มใหม่`,
             });

@@ -569,8 +569,11 @@ export function LiveMode({
           // this run last heard it RUNNING, and a restore is not a broadcast
           announceRestoreRef.current = true;
           // held: gone too long now, or already held when it was written (a held page's
-          // snapshot is kept fresh by the alive re-write, so its age says nothing)
-          const held = (stale || snap.held === true) && !snap.ended;
+          // snapshot is kept fresh by the alive re-write, so its age says nothing). An
+          // ENDED show is held the same: a rehearsal closed after its จบโชว์ this afternoon
+          // is the very run that must not take the PA tonight, and จบโชว์ on a held page
+          // used to come back unheld at the next reload, with MAIN.
+          const held = stale || snap.held === true;
           if (held) {
             restoreHeldRef.current = true;
             setRestoreHeld(true);
@@ -604,7 +607,12 @@ export function LiveMode({
           // ended:false and re-light the wake lock on every phone that had
           // already gone to sleep, with no controller left to correct it.
           if (snap.ended) markShowEnded(true);
-          if (held) {
+          if (snap.ended) {
+            // its clock is frozen where จบโชว์ left it - nothing "carries on"
+            toast.message("กู้คืนโชว์ที่จบไปแล้ว", {
+              description: "เวลาหยุดไว้ตามที่จบ — กดรีเซ็ตถ้าจะเริ่มรอบใหม่",
+            });
+          } else if (held) {
             toast.message("กู้คืนโชว์ที่ค้างไว้ — หยุดรอไว้ก่อน", {
               description: `ค้างมานานเกิน ${STALE_RESTORE_MS / 60_000} นาที เพลงจะไม่เล่นเอง — กดเล่นเมื่อพร้อม หรือกดรีเซ็ตถ้าจะเริ่มใหม่`,
             });
@@ -1537,9 +1545,10 @@ export function LiveMode({
             : null;
       // A HELD run (restoreHeld on that device: back from a long gap, paused, nobody has
       // pressed play) takes no page that was not already watching it - not an idle PA as
-      // a viewer, not a running show into a two-runs warning. An idle page is told once.
+      // a viewer, not a running show into a two-runs warning. An idle page is told once -
+      // unless that run has ended: nothing is left to reset there.
       if (payload.held === true && theirBegun && theirRun != null && followingRunRef.current !== theirRun) {
-        if (!stateRef.current.begun && !heldNotedRef.current.has(theirRun)) {
+        if (!stateRef.current.begun && !payload.ended && !heldNotedRef.current.has(theirRun)) {
           heldNotedRef.current.add(theirRun);
           const who = typeof payload.deviceLabel === "string" ? payload.deviceLabel : "เครื่องอื่น";
           toast.message(`“${who}” มีโชว์ค้างไว้ (หยุดอยู่)`, {

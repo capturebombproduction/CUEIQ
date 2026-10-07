@@ -44,6 +44,7 @@ vi.mock("@/lib/audio-store", () => ({
   deleteAudio: vi.fn(async () => {}),
 }));
 
+import { toast } from "sonner";
 import { LiveMode } from "./live-mode";
 import { deleteAudio } from "@/lib/audio-store";
 import { OfflineBanner } from "@/components/offline-banner";
@@ -3729,6 +3730,31 @@ describe("LiveMode · a run restored paused after a long gap holds nobody until 
     expect(screen.getByTestId("start-show")).toBeEnabled();
   });
 
+  it("an idle page is told about a held run - not about one that has ended", async () => {
+    const note = vi.spyOn(toast, "message");
+    const told = () => note.mock.calls.filter(([m]) => String(m).includes("มีโชว์ค้างไว้")).length;
+    try {
+      await mountLive();
+      await act(async () => {
+        live().setStatus("SUBSCRIBED");
+      });
+      await act(async () => {
+        live().emit("state", heldState(Date.now() - 4 * 60 * 60 * 1000, { ended: true }));
+      });
+      expect(told()).toBe(0);
+      await act(async () => {
+        live().emit("state", heldState(Date.now() - 5 * 60 * 60 * 1000)); // another run, not ended
+      });
+      expect(told()).toBe(1);
+      await act(async () => {
+        vi.advanceTimersByTime(2_000);
+      });
+      expect(screen.getByTestId("start-show")).toBeEnabled();
+    } finally {
+      note.mockRestore();
+    }
+  });
+
   it("a running show is not dragged into a two-runs warning by it", async () => {
     await mountLive();
     const ts = await startShowFromUi();
@@ -3875,6 +3901,66 @@ describe("LiveMode · held and ducks across a reload, a reset and a loop's end",
     });
     expect(stateSends().at(-1)!.payload.held).toBe(true);
     expect(supa.callsTo("show_authority", "upsert")).toHaveLength(0);
+  });
+
+  // 2026-10-08: the restore held a show only while it had NOT ended, so จบโชว์ on a held
+  // page came back unheld at the next reload - claiming MAIN, taking an idle PA as a viewer.
+  it("จบโชว์ on a held page, then a reload: still held, still ended, no MAIN", async () => {
+    seedSnapshot(staleSnap());
+    const first = await mountLive();
+    await act(async () => {
+      vi.advanceTimersByTime(1_000);
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("end-show"));
+    });
+    const written = JSON.parse(localStorage.getItem(SNAPSHOT_KEY)!);
+    expect(written.ended).toBe(true);
+    expect(written.held).toBe(true);
+    first.unmount();
+    supa = makeSupabaseFake({
+      session: makeSession(),
+      script: { setlist_items: ok(ITEMS), songs: ok([]), show_authority: ok([]) },
+    });
+    h.supa = supa;
+    await mountLive();
+    await act(async () => {
+      live().setStatus("SUBSCRIBED");
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(2_000);
+    });
+    const last = stateSends().at(-1)!.payload;
+    expect(last.held).toBe(true);
+    expect(last.ended).toBe(true);
+    expect(supa.callsTo("show_authority", "upsert")).toHaveLength(0);
+  });
+
+  it("a rehearsal ended and closed hours ago comes back held - and says it ended", async () => {
+    const note = vi.spyOn(toast, "message");
+    try {
+      const savedAt = Date.now() - 3 * 60 * 60 * 1000;
+      seedSnapshot({
+        state: { running: false, begun: true, startedAt: savedAt - 300_000, itemStartedAt: null, itemElapsedAtPause: 50, currentIndex: 0, mode: "manual" },
+        ended: true,
+        controllerSince: savedAt - 300_000,
+        savedAt,
+      });
+      await mountLive();
+      await act(async () => {
+        live().setStatus("SUBSCRIBED");
+      });
+      await act(async () => {
+        vi.advanceTimersByTime(2_000);
+      });
+      expect(stateSends().at(-1)!.payload.held).toBe(true);
+      expect(supa.callsTo("show_authority", "upsert")).toHaveLength(0);
+      const titles = note.mock.calls.map(([m]) => String(m));
+      expect(titles).toContain("กู้คืนโชว์ที่จบไปแล้ว");
+      expect(titles.some((m) => m.includes("หยุดรอไว้ก่อน") || m === "กู้คืนสถานะโชว์ที่ค้างไว้")).toBe(false);
+    } finally {
+      note.mockRestore();
+    }
   });
 
   it("a reload mid-MC comes back ducked - and the song's own level is still what is saved", async () => {
