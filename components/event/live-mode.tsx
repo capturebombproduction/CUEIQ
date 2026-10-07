@@ -606,7 +606,15 @@ export function LiveMode({
           // would answer the next sync-request with fromController:true,
           // ended:false and re-light the wake lock on every phone that had
           // already gone to sleep, with no controller left to correct it.
-          if (snap.ended) markShowEnded(true);
+          if (snap.ended) {
+            // The encore hold does not survive a reload: it comes back already over (held,
+            // no MAIN). Inside the hold a reloaded page claimed MAIN before it could hear
+            // whether another device runs a show - a phone woken at the venue wrote over
+            // the PA's row - and a second tab of the same run, giving way, deleted the
+            // first tab's row (one device id per browser). The hold's effect, later in
+            // this same effect pass, reads it off the ref - so no MAIN even for a moment.
+            markShowEnded(true, 0);
+          }
           if (snap.ended) {
             // nothing "carries on": its run time was saved when จบโชว์ was pressed
             toast.message("กู้คืนโชว์ที่จบไปแล้ว", {
@@ -1355,10 +1363,45 @@ export function LiveMode({
    *  broadcasts in the same tick, and statePayload reads the ref — a React state
    *  update is still the old value by then, so a fresh เริ่มโชว์ would announce
    *  "the show is over" to every viewer the instant it started. */
-  function markShowEnded(v: boolean) {
+  function markShowEnded(v: boolean, at: number = Date.now()) {
     showEndedRef.current = v;
     setShowEnded(v);
+    // the first moment it was over - a viewer re-told "ended" keeps the first
+    endedAtRef.current = v ? (endedAtRef.current ?? at) : null;
+    // un-ended in the same tick its broadcast goes out (the encore's START) - not held
+    if (!v) endedLongRef.current = false;
   }
+  // An ended show holds MAIN on for STALE_RESTORE_MS, then lets go. A page left open since
+  // the afternoon's rehearsal must not refuse the PA's START at night, nor take an idle PA
+  // as a viewer; but a show ended a moment ago has an encore to come, and a phone opening
+  // in that gap must not start a second run (nor a mis-tapped จบโชว์ drop MAIN). Once the
+  // hold is over, the ended run is HELD like a stale restore (statePayload's `held`). The
+  // hold lives with this page only - a reload brings an ended show back with it over.
+  const endedAtRef = useRef<number | null>(null);
+  const [endedLong, setEndedLong] = useState(false);
+  const endedLongRef = useRef(false);
+  /** The hold is over: no MAIN, and this run goes out held from now on. Also what an
+   *  ended show does early when another device has the show (see its two callers). */
+  function endEncoreHold() {
+    endedLongRef.current = true;
+    setEndedLong(true);
+  }
+  useEffect(() => {
+    // the ref, not the state: on mount the restore (an earlier effect of this same pass)
+    // may have just ended the show, and this pass still sees the first render's false
+    if (!showEndedRef.current) {
+      endedLongRef.current = false;
+      setEndedLong(false);
+      return;
+    }
+    const left = (endedAtRef.current ?? 0) + STALE_RESTORE_MS - Date.now();
+    if (left <= 0) {
+      endEncoreHold();
+      return;
+    }
+    const id = setTimeout(endEncoreHold, left);
+    return () => clearTimeout(id);
+  }, [showEnded]);
   const wakeLockRef = useRef<WakeLockSentinel | null>(null);
   useEffect(() => {
     if (!state.begun || showEnded) {
@@ -1429,33 +1472,44 @@ export function LiveMode({
   // claims show_main again for this device - set while it is the begun controller
   const reclaimMainRef = useRef<(() => void) | null>(null);
   useEffect(() => {
-    // An ENDED show holds no MAIN either - another device's refused START tells its
-    // operator to press จบโชว์ here, and จบโชว์ used to leave the claim and its heartbeat
-    // in place until a reset. Playing on (an encore) claims it again.
-    if (!(isController && state.begun) || restoreHeld || showEnded) return;
+    // A show ENDED longer ago than the encore hold (endedLong) holds no MAIN either: a page
+    // left open since the rehearsal kept the claim and its heartbeat until a reset, and
+    // refused the PA's START at night. Playing on claims it again.
+    if (!(isController && state.begun) || restoreHeld || endedLong) return;
     const tenantId = itemsRef.current[0]?.tenant_id;
     if (!tenantId) return; // no setlist → nothing to run / claim
     const did = deviceIdRef.current;
     const info = { deviceId: did, deviceLabel: deviceLabel() };
     claimAuthority(tenantId, eventId, "show_main", info);
     reclaimMainRef.current = () => claimAuthority(tenantId, eventId, "show_main", info);
+    let current = true;
     const hb = setInterval(() => {
       // A heartbeat that touched no row means the row is gone or another device's: a
       // START that lost to this show upserted over it, then deleted "its" row as it
       // stepped down. This device is still the show, so it claims the row back -
       // otherwise START elsewhere would stop being refused, and the MAIN chip vanish.
       heartbeatAuthority(eventId, "show_main", did).then((touched) => {
-        if (touched === false) claimAuthority(tenantId, eventId, "show_main", info);
+        // answered after this claim was let go (a reset, the hold's end): it claims nothing
+        if (!current || touched !== false) return;
+        // An ENDED show steps aside instead: the phone that ended it slept (the wake lock
+        // goes with จบโชว์), its heartbeat lapsed, the PA started the real show - waking
+        // inside the hold, it took MAIN back every 30 s.
+        if (showEndedRef.current) {
+          endEncoreHold();
+          return;
+        }
+        claimAuthority(tenantId, eventId, "show_main", info);
       });
     }, 30000);
     return () => {
+      current = false;
       reclaimMainRef.current = null;
       clearInterval(hb);
       // only deletes if WE still hold it — a hand-off that already moved the row to
       // the new main is left intact (releaseAuthority matches on our device_id).
       releaseAuthority(eventId, "show_main", did);
     };
-  }, [isController, state.begun, eventId, restoreHeld, showEnded]);
+  }, [isController, state.begun, eventId, restoreHeld, endedLong]);
 
   // negative buffer (Auto): pre-roll the NEXT track on the secondary element so it
   // overlaps the current one — current keeps playing, next "เล่นสวนขึ้นมา" |lead| sec early.
@@ -1559,6 +1613,19 @@ export function LiveMode({
           });
         }
         return;
+      }
+      // A show that ENDED here steps aside the moment another run is up (not a copy of its
+      // own on a second tab): its encore hold is over, so its answers go out held and the
+      // running device is not dragged into a two-runs warning - its จบโชว์ locked - by a
+      // show that is over.
+      if (
+        theirBegun &&
+        isControllerRef.current &&
+        showEndedRef.current &&
+        !endedLongRef.current &&
+        theirRun !== controllerSinceRef.current
+      ) {
+        endEncoreHold();
       }
       // Another device says it controls: settle who does (lib/live-arbitration.ts - the
       // device that STARTED the show keeps it, พี่ 2026-10-04). Before any show nobody
@@ -1946,8 +2013,9 @@ export function LiveMode({
       // when this page opened: the same run on two tabs stays with the first
       openedAt: openedAtRef.current,
       // a show restored paused after a long gap that nobody has played yet (restoreHeld),
-      // or one that has ended: either way it takes no page not already watching it
-      held: isControllerRef.current && (restoreHeldRef.current || showEndedRef.current) ? true : undefined,
+      // or one ended longer ago than the encore hold: either way it takes no page not
+      // already watching it
+      held: isControllerRef.current && (restoreHeldRef.current || endedLongRef.current) ? true : undefined,
       ...audioFields(s),
     };
   }
@@ -3314,7 +3382,8 @@ export function LiveMode({
         // reset it to the first song and take its sound away, so this is refused, not
         // confirmed. A holder whose heartbeat has gone stale is not counted (isGhost).
         toast.warning(`โชว์กำลังรันอยู่บนเครื่อง “${holder}”`, {
-          description: "เครื่องนี้ดูได้อย่างเดียว — ถ้าจะเริ่มใหม่ ให้กดจบโชว์/รีเซ็ตที่เครื่องนั้นก่อน",
+          // not "จบโชว์": a show ended a moment ago keeps MAIN through its encore hold
+          description: "เครื่องนี้ดูได้อย่างเดียว — ถ้าจะเริ่มใหม่ ให้กดรีเซ็ตที่เครื่องนั้นก่อน",
         });
         return;
       }

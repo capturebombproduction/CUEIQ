@@ -3795,33 +3795,202 @@ describe("LiveMode · a run restored paused after a long gap holds nobody until 
 });
 
 // 2026-10-08 review: จบโชว์ left MAIN (and its heartbeat) on the device until a reset, so
-// another device's START stayed refused - with a message telling its operator to press
-// จบโชว์ on that device - and an idle page that opened became a viewer of a show that was
-// over. A second จบโชว์ saved the run plus the time since (the show clock runs on).
+// a page left open since the afternoon's rehearsal refused the PA's START at night, and an
+// idle page that opened became a viewer of a show that was over. Letting go AT จบโชว์ (as
+// 723ec35 did) opened the encore gap instead: a phone opening then could start a second
+// run. So an ended show holds MAIN for STALE_RESTORE_MS, then lets go. A second จบโชว์
+// saved the run plus the time since (the show clock runs on).
 describe("LiveMode · an ended show holds nothing, and records its run once", () => {
-  it("จบโชว์ lets go of MAIN and takes nobody new - playing on claims it again", async () => {
+  const claims = () => supa.callsTo("show_authority", "upsert").length;
+  const releases = () => supa.callsTo("show_authority", "delete").length;
+  const askState = async () => {
+    await act(async () => {
+      live().emit("sync-request", { sender: "phone-just-opened" });
+    });
+    return stateSends().at(-1)!.payload;
+  };
+  // a heartbeat touches this device's own row (the fake's default ok([]) reads as "the row
+  // is gone or another device's" on every beat)
+  const ownRowStays = () =>
+    supa.setTable("show_authority", (call) => (call.verb === "update" ? ok([{ event_id: EVENT_ID }]) : ok([])));
+  beforeEach(() => {
+    ownRowStays();
+  });
+
+  it("จบโชว์ keeps MAIN through the encore hold, then lets go and takes nobody new", async () => {
     await mountLive();
     await startShowFromUi();
-    const claims = () => supa.callsTo("show_authority", "upsert").length;
     expect(claims()).toBeGreaterThan(0);
     await act(async () => {
       fireEvent.click(screen.getByTestId("end-show"));
     });
-    expect(supa.callsTo("show_authority", "delete").length).toBeGreaterThan(0);
-    const last = stateSends().at(-1)!.payload;
-    expect(last.ended).toBe(true);
-    expect(last.held).toBe(true);
+    const r0 = releases();
+    await act(async () => {
+      vi.advanceTimersByTime(9 * 60_000); // the encore gap: still the show
+    });
+    expect(releases()).toBe(r0);
+    let said = await askState();
+    expect(said.ended).toBe(true);
+    expect(said.held).toBeUndefined();
+    await act(async () => {
+      vi.advanceTimersByTime(60_000 + 1_000); // the hold is over
+    });
+    expect(releases()).toBeGreaterThan(r0);
+    said = await askState();
+    expect(said.held).toBe(true);
     const after = claims();
     await act(async () => {
       vi.advanceTimersByTime(65_000); // two heartbeats' worth: none claims it back
     });
     expect(claims()).toBe(after);
     await act(async () => {
-      fireEvent.click(screen.getByTestId("run-toggle")); // the encore
+      fireEvent.click(screen.getByTestId("run-toggle")); // played on, long after
     });
     expect(stateSends().at(-1)!.payload.held).toBeUndefined();
     expect(claims()).toBeGreaterThan(after);
   });
+
+  it("a mis-tapped จบโชว์ then play: MAIN is never let go, nothing goes out held", async () => {
+    await mountLive();
+    await startShowFromUi();
+    const r0 = releases();
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("end-show"));
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(3_000);
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("run-toggle"));
+    });
+    expect(releases()).toBe(r0);
+    expect(stateSends().some((s) => s.payload.held === true)).toBe(false);
+  });
+
+  // the snapshot of a show that ended an hour in, its page alive until a moment ago
+  const endedSnap = () => ({
+    state: { running: false, begun: true, startedAt: Date.now() - 3_600_000, itemStartedAt: null, itemElapsedAtPause: 50, currentIndex: 0, mode: "manual" },
+    ended: true,
+    controllerSince: Date.now() - 3_600_000,
+    savedAt: Date.now() - 20_000,
+  });
+
+  // the hold lives with the page: reloaded inside it, a page claimed MAIN before it could
+  // hear the PA (a phone woken at the venue wrote over the PA's row), and a second tab of
+  // the same run, giving way, deleted the first tab's row (one device id per browser)
+  it("an ended page that reloads claims no MAIN at all - not even for a moment - and goes out held", async () => {
+    seedSnapshot(endedSnap());
+    await mountLive();
+    await act(async () => {
+      live().setStatus("SUBSCRIBED");
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(2_000);
+    });
+    expect(claims()).toBe(0);
+    expect(stateSends().at(-1)!.payload.held).toBe(true);
+  });
+
+  it("inside its hold, an ended show whose MAIN another device took while it slept steps aside", async () => {
+    await mountLive();
+    await startShowFromUi();
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("end-show"));
+    });
+    const c0 = claims();
+    supa.setTable("show_authority", ok([])); // its row is the PA's now
+    await act(async () => {
+      vi.advanceTimersByTime(31_000);
+    });
+    expect(claims()).toBe(c0);
+    expect((await askState()).held).toBe(true);
+  });
+
+  it("inside its hold, an ended show steps aside when another device runs a show", async () => {
+    await mountLive();
+    const ts = await startShowFromUi();
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("end-show"));
+    });
+    const r0 = releases();
+    await act(async () => {
+      live().emit("state", {
+        sender: "pa-device",
+        sentAt: Date.now(),
+        fromController: true,
+        begun: true,
+        running: true,
+        startedAt: Date.now() - 5_000,
+        itemStartedAt: Date.now() - 5_000,
+        itemElapsedAtPause: null,
+        currentIndex: 0,
+        mode: "manual",
+        controllerSince: ts + 60_000,
+        run: ts + 60_000,
+        ended: false,
+      });
+    });
+    expect(releases()).toBeGreaterThan(r0);
+    expect((await askState()).held).toBe(true);
+  });
+
+  it("inside its hold, its own run on another tab does not make it step aside", async () => {
+    await mountLive();
+    const ts = await startShowFromUi();
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("end-show"));
+    });
+    const r0 = releases();
+    await act(async () => {
+      live().emit("state", {
+        sender: "second-tab",
+        sentAt: Date.now(),
+        fromController: true,
+        begun: true,
+        running: false,
+        startedAt: ts,
+        itemStartedAt: null,
+        itemElapsedAtPause: 50,
+        currentIndex: 0,
+        mode: "manual",
+        controllerSince: ts,
+        run: ts,
+        ended: true,
+        openedAt: Date.now(), // opened after this page: it is the one that gives way
+      });
+    });
+    expect(releases()).toBe(r0);
+    expect((await askState()).held).toBeUndefined();
+  });
+
+  it("a heartbeat that answers after a reset claims nothing back", async () => {
+    let answer: (() => void) | null = null;
+    await mountLive();
+    await startShowFromUi();
+    // the next beat hangs, then says "not your row"
+    supa.setTable("show_authority", (call) =>
+      call.verb === "update"
+        ? new Promise((resolve) => {
+            answer = () => resolve(ok([]));
+          })
+        : ok([])
+    );
+    await act(async () => {
+      vi.advanceTimersByTime(30_000);
+    });
+    expect(answer).not.toBeNull();
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("reset"));
+    });
+    confirm.mockRestore();
+    const c0 = claims();
+    await act(async () => {
+      answer!();
+    });
+    expect(claims()).toBe(c0);
+  });
+
 
   it("จบโชว์ records the run once - a second press is not possible", async () => {
     await mountLive();
