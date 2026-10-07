@@ -1,4 +1,5 @@
 import webpush from "web-push";
+import { isPushServiceEndpoint } from "@/lib/push-endpoint";
 
 /**
  * Server-only Web Push helper. VAPID keys identify our app to the browser push
@@ -49,6 +50,9 @@ export async function sendPush(
   sub: PushSub,
   payload: object
 ): Promise<"ok" | "gone" | "error"> {
+  // Only ever a real push service (lib/push-endpoint.ts): the endpoint is the client's
+  // to write. Not "gone" - a host this list does not know yet is never pruned.
+  if (!isPushServiceEndpoint(sub.endpoint)) return "error";
   ensure();
   try {
     await webpush.sendNotification(

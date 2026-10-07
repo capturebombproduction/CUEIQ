@@ -29,11 +29,16 @@ const h = vi.hoisted(() => ({
   roleFilters: [] as unknown[][],
   /** what the events lookup returns (event_submitted only) */
   eventStatus: "pending_review",
+  /** the songs lookup's copyright_status */
+  songStatus: "pending",
+  /** can_view_group under the CALLER's session */
+  canView: true as boolean,
 }));
 
 vi.mock("@/lib/supabase/server", () => ({
   createClient: async () => ({
     auth: { getUser: async () => ({ data: { user: { id: "caller" } } }) },
+    rpc: async (fn: string) => ({ data: fn === "can_view_group" ? h.canView : null, error: null }),
   }),
 }));
 vi.mock("@/lib/supabase/admin", () => ({
@@ -53,7 +58,7 @@ function table(name: string) {
         title: "Plus One",
         group_id: "band-1",
         tenant_id: "tenant-1",
-        copyright_status: "pending",
+        copyright_status: h.songStatus,
         groups: { name: "Seishin Kakumei" },
       };
     if (name === "events")
@@ -122,6 +127,8 @@ beforeEach(() => {
   h.queried = [];
   h.roleFilters = [];
   h.eventStatus = "pending_review";
+  h.songStatus = "pending";
+  h.canView = true;
 });
 
 describe("song_pending goes to the admins, who can open the Library", () => {
@@ -177,5 +184,38 @@ describe("the other approver kind keeps its audience and its link", () => {
       "staff-b": "/overview",
     });
     expect(h.queried).not.toContain("setlist_items");
+  });
+});
+
+// 2026-10-07: a reviewed song the band changed goes back to pending (0047) - and says so.
+describe("song_resubmitted", () => {
+  it("goes to the admins, to the Library, saying the reviewed song was changed", async () => {
+    const { links } = await send({ kind: "song_resubmitted", songId: "song-1" });
+    expect(Object.keys(links).sort()).toEqual(["admin-1", "admin-2"]);
+    expect(links["admin-1"]).toBe("/library");
+    expect(String(h.inserted[0].title)).toContain("ถูกแก้");
+  });
+  it("needs the song to really be pending again", async () => {
+    h.songStatus = "cleared";
+    await send({ kind: "song_resubmitted", songId: "song-1" });
+    expect(h.inserted).toEqual([]);
+  });
+});
+
+// 2026-10-07 review: a member of ANOTHER band could re-send a true notice about a show
+// or a song that is not theirs.
+describe("the caller must be able to see the band", () => {
+  it("someone who cannot see the band is refused, and nothing is written", async () => {
+    h.canView = false;
+    h.eventStatus = "approved";
+    const res = await POST(
+      new Request("http://localhost/api/notify", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ kind: "event_approved", eventId: "ev-1" }),
+      })
+    );
+    expect(res.status).toBe(403);
+    expect(h.inserted).toEqual([]);
   });
 });

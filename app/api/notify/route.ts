@@ -23,13 +23,14 @@ type Kind =
   | "event_approved" // → the band's Ar(s)
   | "event_rejected" // → the band's Ar(s)
   | "song_pending" // → admins (the Library is the one page the song is on)
+  | "song_resubmitted" // → admins: a reviewed song's file/title changed, back to pending (0047)
   | "song_rejected" // → the band's Ar(s)
   | "song_cleared" // → the band's Ar(s)
   | "run_order_live" // → everyone in the tenant (the show just went live)
   | "feedback_replied"; // → the ONE person who wrote the feedback
 
 const EVENT_KINDS = new Set<Kind>(["event_submitted", "event_approved", "event_rejected"]);
-const SONG_KINDS = new Set<Kind>(["song_pending", "song_rejected", "song_cleared"]);
+const SONG_KINDS = new Set<Kind>(["song_pending", "song_resubmitted", "song_rejected", "song_cleared"]);
 const RUN_ORDER_KINDS = new Set<Kind>(["run_order_live"]);
 const FEEDBACK_KINDS = new Set<Kind>(["feedback_replied"]);
 
@@ -164,7 +165,11 @@ export async function POST(req: Request) {
       .maybeSingle();
     if (!sg) return noOp(req);
     const want =
-      kind === "song_pending" ? "pending" : kind === "song_rejected" ? "rejected" : "cleared";
+      kind === "song_pending" || kind === "song_resubmitted"
+        ? "pending"
+        : kind === "song_rejected"
+          ? "rejected"
+          : "cleared";
     if (sg.copyright_status !== want) return noOp(req);
     tenantId = sg.tenant_id as string;
     groupId = sg.group_id as string;
@@ -179,6 +184,11 @@ export async function POST(req: Request) {
       // them to the Overview, where the song appears nowhere), so they have nothing to
       // open from this notification and are not recipients of it.
       title = "🎵 เพลงใหม่รอตรวจลิขสิทธิ์";
+      recipientRule = "admins";
+    } else if (kind === "song_resubmitted") {
+      // A reviewed song whose file or title the band changed is back to pending
+      // (0047) - the same audience and page as a new one, said as what it is.
+      title = "🔁 เพลงที่ตรวจแล้วถูกแก้ — รอตรวจอีกครั้ง";
       recipientRule = "admins";
     } else if (kind === "song_rejected") {
       title = "⛔ เพลงถูกปฏิเสธลิขสิทธิ์";
@@ -287,6 +297,14 @@ export async function POST(req: Request) {
     .eq("user_id", user.id)
     .maybeSingle();
   if (!callerMember) return json(req, { error: "forbidden" }, 403);
+  // 3b) ...and, for a show or a song, be able to see that band. The anti-spoof above
+  // only proves the state is true: a member of another band could still re-send a
+  // true "approved" / "cleared" about a show or song that is not theirs, again after
+  // each dedupe window. Asked under the caller's OWN session.
+  if (groupId) {
+    const { data: canView } = await supabase.rpc("can_view_group", { gid: groupId });
+    if (canView !== true) return json(req, { error: "forbidden" }, 403);
+  }
 
   // 4) Resolve recipient user ids.
   let recipientIds: string[] = [];
