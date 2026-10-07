@@ -41,6 +41,7 @@ import { cacheSongBlob } from "@/lib/song-cache";
 import { STALE_FILE_FACTS, writeSongFileFacts } from "@/lib/song-file-facts";
 import { hasLiveSession } from "@/lib/auth-session";
 import { wroteNothing } from "@/lib/write-guard";
+import { notify as notifyServer } from "@/lib/notify-client";
 import { getStoredSessionUser } from "~/data/stored-session";
 
 const DB_NAME = "cueiq-mgmt-outbox";
@@ -588,7 +589,7 @@ async function applyAudioUploadOp(
   const supabase = createClient();
   const { data, error, status } = await supabase
     .from("songs")
-    .select("id, audio_path, duration_seconds, bpm")
+    .select("id, audio_path, duration_seconds, bpm, copyright_status")
     .eq("id", op.id)
     .maybeSingle();
   if (error) {
@@ -667,7 +668,7 @@ async function applyAudioUploadOp(
       .from("songs")
       .update({ audio_path: op.path, audio_name: op.fileName, audio_expires_at: null, ...STALE_FILE_FACTS })
       .eq("id", op.id)
-      .select("id");
+      .select("id, copyright_status");
     if (upd.error) {
       if (isQueueableWriteError(upd.error.message, onLine, upd.status))
         throw new Error(upd.error.message);
@@ -682,6 +683,13 @@ async function applyAudioUploadOp(
     // Real replace just landed (not the "applied" pass-through below, which means
     // a previous flush already did this) — same trigger the online path fires on.
     broadcastAudioChanged(op.groupId);
+    // A new file on a reviewed song sent it back to review (0047): tell the admins,
+    // as the library does on an online upload.
+    const after = (upd.data?.[0] as { copyright_status?: string } | undefined)?.copyright_status;
+    const before = (data?.copyright_status as string | null | undefined) ?? null;
+    if (after === "pending" && before && before !== "pending") {
+      notifyServer("song_resubmitted", { songId: op.id });
+    }
     // The new file's own length, in the background (never under the outbox lock) —
     // Live draws the waveform on it. Length only: this flush can land mid-show, and
     // decoding a long WAV for its loudness/waveform is left to the library's next

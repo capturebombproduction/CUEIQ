@@ -10,6 +10,7 @@ export type NotifyKind =
   | "event_approved"
   | "event_rejected"
   | "song_pending"
+  | "song_resubmitted"
   | "song_rejected"
   | "song_cleared"
   | "run_order_live"

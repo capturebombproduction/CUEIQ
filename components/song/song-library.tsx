@@ -787,8 +787,10 @@ export function SongLibrary({
         toast.error("บันทึกไม่สำเร็จ", { description: friendlyError(error?.message) });
         return;
       }
+      const before = songs.find((s) => s.id === form.id)?.copyright_status;
       saved = data as Song;
       setSongs((prev) => prev.map((s) => (s.id === form.id ? (saved as Song) : s)));
+      saidBackToReview(saved.id, before, saved.copyright_status);
     } else {
       const { data, error } = await supabase
         .from("songs")
@@ -962,6 +964,16 @@ export function SongLibrary({
   // device cache), or null on failure. Existing callers ignore the return.
   // `keepLength`: the edit dialog already saved the length it showed the user (who may
   // have changed it); every other caller gets the new file's own length.
+  // 0047: a song that passed (or failed) review, whose file or title the band changed,
+  // is back to pending - the server does that. Say so here, and tell the admins.
+  function saidBackToReview(songId: string, before: string | null | undefined, after: string | null | undefined) {
+    if (after !== "pending" || !before || before === "pending") return;
+    notify("song_resubmitted", { songId });
+    toast.info("เพลงนี้กลับไปรอตรวจลิขสิทธิ์", {
+      description: "แก้ไฟล์หรือชื่อของเพลงที่ตรวจแล้ว — แอดมินจะตรวจอีกครั้ง",
+    });
+  }
+
   async function uploadSongAudio(song: Song, file: File, keepLength = false): Promise<string | null> {
     setAudioBusy((b) => ({ ...b, [song.id]: "up" }));
     const prevPath = song.audio_path ?? null;
@@ -975,7 +987,7 @@ export function SongLibrary({
         .from("songs")
         .update({ audio_path: path, audio_name: file.name, audio_expires_at: null, ...STALE_FILE_FACTS })
         .eq("id", song.id)
-        .select("id");
+        .select("id, copyright_status");
       if (error) throw error;
       // No error and no row = the update never landed (anon after a failed token
       // refresh, or the row is gone) — the DB still points at prevPath, so deleting
@@ -984,13 +996,16 @@ export function SongLibrary({
         toast.error("อัปโหลดไม่สำเร็จ", { description: await noRowsMessage() });
         return null;
       }
+      // a new file on a reviewed song sends it back to review (0047)
+      const status = (data[0] as { copyright_status?: Song["copyright_status"] }).copyright_status ?? song.copyright_status;
       setSongs((prev) =>
         prev.map((s) =>
           s.id === song.id
-            ? { ...s, audio_path: path, audio_name: file.name, audio_expires_at: null, ...STALE_FILE_FACTS }
+            ? { ...s, audio_path: path, audio_name: file.name, audio_expires_at: null, ...STALE_FILE_FACTS, copyright_status: status }
             : s
         )
       );
+      saidBackToReview(song.id, song.copyright_status, status);
       if (prevPath && prevPath !== path) removeEventAudio(prevPath).catch(() => {});
       // A real upload supersedes anything this device had queued for the song. Left
       // behind, its local-source override would keep winning at playback (Live Mode
