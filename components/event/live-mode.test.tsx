@@ -4437,3 +4437,109 @@ describe("LiveMode · the silent unlock never stops the first song", () => {
     expect(String(media.state(primary).src)).not.toMatch(/^data:/);
   });
 });
+
+// พี่ 2026-10-17: an MC's bed loops "จนกว่าจะกด auto mute" - talking past the slot must not
+// fade the music out under the MC - and Auto Mute is how a show ends, so pressing it asks
+// "จบการแสดงเลยไหม?" at once. The end-fade on time stays where the show moves on by itself:
+// Auto with a row after it.
+describe("LiveMode · a Loop row plays past its slot until Auto Mute", () => {
+  beforeEach(() => {
+    // jsdom draws no frames: each fade lands on its first one, through the fake clock
+    vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback) =>
+      setTimeout(() => cb(performance.now() + 60_000), 16)
+    );
+    vi.stubGlobal("cancelAnimationFrame", (id: number) => clearTimeout(id));
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+  const LOOP_SET = [
+    makeItem(1, { kind: "mc", title: "MC", loop_audio: true, duration_seconds: 10 }),
+    makeItem(2, { duration_seconds: 240 }),
+  ];
+  const tick = async (ms: number) => {
+    for (let t = 0; t < ms; t += 250) {
+      await act(async () => {
+        vi.advanceTimersByTime(250);
+      });
+    }
+  };
+  async function startLoop(set = LOOP_SET) {
+    const media = instrumentMediaElements();
+    supa.setScript({ setlist_items: ok(set), songs: ok([]), show_authority: ok([]) });
+    h.saved = [{ itemId: "item-1", blob: new Blob(["audio"]), name: "bgm.wav", path: null }];
+    await mountLive({ items: set });
+    await startShowFromUi();
+    return media;
+  }
+  const autoMute = () => screen.getAllByRole("button", { name: /Auto Mute/ })[0];
+
+  it("Manual: talking past the slot, the bed keeps its level - no fade to silence", async () => {
+    const media = await startLoop();
+    const primary = media.first()!;
+    expect(media.state(primary).volume).toBeCloseTo(0.3); // an MC's bed, at the MC level
+    await tick(16_000); // 6 s past a 10 s slot
+    expect(media.state(primary).paused).toBe(false);
+    expect(media.state(primary).volume).toBeCloseTo(0.3);
+  });
+
+  it("the last row loops on even in Auto - there is no next row to move to", async () => {
+    // a one-row set: the closing MC is the last row
+    const media = await startLoop([makeItem(1, { kind: "mc", title: "MC ปิดท้าย", loop_audio: true, duration_seconds: 10 })]);
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /^Auto$/ }));
+    });
+    await tick(16_000);
+    expect(media.state(media.first()!).volume).toBeCloseTo(0.3);
+  });
+
+  it("Auto with a row after it still fades the bed out to end on time", async () => {
+    const media = await startLoop();
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /^Auto$/ }));
+    });
+    await tick(8_500); // inside the last 3 s
+    expect(media.state(media.first()!).volume).toBeCloseTo(0);
+  });
+
+  it("Auto Mute asks จบการแสดงเลยไหม - and จบโชว์ there ends the show", async () => {
+    const media = await startLoop();
+    expect(screen.queryByTestId("ask-end-show")).toBeNull();
+    await act(async () => {
+      fireEvent.click(autoMute());
+    });
+    const ask = screen.getByTestId("ask-end-show");
+    expect(ask).toHaveTextContent("จบการแสดงเลยไหม");
+    await tick(3_500); // the mute itself goes on underneath
+    expect(media.state(media.first()!).volume).toBeCloseTo(0);
+    await act(async () => {
+      fireEvent.click(within(ask).getByRole("button", { name: /จบโชว์/ }));
+    });
+    expect(stateSends().at(-1)!.payload.ended).toBe(true);
+    expect(screen.queryByTestId("ask-end-show")).toBeNull();
+  });
+
+  it("ยังไม่จบ closes the question and the show runs on", async () => {
+    await startLoop();
+    await act(async () => {
+      fireEvent.click(autoMute());
+    });
+    await act(async () => {
+      fireEvent.click(within(screen.getByTestId("ask-end-show")).getByRole("button", { name: "ยังไม่จบ" }));
+    });
+    expect(screen.queryByTestId("ask-end-show")).toBeNull();
+    expect(stateSends().at(-1)!.payload.ended).not.toBe(true);
+  });
+
+  it("nobody who cannot end the show is asked (a member running it)", async () => {
+    supa.setScript({ setlist_items: ok(LOOP_SET), songs: ok([]), show_authority: ok([]) });
+    h.saved = [{ itemId: "item-1", blob: new Blob(["audio"]), name: "bgm.wav", path: null }];
+    instrumentMediaElements();
+    await mountLive({ items: LOOP_SET, canEdit: false });
+    await startShowFromUi();
+    await act(async () => {
+      fireEvent.click(autoMute());
+    });
+    expect(screen.queryByTestId("ask-end-show")).toBeNull();
+  });
+});

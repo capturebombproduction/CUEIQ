@@ -46,7 +46,9 @@ import { canEditAnyGroup, canLiveEdit, canViewLibrary, type Perms } from "@/lib/
 // 2026-10-17: music on an MC / SE / interlude row straight from the setlist (it took a song
 // row turned into MC by hand), an MC's music starting at the MC level, and the desktop app's
 // false "No signal" on a second run after จบโชว์.
-const ROUND = "2026-10-17";
+// 2026-10-17b (same night): a Loop row plays past its slot until Auto Mute, and Auto Mute
+// asks whether the show is over.
+const ROUND = "2026-10-17b";
 /** For tests that need "this device already read the current round". */
 export const WHATS_NEW_ROUND = ROUND;
 const KEY = "cueiq:whats-new-seen";
@@ -115,6 +117,10 @@ const phoneWeb = () =>
   window.matchMedia?.("(max-width: 1023px)").matches === true;
 
 const ITEMS: Item[] = [
+  {
+    text: "Live: เพลงที่ตั้ง Loop เล่นต่อได้แม้เกินเวลาของแถว (Manual / แถวสุดท้าย) จนกด Auto Mute — และกด Auto Mute แล้วจะถามว่า “จบการแสดงเลยไหม?”",
+    who: bandPeople,
+  },
   {
     text: "เซ็ตลิสต์: แถว MC / SE / Interlude ฯลฯ กด “ใส่เพลง” จากคลังได้เลย — ชื่อและความยาวของแถวคงเดิม, MC เล่นวน (Loop) ให้ ปิด Loop หรือเอาเพลงออกได้ที่แถว",
     who: editors,

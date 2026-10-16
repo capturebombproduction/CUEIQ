@@ -336,12 +336,10 @@ describe("the 2026-10-17 round (music on an MC row)", () => {
   const MC_LEVEL = "เริ่มที่ความดังระดับ MC";
   const NO_SIGNAL = "แก้ “No signal”";
 
-  it("comes back on a device that closed the 2026-10-07b round", async () => {
-    expect(WHATS_NEW_ROUND).toBe("2026-10-17");
+  it("still on the card for a device that closed the 2026-10-07b round", async () => {
     localStorage.setItem(KEY, "2026-10-07b");
     await mount(true);
     expect(screen.getByTestId("whats-new")).toHaveTextContent(ATTACH);
-    expect(whatsNewItems({ ...MEMBER, canEdit: true })[0]).toContain(ATTACH);
   });
 
   it("editors hear about ใส่เพลง, band people about the MC level, staff about neither", () => {
@@ -359,5 +357,22 @@ describe("the 2026-10-17 round (music on an MC row)", () => {
     } finally {
       delete (window as unknown as { cueiqNative?: unknown }).cueiqNative;
     }
+  });
+});
+
+describe("the 2026-10-17b round (a Loop past its slot, Auto Mute asks)", () => {
+  const LOOP = "เล่นต่อได้แม้เกินเวลาของแถว";
+
+  it("comes back on a device that closed the 2026-10-17 round, the Loop first", async () => {
+    expect(WHATS_NEW_ROUND).toBe("2026-10-17b");
+    localStorage.setItem(KEY, "2026-10-17");
+    await mount(false);
+    expect(screen.getByTestId("whats-new")).toHaveTextContent(LOOP);
+    expect(whatsNewItems(MEMBER)[0]).toContain(LOOP);
+  });
+
+  it("band people hear it; label staff do not", () => {
+    expect(has(whatsNewItems(MEMBER), LOOP)).toBe(true);
+    expect(has(whatsNewItems(STAFF), LOOP)).toBe(false);
   });
 });

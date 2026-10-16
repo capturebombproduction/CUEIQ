@@ -806,6 +806,16 @@ export function MyShow() {
   // where each ducked track is going (the key's target) - what the snapshot records,
   // so it can be written the moment the key is pressed, before the fade has landed
   const duckNowRef = useRef<Record<string, number>>({});
+  // Auto Mute is how a show ends, so it asks at once whether it is over - in a bar, never
+  // a confirm() that would stop the clock and the fade (Live Mode's autoMute, พี่ 2026-10-17).
+  const [askEnd, setAskEnd] = useState(false);
+  function autoMute() {
+    fadeKey(0, 3000);
+    if (stateRef.current.begun && !showEndedRef.current) setAskEnd(true);
+  }
+  useEffect(() => {
+    setAskEnd(false);
+  }, [state.currentIndex, state.begun]);
   function fadeKey(target: number, ms = 2000) {
     const audio = audioRef.current;
     const sounding = playingId && audio && !audio.paused ? playingId : null;
@@ -1164,7 +1174,9 @@ export function MyShow() {
     }
   }, [now, state, items, urls]);
 
-  // loop items: fade out over the last 3s so they end right on time (Live Mode port)
+  // loop items: fade out over the last 3s so they end right on time (Live Mode port) -
+  // only where the show moves on by itself (Auto, a row after this one). In Manual and on
+  // the last row a loop plays past its slot until Auto Mute (พี่ 2026-10-17, as Live Mode).
   useEffect(() => {
     const cur = items[state.currentIndex];
     const sounding = !!cur && cur.id === playingId;
@@ -1172,6 +1184,8 @@ export function MyShow() {
       cur &&
       cur.loop &&
       sounding &&
+      state.mode === "auto" &&
+      state.currentIndex < items.length - 1 &&
       state.running &&
       audioPlaying &&
       remaining > 0 &&
@@ -1582,6 +1596,35 @@ export function MyShow() {
             <Volume2 aria-hidden className="h-5 w-5" /> แตะเพื่อเล่นเสียงต่อ (ตำแหน่งปัจจุบัน)
           </button>
         )}
+        {askEnd && state.begun && !showEnded && (
+          <div
+            role="dialog"
+            aria-label="จบการแสดงเลยไหม"
+            data-testid="ask-end-show"
+            className="flex flex-wrap items-center justify-between gap-2 rounded-[2px] bg-primary/[.14] py-1 pl-3 pr-1 text-[15px] font-semibold text-foreground shadow-[inset_3px_0_0_hsl(var(--primary))]"
+          >
+            <span className="flex min-w-0 items-center gap-2">
+              <Flag aria-hidden className="h-4 w-4 shrink-0" />
+              จบการแสดงเลยไหม?
+            </span>
+            <span className="flex shrink-0 gap-1">
+              <Button
+                type="button"
+                className="h-11 gap-1.5 px-3 text-[14px]"
+                onClick={() => {
+                  setAskEnd(false);
+                  endShow();
+                }}
+              >
+                <Flag aria-hidden className="h-4 w-4" />
+                จบโชว์ · บันทึกเวลา
+              </Button>
+              <Button type="button" variant="ghost" className="h-11 px-3 text-[14px]" onClick={() => setAskEnd(false)}>
+                ยังไม่จบ
+              </Button>
+            </span>
+          </div>
+        )}
 
         {items.length === 0 && loaded ? (
           <button
@@ -1691,7 +1734,7 @@ export function MyShow() {
                     <Button
                       type="button"
                       variant="secondary"
-                      onClick={() => fadeKey(0, 3000)}
+                      onClick={autoMute}
                       title="ค่อย ๆ ปิดเสียงเป็น 0% ใน 3 วินาที"
                       className="en h-11 min-w-0 gap-1.5 rounded-[2px] px-1 !text-[14px]"
                     >

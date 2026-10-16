@@ -1365,6 +1365,11 @@ export function LiveMode({
   // frozen), so the lock's `begun` lifetime would otherwise run until reset or
   // unmount — on every viewer phone in the band, not just the operator's.
   const [showEnded, setShowEnded] = useState(false);
+  // Auto Mute's "จบการแสดงเลยไหม?" bar (autoMute, by the fade keys) - gone on a row change or a reset
+  const [askEnd, setAskEnd] = useState(false);
+  useEffect(() => {
+    setAskEnd(false);
+  }, [state.currentIndex, state.begun]);
   const showEndedRef = useRef(showEnded);
   showEndedRef.current = showEnded;
   /** Flip it on the REF as well as in state. Every caller changes it and
@@ -3689,6 +3694,9 @@ export function LiveMode({
   // Loop items: fade the BGM out over the last 3s (= Auto Mute) so it ends right on
   // the item's set time, then the normal countdown advances/stops it. Restore the
   // item's volume once we've moved off it, so a re-cue isn't silent.
+  // Only where the show moves on by itself - Auto, with a row after this one. In Manual,
+  // and on the last row, a bed loops on past its slot until Auto Mute (or the next song):
+  // an MC that talks over time keeps its music (พี่ 2026-10-17, "loop จนกว่าจะกด auto mute").
   const loopFadeRef = useRef<{ id: string; prevVol: number } | null>(null);
   useEffect(() => {
     const cur = items[state.currentIndex];
@@ -3697,6 +3705,8 @@ export function LiveMode({
       cur &&
       cur.loop_audio &&
       sounding &&
+      state.mode === "auto" &&
+      state.currentIndex < items.length - 1 &&
       state.running &&
       audioPlaying &&
       remaining > 0 &&
@@ -4066,6 +4076,15 @@ export function LiveMode({
   // landscape phone only, where the card has no room for them (CSS picks one; the
   // keys carry no test id, so nothing that counts ids sees two). Stage text is 14 px
   // until the window is 1060 px wide, then 16: "Auto Loudness" needs ~123 px of its
+  // Auto Mute is how a show ends (พี่ 2026-10-17: "ปกติ auto mute ใช้ตอนจบการแสดงอยู่แล้ว"), so
+  // it asks at once whether it is over - in a bar, not a confirm(): a modal would stop the
+  // countdown and the fade underneath. Only where จบโชว์ exists (the editor running the
+  // show); it closes itself when the show ends, resets, or moves to another row (askEnd,
+  // declared beside showEnded: no hook may sit below the early returns).
+  function autoMute() {
+    fadeKey(0, 3000);
+    if (stateRef.current.begun && isControllerRef.current && canEdit && !showEndedRef.current) setAskEnd(true);
+  }
   // grid track at 14 px and ~136 px at 16 px; a 1024 px iPad's NOW column used to give
   // it 115 (fixed 300 + 320 side columns) and gives it ~127 now (290 px running order).
   const fadeKeys = (
@@ -4073,7 +4092,7 @@ export function LiveMode({
       <Button
         type="button"
         variant="secondary"
-        onClick={() => fadeKey(0, 3000)}
+        onClick={autoMute}
         disabled={!isController}
         title="ค่อย ๆ ปิดเสียงเป็น 0% ใน 3 วินาที"
         className="en h-11 min-w-0 gap-1.5 rounded-[2px] px-1 !text-[14px] stage:h-12 stage:[@media(min-width:1060px)]:!text-[16px]"
@@ -4345,6 +4364,36 @@ export function LiveMode({
           <Volume2 aria-hidden className="size-5 shrink-0" /> แตะเพื่อเล่นเสียงต่อ (ตำแหน่งปัจจุบัน)
         </button>
       )}
+      {askEnd && state.begun && isController && canEdit && !showEnded && (
+        <div
+          role="dialog"
+          aria-label="จบการแสดงเลยไหม"
+          data-testid="ask-end-show"
+          className="flex shrink-0 flex-wrap items-center justify-between gap-2 rounded-[2px] bg-primary/[.14] py-1 pl-3 pr-1 text-[15px] font-semibold text-foreground shadow-[inset_3px_0_0_hsl(var(--primary))] [@media(orientation:landscape)_and_(max-height:599.98px)_and_(pointer:coarse)]:basis-full stage:mx-5 stage:mb-2"
+        >
+          <span className="flex min-w-0 items-center gap-2">
+            <Flag aria-hidden className="size-4 shrink-0" />
+            จบการแสดงเลยไหม?
+          </span>
+          <span className="flex shrink-0 gap-1">
+            <Button
+              type="button"
+              className="h-11 gap-1.5 px-3 text-[14px]"
+              disabled={inConflict}
+              onClick={() => {
+                setAskEnd(false);
+                endShow();
+              }}
+            >
+              <Flag aria-hidden className="size-4" />
+              จบโชว์ · บันทึกเวลา
+            </Button>
+            <Button type="button" variant="ghost" className="h-11 px-3 text-[14px]" onClick={() => setAskEnd(false)}>
+              ยังไม่จบ
+            </Button>
+          </span>
+        </div>
+      )}
 
       {/* A real playback failure on this device — the countdown keeps running, so
           say WHY the PA is silent instead of leaving the operator guessing. */}
@@ -4614,7 +4663,7 @@ export function LiveMode({
           // file, or on the controller riding the speaker device's level by remote
           volume={current && (currentAudioUrl || (isController && state.begun)) ? levelOf(current.id, volumes) : null}
           onVolume={isController && current ? (v) => setVolumeFor(current.id, v) : null}
-          onFade={isController ? fadeKey : null}
+          onFade={isController ? (target: number, ms?: number) => (target === 0 ? autoMute() : fadeKey(target, ms)) : null}
           volumeDead={volumeIsDead && soundOutput}
           output={signalTap ? { label: showOutput.label, kind: showOutput.kind } : null}
           soundOn={soundOutput}

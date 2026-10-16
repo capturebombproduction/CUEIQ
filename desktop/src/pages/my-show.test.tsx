@@ -1021,3 +1021,57 @@ describe("Quick Show — the fade keys ride the track that is sounding", () => {
     expect(level.value).toBe("100");
   });
 });
+
+
+// พี่ 2026-10-17, the same rule as Live Mode: a Loop row plays past its slot until Auto Mute
+// (the end-fade on time stays where the show moves on by itself - Auto, with a row after
+// it), and Auto Mute asks "จบการแสดงเลยไหม?" at once.
+describe("Quick Show — a Loop row plays past its slot until Auto Mute", () => {
+  beforeEach(() => {
+    vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback) =>
+      setTimeout(() => cb(performance.now() + 60_000), 16)
+    );
+    vi.stubGlobal("cancelAnimationFrame", (id: number) => clearTimeout(id));
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+  const bgm = () => song("BGM", { loop: true, durationSeconds: 10, sortOrder: 1 });
+  const steps = async (ms: number) => {
+    for (let t = 0; t < ms; t += 500) await tick(500);
+  };
+
+  it("Manual: past the slot the loop keeps its level", async () => {
+    await boot([bgm(), { ...SECOND }]);
+    const primary = media.first() as HTMLMediaElement;
+    await click(startButton());
+    await steps(16_000);
+    expect(media.state(primary).paused).toBe(false);
+    expect(media.state(primary).volume).toBeCloseTo(1);
+  });
+
+  it("Auto with a row after it still fades the loop out on time", async () => {
+    await boot([bgm(), { ...SECOND }]);
+    const primary = media.first() as HTMLMediaElement;
+    await click(screen.getByRole("button", { name: "Auto" }));
+    await click(startButton());
+    await steps(8_500); // inside the last 3 s
+    expect(media.state(primary).volume).toBeCloseTo(0);
+  });
+
+  it("Auto Mute asks จบการแสดงเลยไหม; จบโชว์ there ends the show, ยังไม่จบ just closes it", async () => {
+    await boot([bgm(), { ...SECOND }]);
+    await click(startButton());
+    expect(screen.queryByTestId("ask-end-show")).toBeNull();
+    await click(screen.getByRole("button", { name: /Auto Mute/ }));
+    await click(within(screen.getByTestId("ask-end-show")).getByRole("button", { name: "ยังไม่จบ" }));
+    expect(screen.queryByTestId("ask-end-show")).toBeNull();
+    expect(endShowButton()).not.toBeDisabled();
+    await click(screen.getByRole("button", { name: /Auto Mute/ }));
+    const ask = screen.getByTestId("ask-end-show");
+    expect(ask).toHaveTextContent("จบการแสดงเลยไหม");
+    await click(within(ask).getByRole("button", { name: /จบโชว์/ }));
+    expect(screen.queryByTestId("ask-end-show")).toBeNull();
+    expect(endShowButton()).toBeDisabled(); // ended: the record is taken once
+  });
+});
