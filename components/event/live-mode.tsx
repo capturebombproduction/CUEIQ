@@ -3230,8 +3230,14 @@ export function LiveMode({
       el.src = SILENT_WAV;
       el.play()
         .then(() => {
+          // Only while the element still holds OUR silence. This answer can land after
+          // START put the show's first song on it (Chromium queues the resolve when the
+          // silence starts; a fast authority probe - offline, a near server - runs
+          // before that task), and pausing then left the song at 0:00 behind
+          // "แตะเพื่อเล่นเสียงต่อ" (desktop smoke, 669e6f6's CI).
+          if (el.src !== SILENT_WAV) return;
           el.pause();
-          if (el.src === SILENT_WAV) el.removeAttribute("src");
+          el.removeAttribute("src");
         })
         .catch(() => {
           if (el.src === SILENT_WAV) el.removeAttribute("src");

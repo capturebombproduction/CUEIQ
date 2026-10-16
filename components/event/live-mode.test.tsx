@@ -4405,3 +4405,35 @@ describe("LiveMode · an MC's music starts at the MC level", () => {
     expect(media.state(media.first()!).volume).toBeCloseTo(1);
   });
 });
+
+// START "unlocks" both players with a moment of silence inside the tap (primeSecondaryAudio),
+// then awaits the authority probe, then puts the first song on the primary. The silence's
+// play() can answer AFTER the song took the element over (Chromium queues the resolve when
+// the silence starts playing; a fast probe - offline, a near server - lands before that task
+// runs). Its .then paused the element unconditionally: the show's first song sat at 0:00
+// behind "แตะเพื่อเล่นเสียงต่อ" (desktop smoke, 669e6f6's CI: the strip read nothing until
+// the second START).
+describe("LiveMode · the silent unlock never stops the first song", () => {
+  it("a late answer to the unlock leaves the song START put on the player playing", async () => {
+    const media = instrumentMediaElements();
+    h.saved = [{ itemId: "item-1", blob: new Blob(["audio"]), name: "track-1.wav", path: null }];
+    const late: Array<() => void> = [];
+    const real = media.play.getMockImplementation()!;
+    media.play.mockImplementation(function (this: HTMLMediaElement) {
+      const p = real.call(this);
+      // the unlock's silence (a data: WAV) answers later, on cue
+      if (String(this.src).startsWith("data:audio/wav")) return new Promise<void>((res) => late.push(() => void p.then(res)));
+      return p;
+    });
+    await mountLive();
+    await startShowFromUi();
+    const primary = media.first()!;
+    expect(media.state(primary).paused).toBe(false); // the song is on
+    expect(String(media.state(primary).src)).not.toMatch(/^data:/);
+    await act(async () => {
+      late.splice(0).forEach((answer) => answer());
+    });
+    expect(media.state(primary).paused).toBe(false); // ...and stays on
+    expect(String(media.state(primary).src)).not.toMatch(/^data:/);
+  });
+});
