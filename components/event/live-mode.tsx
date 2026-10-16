@@ -75,6 +75,7 @@ import { NowCard } from "@/components/live/now-card";
 import { SignalStrip } from "@/components/live/signal-strip";
 import { useShowOutput } from "@/components/live/use-show-output";
 import { SignalTap, signalTapSupported, type SilenceVerdict } from "@/lib/live-signal";
+import { baseLevel, MC_LEVEL } from "@/lib/live-levels";
 import { decodeWaveform } from "@/lib/song-analysis";
 import { loudnessDelta, waveOverBlock, type SongSignalMap } from "@/lib/song-signal";
 import { writeSongFileFacts } from "@/lib/song-file-facts";
@@ -394,6 +395,12 @@ export function LiveMode({
   const [crossfade, setCrossfade] = useState(false);
   const volumesRef = useRef(volumes); // stable read for the overlap pre-roll effect
   volumesRef.current = volumes;
+  // A track's level on this device: the one set here (a soundcheck, a fade) or, never set,
+  // where its row starts - an MC's music under the talking at the MC level, the rest at
+  // full (lib/live-levels.ts). The rows come through the ref: effects and timers call this.
+  function levelOf(itemId: string, vols: Record<string, number> = volumesRef.current): number {
+    return vols[itemId] ?? baseLevel(itemsRef.current.find((it) => it.id === itemId)?.kind);
+  }
   const fadeRef = useRef<number | null>(null); // rAF id for the volume fade animation
   // where the running fade is going: a viewer that joins mid-fade is told the level the
   // track is fading TO (intendedVolumes) - the fade's own message went out before it came
@@ -460,9 +467,10 @@ export function LiveMode({
   // apply the PLAYING track's own volume to the primary element (per-track)
   useEffect(() => {
     if (!audioRef.current || !playingId) return;
-    const v = (volumes[playingId] ?? 100) / 100;
+    const v = levelOf(playingId, volumes) / 100;
     audioRef.current.volume = Math.min(1, Math.max(0, v));
-  }, [volumes, playingId]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- levelOf reads the rows' ref; items re-runs it
+  }, [volumes, playingId, items]);
 
   // restore per-track volume presets for this event (saved on-device, per-device)
   const volumesLoadedRef = useRef(false);
@@ -1534,7 +1542,7 @@ export function LiveMode({
         sec.pause();
         sec.src = url;
         sec.currentTime = 0;
-        sec.volume = Math.min(1, Math.max(0, (volumesRef.current[nxt.id] ?? 100) / 100));
+        sec.volume = Math.min(1, Math.max(0, levelOf(nxt.id) / 100));
         // Synchronous record of WHAT is loaded on the secondary — needed by goto()
         // to stop a pre-roll it decides not to promote. Distinct from
         // overlapNextIdRef, which means "proven to be sounding".
@@ -2754,7 +2762,7 @@ export function LiveMode({
   function fadeVolumeFor(itemId: string, target: number, ms: number) {
     if (fadeRef.current) cancelAnimationFrame(fadeRef.current);
     fadeTargetRef.current = null;
-    const start = volumesRef.current[itemId] ?? 100;
+    const start = levelOf(itemId);
     if (ms <= 0 || start === target) {
       setVolumes((prev) => ({ ...prev, [itemId]: target }));
       return;
@@ -2805,7 +2813,7 @@ export function LiveMode({
     const id = sounding ?? items[state.currentIndex]?.id;
     if (!id) return;
     if (sounding && !(id in duckRef.current)) {
-      duckRef.current[id] = intendedVolumes()[id] ?? 100;
+      duckRef.current[id] = levelOf(id, intendedVolumes());
     }
     fadeVolumeFor(id, target, ms);
     broadcastVolume(id, target, ms);
@@ -3275,7 +3283,7 @@ export function LiveMode({
     incoming.pause();
     incoming.src = url;
     incoming.currentTime = filePos(itemId, fromOffset);
-    incoming.volume = Math.min(1, Math.max(0, (volumesRef.current[itemId] ?? 100) / 100));
+    incoming.volume = Math.min(1, Math.max(0, levelOf(itemId) / 100));
     incoming.play().catch((err) => onPlayRejected(itemId, err));
     swapAudio(); // incoming → primary (scrubber/volume follow it); outgoing → secondary
     setPlayingId(itemId);
@@ -3689,7 +3697,7 @@ export function LiveMode({
       remaining <= 3 &&
       loopFadeRef.current?.id !== cur.id
     ) {
-      loopFadeRef.current = { id: cur.id, prevVol: volumesRef.current[cur.id] ?? 100 };
+      loopFadeRef.current = { id: cur.id, prevVol: levelOf(cur.id) };
       fadeVolumeTo(0, Math.max(200, Math.round(remaining * 1000)));
     }
     // moved off the faded item OR paused mid-fade → restore its volume so it isn't
@@ -4070,9 +4078,9 @@ export function LiveMode({
       <Button
         type="button"
         variant="secondary"
-        onClick={() => fadeKey(30)}
+        onClick={() => fadeKey(MC_LEVEL)}
         disabled={!isController}
-        title="ค่อย ๆ ลดเสียงลงเป็น 30% ใน 2 วินาที (ช่วง MC)"
+        title={`ค่อย ๆ ลดเสียงลงเป็น ${MC_LEVEL}% ใน 2 วินาที (ช่วง MC)`}
         className="en h-11 min-w-0 gap-1.5 rounded-[2px] px-1 !text-[14px] stage:h-12 stage:[@media(min-width:1060px)]:!text-[16px]"
       >
         <Volume1 aria-hidden />
@@ -4598,7 +4606,7 @@ export function LiveMode({
           player={() => audioRef.current}
           // the fader and the fades where STAGE shows them: on the device that holds the
           // file, or on the controller riding the speaker device's level by remote
-          volume={current && (currentAudioUrl || (isController && state.begun)) ? volumes[current.id] ?? 100 : null}
+          volume={current && (currentAudioUrl || (isController && state.begun)) ? levelOf(current.id, volumes) : null}
           onVolume={isController && current ? (v) => setVolumeFor(current.id, v) : null}
           onFade={isController ? fadeKey : null}
           volumeDead={volumeIsDead && soundOutput}
@@ -4658,7 +4666,7 @@ export function LiveMode({
                   min={0}
                   max={100}
                   step={1}
-                  value={volumes[current.id] ?? 100}
+                  value={levelOf(current.id, volumes)}
                   onChange={(e) => setVolumeFor(current.id, Number(e.target.value))}
                   disabled={!isController}
                   title={
@@ -4668,7 +4676,7 @@ export function LiveMode({
                   }
                   className="min-w-0 flex-1 disabled:cursor-not-allowed disabled:opacity-50"
                 />
-                <span className="num shrink-0 text-[16px] text-foreground">{volumes[current.id] ?? 100}%</span>
+                <span className="num shrink-0 text-[16px] text-foreground">{levelOf(current.id, volumes)}%</span>
                 {currentAudioUrl && (
                   <span className="min-w-0 max-w-[40%] truncate">· {audioNames[current.id]}</span>
                 )}
@@ -5216,7 +5224,7 @@ export function LiveMode({
                   min={0}
                   max={100}
                   step={1}
-                  value={volumes[current.id] ?? 100}
+                  value={levelOf(current.id, volumes)}
                   onChange={(e) => setVolumeFor(current.id, Number(e.target.value))}
                   disabled={!isController}
                   title={
@@ -5226,7 +5234,7 @@ export function LiveMode({
                   }
                   className="min-w-0 flex-1 disabled:cursor-not-allowed disabled:opacity-50"
                 />
-                <span className="num w-11 shrink-0 text-right text-[13px]">{volumes[current.id] ?? 100}%</span>
+                <span className="num w-11 shrink-0 text-right text-[13px]">{levelOf(current.id, volumes)}%</span>
               </div>
               {/* iOS hands back a READ-ONLY HTMLMediaElement.volume: the assignment is
                   accepted and does nothing, so the slider, the 3-second Auto Mute fade
@@ -5333,14 +5341,14 @@ export function LiveMode({
                   <Volume1 aria-hidden className="size-3.5 shrink-0" />
                   <span className="truncate">ตั้งความดังล่วงหน้า · {next.title || "—"}</span>
                 </p>
-                <span className="num shrink-0 text-[13px]">{volumes[next.id] ?? 100}%</span>
+                <span className="num shrink-0 text-[13px]">{levelOf(next.id, volumes)}%</span>
               </div>
               <input
                 type="range"
                 min={0}
                 max={100}
                 step={1}
-                value={volumes[next.id] ?? 100}
+                value={levelOf(next.id, volumes)}
                 onChange={(e) => setVolumeFor(next.id, Number(e.target.value))}
                 disabled={!isController}
                 title={

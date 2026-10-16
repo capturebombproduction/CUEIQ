@@ -316,12 +316,10 @@ describe("the 2026-10-07b round (the bug hunt)", () => {
   const UNTIMED = "แถวที่ไม่ได้ตั้งเวลา";
   const REVIEW = "กลับไป “รอตรวจ”";
 
-  it("comes back on a device that closed the 2026-10-07 round, the fade keys first", async () => {
-    expect(WHATS_NEW_ROUND).toBe("2026-10-07b");
+  it("still on the card for a device that closed the 2026-10-07 round", async () => {
     localStorage.setItem(KEY, "2026-10-07");
     await mount(false);
     expect(screen.getByTestId("whats-new")).toHaveTextContent(FADE);
-    expect(whatsNewItems(MEMBER)[0]).toContain(FADE);
   });
 
   it("band people hear about Live; only those who change songs about review; staff about none", () => {
@@ -330,5 +328,36 @@ describe("the 2026-10-07b round (the bug hunt)", () => {
     expect(has(whatsNewItems(MEMBER), REVIEW)).toBe(false);
     expect(has(whatsNewItems({ ...MEMBER, canEdit: true }), REVIEW)).toBe(true); // an Ar
     expect(has(whatsNewItems(STAFF), FADE) || has(whatsNewItems(STAFF), REVIEW)).toBe(false);
+  });
+});
+
+describe("the 2026-10-17 round (music on an MC row)", () => {
+  const ATTACH = "กด “ใส่เพลง” จากคลัง";
+  const MC_LEVEL = "เริ่มที่ความดังระดับ MC";
+  const NO_SIGNAL = "แก้ “No signal”";
+
+  it("comes back on a device that closed the 2026-10-07b round", async () => {
+    expect(WHATS_NEW_ROUND).toBe("2026-10-17");
+    localStorage.setItem(KEY, "2026-10-07b");
+    await mount(true);
+    expect(screen.getByTestId("whats-new")).toHaveTextContent(ATTACH);
+    expect(whatsNewItems({ ...MEMBER, canEdit: true })[0]).toContain(ATTACH);
+  });
+
+  it("editors hear about ใส่เพลง, band people about the MC level, staff about neither", () => {
+    expect(has(whatsNewItems({ ...MEMBER, canEdit: true }), ATTACH)).toBe(true);
+    expect(has(whatsNewItems(MEMBER), ATTACH)).toBe(false); // a member cannot edit the set
+    expect(has(whatsNewItems(MEMBER), MC_LEVEL)).toBe(true);
+    expect(has(whatsNewItems(STAFF), ATTACH) || has(whatsNewItems(STAFF), MC_LEVEL)).toBe(false);
+  });
+
+  it("the No signal fix is told in the desktop app only (the meter is the desktop's)", () => {
+    expect(has(whatsNewItems(MEMBER), NO_SIGNAL)).toBe(false);
+    (window as unknown as { cueiqNative?: unknown }).cueiqNative = {};
+    try {
+      expect(has(whatsNewItems(MEMBER), NO_SIGNAL)).toBe(true);
+    } finally {
+      delete (window as unknown as { cueiqNative?: unknown }).cueiqNative;
+    }
   });
 });

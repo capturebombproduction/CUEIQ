@@ -43,7 +43,10 @@ import { canEditAnyGroup, canLiveEdit, canViewLibrary, type Perms } from "@/lib/
 // says ("เล่นซ้อน"), and the band's editors set those seconds from the room.
 // 2026-10-07b (same night, the bug hunt): what changed in hand for the band - the fade
 // keys, an untimed row, and a reviewed song going back to review when it is changed.
-const ROUND = "2026-10-07b";
+// 2026-10-17: music on an MC / SE / interlude row straight from the setlist (it took a song
+// row turned into MC by hand), an MC's music starting at the MC level, and the desktop app's
+// false "No signal" on a second run after จบโชว์.
+const ROUND = "2026-10-17";
 /** For tests that need "this device already read the current round". */
 export const WHATS_NEW_ROUND = ROUND;
 const KEY = "cueiq:whats-new-seen";
@@ -112,6 +115,18 @@ const phoneWeb = () =>
   window.matchMedia?.("(max-width: 1023px)").matches === true;
 
 const ITEMS: Item[] = [
+  {
+    text: "เซ็ตลิสต์: แถว MC / SE / Interlude ฯลฯ กด “ใส่เพลง” จากคลังได้เลย — ชื่อและความยาวของแถวคงเดิม, MC เล่นวน (Loop) ให้ ปิด Loop หรือเอาเพลงออกได้ที่แถว",
+    who: editors,
+  },
+  {
+    text: "Live: เพลงประกอบในแถว MC เริ่มที่ความดังระดับ MC (30%) — ปรับเองได้เหมือนเดิม",
+    who: bandPeople,
+  },
+  {
+    text: "แอป CueIQ: แก้ “No signal” ที่ขึ้นทั้งที่เสียงออก หลังจบโชว์แล้วเริ่มรอบใหม่",
+    only: desktopApp,
+  },
   {
     text: "Live: ปุ่ม MC / Auto Mute / Auto Loudness ปรับเสียงเพลงที่กำลังดังอยู่ แม้คิวแถวถัดไปไว้แล้ว — ปรับแค่ช่วงนั้น เพลงกลับมาดังเท่าที่ตั้งไว้เมื่อเล่นรอบหน้า",
     who: bandPeople,

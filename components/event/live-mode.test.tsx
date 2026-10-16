@@ -4358,3 +4358,50 @@ describe("LiveMode · the volume messages keep their order", () => {
     expect(sent).toEqual(["item-1=50", "item-1=45", "item-2=60"]);
   });
 });
+
+// An MC row's music is a bed under the talking (พี่ 2026-10-17: "ตั้งความดังพื้นฐานไว้ที่ค่า MC
+// ของระบบ"): on a device that never set a level for the row it starts at the MC key's 30 %,
+// not at full. A level the device did set (its soundcheck) is still the one it plays at.
+describe("LiveMode · an MC's music starts at the MC level", () => {
+  const MC_SET = [makeItem(1, { kind: "mc", title: "MC", loop_audio: true }), makeItem(2), makeItem(3)];
+  const VOL_KEY = `cueiq:vol:${EVENT_ID}`;
+  // the refetch on SUBSCRIBED answers with this set, not the default all-song one
+  beforeEach(() => {
+    supa.setScript({ setlist_items: ok(MC_SET), songs: ok([]), show_authority: ok([]) });
+  });
+
+  it("plays at 30 % where this device has no level of its own for the row", async () => {
+    const media = instrumentMediaElements();
+    h.saved = [{ itemId: "item-1", blob: new Blob(["audio"]), name: "bgm.wav", path: null }];
+    await mountLive({ items: MC_SET });
+    await startShowFromUi();
+    const primary = media.first()!;
+    expect(media.state(primary).paused).toBe(false);
+    expect(media.state(primary).volume).toBeCloseTo(0.3);
+    // the level a person reads is the level it plays at
+    expect(screen.getAllByText("30%").length).toBeGreaterThan(0);
+    // a default is not a soundcheck: nothing was saved for the row
+    await act(async () => {
+      vi.advanceTimersByTime(1_000);
+    });
+    expect(JSON.parse(localStorage.getItem(VOL_KEY) ?? "{}")["item-1"]).toBeUndefined();
+  });
+
+  it("a level this device set for the row wins", async () => {
+    const media = instrumentMediaElements();
+    localStorage.setItem(VOL_KEY, JSON.stringify({ "item-1": 55 }));
+    h.saved = [{ itemId: "item-1", blob: new Blob(["audio"]), name: "bgm.wav", path: null }];
+    await mountLive({ items: MC_SET });
+    await startShowFromUi();
+    expect(media.state(media.first()!).volume).toBeCloseTo(0.55);
+  });
+
+  it("a song row still starts at full", async () => {
+    const media = instrumentMediaElements();
+    supa.setScript({ setlist_items: ok(ITEMS), songs: ok([]), show_authority: ok([]) });
+    h.saved = [{ itemId: "item-1", blob: new Blob(["audio"]), name: "track-1.wav", path: null }];
+    await mountLive();
+    await startShowFromUi();
+    expect(media.state(media.first()!).volume).toBeCloseTo(1);
+  });
+});

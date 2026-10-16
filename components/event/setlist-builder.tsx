@@ -16,6 +16,9 @@ import {
   GripVertical,
   OctagonAlert,
   RotateCcw,
+  Music2,
+  Repeat,
+  X,
 } from "lucide-react";
 import { KindTile } from "@/components/event/kind";
 import { RunMeter } from "@/components/event/run-meter";
@@ -1093,12 +1096,48 @@ export function SetlistBuilder({
     () => new Set(items.map((i) => i.song_id).filter((x): x is string => !!x)),
     [items]
   );
+  const songsById = useMemo(() => new Map(songs.map((s) => [s.id, s])), [songs]);
 
-  /** Clone a row (appended at the end — drag into place). Audio is not copied. */
+  // Music for a row that is not a song - an MC's bed, an SE, an interlude's track (พี่
+  // 2026-10-17: it took a song row turned into MC by hand). Live Mode plays any row linked
+  // to a library song, so the link is all that is written. The row keeps its title and its
+  // OWN length - the slot is the plan; the file fills it (Loop) or plays past it - and only
+  // an empty 0:00 slot starts at the file's. An MC's first music loops, and Live Mode starts
+  // it at the MC level (lib/live-levels.ts). A swap keeps the Loop the row already had.
+  const [attaching, setAttaching] = useState<SetlistItem | null>(null);
+  const [attachOpen, setAttachOpen] = useState(false);
+  function attachFromLibrary(song: Song) {
+    const picked = attaching;
+    setAttachOpen(false);
+    if (!picked) return;
+    if (liveItemId === picked.id) {
+      toast.error("แถวนี้กำลังเล่นอยู่บนเวที — ยังเปลี่ยนเพลงไม่ได้");
+      return;
+    }
+    // the row as it stands now: a length typed while the dialog was open counts
+    const it = items.find((i) => i.id === picked.id) ?? picked;
+    const patch: Partial<SetlistItem> = { song_id: song.id };
+    if (!it.duration_seconds && song.duration_seconds) patch.duration_seconds = song.duration_seconds;
+    if (it.kind === "mc" && !it.song_id) patch.loop_audio = true;
+    update(it.id, patch);
+  }
+  function detachSong(it: SetlistItem) {
+    if (liveItemId === it.id) {
+      toast.error("แถวนี้กำลังเล่นอยู่บนเวที — ยังเปลี่ยนเพลงไม่ได้");
+      return;
+    }
+    update(it.id, { song_id: null });
+  }
+
+  /** Clone a row (appended at the end — drag into place). The library song link and its
+   *  Loop come along (a pointer, not a file: MC 1 and MC 2 often share one bed); a legacy
+   *  per-row file does not. */
   async function duplicateItem(it: SetlistItem) {
     const added = await insertItem({
       kind: it.kind,
       title: it.title,
+      song_id: it.song_id ?? null,
+      loop_audio: !!it.loop_audio,
       duration_seconds: it.duration_seconds,
       buffer_before_seconds: it.buffer_before_seconds,
       buffer_after_seconds: it.buffer_after_seconds,
@@ -1556,6 +1595,7 @@ export function SetlistBuilder({
                   : undefined
               }
               onDrop={editable ? () => handleDrop(idx) : undefined}
+              data-setlist-row={it.id}
               onDragLeave={
                 editable
                   ? () => setDragOverIndex((v) => (v === idx ? null : v))
@@ -1660,6 +1700,21 @@ export function SetlistBuilder({
                       <ListMusic className="h-4 w-4" /> เปลี่ยน
                     </Button>
                   )}
+                  {rowEditable && it.kind !== "song" && !it.song_id && songs.length > 0 && (
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      className="shrink-0 px-2.5"
+                      title="ใส่เพลง / ดนตรีประกอบจากคลัง — ชื่อและความยาวของแถวคงเดิม"
+                      data-attach-row={it.id}
+                      onClick={() => {
+                        setAttaching(it);
+                        setAttachOpen(true);
+                      }}
+                    >
+                      <ListMusic className="h-4 w-4" /> ใส่เพลง
+                    </Button>
+                  )}
                 </div>
                 {rowEditable && (
                   <div className="order-1 ml-auto flex shrink-0 sm:order-none sm:ml-0">
@@ -1707,6 +1762,67 @@ export function SetlistBuilder({
                   </div>
                 )}
               </div>
+
+              {/* The music of a row that is not a song: what is linked, its Loop, swap, เอาออก. */}
+              {it.kind !== "song" && it.song_id && (
+                <div
+                  data-testid={`row-music-${it.id}`}
+                  className="mt-2 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 pl-8 text-[13px] text-muted-foreground"
+                >
+                  <Music2 aria-hidden className="h-4 w-4 shrink-0" />
+                  <span className="min-w-0 truncate text-foreground/85">
+                    {songsById.get(it.song_id)?.title ?? "เพลงจากคลัง"}
+                  </span>
+                  {songsById.get(it.song_id)?.duration_seconds ? (
+                    <span className="num shrink-0">{formatDuration(songsById.get(it.song_id)!.duration_seconds)}</span>
+                  ) : null}
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={!!it.loop_audio}
+                    disabled={!rowEditable}
+                    onClick={() => update(it.id, { loop_audio: !it.loop_audio })}
+                    title={
+                      it.loop_audio
+                        ? "Loop เปิด — เพลงวนจนครบเวลาของแถวแล้วเฟดจบเอง (แตะเพื่อปิด)"
+                        : "Loop ปิด — เพลงเล่นรอบเดียว (แตะเพื่อให้วนจนครบเวลาของแถว)"
+                    }
+                    className={cn(
+                      "inline-flex min-h-11 shrink-0 items-center gap-1 rounded-[2px] px-2.5 shadow-[inset_0_0_0_1px_hsl(var(--border))] disabled:opacity-50",
+                      it.loop_audio ? "font-semibold text-primary-ink" : "text-muted-foreground"
+                    )}
+                  >
+                    <Repeat aria-hidden className="h-3.5 w-3.5" />
+                    Loop
+                  </button>
+                  {rowEditable && songs.length > 0 && (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      className="shrink-0 px-2.5 text-[13px]"
+                      data-attach-swap={it.id}
+                      onClick={() => {
+                        setAttaching(it);
+                        setAttachOpen(true);
+                      }}
+                    >
+                      <ListMusic className="h-4 w-4" /> เปลี่ยนเพลง
+                    </Button>
+                  )}
+                  {rowEditable && (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      aria-label="เอาเพลงออก"
+                      title="เอาเพลงออกจากแถวนี้ (เพลงในคลังไม่หาย)"
+                      onClick={() => detachSong(it)}
+                    >
+                      <X className="h-4 w-4" />
+                    </Button>
+                  )}
+                </div>
+              )}
 
               {/* Timing line */}
               <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-0.5 pl-8 text-[12.5px] text-muted-foreground">
@@ -1882,6 +1998,26 @@ export function SetlistBuilder({
             onPick={addFromLibrary}
             disabled={inserting}
             inSet={songIdsInSet}
+          />
+          <LibraryPickerDialog
+            songs={songs}
+            onPick={attachFromLibrary}
+            inSet={songIdsInSet}
+            open={attachOpen}
+            onOpenChange={setAttachOpen}
+            returnFocusTo={() =>
+              attaching
+                ? document.querySelector<HTMLElement>(
+                    `[data-attach-row="${attaching.id}"], [data-attach-swap="${attaching.id}"]`
+                  )
+                : null
+            }
+            heading={`ใส่เพลงแถวที่ ${
+              attaching ? items.findIndex((i) => i.id === attaching.id) + 1 : ""
+            }`}
+            hint={`ใส่ใน “${clip(attaching?.title?.trim() || "แถวนี้", 40)}” — ชื่อและความยาวของแถวคงเดิม${
+              attaching?.kind === "mc" ? " · MC เล่นวน (Loop) และเริ่มที่ความดังระดับ MC" : ""
+            }`}
           />
           <LibraryPickerDialog
             songs={songs}
