@@ -199,7 +199,9 @@ interface Analysis {
 /**
  * Taps the given players. Each one's captureStream() feeds a splitter and two analysers that
  * go nowhere. A player's capture changes tracks when its source changes (a new song), so the
- * source node is rebuilt on addtrack / removetrack. The AudioContext may start suspended under
+ * source node is rebuilt on addtrack / removetrack - from the NEWEST live track (see onTracks).
+ * A player that plays while its copy carries no track at all cannot be heard from here, and
+ * read() says so (ready: false) rather than reading it as silence. The AudioContext may start suspended under
  * the autoplay policy; it is resumed on the next press anywhere (START, NEXT - a show is all
  * presses) and whenever a player starts (the page is activated by then, and activation is
  * sticky). Until it runs, read() says ready: false and nothing alarms.
@@ -251,7 +253,13 @@ export class SignalTap {
     splitter.connect(right, 1);
     const t: Tap = { el, stream, source: null, trackId: null, left, right, onTracks: () => {}, toBus: null };
     t.onTracks = () => {
-      const track = stream.getAudioTracks().find((x) => x.readyState === "live") ?? null;
+      // The NEWEST live track, never the first. Chromium (Electron 42, measured 2026-10-16)
+      // ADDS a track to the copy at every new load and drops them only when a file plays to
+      // its natural end. A cut - จบโชว์ then START, NEXT mid-song - leaves the old track in the
+      // stream, still "live" but carrying nothing, ahead of the new one: listening to the
+      // first one read zeros under a song the room could hear, and NO SIGNAL went up.
+      const live = stream.getAudioTracks().filter((x) => x.readyState === "live");
+      const track = live[live.length - 1] ?? null;
       if ((track?.id ?? null) === t.trackId) return;
       try {
         t.source?.disconnect();
@@ -422,9 +430,15 @@ export class SignalTap {
     if (!this.ctx || this.ctx.state !== "running") return out;
     out.ready = true;
     for (const t of this.taps) {
-      if (!t.source) continue;
       // keep the capture's track current even if an event was missed
       t.onTracks();
+      if (!t.source) {
+        // Playing with nothing in its copy: the same file played again after it ended (the
+        // end dropped its tracks, a replay without a reload adds none). The room hears it and
+        // this tap cannot - no reading, so no verdict, rather than a reading of silence.
+        if (!t.el.paused && !t.el.ended && t.el.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) out.ready = false;
+        continue;
+      }
       t.left.getFloatTimeDomainData(this.buf);
       const a = blockLevels(this.buf);
       t.right.getFloatTimeDomainData(this.buf);

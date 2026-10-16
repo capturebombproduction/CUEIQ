@@ -30,7 +30,16 @@ class FakeAnalyser extends FakeNode {
     return this.fftSize / 2;
   }
   getFloatTimeDomainData(b: Float32Array) {
-    b.fill(this.level);
+    b.fill(this.level || this.heard());
+  }
+  /** what the graph feeds it: the loudest track whose source reaches it through one node (the splitter) */
+  private heard() {
+    const feeders = this.ctx.created.filter((n) => n.connections.some((c) => c.to === this));
+    let lv = 0;
+    for (const s of this.ctx.created) {
+      if (s instanceof FakeSource && s.connections.some((c) => feeders.includes(c.to))) lv = Math.max(lv, s.level);
+    }
+    return lv;
   }
   getFloatFrequencyData(b: Float32Array) {
     b.fill(-60);
@@ -41,6 +50,14 @@ class FakeGain extends FakeNode {
   channelCount = 2;
   channelCountMode = "max";
   channelInterpretation = "speakers";
+}
+class FakeSource extends FakeNode {
+  constructor(ctx: FakeCtx, readonly stream: { tracks: { level?: number }[] }) {
+    super("source", ctx);
+  }
+  get level() {
+    return this.stream.tracks[0]?.level ?? 0;
+  }
 }
 class FakeIIR extends FakeNode {
   constructor(ctx: FakeCtx, readonly ff: number[], readonly fb: number[]) {
@@ -68,8 +85,8 @@ class FakeCtx {
   createIIRFilter(ff: number[], fb: number[]) {
     return new FakeIIR(this, ff, fb);
   }
-  createMediaStreamSource() {
-    return new FakeNode("source", this);
+  createMediaStreamSource(stream: { tracks: { level?: number }[] }) {
+    return new FakeSource(this, stream);
   }
   resume() {
     return Promise.resolve();
@@ -204,5 +221,87 @@ describe("SignalTap · CONSOLE's analysis", () => {
     const src = tap.startAnalysis()!;
     tap.close();
     expect(src.read()).toBeNull();
+  });
+});
+
+describe("SignalTap · it hears the song that is playing NOW", () => {
+  // Chromium (Electron 42, measured 2026-10-16): a player's captureStream() GAINS a track at
+  // every new load and drops them only when a file plays to its natural end. A cut - จบโชว์
+  // then START, NEXT mid-song - leaves the old track in the stream, still "live" but carrying
+  // nothing, AHEAD of the new one. Listening to the first live track read zeros under a song
+  // that was sounding: NO SIGNAL on a show that was playing (พี่ 2026-10-16).
+  type FakeTrack = { id: string; readyState: string; level: number };
+  function player(tracks: FakeTrack[]) {
+    const el = document.createElement("audio");
+    const st = { paused: true, readyState: 0 };
+    Object.defineProperty(el, "paused", { get: () => st.paused });
+    Object.defineProperty(el, "ended", { get: () => false });
+    Object.defineProperty(el, "readyState", { get: () => st.readyState });
+    const stream = { getAudioTracks: () => tracks, addEventListener() {}, removeEventListener() {} };
+    Object.defineProperty(el, "captureStream", { value: () => stream });
+    const play = () => {
+      st.paused = false;
+      st.readyState = 4;
+    };
+    return { el, st, play };
+  }
+  const feeding = (ctx: FakeCtx) => ctx.created.filter((n) => n instanceof FakeSource && n.connections.length > 0);
+
+  it("after a cut, the newest live track is the song - not the dead one ahead of it", () => {
+    const tracks: FakeTrack[] = [{ id: "show-1-last-song", readyState: "live", level: 0.3 }];
+    const a = player(tracks);
+    const b = player([]);
+    const tap = new SignalTap(() => [a.el, b.el]);
+    tap.attach();
+    const ctx = contexts[0];
+    a.play();
+    expect(tap.read().rmsL).toBeCloseTo(0.3, 5);
+    // จบโชว์ paused it mid-song; it falls silent but keeps its place in the stream
+    tracks[0].level = 0;
+    a.st.paused = true;
+    // START: the first song loads on the same player - Chromium ADDS its track behind the old one
+    tracks.push({ id: "show-2-first-song", readyState: "live", level: 0.35 });
+    a.play();
+    const r = tap.read();
+    expect(r.ready).toBe(true);
+    expect(r.rmsL).toBeCloseTo(0.35, 5);
+    // NEXT mid-song: a third track, the two before it dead - still the one playing, and only it
+    tracks[1].level = 0;
+    tracks.push({ id: "show-2-second-song", readyState: "live", level: 0.5 });
+    expect(tap.read().rmsL).toBeCloseTo(0.5, 5);
+    expect(feeding(ctx)).toHaveLength(1);
+    // the song plays to its end: Chromium drops every track; the next load brings one back
+    tracks.length = 0;
+    a.st.paused = true;
+    expect(tap.read().rmsL).toBe(0);
+    tracks.push({ id: "show-2-third-song", readyState: "live", level: 0.25 });
+    a.play();
+    expect(tap.read().rmsL).toBeCloseTo(0.25, 5);
+    expect(feeding(ctx)).toHaveLength(1);
+  });
+
+  it("a playing player it cannot hear gives no reading - not a reading of silence", () => {
+    // the same file played again after it ended: Chromium dropped its tracks at the end and a
+    // replay without a reload adds none. Measured: the copy is empty while the room hears it.
+    const a = player([]);
+    const b = player([]);
+    const tap = new SignalTap(() => [a.el, b.el]);
+    tap.attach();
+    // nothing playing: quiet is the truth, the meters read it
+    expect(tap.read().ready).toBe(true);
+    a.play();
+    // playing and unheard: no verdict (the NO SIGNAL watch is told the tap is not ready)
+    expect(tap.read().ready).toBe(false);
+    // the other player sounding with a track of its own does not make the blind one heard
+    const bt: FakeTrack[] = [{ id: "pre-roll", readyState: "live", level: 0.4 }];
+    const c = player(bt);
+    const tap2 = new SignalTap(() => [a.el, c.el]);
+    tap2.attach();
+    c.play();
+    expect(tap2.read().ready).toBe(false);
+    // once the blind one stops, the reading is whole again
+    a.st.paused = true;
+    expect(tap2.read().ready).toBe(true);
+    expect(tap2.read().rmsL).toBeCloseTo(0.4, 5);
   });
 });

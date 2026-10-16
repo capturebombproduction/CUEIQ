@@ -1555,10 +1555,8 @@ async function driveLiveScenario(win) {
     // graph, and the app's meter must be shown working on the untouched element. It must see
     // the tone (a 0.5 sine peaks at -6 dBFS) and raise no NO SIGNAL alarm while it plays.
     smokeAt("live:audible:signal");
-    const signalDeadline = Date.now() + 10_000;
-    let signal = null;
-    for (;;) {
-      signal = JSON.parse(
+    const readSignal = async () =>
+      JSON.parse(
         await win.webContents.executeJavaScript(`JSON.stringify((() => {
           const s = document.querySelector('[data-testid=signal-strip]');
           const alarm = document.querySelector('[data-testid=signal-alarm]');
@@ -1566,6 +1564,10 @@ async function driveLiveScenario(win) {
           return { present: true, ready: s.dataset.ready, db: s.dataset.db || null, alarm: alarm ? alarm.dataset.kind : null };
         })())`)
       );
+    const signalDeadline = Date.now() + 10_000;
+    let signal = null;
+    for (;;) {
+      signal = await readSignal();
       if (signal.present && signal.ready === "1" && signal.db !== null && Number(signal.db) > -30) break;
       if (Date.now() >= signalDeadline) break;
       await new Promise((r) => setTimeout(r, 250));
@@ -1642,6 +1644,59 @@ async function driveLiveScenario(win) {
       );
     }
     win.webContents.setZoomFactor(zoomBefore);
+    // จบโชว์, รีเซ็ต, START again: a second run on the same page. Its first song loads on the
+    // player the first run's song was CUT on (จบโชว์ pauses mid-file), and Chromium keeps the
+    // cut song's track in the capture - still "live", carrying nothing - AHEAD of the new one
+    // (lib/live-signal.ts onTracks). A tap that listened to the first live track read zeros
+    // under a song the room could hear: NO SIGNAL on a sounding show (พี่ 2026-10-16). The strip
+    // has to hear the tone again and stay quiet through a whole alarm window.
+    smokeAt("live:audible:rerun");
+    const rerun = { step: null, signal: null, alarms: [] };
+    rerun.step = await win.webContents.executeJavaScript(
+      `(async () => {
+        const q = (s) => document.querySelector(s);
+        const wait = async (ok, ms) => {
+          for (const end = Date.now() + ms; Date.now() < end; await new Promise((r) => setTimeout(r, 100))) if (ok()) return true;
+          return false;
+        };
+        const end = q('[data-testid=end-show]');
+        if (!end) return 'no end-show key';
+        if (end.disabled) return 'end-show disabled';
+        end.click();
+        if (!(await wait(() => q('[data-testid=end-show]')?.disabled, 5000))) return 'end-show never took';
+        const reset = q('[data-testid=reset]');
+        if (!reset || reset.disabled) return 'no reset key';
+        // the confirm asks a person; here the test is the person
+        const confirm = window.confirm;
+        window.confirm = () => true;
+        try { reset.click(); } finally { window.confirm = confirm; }
+        if (!(await wait(() => { const b = q('[data-testid=start-show]'); return !!b && !b.disabled; }, 10000))) return 'START never came back after the reset';
+        return 'ready';
+      })()`
+    );
+    if (rerun.step === "ready") {
+      // userGesture: true, as the first START (the autoplay policy)
+      const again = await win.webContents.executeJavaScript(
+        `(() => { const b = document.querySelector('[data-testid=start-show]');
+          if (!b) return 'no start button';
+          if (b.disabled) return 'start button disabled';
+          b.click(); return 'clicked'; })()`,
+        true
+      );
+      if (again !== "clicked") rerun.step = `could not start the second run: ${again}`;
+      else {
+        await pollLive(win, "the second run never started here", (l) => l.begun && l.controller, 20_000);
+        // past the new song's grace and a whole NO SIGNAL window (lib/live-signal.ts:
+        // START_GRACE_MS 2.5 s, SILENCE_ALARM_MS 3 s) - the old tap had it up at ~3 s
+        const until = Date.now() + 7_000;
+        for (;;) {
+          rerun.signal = await readSignal();
+          if (rerun.signal.alarm) rerun.alarms.push(rerun.signal.alarm);
+          if (Date.now() >= until) break;
+          await new Promise((r) => setTimeout(r, 250));
+        }
+      }
+    }
     smokeAt("live:audible:listening");
     const deadline = Date.now() + 15_000;
     let heard = null;
@@ -1651,7 +1706,7 @@ async function driveLiveScenario(win) {
       if (Date.now() >= deadline) break;
       await new Promise((r) => setTimeout(r, 500));
     }
-    return { role: "audible", after: started, audio: heard, signal, console: consoleReading, mountedSync: mounted.sync };
+    return { role: "audible", after: started, audio: heard, signal, console: consoleReading, rerun, mountedSync: mounted.sync };
   }
 
   if (SMOKE_LIVE === "main" || SMOKE_LIVE === "main-conflict") {

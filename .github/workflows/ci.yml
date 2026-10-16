@@ -141,7 +141,9 @@ jobs:
       # is a silent viewer and the PA's warning is gone ·
       # audible -> plants a real WAV in the app's own audio cache, starts the show,
       # and MEASURES THE WAVEFORM coming out of the player (a silent file fails it
-      # while every other reading stays green) · Quick Show -> opens with no account
+      # while every other reading stays green), then จบโชว์ + รีเซ็ต + START again: the
+      # Signal strip must still hear the second run (Chromium keeps the cut song's dead
+      # track ahead of the new one in the capture) · Quick Show -> opens with no account
       # and no network.
       # Plus TWO cross-checks:
       # the job fails if the cold and airplane boots land on the same screen (what

@@ -323,7 +323,7 @@ const SCENARIOS = [
     // ⚠️ It measures INSIDE Chromium, before the operating system's mixer. It can
     // say "the app produced a real signal"; it cannot say a speaker was plugged in.
     name: "audible",
-    what: "a real file plays and a real waveform comes out of it",
+    what: "a real file plays and a real waveform comes out of it - and again after จบโชว์ + รีเซ็ต",
     seed: false,
     backend: true,
     audible: true,
@@ -923,6 +923,20 @@ async function runAudibleScenario(s) {
     }
     if (board.alarm) problems.push(`a Signal alarm (${board.alarm}) was up on CONSOLE while the tone audibly played`);
     if (board.back !== "stage") problems.push(`switching back from CONSOLE to STAGE failed (${board.back})`);
+  }
+  // A second run on the same page (main.cjs: จบโชว์, รีเซ็ต, START): its song loads on the player
+  // the first run's was cut on. The strip has to hear it and raise nothing (พี่ 2026-10-16).
+  const rerun = result?.liveReport?.rerun;
+  console.log(`   a second run after จบโชว์ + รีเซ็ต: ${JSON.stringify(rerun ?? null)}`);
+  if (rerun?.step !== "ready") problems.push(`the second run never got going (${rerun?.step ?? "no reading"})`);
+  else {
+    if (rerun.alarms.length) {
+      problems.push(`a Signal alarm (${[...new Set(rerun.alarms)].join(", ")}) went up while the second run's tone audibly played`);
+    }
+    const sig = rerun.signal;
+    if (sig?.ready !== "1" || sig.db == null || !(Number(sig.db) > -30)) {
+      problems.push(`on the second run the Signal strip read ${sig?.db} dB (ready=${sig?.ready}) while a -6 dBFS tone played`);
+    }
   }
   if (problems.length === 0) {
     console.log(
