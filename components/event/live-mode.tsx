@@ -103,6 +103,7 @@ import { formatDuration, nowClock, pad2 } from "@/lib/time";
 import { liveZone } from "@/lib/live-zone";
 import { restoreShow, SNAPSHOT_ALIVE_MS, STALE_RESTORE_MS } from "@/lib/live-restore";
 import { hardOutGap, hardOutReading } from "@/lib/live-hard-out";
+import { fadeLevel, nextFadeFrame } from "@/lib/fade";
 
 type ShowMode = "manual" | "auto";
 
@@ -401,10 +402,13 @@ export function LiveMode({
   function levelOf(itemId: string, vols: Record<string, number> = volumesRef.current): number {
     return vols[itemId] ?? baseLevel(itemsRef.current.find((it) => it.id === itemId)?.kind);
   }
-  const fadeRef = useRef<number | null>(null); // rAF id for the volume fade animation
+  const fadeRef = useRef<(() => void) | null>(null); // cancels the volume fade's next frame
   // where the running fade is going: a viewer that joins mid-fade is told the level the
   // track is fading TO (intendedVolumes) - the fade's own message went out before it came
   const fadeTargetRef = useRef<{ itemId: string; target: number } | null>(null);
+  // where the running fade IS, unrounded (lib/fade.ts): while it runs it drives its track's
+  // element itself, and a fade that replaces it starts from here, not the rounded slider
+  const fadeNowRef = useRef<{ itemId: string; level: number } | null>(null);
   // throttle state for volume broadcasts (slider drag would otherwise flood the channel)
   const volBcastRef = useRef<{
     last: number;
@@ -467,6 +471,8 @@ export function LiveMode({
   // apply the PLAYING track's own volume to the primary element (per-track)
   useEffect(() => {
     if (!audioRef.current || !playingId) return;
+    // a fade on it writes every frame, unrounded; the slider's whole percent would step it
+    if (fadeNowRef.current?.itemId === playingId) return;
     const v = levelOf(playingId, volumes) / 100;
     audioRef.current.volume = Math.min(1, Math.max(0, v));
     // eslint-disable-next-line react-hooks/exhaustive-deps -- levelOf reads the rows' ref; items re-runs it
@@ -767,7 +773,7 @@ export function LiveMode({
   useEffect(() => {
     const vb = volBcastRef.current; // stable object (never reassigned, only mutated)
     return () => {
-      if (fadeRef.current) cancelAnimationFrame(fadeRef.current);
+      fadeRef.current?.();
       if (vb.timer) clearTimeout(vb.timer);
     };
   }, []);
@@ -2765,34 +2771,47 @@ export function LiveMode({
   // Fade ONE track's volume to `target` over `ms` (ms<=0 = set instantly). Shared by
   // the local buttons/slider and by the viewer mirroring a remote volume command.
   function fadeVolumeFor(itemId: string, target: number, ms: number) {
-    if (fadeRef.current) cancelAnimationFrame(fadeRef.current);
+    fadeRef.current?.();
+    fadeRef.current = null;
     fadeTargetRef.current = null;
-    const start = levelOf(itemId);
-    if (ms <= 0 || start === target) {
+    const was = fadeNowRef.current;
+    fadeNowRef.current = null;
+    // a fade cut short by this one is where IT got to, not where the slider last said
+    const start = was?.itemId === itemId ? was.level : levelOf(itemId);
+    if (ms <= 0 || Math.abs(start - target) < 0.01) {
+      if (playingIdRef.current === itemId && audioRef.current) {
+        audioRef.current.volume = Math.min(1, Math.max(0, target / 100));
+      }
       setVolumes((prev) => ({ ...prev, [itemId]: target }));
       return;
     }
     const going = { itemId, target };
     fadeTargetRef.current = going;
+    const now = { itemId, level: start };
+    fadeNowRef.current = now;
     const t0 = performance.now();
     let lastSet = 0;
     const step = (t: number) => {
-      const p = Math.min(1, (t - t0) / ms);
-      const v = Math.round(start + (target - start) * p);
+      const p = Math.min(1, Math.max(0, (t - t0) / ms));
+      const v = fadeLevel(start, target, p); // lib/fade.ts: a fader's curve, unrounded
+      now.level = v;
       // drive the audio smoothly EVERY frame (imperative — no React re-render)
       if (playingIdRef.current === itemId && audioRef.current) {
         audioRef.current.volume = Math.min(1, Math.max(0, v / 100));
+      }
+      if (p >= 1) {
+        if (fadeTargetRef.current === going) fadeTargetRef.current = null;
+        if (fadeNowRef.current === now) fadeNowRef.current = null;
       }
       // refresh the on-screen slider ~12x/sec (and at the end) instead of ~60x/sec,
       // so a 2–3s fade doesn't re-render this whole component on every frame
       if (p >= 1 || t - lastSet >= 80) {
         lastSet = t;
-        setVolumes((prev) => ({ ...prev, [itemId]: v }));
+        setVolumes((prev) => ({ ...prev, [itemId]: Math.round(v) }));
       }
-      if (p >= 1 && fadeTargetRef.current === going) fadeTargetRef.current = null;
-      fadeRef.current = p < 1 ? requestAnimationFrame(step) : null;
+      fadeRef.current = p < 1 ? nextFadeFrame(step) : null;
     };
-    fadeRef.current = requestAnimationFrame(step);
+    fadeRef.current = nextFadeFrame(step);
   }
   const fadeVolumeForRef = useRef(fadeVolumeFor);
   fadeVolumeForRef.current = fadeVolumeFor;
@@ -3311,12 +3330,12 @@ export function LiveMode({
       // was reused (another swap / an overlap pre-roll loaded a new track on it)
       if (outFadeTokenRef.current !== token) return;
       if (el !== audioRef2.current || el.src !== srcAtStart) return;
-      const p = Math.min(1, (t - t0) / MS);
-      el.volume = startVol * (1 - p);
-      if (p < 1) requestAnimationFrame(step);
+      const p = Math.min(1, Math.max(0, (t - t0) / MS));
+      el.volume = Math.min(1, Math.max(0, fadeLevel(startVol * 100, 0, p) / 100));
+      if (p < 1) nextFadeFrame(step);
       else el.pause();
     };
-    requestAnimationFrame(step);
+    nextFadeFrame(step);
   }
 
   // Resume audio after a reload / autoplay-block: load the sounding track and seek to

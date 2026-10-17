@@ -1075,3 +1075,60 @@ describe("Quick Show — a Loop row plays past its slot until Auto Mute", () => 
     expect(endShowButton()).toBeDisabled(); // ended: the record is taken once
   });
 });
+
+// The same as Live Mode (lib/fade.ts): a fade moves along a fader's curve, unrounded - not a
+// straight line in whole percents that stayed loud and then stepped 3 → 2 → 1 → 0 % - and it
+// lands on a hidden page too, where no frame is ever drawn.
+describe("Quick Show — a fade moves like a fader, and lands on a hidden page too", () => {
+  const dB = (v: number) => 20 * Math.log10(v);
+  const first = () => song("First", { durationSeconds: 200, sortOrder: 1 });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it("Auto Mute: half way it is ~18 dB down, and frame to frame it never steps", async () => {
+    let frames: FrameRequestCallback[] = [];
+    vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback) => frames.push(cb));
+    vi.stubGlobal("cancelAnimationFrame", () => {});
+    await boot([first(), { ...SECOND }]);
+    const primary = media.first() as HTMLMediaElement;
+    await click(startButton());
+    expect(media.state(primary).paused).toBe(false);
+    frames = [];
+    const t0 = performance.now();
+    await click(screen.getByRole("button", { name: /Auto Mute/ }));
+    const level: number[] = [];
+    for (let k = 1; k <= 200; k++) {
+      await act(async () => {
+        const due = frames;
+        frames = [];
+        for (const cb of due) cb(t0 + (k * 1000) / 60);
+      });
+      level.push(media.state(primary).volume);
+    }
+    expect(dB(level[89])).toBeLessThan(-15); // a straight line: -6 dB, still loud
+    expect(dB(level[89])).toBeGreaterThan(-21);
+    for (let k = 1; k < level.length; k++) {
+      if (level[k] < 0.01) break;
+      expect(Math.abs(dB(level[k - 1]) - dB(level[k]))).toBeLessThan(1.5);
+    }
+    expect(level[level.length - 1]).toBe(0);
+  });
+
+  it("no frames at all (a minimized window): Auto Mute still lands on 0, on time", async () => {
+    vi.stubGlobal("requestAnimationFrame", () => 1); // a hidden page: never called back
+    vi.stubGlobal("cancelAnimationFrame", () => {});
+    vi.spyOn(performance, "now").mockImplementation(() => Date.now()); // the fake clock
+    await boot([first(), { ...SECOND }]);
+    const primary = media.first() as HTMLMediaElement;
+    await click(startButton());
+    await click(screen.getByRole("button", { name: /Auto Mute/ }));
+    for (let t = 0; t < 1_500; t += 250) await tick(250);
+    expect(media.state(primary).volume).toBeGreaterThan(0);
+    expect(media.state(primary).volume).toBeLessThan(0.3);
+    for (let t = 0; t < 1_750; t += 250) await tick(250);
+    expect(media.state(primary).volume).toBe(0);
+    expect(media.state(primary).paused).toBe(false);
+  });
+});

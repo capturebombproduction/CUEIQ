@@ -56,6 +56,7 @@ import { cn } from "@/lib/utils";
 import { formatCountdown, formatDuration, isSettled, nowClock } from "@/lib/time";
 import { liveZone, zoneCaption } from "@/lib/live-zone";
 import { restoreShow, SNAPSHOT_ALIVE_MS, STALE_RESTORE_MS } from "@/lib/live-restore";
+import { fadeLevel, nextFadeFrame } from "@/lib/fade";
 import {
   deleteSoloItem,
   getSoloLastRun,
@@ -209,7 +210,10 @@ export function MyShow() {
   const [volumes, setVolumes] = useState<Record<string, number>>({});
   const volumesRef = useRef(volumes);
   volumesRef.current = volumes;
-  const fadeRef = useRef<number | null>(null);
+  const fadeRef = useRef<(() => void) | null>(null); // cancels the volume fade's next frame
+  // where the running fade IS, unrounded (lib/fade.ts): while it runs it drives its track's
+  // element itself, and a fade that replaces it starts from here, not the rounded slider
+  const fadeNowRef = useRef<{ itemId: string; level: number } | null>(null);
   // loop end-fade in progress (id + the volume to restore) — its transient 0
   // must never be persisted onto the item as the track's preset
   const loopFadeRef = useRef<{ id: string; prevVol: number } | null>(null);
@@ -450,6 +454,8 @@ export function MyShow() {
   // playing track's preset volume follows the primary element
   useEffect(() => {
     if (!audioRef.current || !playingId) return;
+    // a fade on it writes every frame, unrounded; the slider's whole percent would step it
+    if (fadeNowRef.current?.itemId === playingId) return;
     const v = (volumes[playingId] ?? 100) / 100;
     audioRef.current.volume = Math.min(1, Math.max(0, v));
   }, [volumes, playingId]);
@@ -756,41 +762,50 @@ export function MyShow() {
     const step = (t: number) => {
       if (outFadeTokenRef.current !== token) return;
       if (el !== audioRef2.current || el.src !== srcAtStart) return;
-      const pgs = Math.min(1, (t - t0) / MS);
-      el.volume = startVol * (1 - pgs);
-      if (pgs < 1) requestAnimationFrame(step);
+      const pgs = Math.min(1, Math.max(0, (t - t0) / MS));
+      el.volume = Math.min(1, Math.max(0, fadeLevel(startVol * 100, 0, pgs) / 100));
+      if (pgs < 1) nextFadeFrame(step);
       else el.pause();
     };
-    requestAnimationFrame(step);
+    nextFadeFrame(step);
   }
 
   // fade ONE track's volume (fade buttons + loop end-fade); imperative like live-mode
   function fadeVolumeFor(itemId: string, target: number, ms: number) {
-    if (fadeRef.current) cancelAnimationFrame(fadeRef.current);
-    const start = volumesRef.current[itemId] ?? 100;
-    if (ms <= 0 || start === target) {
+    fadeRef.current?.();
+    fadeRef.current = null;
+    const was = fadeNowRef.current;
+    fadeNowRef.current = null;
+    // a fade cut short by this one is where IT got to, not where the slider last said
+    const start = was?.itemId === itemId ? was.level : volumesRef.current[itemId] ?? 100;
+    if (ms <= 0 || Math.abs(start - target) < 0.01) {
+      if (playingIdRef.current === itemId && audioRef.current) {
+        audioRef.current.volume = Math.min(1, Math.max(0, target / 100));
+      }
       setVolumes((prev) => ({ ...prev, [itemId]: target }));
       return;
     }
+    const now = { itemId, level: start };
+    fadeNowRef.current = now;
     const t0 = performance.now();
     let lastSet = 0;
     const step = (t: number) => {
-      const p = Math.min(1, (t - t0) / ms);
-      const v = Math.round(start + (target - start) * p);
+      const p = Math.min(1, Math.max(0, (t - t0) / ms));
+      const v = fadeLevel(start, target, p); // lib/fade.ts: a fader's curve, unrounded
+      now.level = v;
       if (playingIdRef.current === itemId && audioRef.current) {
         audioRef.current.volume = Math.min(1, Math.max(0, v / 100));
       }
+      if (p >= 1 && fadeNowRef.current === now) fadeNowRef.current = null;
       if (p >= 1 || t - lastSet >= 80) {
         lastSet = t;
-        setVolumes((prev) => ({ ...prev, [itemId]: v }));
+        setVolumes((prev) => ({ ...prev, [itemId]: Math.round(v) }));
       }
-      fadeRef.current = p < 1 ? requestAnimationFrame(step) : null;
+      fadeRef.current = p < 1 ? nextFadeFrame(step) : null;
     };
-    fadeRef.current = requestAnimationFrame(step);
+    fadeRef.current = nextFadeFrame(step);
   }
-  useEffect(() => () => {
-    if (fadeRef.current) cancelAnimationFrame(fadeRef.current);
-  }, []);
+  useEffect(() => () => fadeRef.current?.(), []);
 
   function fadeVolumeTo(target: number, ms = 2000) {
     const cur = items[state.currentIndex];

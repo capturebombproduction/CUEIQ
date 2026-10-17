@@ -4543,3 +4543,89 @@ describe("LiveMode · a Loop row plays past its slot until Auto Mute", () => {
     expect(screen.queryByTestId("ask-end-show")).toBeNull();
   });
 });
+
+// พี่ 2026-10-17 ("ตัวเล่นเสียงอัพเกรดอะไรได้ไหม"): a fade was a straight line in amplitude,
+// written as whole percents - an Auto Mute stayed loud for most of its 3 s and then fell off
+// a cliff, its tail stepping 3 → 2 → 1 → 0 %. And it rode requestAnimationFrame alone: a
+// hidden page draws no frames, so an Auto Mute pressed and then minimized froze mid-fade with
+// the music playing on (lib/fade.ts).
+describe("LiveMode · a fade moves like a fader, and lands on a hidden page too", () => {
+  const SET = [makeItem(1, { duration_seconds: 240 }), makeItem(2, { duration_seconds: 240 })];
+  const dB = (v: number) => 20 * Math.log10(v);
+  async function startSong() {
+    const media = instrumentMediaElements();
+    supa.setScript({ setlist_items: ok(SET), songs: ok([]), show_authority: ok([]) });
+    h.saved = [{ itemId: "item-1", blob: new Blob(["audio"]), name: "song.wav", path: null }];
+    await mountLive({ items: SET });
+    await startShowFromUi();
+    const primary = media.first()!;
+    expect(media.state(primary).paused).toBe(false);
+    expect(media.state(primary).volume).toBeCloseTo(1);
+    return { media, primary };
+  }
+  const autoMute = () => screen.getAllByRole("button", { name: /Auto Mute/ })[0];
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it("Auto Mute: half way it is ~18 dB down, and frame to frame it never steps", async () => {
+    // frames drawn by hand, 60 a second; the fade's fallback timer never comes due
+    let frames: FrameRequestCallback[] = [];
+    vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback) => frames.push(cb));
+    vi.stubGlobal("cancelAnimationFrame", () => {});
+    const { media, primary } = await startSong();
+    frames = [];
+    const t0 = performance.now();
+    await act(async () => {
+      fireEvent.click(autoMute());
+    });
+    const level: number[] = [];
+    for (let k = 1; k <= 200; k++) {
+      await act(async () => {
+        const due = frames;
+        frames = [];
+        for (const cb of due) cb(t0 + (k * 1000) / 60);
+      });
+      level.push(media.state(primary).volume);
+    }
+    // 3 s = 180 frames: half way is frame 90
+    expect(dB(level[89])).toBeLessThan(-15); // a straight line: -6 dB, still loud
+    expect(dB(level[89])).toBeGreaterThan(-21);
+    for (let k = 1; k < level.length; k++) {
+      if (level[k] < 0.01) break; // below -40 dB a step is not heard
+      expect(Math.abs(dB(level[k - 1]) - dB(level[k]))).toBeLessThan(1.5);
+    }
+    expect(level.at(-1)).toBe(0);
+    // the element was given the curve itself, not the slider's whole percents
+    const unrounded = media
+      .callsFor(primary)
+      .filter((c) => c.type === "volume" && Math.abs((c.value as number) * 100 - Math.round((c.value as number) * 100)) > 1e-6);
+    expect(unrounded.length).toBeGreaterThan(100);
+  });
+
+  it("no frames at all (a minimized window): Auto Mute still lands on 0, on time", async () => {
+    vi.stubGlobal("requestAnimationFrame", () => 1); // a hidden page: never called back
+    vi.stubGlobal("cancelAnimationFrame", () => {});
+    vi.spyOn(performance, "now").mockImplementation(() => Date.now()); // the fake clock
+    const { media, primary } = await startSong();
+    await act(async () => {
+      fireEvent.click(autoMute());
+    });
+    for (let t = 0; t < 1_500; t += 250) {
+      await act(async () => {
+        vi.advanceTimersByTime(250);
+      });
+    }
+    const half = media.state(primary).volume;
+    expect(half).toBeGreaterThan(0);
+    expect(half).toBeLessThan(0.3);
+    for (let t = 0; t < 1_750; t += 250) {
+      await act(async () => {
+        vi.advanceTimersByTime(250);
+      });
+    }
+    expect(media.state(primary).volume).toBe(0);
+    expect(media.state(primary).paused).toBe(false); // a mute, not a stop
+  });
+});

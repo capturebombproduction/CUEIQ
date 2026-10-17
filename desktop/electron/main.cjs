@@ -261,6 +261,19 @@ function stopShowPowerSaveBlocker() {
   powerSaveBlockerId = null;
 }
 
+// A hidden window is a background page to Chromium: requestAnimationFrame stops and timers
+// are throttled (measured in Electron 42, minimized for 4 s: ONE frame, and a 20 ms timer
+// ran 5 times). On the show machine an Auto Mute pressed and then minimized froze mid-fade,
+// the music playing on at that level, and the clock Auto advances by slowed with it. So
+// while a show runs this window never becomes a background page. Electron's trade: the
+// page then stays "visible" while minimized, and its visibilitychange handlers sit the show
+// out - they re-sync a page that was suspended, and this one no longer is. The self-test
+// window runs unthrottled from the start (createWindow), and stays so.
+function setShowThrottling(contents, running) {
+  if (SMOKE || !contents || contents.isDestroyed()) return;
+  contents.setBackgroundThrottling(!running);
+}
+
 function registerIpc() {
   ipcMain.handle("cueiq:fetch-audio", (_e, url) => fetchAudioBytes(url));
   ipcMain.handle("cueiq:put-audio", (_e, url, bytes, contentType) =>
@@ -268,9 +281,10 @@ function registerIpc() {
   );
   ipcMain.handle("cueiq:pick-audio-file", () => pickAudioFile());
   // Renderer tells us when a show starts/ends running; see the SPA's live paths.
-  ipcMain.handle("cueiq:set-show-running", (_e, running) =>
-    running ? startShowPowerSaveBlocker() : stopShowPowerSaveBlocker()
-  );
+  ipcMain.handle("cueiq:set-show-running", (e, running) => {
+    setShowThrottling(e.sender, running);
+    return running ? startShowPowerSaveBlocker() : stopShowPowerSaveBlocker();
+  });
   ipcMain.handle("cueiq:set-unload-reason", (_e, reason) => {
     unloadReason = reason === "show" || reason === "unsaved" ? reason : null;
   });

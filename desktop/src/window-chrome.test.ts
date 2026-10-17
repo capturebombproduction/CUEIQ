@@ -73,3 +73,26 @@ describe("the desktop body rule", () => {
     expect(body).toMatch(/color:\s*hsl\(var\(--foreground\)\)/);
   });
 });
+
+// A minimized window is a background page to Chromium: no frames, and timers throttled -
+// measured in Electron 42, a silent minimized window ran its 500 ms clock ONCE A MINUTE from
+// the second minute on. Auto advances by that clock, and the fades rode those frames. While
+// a show runs, main.cjs keeps the window out of the background (setShowThrottling).
+describe("while a show runs, the window is never a background page", () => {
+  const main = read("electron", "main.cjs");
+
+  it("the show-running message turns background throttling off, and back on after", () => {
+    const handler = /ipcMain\.handle\("cueiq:set-show-running",\s*\(e, running\) => \{([\s\S]*?)\}\);/.exec(main);
+    expect(handler).not.toBeNull();
+    expect(handler![1]).toMatch(/setShowThrottling\(e\.sender, running\)/);
+    const fn = /function setShowThrottling\(contents, running\) \{([\s\S]*?)\n\}/.exec(main);
+    expect(fn).not.toBeNull();
+    expect(fn![1]).toMatch(/contents\.setBackgroundThrottling\(!running\)/);
+  });
+
+  it("leaves the self-test window unthrottled throughout", () => {
+    const fn = /function setShowThrottling\(contents, running\) \{([\s\S]*?)\n\}/.exec(main);
+    expect(fn![1]).toMatch(/if \(SMOKE \|\|/);
+    expect(main).toMatch(/\.\.\.\(SMOKE \? \{ backgroundThrottling: false \} : \{\}\)/);
+  });
+});
