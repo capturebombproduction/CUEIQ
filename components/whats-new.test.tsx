@@ -363,16 +363,42 @@ describe("the 2026-10-17 round (music on an MC row)", () => {
 describe("the 2026-10-17b round (a Loop past its slot, Auto Mute asks)", () => {
   const LOOP = "เล่นต่อได้แม้เกินเวลาของแถว";
 
-  it("comes back on a device that closed the 2026-10-17 round, the Loop first", async () => {
-    expect(WHATS_NEW_ROUND).toBe("2026-10-17b");
+  it("comes back on a device that closed the 2026-10-17 round", async () => {
     localStorage.setItem(KEY, "2026-10-17");
     await mount(false);
     expect(screen.getByTestId("whats-new")).toHaveTextContent(LOOP);
-    expect(whatsNewItems(MEMBER)[0]).toContain(LOOP);
   });
 
   it("band people hear it; label staff do not", () => {
     expect(has(whatsNewItems(MEMBER), LOOP)).toBe(true);
     expect(has(whatsNewItems(STAFF), LOOP)).toBe(false);
+  });
+});
+
+describe("the 2026-10-17c round (the fades, a minimized window)", () => {
+  const FADER = "เฟดแบบเฟดเดอร์มิกเซอร์";
+  const MINIMIZED = "ย่อหน้าต่างหรือสลับไปแอปอื่นระหว่างโชว์ได้";
+
+  it("comes back on a device that closed the 2026-10-17b round, the fades first", async () => {
+    expect(WHATS_NEW_ROUND).toBe("2026-10-17c");
+    localStorage.setItem(KEY, "2026-10-17b");
+    await mount(false);
+    expect(screen.getByTestId("whats-new")).toHaveTextContent(FADER);
+    expect(whatsNewItems(MEMBER)[0]).toContain(FADER);
+  });
+
+  it("band people hear about the fades; label staff do not", () => {
+    expect(has(whatsNewItems(MEMBER), FADER)).toBe(true);
+    expect(has(whatsNewItems(STAFF), FADER)).toBe(false);
+  });
+
+  it("the minimized window is told in the desktop app only (a browser tab still sleeps)", () => {
+    expect(has(whatsNewItems(MEMBER), MINIMIZED)).toBe(false);
+    (window as unknown as { cueiqNative?: unknown }).cueiqNative = {};
+    try {
+      expect(has(whatsNewItems(MEMBER), MINIMIZED)).toBe(true);
+    } finally {
+      delete (window as unknown as { cueiqNative?: unknown }).cueiqNative;
+    }
   });
 });

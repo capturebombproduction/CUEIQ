@@ -57,6 +57,7 @@ import { formatCountdown, formatDuration, isSettled, nowClock } from "@/lib/time
 import { liveZone, zoneCaption } from "@/lib/live-zone";
 import { restoreShow, SNAPSHOT_ALIVE_MS, STALE_RESTORE_MS } from "@/lib/live-restore";
 import { fadeLevel, nextFadeFrame } from "@/lib/fade";
+import { unplayableAudio } from "@/lib/audio";
 import {
   deleteSoloItem,
   getSoloLastRun,
@@ -1364,8 +1365,18 @@ export function MyShow() {
     });
   }
 
-  async function addFiles(files: FileList | null) {
-    if (!files || files.length === 0) return;
+  async function addFiles(picked: FileList | null) {
+    if (!picked || picked.length === 0) return;
+    // a file this player cannot open is never added (lib/audio.ts); the rest still are
+    const all = Array.from(picked);
+    const files = all.filter((f) => !unplayableAudio(f));
+    const refused = all.filter((f) => unplayableAudio(f));
+    if (refused.length) {
+      toast.error(`ใช้ไฟล์นี้ไม่ได้: ${refused.map((f) => f.name).join(", ")}`, {
+        description: unplayableAudio(refused[0])!,
+      });
+    }
+    if (files.length === 0) return;
     setAdding(true);
     try {
       const base = itemsRef.current.length
@@ -1502,6 +1513,11 @@ export function MyShow() {
     const id = replaceTargetRef.current;
     e.target.value = "";
     if (!f || !id) return;
+    const why = unplayableAudio(f);
+    if (why) {
+      toast.error("ใช้ไฟล์นี้ไม่ได้", { description: why });
+      return;
+    }
     let blob: Blob;
     try {
       // copy the bytes (see addFiles) — the stored show must never reference the source path

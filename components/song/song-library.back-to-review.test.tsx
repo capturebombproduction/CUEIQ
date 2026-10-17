@@ -49,7 +49,10 @@ vi.mock("@/lib/realtime", async (orig) => ({
   privateChannel: () => ({ subscribe() {}, send() {} }),
 }));
 // the take that replaces it is 5:12
-vi.mock("@/lib/audio", () => ({ detectAudioDuration: async () => 312 }));
+vi.mock("@/lib/audio", async (orig) => ({
+  ...(await orig<typeof import("@/lib/audio")>()),
+  detectAudioDuration: async () => 312,
+}));
 vi.mock("@/lib/song-analysis-browser", () => ({ analyzeAudioFile: async () => MEASURED }));
 vi.mock("@/lib/supabase/client", () => ({
   createClient: () => ({

@@ -30,7 +30,7 @@ import {
 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { notify } from "@/lib/notify-client";
-import { detectAudioDuration } from "@/lib/audio";
+import { detectAudioDuration, unplayableAudio } from "@/lib/audio";
 import { makeCoverDataUrl } from "@/lib/song-cover";
 import { STALE_FILE_FACTS, writeSongFileFacts } from "@/lib/song-file-facts";
 import {
@@ -719,6 +719,12 @@ export function SongLibrary({
 
   async function onPickFile(file: File | undefined) {
     if (!file) return;
+    const why = unplayableAudio(file);
+    if (why) {
+      if (fileRef.current) fileRef.current.value = "";
+      toast.error("ใช้ไฟล์นี้ไม่ได้", { description: why });
+      return;
+    }
     setPickedFile(file); // keep the File — uploaded to R2 on save
     setForm((f) => ({ ...f, file_name: file.name }));
     setDetecting(true);
@@ -975,6 +981,12 @@ export function SongLibrary({
   }
 
   async function uploadSongAudio(song: Song, file: File, keepLength = false): Promise<string | null> {
+    // every way a file reaches the library comes through here (lib/audio.ts)
+    const why = unplayableAudio(file);
+    if (why) {
+      toast.error("ใช้ไฟล์นี้ไม่ได้", { description: why });
+      return null;
+    }
     setAudioBusy((b) => ({ ...b, [song.id]: "up" }));
     const prevPath = song.audio_path ?? null;
     const path = buildSongAudioPath(song.tenant_id, song.group_id, song.id, file.name);
@@ -1174,6 +1186,11 @@ export function SongLibrary({
     try {
       const picked = await native.pickAudioFile();
       if (!picked) return; // user cancelled the native dialog
+      const why = unplayableAudio(picked);
+      if (why) {
+        toast.error("ใช้ไฟล์นี้ไม่ได้", { description: why });
+        return;
+      }
       // The native picker returns an exact, full-buffer Uint8Array; use its
       // ArrayBuffer (a plain Uint8Array isn't a BlobPart under strict lib types).
       const blob = new Blob([picked.bytes.buffer as ArrayBuffer], {

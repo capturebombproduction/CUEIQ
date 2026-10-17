@@ -96,3 +96,32 @@ describe("LiveMode · a file attached in Live brings its own length", () => {
     expect(length.eq).toEqual({ id: NEW_SONG, audio_path: path });
   });
 });
+
+// lib/audio.ts unplayableAudio: this player cannot open an AIFF - attached, it would make a
+// library song that is silent on every Chromium device.
+describe("LiveMode · an AIFF is not attached", () => {
+  it("no song is made, the row is not linked, nothing is uploaded", async () => {
+    render(
+      <LiveMode
+        eventId={EVENT_ID}
+        groupId={GROUP_ID}
+        eventName="Seishin Kakumei One-Man"
+        items={[MC]}
+        songAudio={{}}
+        canEdit={true}
+        lastRunSeconds={null}
+        lastRunAt={null}
+      />
+    );
+    await act(async () => {});
+    fireEvent.click(screen.getByTitle("โหลดไฟล์เพลง (อัปโหลดขึ้นคลาวด์)"));
+    const input = document.querySelector('input[type="file"][accept="audio/*"]') as HTMLInputElement;
+    await act(async () => {
+      fireEvent.change(input, { target: { files: [new File(["FORM"], "backing.aiff", { type: "audio/x-aiff" })] } });
+    });
+    await act(async () => {});
+    expect(supa.callsTo("songs", "insert")).toHaveLength(0);
+    expect(supa.callsTo("setlist_items", "update")).toHaveLength(0);
+    expect(screen.queryByText("backing.aiff")).toBeNull();
+  });
+});

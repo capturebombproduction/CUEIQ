@@ -104,6 +104,7 @@ import { liveZone } from "@/lib/live-zone";
 import { restoreShow, SNAPSHOT_ALIVE_MS, STALE_RESTORE_MS } from "@/lib/live-restore";
 import { hardOutGap, hardOutReading } from "@/lib/live-hard-out";
 import { fadeLevel, nextFadeFrame } from "@/lib/fade";
+import { unplayableAudio } from "@/lib/audio";
 
 type ShowMode = "manual" | "auto";
 
@@ -2621,6 +2622,11 @@ export function LiveMode({
     if (!file || !itemId) return;
     const item = itemsRef.current.find((it) => it.id === itemId);
     if (!item) return;
+    const why = unplayableAudio(file); // a file this player cannot open is not attached
+    if (why) {
+      toast.error("ใช้ไฟล์นี้ไม่ได้", { description: why });
+      return;
+    }
 
     // instant local playback
     if (audioUrls[itemId]) URL.revokeObjectURL(audioUrls[itemId]);

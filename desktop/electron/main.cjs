@@ -231,7 +231,8 @@ async function pickAudioFile() {
     title: "เลือกไฟล์เพลงจากเครื่อง",
     properties: ["openFile"],
     filters: [
-      { name: "Audio", extensions: ["wav", "mp3", "m4a", "aac", "flac", "ogg", "aiff", "aif"] },
+      // no AIFF: Chromium cannot play it (lib/audio.ts unplayableAudio)
+      { name: "Audio", extensions: ["wav", "mp3", "m4a", "aac", "flac", "ogg"] },
       { name: "All Files", extensions: ["*"] },
     ],
   });

@@ -48,7 +48,10 @@ import { canEditAnyGroup, canLiveEdit, canViewLibrary, type Perms } from "@/lib/
 // false "No signal" on a second run after จบโชว์.
 // 2026-10-17b (same night): a Loop row plays past its slot until Auto Mute, and Auto Mute
 // asks whether the show is over.
-const ROUND = "2026-10-17b";
+// 2026-10-17c (the audio-player upgrades, พี่ "ทำหมด"): the fade keys move like a mixer's
+// fader (lib/fade.ts), and in the desktop app a minimized window no longer stalls a fade or
+// Auto's clock mid-show.
+const ROUND = "2026-10-17c";
 /** For tests that need "this device already read the current round". */
 export const WHATS_NEW_ROUND = ROUND;
 const KEY = "cueiq:whats-new-seen";
@@ -117,6 +120,14 @@ const phoneWeb = () =>
   window.matchMedia?.("(max-width: 1023px)").matches === true;
 
 const ITEMS: Item[] = [
+  {
+    text: "Live: Auto Mute / MC / Auto Loudness เฟดแบบเฟดเดอร์มิกเซอร์ — เสียงค่อย ๆ เบาลงจนเงียบอย่างเป็นธรรมชาติ ไม่ดังค้างแล้วดับวูบตอนท้าย",
+    who: bandPeople,
+  },
+  {
+    text: "แอป CueIQ: ย่อหน้าต่างหรือสลับไปแอปอื่นระหว่างโชว์ได้ — เสียงเฟดจนจบ และ Auto ขึ้นแถวถัดไปตรงเวลา",
+    only: desktopApp,
+  },
   {
     text: "Live: เพลงที่ตั้ง Loop เล่นต่อได้แม้เกินเวลาของแถว (Manual / แถวสุดท้าย) จนกด Auto Mute — และกด Auto Mute แล้วจะถามว่า “จบการแสดงเลยไหม?”",
     who: bandPeople,

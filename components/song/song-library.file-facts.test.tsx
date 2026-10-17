@@ -47,7 +47,10 @@ vi.mock("@/lib/realtime", async (orig) => ({
   privateChannel: () => ({ subscribe() {}, send() {} }),
 }));
 // the take that replaces it is 5:12
-vi.mock("@/lib/audio", () => ({ detectAudioDuration: async () => 312 }));
+vi.mock("@/lib/audio", async (orig) => ({
+  ...(await orig<typeof import("@/lib/audio")>()),
+  detectAudioDuration: async () => 312,
+}));
 vi.mock("@/lib/song-analysis-browser", () => ({ analyzeAudioFile: async () => MEASURED }));
 vi.mock("@/lib/supabase/client", () => ({
   createClient: () => ({
@@ -147,5 +150,36 @@ describe("SongLibrary — a new file brings its own facts", () => {
     expect(h.writes[0].values).toMatchObject({ duration_seconds: 150 });
     // nothing after the save writes a length over the user's
     expect(h.writes.slice(1).some((w) => "duration_seconds" in w.values)).toBe(false);
+  });
+});
+
+// lib/audio.ts unplayableAudio: Chromium - the desktop app, Chrome, Edge - cannot open an AIFF,
+// so one that reached the library played on the Mac that uploaded it and was silent at the show.
+describe("SongLibrary — an AIFF never reaches the library", () => {
+  const AIFF = new File(["FORM"], "take-2.aiff", { type: "audio/aiff" });
+
+  it("replacing a file with an AIFF: refused, nothing uploaded, nothing written", async () => {
+    mount(song());
+    fireEvent.click(within(phoneList()).getByText("Neon Lullaby").closest("button[aria-haspopup=dialog]") as HTMLElement);
+    fireEvent.click(within(screen.getByRole("dialog")).getByTitle("เปลี่ยนไฟล์เสียง"));
+    fireEvent.change(audioInput(), { target: { files: [AIFF] } });
+    await waitFor(() => expect(h.toast.error).toHaveBeenCalled());
+    expect(h.toast.error.mock.calls[0][0]).toBe("ใช้ไฟล์นี้ไม่ได้");
+    expect(String(h.toast.error.mock.calls[0][1]?.description)).toContain("WAV");
+    expect(h.writes).toHaveLength(0);
+  });
+
+  it("the edit dialog does not keep an AIFF picked for the song", async () => {
+    mount(song({ audio_path: null, audio_name: null }));
+    fireEvent.click(within(phoneList()).getByText("Neon Lullaby").closest("button[aria-haspopup=dialog]") as HTMLElement);
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "แก้ไข" }));
+    const dialog = await screen.findByRole("dialog", { name: "Edit Song" });
+    const picker = dialog.querySelector('input[type="file"]') as HTMLInputElement;
+    fireEvent.change(picker, { target: { files: [new File(["FORM"], "Master.AIF", { type: "" })] } });
+    await waitFor(() => expect(h.toast.error).toHaveBeenCalled());
+    expect(within(dialog).queryByText("Master.AIF")).toBeNull();
+    fireEvent.click(within(dialog).getByRole("button", { name: "บันทึก" }));
+    await waitFor(() => expect(h.writes.length).toBeGreaterThan(0));
+    expect(h.writes.some((w) => "audio_path" in w.values || w.values.audio_name === "Master.AIF")).toBe(false);
   });
 });

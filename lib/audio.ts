@@ -7,6 +7,20 @@
 // ---------------------------------------------------------------------------
 
 /**
+ * Why the players here cannot open `file`, or null. AIFF: Chromium - the desktop app, Chrome,
+ * Edge - has no AIFF demuxer at all (measured in Electron 42.8.1: canPlayType "",
+ * DEMUXER_ERROR_COULD_NOT_OPEN, decodeAudioData EncodingError), while Safari plays it. So a
+ * master exported from a Mac as AIFF would go into the library, play on the Mac that uploaded
+ * it, and be silent on the show laptop. WAV holds the same PCM: converting loses nothing.
+ */
+export function unplayableAudio(file: { name: string; type?: string }): string | null {
+  if (/\.(aiff?|aifc)$/i.test(file.name) || /^audio\/(x-)?aiff?$/i.test(file.type ?? "")) {
+    return "แอปเล่นไฟล์ AIFF ไม่ได้ — แปลงเป็น WAV ก่อน (เสียงเท่าเดิม ไม่เสียคุณภาพ)";
+  }
+  return null;
+}
+
+/**
  * Detect the duration (in whole seconds) of a chosen audio file by loading
  * just its metadata into a throwaway <audio> element. The file never leaves
  * the browser.

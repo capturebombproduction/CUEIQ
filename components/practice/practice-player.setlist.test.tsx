@@ -328,6 +328,9 @@ describe("PracticePlayer — ซ้อมตามเซ็ตลิสต์", 
     end(); // boot runs out while neon is still downloading
     await new Promise((r) => setTimeout(r, 30));
     release();
+    // a fixed 30 ms here was not enough under a loaded full run (the one flaky test): wait for
+    // neon, then give a wrong jump the same 30 ms to show itself
+    await waitFor(() => expect(engine().loads).toEqual(["boot.wav", "neon.wav"]));
     await new Promise((r) => setTimeout(r, 30));
     // without the guard the end would move the set to row 3 and play iam instead
     expect(engine().loads).toEqual(["boot.wav", "neon.wav"]);

@@ -1132,3 +1132,49 @@ describe("Quick Show — a fade moves like a fader, and lands on a hidden page t
     expect(media.state(primary).paused).toBe(false);
   });
 });
+
+// lib/audio.ts unplayableAudio: Chromium cannot open an AIFF, so it never becomes a row that
+// plays silence at the show - and a WAV picked with it is still added.
+describe("Quick Show — an AIFF is never added", () => {
+  it("picked with a WAV: the WAV is added, the AIFF refused by name", async () => {
+    await boot([]);
+    const before = media.elements.length;
+    const input = document.querySelector('input[type="file"][multiple]') as HTMLInputElement;
+    const aiff = new File([new ArrayBuffer(8)], "Master.aiff", { type: "audio/aiff" });
+    const wav = new File([new ArrayBuffer(8)], "Opener.wav", { type: "audio/wav" });
+    await act(async () => {
+      fireEvent.change(input, { target: { files: [aiff, wav] } });
+    });
+    // every length probe answers (a refused file is never probed at all)
+    for (let i = 0; i < 40 && store.writes.length === 0; i++) {
+      await act(async () => {
+        await macrotask();
+      });
+      for (const el of media.elements.slice(before)) {
+        if (media.state(el).src && media.state(el).duration === 0) {
+          media.set(el, { duration: 200 });
+          media.emit(el, "loadedmetadata");
+        }
+      }
+    }
+    expect(store.items.map((it) => it.fileName)).toEqual(["Opener.wav"]);
+    expect(toast.error).toHaveBeenCalledWith(expect.stringContaining("Master.aiff"), expect.anything());
+  });
+
+  it("เลือกไฟล์ใหม่ with an AIFF keeps the row as it was", async () => {
+    const dead = song("Dead", { sortOrder: 1 });
+    const gone = deadFile("dead.mp3");
+    dead.blob = gone;
+    await boot([dead]);
+    store.writes.length = 0;
+    await click(within(rowFor("Dead")).getByRole("button", { name: TH.pickNewFile }));
+    const input = document.querySelector('input[type="file"]:not([multiple])') as HTMLInputElement;
+    await act(async () => {
+      fireEvent.change(input, { target: { files: [new File([new ArrayBuffer(8)], "Dead v2.AIF", { type: "" })] } });
+    });
+    await settle();
+    expect(toast.error).toHaveBeenCalledWith("ใช้ไฟล์นี้ไม่ได้", expect.anything());
+    expect(store.writes).toHaveLength(0);
+    expect(store.items[0].blob).toBe(gone);
+  });
+});
