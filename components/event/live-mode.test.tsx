@@ -4581,7 +4581,7 @@ describe("LiveMode · a fade moves like a fader, and lands on a hidden page too"
       fireEvent.click(autoMute());
     });
     const level: number[] = [];
-    for (let k = 1; k <= 200; k++) {
+    for (let k = 1; k <= 300; k++) {
       await act(async () => {
         const due = frames;
         frames = [];
@@ -4589,9 +4589,14 @@ describe("LiveMode · a fade moves like a fader, and lands on a hidden page too"
       });
       level.push(media.state(primary).volume);
     }
-    // 3 s = 180 frames: half way is frame 90
-    expect(dB(level[89])).toBeLessThan(-15); // a straight line: -6 dB, still loud
-    expect(dB(level[89])).toBeGreaterThan(-21);
+    // Half way is 90 frames (1.5 s) before the frame it landed on - counted from there, not
+    // from before the click: the fade's clock starts inside the click, and a slow runner
+    // spent ~195 ms in it (CI 45394f2 read -14.9 dB "half way", which was 0.43 of the way).
+    const landed = level.indexOf(0);
+    expect(landed).toBeGreaterThan(90);
+    const mid = level[landed - 90];
+    expect(dB(mid)).toBeLessThan(-15); // a straight line: -6 dB, still loud
+    expect(dB(mid)).toBeGreaterThan(-21);
     for (let k = 1; k < level.length; k++) {
       if (level[k] < 0.01) break; // below -40 dB a step is not heard
       expect(Math.abs(dB(level[k - 1]) - dB(level[k]))).toBeLessThan(1.5);
