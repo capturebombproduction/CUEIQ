@@ -11,6 +11,7 @@ import {
   pad2,
   parseClockToSeconds,
   parseDurationToSeconds,
+  runSecondsOf,
   SETTLE_AFTER_SEC,
   shortClock,
 } from "./time";
@@ -191,6 +192,29 @@ describe("computeSetlistTimes — the run-sheet engine", () => {
     expect(r.totalSeconds).toBe(300);
   });
 
+  // พี่ 2026-10-17 "A จบตอน B เข้า": the overlap comes off the row it cuts short. It came off
+  // the next one: song 1 read "จบ 3:00 · สะสม 3:00" while song 2 was already playing.
+  it("ends a row the next one comes in over when it comes in; the next one keeps its length", () => {
+    const r = computeSetlistTimes([item(180), item(180, -60)]);
+    expect(r.rows[0]).toMatchObject({ startSec: 0, endSec: 120, slotEndSec: 120, blockSeconds: 120, accumulatedSec: 120 });
+    expect(r.rows[1]).toMatchObject({ slotStartSec: 120, startSec: 120, endSec: 300, blockSeconds: 180, accumulatedSec: 300 });
+    expect(r.rows[0].blockSeconds + r.rows[1].blockSeconds).toBe(r.totalSeconds);
+  });
+
+  it("an overlap into a row's buffer leaves its song whole and ends the buffer early", () => {
+    // song 1 is 3:00 + 0:30 after; song 2 comes in 10 s before that buffer ends
+    const r = computeSetlistTimes([item(180, 0, 30), item(180, -10)]);
+    expect(r.rows[0]).toMatchObject({ endSec: 180, slotEndSec: 200, blockSeconds: 200, accumulatedSec: 200 });
+    expect(r.rows[1]).toMatchObject({ startSec: 200, blockSeconds: 180 });
+  });
+
+  it("a row the next one starts over runs past the hard out only to where it ends", () => {
+    // the hard out is at 2:30; song 1 (3:00) now ends at 2:00 under song 2
+    const r = computeSetlistTimes([item(180), item(180, -60)], 0, 150);
+    expect(r.rows[0].overHardOut).toBe(false);
+    expect(r.rows[1].overHardOut).toBe(true);
+  });
+
   it("flags hard-out overruns per row and overall", () => {
     const r = computeSetlistTimes([item(180), item(240)], 0, 300);
     expect(r.isOver).toBe(true);
@@ -249,5 +273,17 @@ describe("monthBeforeKey", () => {
     expect(monthBeforeKey("2026-03-31")).toBe("2026-02-28");
     expect(monthBeforeKey("2024-03-31")).toBe("2024-02-29");
     expect(monthBeforeKey("2026-05-31")).toBe("2026-04-30");
+  });
+});
+
+describe("runSecondsOf - how long a row runs when the next one comes in over its end", () => {
+  it("is the row's block less the next row's lead", () => {
+    expect(runSecondsOf(240, 5)).toBe(235);
+    expect(runSecondsOf(240, 0)).toBe(240);
+  });
+  it("never runs below 0, and a lead of nothing or less is none", () => {
+    expect(runSecondsOf(10, 60)).toBe(0);
+    expect(runSecondsOf(240, -5)).toBe(240);
+    expect(runSecondsOf(0, 5)).toBe(0);
   });
 });

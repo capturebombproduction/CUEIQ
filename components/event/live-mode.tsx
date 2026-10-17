@@ -99,7 +99,7 @@ import {
   type SetlistItem,
   type SetlistKind,
 } from "@/lib/types";
-import { formatDuration, nowClock, pad2 } from "@/lib/time";
+import { formatDuration, nowClock, pad2, runSecondsOf } from "@/lib/time";
 import { liveZone } from "@/lib/live-zone";
 import { restoreShow, SNAPSHOT_ALIVE_MS, STALE_RESTORE_MS } from "@/lib/live-restore";
 import { hardOutGap, hardOutReading } from "@/lib/live-hard-out";
@@ -155,6 +155,24 @@ function blockSeconds(it: SetlistItem) {
     (it.duration_seconds || 0) +
     (it.buffer_after_seconds || 0)
   );
+}
+
+// How early a row comes in over the end of the row before it - "เล่นซ้อน", a negative
+// buffer_before - in seconds; 0 = after it.
+function leadOf(it: SetlistItem | undefined): number {
+  return Math.max(0, -(it?.buffer_before_seconds ?? 0));
+}
+
+// How long row i RUNS - its countdown, and what every clock on this screen adds up: its
+// block, less how early the next row comes in over its end (lib/time.ts runSecondsOf). พี่
+// 2026-10-17 "A จบตอน B เข้า": a 4:00 song with the next at -5 counts 3:55, the show moves
+// on the moment the next one comes in and that one counts its own length in full; the
+// outgoing song's last seconds sound under it (overlapSwap). It used to count the other way
+// round - this row in full, the next one |lead| short - so the countdown, จบประมาณ and
+// Hard Out all read the full song while the next was already playing.
+function runBlock(list: SetlistItem[], i: number): number {
+  const it = list[i];
+  return it ? runSecondsOf(blockSeconds(it), leadOf(list[i + 1])) : 0;
 }
 
 // Where a row's FILE starts on its own clock, for everything that DRAWS it (the NOW card's
@@ -330,15 +348,10 @@ export function LiveMode({
   );
 
   // audio state — two elements so an incoming track can overlap (negative buffer)
-  // without cutting the current one. audioRef = primary (drives the UI scrubber).
+  // without cutting the current one (overlapSwap: the outgoing plays its last seconds
+  // out on the secondary). audioRef = primary (drives the UI scrubber).
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const audioRef2 = useRef<HTMLAudioElement | null>(null);
-  const overlapNextIdRef = useRef<string | null>(null); // pre-roll PROVEN to be sounding
-  // What is loaded on the secondary right now, set synchronously at pre-roll time.
-  // The claim above waits for play() to resolve; this does not, so goto() can always
-  // silence a pre-roll it isn't going to promote (otherwise the same track plays on
-  // both elements at once).
-  const preRollIdRef = useRef<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const loadTargetRef = useRef<string | null>(null);
   const [audioUrls, setAudioUrls] = useState<Record<string, string>>({}); // itemId → objectURL
@@ -417,8 +430,6 @@ export function LiveMode({
     /** the messages waiting out the gap - one per track, the newest for each */
     pending: Map<string, { itemId: string; target: number; ms: number }>;
   }>({ last: 0, timer: null, pending: new Map() });
-  // tracks which "currentId→nextId" pair already had auto-trigger fired
-  const autoTriggeredForRef = useRef<string | null>(null);
   // tracks which item already triggered an auto-advance (no-audio items)
   const autoAdvanceForRef = useRef<string | null>(null);
   // The item the show has COMMITTED to sound out + when it started (controller clock).
@@ -1478,7 +1489,6 @@ export function LiveMode({
 
   // reset per-item auto guards when item changes
   useEffect(() => {
-    autoTriggeredForRef.current = null;
     autoAdvanceForRef.current = null;
   }, [state.currentIndex]);
 
@@ -1530,51 +1540,6 @@ export function LiveMode({
       releaseAuthority(eventId, "show_main", did);
     };
   }, [isController, state.begun, eventId, restoreHeld, endedLong]);
-
-  // negative buffer (Auto): pre-roll the NEXT track on the secondary element so it
-  // overlaps the current one — current keeps playing, next "เล่นสวนขึ้นมา" |lead| sec early.
-  useEffect(() => {
-    if (state.mode !== "auto" || !state.running || !state.itemStartedAt) return;
-    if (!isControllerRef.current) return; // only the controller drives audio
-    const cur = items[state.currentIndex];
-    const nxt = items[state.currentIndex + 1];
-    if (!cur || !nxt) return;
-    const lead = -(nxt.buffer_before_seconds ?? 0);
-    if (lead <= 0) return; // only negative buffer overlaps
-
-    const rem = blockSeconds(cur) - (now - state.itemStartedAt) / 1000;
-    const triggerKey = `${cur.id}→${nxt.id}`;
-    if (autoTriggeredForRef.current === triggerKey) return;
-
-    if (rem > 0 && rem <= lead) {
-      autoTriggeredForRef.current = triggerKey;
-      const url = audioUrls[nxt.id];
-      const sec = audioRef2.current;
-      if (url && sec) {
-        sec.pause();
-        sec.src = url;
-        sec.currentTime = 0;
-        sec.volume = Math.min(1, Math.max(0, levelOf(nxt.id) / 100));
-        // Synchronous record of WHAT is loaded on the secondary — needed by goto()
-        // to stop a pre-roll it decides not to promote. Distinct from
-        // overlapNextIdRef, which means "proven to be sounding".
-        preRollIdRef.current = nxt.id;
-        // Claim SYNCHRONOUSLY and retract on failure — not the other way round. A
-        // play() promise resolves only once audio actually begins, which on an 88 MB
-        // master is easily longer than the remaining lead, so waiting for it would
-        // leave goto() thinking there was no pre-roll: it would hard-cut the same
-        // track on the primary while the secondary carried on, and the PA would get
-        // two offset copies of one song. Retracting on the catch keeps the seamless
-        // hand-off everywhere it worked before, and a WebKit-refused pre-roll leaves
-        // the element PAUSED — which is what goto() actually checks below.
-        overlapNextIdRef.current = nxt.id; // promoted to primary on advance
-        sec.play().catch((err) => {
-          if (overlapNextIdRef.current === nxt.id) overlapNextIdRef.current = null;
-          onPlayRejectedRef.current(nxt.id, err, false); // the current track is still sounding
-        });
-      }
-    }
-  }, [now, state, items, audioUrls]);
 
   // A VIEWER NEVER SOUNDS (SINGLE AUDIO SOURCE, พี่ 2026-10-04: the device that started
   // the show is the only one that plays it). Viewers used to follow the controller's
@@ -2501,8 +2466,6 @@ export function LiveMode({
     // played on out of the PA, with nothing left on screen that would stop it.
     audioRef.current?.pause();
     audioRef2.current?.pause();
-    overlapNextIdRef.current = null;
-    preRollIdRef.current = null;
     setAudioPlaying(false);
     // Telling the OTHER devices needs no new message: every state broadcast
     // already carries this device's audio intent (audioFields), and that intent is
@@ -2884,12 +2847,9 @@ export function LiveMode({
       if (committedRef.current.id) committedRef.current = { ...committedRef.current, pausedAt };
       audio?.pause();
       setAudioPlaying(false);
-      if (state.mode === "auto") {
-        audioRef2.current?.pause(); // also halt any overlap pre-roll
-        overlapNextIdRef.current = null;
-        preRollIdRef.current = null;
-        autoTriggeredForRef.current = null; // let overlap re-arm on resume
-      }
+      // and an outgoing song's last seconds (overlapSwap) or a crossfade's tail: a pause
+      // is quiet
+      audioRef2.current?.pause();
     } else {
       // RUN — go live with the current item: play its audio + run its countdown
       const offset = state.itemElapsedAtPause ?? 0;
@@ -2982,7 +2942,7 @@ export function LiveMode({
   // where the row loops, silent after its end - a row's length is the plan, not the file
   const nowFileLen = currentSongSignal?.duration ?? null;
   const nowWave = useMemo(() => {
-    const block = current ? blockSeconds(current) : 0;
+    const block = current ? runBlock(items, state.currentIndex) : 0;
     if (!current || nowWaveLevels.length === 0 || !(block > 0)) return null;
     const levels = waveOverBlock(nowWaveLevels, {
       block,
@@ -2992,7 +2952,7 @@ export function LiveMode({
       columns: nowWaveLevels.length,
     });
     return { levels, start: 0, length: block };
-  }, [current, nowWaveLevels, nowAudioStart, nowFileLen]);
+  }, [current, nowWaveLevels, nowAudioStart, nowFileLen, items, state.currentIndex]);
   const nowSections = useMemo(
     () =>
       (current?.song_id ? songMarkers[current.song_id] ?? [] : []).map((m) => ({
@@ -3024,13 +2984,13 @@ export function LiveMode({
   // the CONSOLE board's items: each block, where its audio sits in it, its song's analysis
   const consoleItems = useMemo<ConsoleItem[]>(
     () =>
-      items.map((it) => {
+      items.map((it, i) => {
         const sig = it.song_id ? songSignal?.[it.song_id] : undefined;
         return {
           id: it.id,
           kind: (it.kind as SetlistKind | undefined) ?? null,
           title: it.title,
-          block: blockSeconds(it),
+          block: runBlock(items, i),
           audioStart: FILE_START_SEC,
           // the FILE's length (an MC can play a 5-minute track in a 2:30 slot); the row's where unknown
           audioLen: sig?.duration ?? (it.duration_seconds || 0),
@@ -3096,19 +3056,23 @@ export function LiveMode({
   const elapsedItem = state.running && state.itemStartedAt
     ? (now - state.itemStartedAt) / 1000
     : (state.itemElapsedAtPause ?? 0);
-  const remaining = current ? blockSeconds(current) - elapsedItem : 0;
+  const remaining = current ? runBlock(items, state.currentIndex) - elapsedItem : 0;
   // accumulated = real elapsed time since show start; keeps counting through pauses
   const totalElapsed = state.startedAt ? (now - state.startedAt) / 1000 : 0;
 
   // Warning ladder (lib/live-zone): warn/urgent scale to the item's own block.
-  const zoneBlock = current ? blockSeconds(current) : 0;
+  const zoneBlock = current ? runBlock(items, state.currentIndex) : 0;
   const zone = liveZone({ running: state.running, remaining, blockSec: zoneBlock });
   // The zone's look is components/live/now-card.tsx + app/stage.css (.zone-warn /
   // .zone-urgent / .alarm-plate), on tokens no band skin writes.
 
   // ── display-only figures (O(n) arithmetic per 500 ms tick; nothing here is state) ──
-  const futureSec = items.slice(state.currentIndex + 1).reduce((s, it) => s + blockSeconds(it), 0);
-  const plannedBefore = items.slice(0, state.currentIndex).reduce((s, it) => s + blockSeconds(it), 0);
+  let futureSec = 0;
+  let plannedBefore = 0;
+  for (let i = 0; i < items.length; i++) {
+    if (i > state.currentIndex) futureSec += runBlock(items, i);
+    else if (i < state.currentIndex) plannedBefore += runBlock(items, i);
+  }
   const plannedTotal = plannedBefore + zoneBlock + futureSec;
   // What is left of the PLAN from here: this item's remaining time plus every block
   // after it. (The slot / Hard Out version needs the show's times — not passed here.)
@@ -3123,7 +3087,7 @@ export function LiveMode({
   const itemEndClock = nowClock(new Date(now + Math.max(0, remaining) * 1000));
   // the dock strip's playhead: where the show is in its PLAN, not wall-clock time
   const playheadSec = Math.min(plannedTotal, plannedBefore + Math.min(Math.max(0, elapsedItem), zoneBlock));
-  const runBlocks = items.map((it) => ({ kind: it.kind as SetlistKind, seconds: blockSeconds(it) }));
+  const runBlocks = items.map((it, i) => ({ kind: it.kind as SetlistKind, seconds: runBlock(items, i) }));
   const audioItems = items.filter((it) => it.audio_path);
   const readyCount = audioItems.filter((it) => audioUrls[it.id]).length;
   const allReady = readyCount === audioItems.length;
@@ -3310,11 +3274,33 @@ export function LiveMode({
     return len && len > 0 ? s % len : s;
   }
 
+  // "เล่นซ้อน" (พี่ 2026-10-17 "A จบตอน B เข้า"): the row comes in over the end of the sounding
+  // song. It starts from its top on the spare element and takes the screen (its countdown
+  // runs its own length in full); the outgoing song plays its last seconds out under it and
+  // stops at its own end. A Loop has no last seconds - its end-fade took it to 0 by now - so
+  // it stops here. This replaced a pre-roll that started the row |lead| early and then
+  // counted it short.
+  function overlapSwap(itemId: string, url: string) {
+    const incoming = audioRef2.current;
+    const outgoing = audioRef.current;
+    if (!incoming || !outgoing) return;
+    ++outFadeTokenRef.current; // a crossfade still fading this element out bows out
+    endedItemRef.current = null;
+    const outgoingLoops = !!itemsRef.current.find((x) => x.id === playingIdRef.current)?.loop_audio;
+    incoming.pause();
+    incoming.src = url;
+    incoming.currentTime = 0;
+    incoming.volume = Math.min(1, Math.max(0, levelOf(itemId) / 100));
+    incoming.play().catch((err) => onPlayRejected(itemId, err));
+    swapAudio(); // incoming → primary (scrubber/volume follow it); outgoing → secondary
+    setPlayingId(itemId);
+    setAudioPlaying(true);
+    if (outgoingLoops) outgoing.pause();
+  }
+
   function crossfadeSwap(itemId: string, url: string, fromOffset = 0) {
     const incoming = audioRef2.current;
     if (!incoming || !audioRef.current) return;
-    overlapNextIdRef.current = null; // the secondary element is ours now
-    preRollIdRef.current = null;
     endedItemRef.current = null;
     incoming.pause();
     incoming.src = url;
@@ -3526,16 +3512,12 @@ export function LiveMode({
         setAudioPlaying(true);
       }
     } else {
-      // switching to Manual — stop any pending overlap pre-roll on the secondary
-      if (mode === "manual") {
-        audioRef2.current?.pause();
-        overlapNextIdRef.current = null;
-        preRollIdRef.current = null;
-      }
       apply({ ...state, mode });
     }
   }
-  function goto(index: number) {
+  // `runOut`: Auto's own move, the moment the row before ran out - where a row set to come
+  // in over the end of the one before (leadOf) does (overlapSwap). A row tapped is a cut.
+  function goto(index: number, runOut = false) {
     if (index < 0 || index >= items.length) return;
     if (state.begun && index === state.currentIndex) return; // already current → no-op
     const it = items[index];
@@ -3568,44 +3550,6 @@ export function LiveMode({
       return;
     }
     if (state.mode === "auto") {
-      // Overlap hand-off: the next track has been pre-rolling on the secondary
-      // element (negative buffer). Promote it instead of restarting from 0.
-      // The pre-roll only claims the id once its play() resolved, but the element
-      // can still have been stopped since (an interruption, a route change). Promote
-      // only something that is genuinely sounding — otherwise fall through to the
-      // ordinary branch below, which hard-cuts on the element we know works.
-      if (it && overlapNextIdRef.current === it.id && audioRef2.current?.paused) {
-        overlapNextIdRef.current = null;
-      }
-      // …and whenever we are NOT promoting — a refused pre-roll, or the operator
-      // tapping some other row — the secondary may still be sounding the track it
-      // pre-rolled. The ordinary branch below starts a track on the PRIMARY, so
-      // leaving it running puts two songs out of the PA at once. Silence it first.
-      if (!it || overlapNextIdRef.current !== it.id) {
-        if (preRollIdRef.current) {
-          audioRef2.current?.pause();
-          preRollIdRef.current = null;
-          overlapNextIdRef.current = null;
-        }
-      }
-      if (it && overlapNextIdRef.current === it.id) {
-        const lead = -(it.buffer_before_seconds ?? 0);
-        swapAudio();
-        endedItemRef.current = null;
-        setPlayingId(it.id);
-        setAudioPlaying(true);
-        overlapNextIdRef.current = null;
-        preRollIdRef.current = null; // it is the primary now, not a pre-roll
-        apply({
-          ...state,
-          currentIndex: index,
-          itemStartedAt: Date.now() - Math.max(0, lead) * 1000, // audio already |lead| in
-          itemElapsedAtPause: null,
-          running: true,
-          startedAt: state.startedAt ?? Date.now(),
-        });
-        return;
-      }
       // Auto: jump + play new track + run countdown
       apply({
         ...state,
@@ -3618,8 +3562,16 @@ export function LiveMode({
       if (it) {
         const url = audioUrls[it.id];
         const a = audioRef.current;
-        // crossfade (opt-in): fade the sounding track out instead of hard-cutting
-        if (crossfade && url && a && !a.paused && playingId !== it.id) {
+        const sounding = !!a && !a.paused && !!playingId && playingId !== it.id;
+        if (runOut && leadOf(it) > 0 && sounding) {
+          // "เล่นซ้อน": it comes in over the sounding song, which plays its last seconds
+          // out under it - and a row with no sound of its own leaves that song alone to
+          // finish. A Loop has no last seconds: it would go round under the row for good
+          // (at full level, once its end-fade is given back), so it stops as before.
+          if (url) overlapSwap(it.id, url);
+          else if (itemsRef.current.find((x) => x.id === playingId)?.loop_audio) playItemAudio(it.id);
+        } else if (crossfade && url && sounding) {
+          // crossfade (opt-in): fade the sounding track out instead of hard-cutting
           crossfadeSwap(it.id, url);
         } else {
           playItemAudio(it.id);
@@ -3651,9 +3603,6 @@ export function LiveMode({
     }
     audioRef.current?.pause();
     audioRef2.current?.pause();
-    overlapNextIdRef.current = null;
-    preRollIdRef.current = null;
-    autoTriggeredForRef.current = null;
     autoAdvanceForRef.current = null;
     endedItemRef.current = null;
     setPlayingId(null);
@@ -3680,13 +3629,11 @@ export function LiveMode({
     if (!isControllerRef.current) return;
     const cur = items[state.currentIndex];
     if (!cur || state.currentIndex >= items.length - 1) return;
-    const remMs = blockSeconds(cur) * 1000 - (Date.now() - state.itemStartedAt);
-    const nxt = items[state.currentIndex + 1];
-    const leadMs = nxt ? Math.max(0, -(nxt.buffer_before_seconds ?? 0)) * 1000 : 0;
-    const moments = [remMs - leadMs, remMs].filter((ms) => ms > 0);
-    if (!moments.length) return;
+    // the row runs out when the next one comes in (runBlock): that is the one moment
+    const remMs = runBlock(items, state.currentIndex) * 1000 - (Date.now() - state.itemStartedAt);
+    if (!(remMs > 0)) return;
     // +5 ms: the render then reads the moment as reached, never a hair before it
-    const id = setTimeout(() => setNow(Date.now()), Math.min(...moments) + 5);
+    const id = setTimeout(() => setNow(Date.now()), remMs + 5);
     return () => clearTimeout(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state.mode, state.running, state.itemStartedAt, state.currentIndex, items, now]);
@@ -3705,7 +3652,7 @@ export function LiveMode({
     if (remaining > 0) return;
     if (autoAdvanceForRef.current === cur.id) return;
     autoAdvanceForRef.current = cur.id;
-    goto(state.currentIndex + 1);
+    goto(state.currentIndex + 1, true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [now, state, remaining, audioUrls, items]);
 
@@ -3855,9 +3802,9 @@ export function LiveMode({
   // a start. Depends on nothing the rows below do not already depend on.
   const plannedStarts = useMemo(() => {
     let at = 0;
-    return items.map((it) => {
+    return items.map((_it, i) => {
       const clock = state.startedAt != null ? nowClock(new Date(state.startedAt + at * 1000)).slice(0, 5) : "";
-      at += blockSeconds(it);
+      at += runBlock(items, i);
       return clock;
     });
   }, [items, state.startedAt]);
@@ -4789,7 +4736,7 @@ export function LiveMode({
                   <span className="num shrink-0 text-[16px] text-faint">{pad2(state.currentIndex + 2)}</span>
                   {next.kind && <KindChip kind={next.kind as SetlistKind} className="shrink-0" />}
                   <span className="num ml-auto shrink-0 text-[26px] leading-none stage:text-[48px] stage:font-extrabold">
-                    {formatDuration(blockSeconds(next))}
+                    {formatDuration(runBlock(items, state.currentIndex + 1))}
                   </span>
                 </div>
                 {/* py + -my (stage's 4 px gap folded into its margin): the clip is the
@@ -5034,7 +4981,7 @@ export function LiveMode({
                   {next && (
                     <span className="hidden stage:inline">
                       {" "}
-                      · <span className="num text-[16px]">{formatDuration(blockSeconds(next))}</span>
+                      · <span className="num text-[16px]">{formatDuration(runBlock(items, state.currentIndex + 1))}</span>
                     </span>
                   )}
                 </span>

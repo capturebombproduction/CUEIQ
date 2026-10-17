@@ -847,7 +847,11 @@ describe("Quick Show — Auto mode", () => {
     expect(countdown()).toBe("-0:40"); // over time, still on the last item
   });
 
-  it("เล่นสวน pre-rolls the next song BEFORE the current block ends", async () => {
+  // พี่ 2026-10-17 "A จบตอน B เข้า": Alpha's countdown runs to the moment Bravo comes in
+  // (10 s less Bravo's 5 s lead), the show moves to Bravo THEN, and Bravo counts its own
+  // 20 s in full. It used to run Alpha's 10 s with Bravo already sounding, then show Bravo
+  // 5 s short - "ตัวนับเวลา ... ดันไปคิดเวลาเพลงเต็มตามปกติ".
+  it("เล่นสวน: the row runs out when the next song comes in, which counts its own length", async () => {
     const [a1, a2, a3] = [{ ...A1 }, { ...A2, overlapLeadSeconds: 5 }, { ...A3 }];
     await bootAuto([a1, a2, a3]);
     const first = media.first() as HTMLMediaElement;
@@ -855,24 +859,29 @@ describe("Quick Show — Auto mode", () => {
     const playsOn = (el: HTMLMediaElement) =>
       media.callsFor(el).filter((c) => c.type === "play");
 
-    // 6 s into a 10 s slot: 4 s left, inside Bravo's 5 s lead.
-    await tick(6_000);
+    // 4 s in: Alpha has 1 s left to run - 10 s less Bravo's 5 s
+    await tick(4_000);
+    expect(positionLabel()).toBe("1 / 3");
+    expect(countdown()).toBe("0:01");
+    expect(media.state(second).src).toBe("");
 
+    // 5 s in: Bravo comes in - on the spare element, from its top - and the show is on it
+    await tick(1_000);
+    expect(positionLabel()).toBe("2 / 3");
     expect(media.state(second).src).toBe(urlFor(a2));
     expect(playsOn(second)).toHaveLength(1);
-    // …while Alpha keeps sounding on the primary and the show has not advanced
+    expect(countdown()).toBe("0:20"); // its own length, in full
+    // Alpha plays its last 5 s out under it
     expect(media.state(first).src).toBe(urlFor(a1));
     expect(media.state(first).paused).toBe(false);
-    expect(positionLabel()).toBe("1 / 3");
+  });
 
-    // Block end: the pre-rolled element is PROMOTED, not restarted.
-    await tick(4_000);
-
-    expect(positionLabel()).toBe("2 / 3");
-    expect(playsOn(second)).toHaveLength(1);
-    expect(media.state(first).paused).toBe(false); // outgoing plays out its tail
-    // Bravo has already been sounding for its 5 s lead, so its 20 s slot shows 15
-    expect(countdown()).toBe("0:15");
+  it("each row lists how long it runs: the overlap comes off the row it cuts short", async () => {
+    const [a1, a2, a3] = [{ ...A1 }, { ...A2, overlapLeadSeconds: 5 }, { ...A3 }];
+    await bootAuto([a1, a2, a3]);
+    // Alpha 10 s less Bravo's 5 s: 0:05; Bravo its own 0:20
+    expect(within(rowFor("Alpha")).getByText("0:05")).toBeInTheDocument();
+    expect(within(rowFor("Bravo")).getByText("0:20")).toBeInTheDocument();
   });
 
   it("does not pre-roll an item with no lead set", async () => {

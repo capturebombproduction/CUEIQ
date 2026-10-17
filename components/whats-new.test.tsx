@@ -379,12 +379,10 @@ describe("the 2026-10-17c round (the fades, a minimized window)", () => {
   const FADER = "เฟดแบบเฟดเดอร์มิกเซอร์";
   const MINIMIZED = "ย่อหน้าต่างหรือสลับไปแอปอื่นระหว่างโชว์ได้";
 
-  it("comes back on a device that closed the 2026-10-17b round, the fades first", async () => {
-    expect(WHATS_NEW_ROUND).toBe("2026-10-17c");
+  it("comes back on a device that closed the 2026-10-17b round", async () => {
     localStorage.setItem(KEY, "2026-10-17b");
     await mount(false);
     expect(screen.getByTestId("whats-new")).toHaveTextContent(FADER);
-    expect(whatsNewItems(MEMBER)[0]).toContain(FADER);
   });
 
   it("band people hear about the fades; label staff do not", () => {
@@ -400,5 +398,22 @@ describe("the 2026-10-17c round (the fades, a minimized window)", () => {
     } finally {
       delete (window as unknown as { cueiqNative?: unknown }).cueiqNative;
     }
+  });
+});
+
+describe("the 2026-10-17d round (เล่นซ้อน counts the real time)", () => {
+  const OVERLAP = "เพลงก่อนหน้าจบตอนเพลงถัดไปเข้า";
+
+  it("comes back on a device that closed the 2026-10-17c round, first", async () => {
+    expect(WHATS_NEW_ROUND).toBe("2026-10-17d");
+    localStorage.setItem(KEY, "2026-10-17c");
+    await mount(false);
+    expect(screen.getByTestId("whats-new")).toHaveTextContent(OVERLAP);
+    expect(whatsNewItems(MEMBER)[0]).toContain(OVERLAP);
+  });
+
+  it("band people hear it; label staff do not", () => {
+    expect(has(whatsNewItems(MEMBER), OVERLAP)).toBe(true);
+    expect(has(whatsNewItems(STAFF), OVERLAP)).toBe(false);
   });
 });

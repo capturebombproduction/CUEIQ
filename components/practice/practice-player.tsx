@@ -869,6 +869,12 @@ export function PracticePlayer({
   let activeMarkerId: string | null = null;
   for (const m of curMarkers) if (m.position_seconds <= cur + 0.25) activeMarkerId = m.id;
   const at = (t: number) => `${dur > 0 ? Math.min(100, Math.max(0, (t / dur) * 100)) : 0}%`;
+  // "เล่นซ้อน" in a set run (พี่ 2026-10-17 "A จบตอน B เข้า"): this song runs until the next one
+  // comes in, so that is where its time ends - the bar's right-hand time and a tick on the
+  // bar. The scrubber still spans the whole file. A loop being drilled holds the next song
+  // back (overlapTickRef), and then the song runs its length.
+  const runNext = run && run.queue[run.pos]?.song.id === currentId ? run.queue[run.pos + 1] : undefined;
+  const handOverAt = runNext && runNext.overlap > 0 && !loopOn && dur > 0 ? Math.max(0, dur - runNext.overlap) : null;
   // a loop end reads as its section's name when it sits on a mark ("วน Hook → Bridge")
   const pointLabel = (t: number) =>
     curMarkers.find((m) => Math.abs(m.position_seconds - t) < 0.75)?.label ?? mmss(t);
@@ -1012,6 +1018,13 @@ export function PracticePlayer({
                     style={{ left: at(m.position_seconds) }}
                   />
                 ))}
+                {handOverAt != null && (
+                  <i
+                    data-testid="hand-over-tick"
+                    className="absolute top-0 h-4 w-[2px] -translate-x-1/2 bg-primary"
+                    style={{ left: at(handOverAt) }}
+                  />
+                )}
               </div>
               <input
                 type="range"
@@ -1033,7 +1046,19 @@ export function PracticePlayer({
                   {!loopOn && " (ปิดอยู่)"}
                 </span>
               )}
-              <span className="num text-[16px]">{mmss(dur)}</span>
+              {handOverAt != null ? (
+                <span
+                  className="num text-[16px]"
+                  data-testid="song-ends-at"
+                  title={`เพลงถัดไปเข้าที่ ${mmss(handOverAt)} (เล่นซ้อน ${runNext!.overlap} วิ) · ไฟล์ยาว ${mmss(dur)}`}
+                >
+                  {mmss(handOverAt)}
+                </span>
+              ) : (
+                <span className="num text-[16px]" data-testid="song-ends-at">
+                  {mmss(dur)}
+                </span>
+              )}
             </div>
 
             {/* transport: −5s · ⏮ · PLAY (the chamfered key) · ⏭ · +5s */}

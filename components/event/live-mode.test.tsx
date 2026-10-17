@@ -4629,3 +4629,135 @@ describe("LiveMode · a fade moves like a fader, and lands on a hidden page too"
     expect(media.state(primary).paused).toBe(false); // a mute, not a stop
   });
 });
+
+// พี่ 2026-10-17 ("ตอนนี้พอใส่เพลงเล่นซ้อนในเพลงก่อนหน้าแล้ว ตัวนับเวลายังไม่คำนวนเวลาจริงใหม่ ดันไป
+// คิดเวลาเพลงเต็มตามปกติ"; chose "A จบตอน B เข้า"): a row the next one comes in over RUNS until
+// it comes in - its countdown, จบประมาณ, Hard Out - and the show moves on then; the next row
+// counts its own length in full, and the outgoing song plays its last seconds out under it.
+describe("LiveMode · เล่นซ้อน: a row ends when the next one comes in", () => {
+  const SET = [
+    makeItem(1, { duration_seconds: 10 }),
+    makeItem(2, { duration_seconds: 20, buffer_before_seconds: -5 }),
+    makeItem(3, { duration_seconds: 300 }),
+  ];
+  const timer = () => screen.getAllByRole("timer")[0].textContent;
+  const tick = async (ms: number) => {
+    for (let t = 0; t < ms; t += 250) {
+      await act(async () => {
+        vi.advanceTimersByTime(250);
+      });
+    }
+  };
+  async function startAuto(set = SET) {
+    const media = instrumentMediaElements();
+    supa.setScript({ setlist_items: ok(set), songs: ok([]), show_authority: ok([]) });
+    h.saved = set.map((it) => ({ itemId: it.id, blob: new Blob([it.id]), name: `${it.id}.wav`, path: null }));
+    await mountLive({ items: set });
+    await startShowFromUi();
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /^Auto$/ }));
+    });
+    return media;
+  }
+
+  it("Auto: the 10 s row counts 5 s, then the next comes in and counts its 20 s in full", async () => {
+    const media = await startAuto();
+    const [first, second] = [media.first()!, media.second()!];
+    const plays = () => media.callsFor(second).filter((c) => c.type === "play").length;
+    const unlock = { src: media.state(second).src, plays: plays() }; // START's silent unlock
+    expect(timer()).toBe("0:05"); // 10 s less the next row's 5 s
+    await tick(4_000);
+    expect(timer()).toBe("0:01");
+    expect(media.state(second).src).toBe(unlock.src); // nothing comes in early any more
+    await tick(1_250);
+    expect(stateSends().at(-1)!.payload.currentIndex).toBe(1);
+    expect(timer()).toBe("0:20");
+    // it came in on the spare element, from its top; the first song plays its tail out
+    expect(media.state(second).src).not.toBe(unlock.src);
+    expect(plays()).toBe(unlock.plays + 1);
+    expect(media.state(second).currentTime).toBe(0);
+    expect(media.state(first).paused).toBe(false);
+  });
+
+  it("Manual counts the same way - the countdown says when the next one is due", async () => {
+    instrumentMediaElements();
+    supa.setScript({ setlist_items: ok(SET), songs: ok([]), show_authority: ok([]) });
+    await mountLive({ items: SET });
+    await startShowFromUi();
+    expect(timer()).toBe("0:05");
+    await tick(6_000);
+    expect(timer()).toBe("+0:01");
+  });
+
+  it("a Loop bed the next song comes in over stops there - its end-fade already took it to 0", async () => {
+    const set = [
+      makeItem(1, { kind: "mc", title: "MC", loop_audio: true, duration_seconds: 10 }),
+      makeItem(2, { duration_seconds: 20, buffer_before_seconds: -5 }),
+    ];
+    const media = await startAuto(set);
+    const first = media.first()!;
+    await tick(5_250);
+    expect(stateSends().at(-1)!.payload.currentIndex).toBe(1);
+    expect(media.state(first).paused).toBe(true); // no silent loop left going round under it
+  });
+
+  it("a Loop bed an MC with no sound comes in over stops there too - it never goes round under it", async () => {
+    const set = [
+      makeItem(1, { kind: "mc", title: "BGM", loop_audio: true, duration_seconds: 10 }),
+      makeItem(2, { kind: "mc", title: "MC พูด", duration_seconds: 60, buffer_before_seconds: -5 }),
+    ];
+    const media = instrumentMediaElements();
+    supa.setScript({ setlist_items: ok(set), songs: ok([]), show_authority: ok([]) });
+    h.saved = [{ itemId: "item-1", blob: new Blob(["bgm"]), name: "bgm.wav", path: null }];
+    await mountLive({ items: set });
+    await startShowFromUi();
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /^Auto$/ }));
+    });
+    await tick(5_250);
+    expect(stateSends().at(-1)!.payload.currentIndex).toBe(1);
+    expect(media.state(media.first()!).paused).toBe(true);
+  });
+
+  it("a song an MC with no sound comes in over plays its last seconds out", async () => {
+    const set = [
+      makeItem(1, { duration_seconds: 10 }),
+      makeItem(2, { kind: "mc", title: "MC พูด", duration_seconds: 60, buffer_before_seconds: -5 }),
+    ];
+    const media = instrumentMediaElements();
+    supa.setScript({ setlist_items: ok(set), songs: ok([]), show_authority: ok([]) });
+    h.saved = [{ itemId: "item-1", blob: new Blob(["song"]), name: "song.wav", path: null }];
+    await mountLive({ items: set });
+    await startShowFromUi();
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /^Auto$/ }));
+    });
+    await tick(5_250);
+    expect(stateSends().at(-1)!.payload.currentIndex).toBe(1);
+    expect(media.state(media.first()!).paused).toBe(false);
+    expect(timer()).toBe("1:00");
+  });
+
+  it("จบประมาณ and the Hard Out count each overlap once", async () => {
+    const pad = (n: number) => String(n).padStart(2, "0");
+    const d = new Date(Date.now());
+    const ymd = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+    const hard = new Date(Date.now() + 15 * 60_000);
+    // three 4:00 rows, the last two coming in 30 s early: 11:00, not 12:00
+    const set = [
+      makeItem(1, { duration_seconds: 240 }),
+      makeItem(2, { duration_seconds: 240, buffer_before_seconds: -30 }),
+      makeItem(3, { duration_seconds: 240, buffer_before_seconds: -30 }),
+    ];
+    supa.setScript({ setlist_items: ok(set), songs: ok([]), show_authority: ok([]) });
+    await mountLive({
+      items: set,
+      eventDate: ymd,
+      showStartTime: null,
+      hardOutTime: `${pad(hard.getHours())}:${pad(hard.getMinutes())}:00`,
+    });
+    await startShowFromUi();
+    // (START is pressed 2 s after the mount the Hard Out was reckoned at; 12:00 read "ก่อน 2:58")
+    expect(screen.getByTestId("hard-out-gap").textContent).toBe("ก่อน 3:58");
+  });
+});

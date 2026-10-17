@@ -51,7 +51,9 @@ import { canEditAnyGroup, canLiveEdit, canViewLibrary, type Perms } from "@/lib/
 // 2026-10-17c (the audio-player upgrades, พี่ "ทำหมด"): the fade keys move like a mixer's
 // fader (lib/fade.ts), and in the desktop app a minimized window no longer stalls a fade or
 // Auto's clock mid-show.
-const ROUND = "2026-10-17c";
+// 2026-10-17d (พี่: "ตัวนับเวลายังไม่คำนวนเวลาจริงใหม่"): a row the next one comes in over ends
+// when it comes in, on every screen that counts (lib/time.ts runSecondsOf).
+const ROUND = "2026-10-17d";
 /** For tests that need "this device already read the current round". */
 export const WHATS_NEW_ROUND = ROUND;
 const KEY = "cueiq:whats-new-seen";
@@ -120,6 +122,10 @@ const phoneWeb = () =>
   window.matchMedia?.("(max-width: 1023px)").matches === true;
 
 const ITEMS: Item[] = [
+  {
+    text: "เล่นซ้อน: นับเวลาตามจริงทุกหน้า — เพลงก่อนหน้าจบตอนเพลงถัดไปเข้า (4:00 ซ้อน -5 วิ = 3:55) แล้วเพลงถัดไปนับเต็มความยาวของมัน",
+    who: bandPeople,
+  },
   {
     text: "Live: Auto Mute / MC / Auto Loudness เฟดแบบเฟดเดอร์มิกเซอร์ — เสียงค่อย ๆ เบาลงจนเงียบอย่างเป็นธรรมชาติ ไม่ดังค้างแล้วดับวูบตอนท้าย",
     who: bandPeople,

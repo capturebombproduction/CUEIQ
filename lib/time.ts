@@ -165,6 +165,19 @@ export interface SetlistTiming {
 }
 
 /**
+ * How long a row RUNS: its own `block`, less `nextLead` - how many seconds the next row is
+ * set to come in before it ends ("เล่นซ้อน"). พี่ 2026-10-17: a 4:00 song with the next one
+ * at -5 counts 3:55, and the next counts its own length in full from the moment it comes in
+ * ("A จบตอน B เข้า"); the outgoing song's last seconds still sound under it - only the
+ * counting moves. Live Mode, Quick Show and the run sheet (computeSetlistTimes) all count
+ * this way. A lead can at most end the row at its own start.
+ */
+export function runSecondsOf(block: number, nextLead: number): number {
+  const own = Math.max(0, block || 0);
+  return own - Math.min(own, Math.max(0, nextLead || 0));
+}
+
+/**
  * Compute Start / End / Accumulated / Hard-out status for a setlist.
  * `showStartSec` is seconds-of-day (default 0 = treat as pure durations).
  */
@@ -211,6 +224,23 @@ export function computeSetlistTimes(
       overHardOut: foldedHardOutSec != null ? slotEndSec > foldedHardOutSec : false,
     };
   });
+  // "เล่นซ้อน" (runSecondsOf below): a row the next one comes in over ENDS when it comes
+  // in - its end, block and running total stop there, and the next row's block is its
+  // own length in full. The overlap used to come off the NEXT row instead (A 4:00, then
+  // B 3:20 at -5: A read "จบ 4:00 · สะสม 4:00", B a 3:15 block) - the same show end, but
+  // every row the overlap touched read the full song.
+  for (let i = 0; i + 1 < rows.length; i++) {
+    const row = rows[i];
+    const next = rows[i + 1];
+    if (next.startSec >= row.slotEndSec) continue;
+    row.slotEndSec = next.startSec;
+    row.endSec = Math.min(row.endSec, next.startSec);
+    row.blockSeconds = row.slotEndSec - row.slotStartSec;
+    row.accumulatedSec = row.slotEndSec - showStartSec;
+    row.overHardOut = foldedHardOutSec != null ? row.slotEndSec > foldedHardOutSec : false;
+    next.slotStartSec = next.startSec;
+    next.blockSeconds = next.slotEndSec - next.slotStartSec;
+  }
 
   const totalSeconds = cursor - showStartSec;
   return {

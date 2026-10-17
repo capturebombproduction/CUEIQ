@@ -17,6 +17,7 @@ type FakeEngine = {
   tailsStopped: number;
   onEnded: () => void;
   onTime: (t: number) => void;
+  onDuration: (d: number) => void;
   onPlayingChange: (p: boolean) => void;
   duration: number;
   position: number;
@@ -721,5 +722,45 @@ describe("PracticePlayer — เล่นซ้อน", () => {
       await waitFor(() => expect(engine().playing).toBe(true));
       expect(engine().handOffs).toEqual([]);
     });
+  });
+});
+
+// พี่ 2026-10-17 "A จบตอน B เข้า": in a set run a song with the next one coming in over its end
+// runs until then - the time the bar ends on is that moment, not the file's full length.
+describe("PracticePlayer — เล่นซ้อน: the bar's time ends where the next song comes in", () => {
+  beforeEach(() => {
+    h.shows = [
+      {
+        id: "show-1",
+        name: "Welcome to friendverse",
+        event_date: bkkTodayKey(),
+        setlist_items: [
+          row("r1", 1, "boot"),
+          { ...row("r2", 2, "neon"), buffer_before_seconds: -5 },
+          { ...row("mc", 3, null, "mc"), buffer_before_seconds: -4 },
+          { ...row("r3", 4, "iam"), buffer_before_seconds: -3 }, // over the MC, not Neon
+        ],
+      },
+    ];
+  });
+
+  it("200 s with the next at -5 ends at 3:15, with a tick on the bar there", async () => {
+    mount();
+    fireEvent.click(await screen.findByRole("button", { name: /เล่นทั้งเซ็ต/ }));
+    await waitFor(() => expect(engine().loads).toEqual(["boot.wav"]));
+    act(() => engine().onDuration(200));
+    expect(screen.getByTestId("song-ends-at").textContent).toBe("3:15");
+    expect(screen.getByTestId("hand-over-tick")).toBeTruthy();
+  });
+
+  it("a song nothing comes in over runs its length (the next one overlaps the MC between)", async () => {
+    mount();
+    fireEvent.click(await screen.findByRole("button", { name: /เล่นทั้งเซ็ต/ }));
+    await waitFor(() => expect(engine().loads).toEqual(["boot.wav"]));
+    fireEvent.click(screen.getByRole("button", { name: /Neon Lullaby/ }));
+    await waitFor(() => expect(engine().loads).toEqual(["boot.wav", "neon.wav"]));
+    act(() => engine().onDuration(200));
+    expect(screen.getByTestId("song-ends-at").textContent).toBe("3:20");
+    expect(screen.queryByTestId("hand-over-tick")).toBeNull();
   });
 });
