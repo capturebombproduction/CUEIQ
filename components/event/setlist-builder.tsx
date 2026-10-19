@@ -69,6 +69,8 @@ import {
 import {
   computeSetlistTimes,
   foldWaitsIntoNext,
+  TIMING_LABEL,
+  timingMeaning,
   formatDuration,
   parseClockToSeconds,
   parseDurationToSeconds,
@@ -124,7 +126,7 @@ function DurationField({
 }
 
 /**
- * "ตั้งเวลา" (พี่ 2026-10-19: "รวมให้เป็นตั้งเวลา ติดลบก็คือเล่นซ้อนเหมือนเดิม ถ้าเป็นค่า
+ * "เข้าหลังเพลงก่อนหน้า" (TIMING_LABEL; พี่ 2026-10-19: "รวมให้เป็นตั้งเวลา ติดลบก็คือเล่นซ้อนเหมือนเดิม ถ้าเป็นค่า
  * บวกก็คือรอเพิ่มหลังเพลงก่อนหน้าจบ") — one signed number against the item BEFORE: -5 =
  * comes in 5 s before it ends ("เล่นซ้อน", how Quick Show takes it too), 3 = waits 3 s
  * after it ends. It replaced the separate "เล่นซ้อน" and "เผื่อเวลาหลัง" fields, which
@@ -1904,22 +1906,23 @@ export function SetlistBuilder({
                     onClick={() => setTimingOpen((prev) => new Set(prev).add(it.id))}
                     className="order-3 col-span-2 justify-self-start min-h-11 rounded-[2px] px-2 text-[13px] text-muted-foreground underline-offset-2 hover:text-foreground hover:underline sm:hidden"
                   >
-                    + ตั้งเวลา (ซ้อน / รอ)
+                    + {TIMING_LABEL} (ซ้อน / รอ)
                   </button>
                 )}
                 {/* The first item has no item before it to overlap or wait for: no
                     field at all, so nothing can be set there by mistake (พี่ 2026-10-19). */}
                 {idx > 0 && (
-                <div className={`order-4 space-y-1 sm:order-none sm:col-span-2 ${showTiming(it) ? "" : "hidden sm:block"}`}>
-                  {/* The words "เริ่มก่อนเพลงก่อนจบ" used to be in this label; at sm–lg the
-                      cell is 105–130px, the label needed ~180px and wrapped to two lines,
-                      dropping its input ~24–31px below the other three (CQ-42). The label
-                      is short now and the explanation rides on the field's title. */}
+                <div className={`order-4 space-y-1 sm:order-none sm:col-span-3 ${showTiming(it) ? "" : "hidden sm:block"}`}>
+                  {/* CQ-42: a label that wraps drops its input below the row's other
+                      fields. "เข้าหลังเพลงก่อนหน้า (วิ)" (พี่ 2026-10-19: one wording with
+                      the practice room) needs ~150px, so this cell is 3 of 12 (sm: ~160px)
+                      and the label never wraps; what the number DOES is the line under
+                      the field, in words, for the value typed. */}
                   <Label
                     htmlFor={`sl-${it.id}-overlap`}
-                    className="text-[13px] font-medium text-muted-foreground"
+                    className="whitespace-nowrap text-[13px] font-medium text-muted-foreground"
                   >
-                    ตั้งเวลา (วิ)
+                    {TIMING_LABEL} (วิ)
                   </Label>
                   {/* type="number" made this unreachable on iOS, whose numeric keypad
                       has no minus key: an iPad user could only type positives, which
@@ -1927,15 +1930,21 @@ export function SetlistBuilder({
                       accepted and simply never happened. See OverlapInput. */}
                   <OverlapInput
                     id={`sl-${it.id}-overlap`}
-                    title="ติดลบ = เล่นซ้อน เข้าก่อนรายการก่อนหน้าจบ (เช่น -5) · บวก = รอหลังรายการก่อนหน้าจบ (เช่น 3)"
+                    title="ติดลบ = เล่นซ้อนเพลงก่อนหน้า (เช่น -5) · บวก = รอหลังเพลงก่อนหน้าจบ (เช่น 3) · 0 = เริ่มทันทีที่เพลงก่อนหน้าจบ"
                     seconds={it.buffer_before_seconds}
                     disabled={!rowEditable}
                     onChange={(s) => setLocal(it.id, { buffer_before_seconds: s })}
                     onCommit={(s) => persist(it.id, { buffer_before_seconds: s })}
                   />
+                  <p
+                    data-testid="timing-meaning"
+                    className="text-[12px] leading-snug text-muted-foreground"
+                  >
+                    {timingMeaning(it.buffer_before_seconds)}
+                  </p>
                 </div>
                 )}
-                <div className={`order-2 space-y-1 sm:order-none ${idx > 0 ? "sm:col-span-8" : "sm:col-span-10"}`}>
+                <div className={`order-2 space-y-1 sm:order-none ${idx > 0 ? "sm:col-span-7" : "sm:col-span-10"}`}>
                   <Label className="text-[13px] font-medium text-muted-foreground">ไมค์ + สมาชิก</Label>
                   <MicSlotsDialog
                     item={it}

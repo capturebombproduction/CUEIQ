@@ -500,8 +500,8 @@ describe("PracticePlayer — เล่นซ้อน", () => {
   it("shows each overlap between the two songs it joins, and nowhere else", async () => {
     mount();
     await screen.findByRole("button", { name: /เล่นทั้งเซ็ต/ });
-    expect(chip("ซ้อน 5 วิ")).toHaveLength(1);
-    expect(chip("ซ้อน 3 วิ")).toHaveLength(0); // I Am Who I Am's sits after the MC
+    expect(chip("เล่นซ้อนเพลงก่อนหน้า 5 วิ")).toHaveLength(1);
+    expect(chip("เล่นซ้อนเพลงก่อนหน้า 3 วิ")).toHaveLength(0); // I Am Who I Am's sits after the MC
     // a member sees the numbers; setting them is the band editor's
     expect(screen.queryByRole("button", { name: /ตั้งเล่นซ้อน/ })).toBeNull();
   });
@@ -804,7 +804,7 @@ describe("PracticePlayer — เซ็ตของห้องนี้ (สร�
     render(<Room start={own} />);
     await pickRoom();
     const chips = within(setCard()).queryAllByText(
-      (_, el) => el?.tagName === "P" && el.textContent?.replace(/\s+/g, " ").trim() === "ซ้อน 4 วิ"
+      (_, el) => el?.tagName === "P" && el.textContent?.replace(/\s+/g, " ").trim() === "เล่นซ้อนเพลงก่อนหน้า 4 วิ"
     );
     expect(chips).toHaveLength(1);
     fireEvent.click(within(setCard()).getByRole("button", { name: /เล่นทั้งเซ็ต \(2 เพลง\)/ }));
@@ -844,6 +844,24 @@ describe("PracticePlayer — เซ็ตของห้องนี้ (สร�
     await waitFor(() => expect(engine().loads).toEqual(["boot.wav"]));
   });
 
+  // พี่ 2026-10-19 (screenshot): the control sat between two songs, indented under the one
+  // ABOVE, and read as that one's. It sits under the song it belongs to now, signed like
+  // the setlist's field (-4 = over the last 4 s), with what it does in words.
+  it("puts a song's timing under that song, as the setlist writes it", async () => {
+    render(<Room start={own} />);
+    await pickRoom();
+    fireEvent.click(within(setCard()).getByRole("button", { name: /แก้เซ็ต/ }));
+    const row = screen.getByRole("button", { name: "เลื่อนขึ้น · [SYSTEM_BOOT] SE" });
+    const more = screen.getByRole("button", { name: "เพิ่มเวลาเล่นซ้อน · [SYSTEM_BOOT] SE" });
+    expect(row.compareDocumentPosition(more) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    const value = screen.getByLabelText("เล่นซ้อน [SYSTEM_BOOT] SE 4 วินาที");
+    expect(value.textContent?.replace(/\s+/g, " ").trim()).toBe("-4 วินาที");
+    expect(within(setCard()).getByText("เล่นซ้อนเพลงก่อนหน้า 4 วิ")).toBeTruthy();
+    expect(within(setCard()).getAllByText("เข้าหลังเพลงก่อนหน้า")).toHaveLength(1); // not on song 1
+    fireEvent.click(more); // − = more overlap: -5
+    expect(within(setCard()).getByText("เล่นซ้อนเพลงก่อนหน้า 5 วิ")).toBeTruthy();
+  });
+
   it("remembers the room's set as this room's pick", async () => {
     const first = render(<Room start={own} />);
     await pickRoom();
@@ -872,6 +890,6 @@ describe("PracticePlayer — a show row that waits", () => {
     expect(screen.queryByRole("button", { name: /ตั้งเล่นซ้อน/ })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: /ตั้งเล่นซ้อน/ }));
     expect(screen.queryByRole("button", { name: "เพิ่มเวลาเล่นซ้อน · Neon Lullaby" })).toBeNull();
-    expect(screen.getByText(/งานนี้ตั้งรอ/)).toBeTruthy();
+    expect(screen.getByText(/รอ 3 วิ หลังเพลงก่อนหน้าจบ.*แก้ในเซ็ตลิสต์ของงาน/)).toBeTruthy();
   });
 });

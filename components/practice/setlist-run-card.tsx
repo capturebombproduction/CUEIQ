@@ -22,7 +22,7 @@ import { liveTopic, privateChannel } from "@/lib/realtime";
 import { hasLiveSession } from "@/lib/auth-session";
 import { writeFailureMessage } from "@/lib/practice-journal-gate";
 import { wroteNothing, noRowsMessage } from "@/lib/write-guard";
-import { bkkTodayKey, monthBeforeKey } from "@/lib/time";
+import { bkkTodayKey, monthBeforeKey, TIMING_LABEL, timingMeaning } from "@/lib/time";
 import {
   MAX_OVERLAP_SECONDS,
   orderShowsForPractice,
@@ -417,57 +417,6 @@ export function SetlistRunCard({
           const active = runningHere?.index === i;
           return (
             <li key={`${q.itemId}-${i}`}>
-              {/* The overlap INTO this song sits between it and the one above:
-                  "↳ ซ้อน 5 วิ" = it comes in 5 s before that one ends. */}
-              {editing && i > 0 ? (
-                (q.wait ?? 0) > 0 ? (
-                  <p className="py-1 pl-8 text-[12px] text-faint">
-                    งานนี้ตั้งรอ <span className="num">{q.wait}</span> วิ หลังเพลงบนจบ — แก้ในเซ็ตลิสต์ของงาน
-                  </p>
-                ) : q.adjacent ? (
-                  <div className="flex items-center gap-2 py-1.5 pl-8">
-                    <CornerDownRight className="h-3.5 w-3.5 text-muted-foreground" aria-hidden />
-                    <span className="text-[12.5px] text-muted-foreground">เข้าก่อนจบ</span>
-                    <Button
-                      type="button"
-                      size="icon"
-                      variant="secondary"
-                      aria-label={`ลดเวลาเล่นซ้อน · ${q.song.title}`}
-                      disabled={q.overlap <= 0}
-                      onClick={() => setLead(q.itemId, q.overlap - 1)}
-                    >
-                      <Minus aria-hidden />
-                    </Button>
-                    {/* the digit alone wears .num — its face has no Thai, and "วิ"
-                        set in it came out as a second, broken digit */}
-                    <output
-                      className="min-w-[3.25rem] text-center text-[14px]"
-                      aria-label={`เล่นซ้อน ${q.song.title} ${q.overlap} วินาที`}
-                    >
-                      <span className="num text-[15px]">{q.overlap}</span> วิ
-                    </output>
-                    <Button
-                      type="button"
-                      size="icon"
-                      variant="secondary"
-                      aria-label={`เพิ่มเวลาเล่นซ้อน · ${q.song.title}`}
-                      disabled={q.overlap >= MAX_OVERLAP_SECONDS}
-                      onClick={() => setLead(q.itemId, q.overlap + 1)}
-                    >
-                      <Plus aria-hidden />
-                    </Button>
-                  </div>
-                ) : (
-                  <p className="py-1 pl-8 text-[12px] text-faint">
-                    มี MC หรือช่วงอื่นคั่นในงาน — เล่นหลังเพลงบนจบ
-                  </p>
-                )
-              ) : q.overlap > 0 ? (
-                <p className="flex items-center gap-1.5 py-1 pl-8 text-[12.5px] text-muted-foreground">
-                  <CornerDownRight className="h-3.5 w-3.5" aria-hidden />
-                  ซ้อน <span className="num text-foreground">{q.overlap}</span> วิ
-                </p>
-              ) : null}
               {editing && isRoom ? (
                 <div className="slab flex min-h-[50px] w-full items-center gap-1 pl-3 pr-1 text-[14.5px]">
                   <span className="num w-5 shrink-0 text-right text-[14px] text-faint">{i + 1}</span>
@@ -524,6 +473,68 @@ export function SetlistRunCard({
                 ) : null}
               </button>
               )}
+              {/* How this song comes in after the one above (TIMING_LABEL — the setlist
+                  builder's own words, พี่ 2026-10-19), under the song it belongs to: it
+                  sat between the two, indented under the one above, and read as that
+                  one's. The number is the show's, signed: -5 = over the last 5 s of the
+                  one above; − / + move along that line (− = more overlap). */}
+              {editing && i > 0 ? (
+                (q.wait ?? 0) > 0 ? (
+                  <p className="py-1.5 pl-8 text-[12px] text-faint">
+                    {TIMING_LABEL}: {timingMeaning(q.wait ?? 0)} — แก้ในเซ็ตลิสต์ของงาน
+                  </p>
+                ) : q.adjacent ? (
+                  <div className="space-y-0.5 py-1.5 pl-8">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <CornerDownRight className="h-3.5 w-3.5 text-muted-foreground" aria-hidden />
+                      <span className="text-[12.5px] text-muted-foreground">{TIMING_LABEL}</span>
+                      <Button
+                        type="button"
+                        size="icon"
+                        variant="secondary"
+                        aria-label={`เพิ่มเวลาเล่นซ้อน · ${q.song.title}`}
+                        disabled={q.overlap >= MAX_OVERLAP_SECONDS}
+                        onClick={() => setLead(q.itemId, q.overlap + 1)}
+                      >
+                        <Minus aria-hidden />
+                      </Button>
+                      {/* the digits alone wear .num — its face has no Thai, and "วิ"
+                          set in it came out as a second, broken digit. Next to bold
+                          digits even a Thai "วิ" read as a 5 ("0 วิ" as "05", พี่'s
+                          screenshot 2026-10-19): the unit is spelled out, light. */}
+                      <output
+                        className="min-w-[4.5rem] text-center"
+                        aria-label={`เล่นซ้อน ${q.song.title} ${q.overlap} วินาที`}
+                      >
+                        <span className="num text-[15px]">{q.overlap > 0 ? `-${q.overlap}` : "0"}</span>{" "}
+                        <span className="text-[12px] font-normal text-muted-foreground">วินาที</span>
+                      </output>
+                      <Button
+                        type="button"
+                        size="icon"
+                        variant="secondary"
+                        aria-label={`ลดเวลาเล่นซ้อน · ${q.song.title}`}
+                        disabled={q.overlap <= 0}
+                        onClick={() => setLead(q.itemId, q.overlap - 1)}
+                      >
+                        <Plus aria-hidden />
+                      </Button>
+                    </div>
+                    <p className="pl-5 text-[12px] text-muted-foreground">
+                      {timingMeaning(-q.overlap)}
+                    </p>
+                  </div>
+                ) : (
+                  <p className="py-1.5 pl-8 text-[12px] text-faint">
+                    มี MC หรือช่วงอื่นคั่นในงาน — เริ่มหลังเพลงก่อนหน้าจบ
+                  </p>
+                )
+              ) : q.overlap > 0 ? (
+                <p className="flex items-center gap-1.5 py-1 pl-8 text-[12.5px] text-muted-foreground">
+                  <CornerDownRight className="h-3.5 w-3.5" aria-hidden />
+                  เล่นซ้อนเพลงก่อนหน้า <span className="num text-foreground">{q.overlap}</span> วิ
+                </p>
+              ) : null}
             </li>
           );
         })}

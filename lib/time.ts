@@ -178,6 +178,24 @@ export function runSecondsOf(block: number, nextLead: number): number {
 }
 
 /**
+ * The one name for a row's buffer_before, on every screen that sets it (the setlist
+ * builder, the practice room's set) - พี่ 2026-10-19: "ควรใช้คำเดียวกัน". The field sits
+ * on the row that comes in, and says how it comes in after the row above.
+ */
+export const TIMING_LABEL = "เข้าหลังเพลงก่อนหน้า";
+
+/**
+ * What a row's buffer_before does, in words, under the field that sets it: -5 = comes in
+ * over the end of the row above, 3 = waits after it, 0 = straight after it.
+ */
+export function timingMeaning(seconds: number): string {
+  const s = Math.round(Number(seconds) || 0);
+  if (s < 0) return `เล่นซ้อนเพลงก่อนหน้า ${-s} วิ`;
+  if (s > 0) return `รอ ${s} วิ หลังเพลงก่อนหน้าจบ แล้วค่อยเริ่มเพลงนี้`;
+  return "เริ่มทันทีที่เพลงก่อนหน้าจบ";
+}
+
+/**
  * The old "เผื่อเวลาหลัง" (a row's buffer_after) as the one "ตั้งเวลา" the builder shows
  * now (พี่ 2026-10-19): each row's wait moves onto the row after it - added to that row's
  * buffer_before, so an overlap there nets out the same (wait 3 then -5 = -2) - and a last

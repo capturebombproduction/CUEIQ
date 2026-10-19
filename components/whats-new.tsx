@@ -54,8 +54,10 @@ import { canEditAnyGroup, canLiveEdit, canViewLibrary, type Perms } from "@/lib/
 // 2026-10-17d (พี่: "ตัวนับเวลายังไม่คำนวนเวลาจริงใหม่"): a row the next one comes in over ends
 // when it comes in, on every screen that counts (lib/time.ts runSecondsOf).
 // 2026-10-19 (พี่: "ห้องซ้อมมันล็อค setlist ตามงาน อยากให้สามารถสร้างเองได้"): the room's own set.
-// 2026-10-19b (พี่, same day): the setlist's เล่นซ้อน + เผื่อเวลาหลัง are one "ตั้งเวลา" field.
-const ROUND = "2026-10-19b";
+// 2026-10-19b (พี่, same day): the setlist's เล่นซ้อน + เผื่อเวลาหลัง are one field.
+// 2026-10-19c: that field's name, "เข้าหลังเพลงก่อนหน้า", the same in the practice room, with
+// what the number does in words under it - told again to the devices that read 19b's name.
+const ROUND = "2026-10-19c";
 /** For tests that need "this device already read the current round". */
 export const WHATS_NEW_ROUND = ROUND;
 const KEY = "cueiq:whats-new-seen";
@@ -125,7 +127,7 @@ const phoneWeb = () =>
 
 const ITEMS: Item[] = [
   {
-    text: "เซ็ตลิสต์: “เล่นซ้อน” กับ “เผื่อเวลาหลัง” รวมเป็นช่องเดียว “ตั้งเวลา (วิ)” — ติดลบ = เล่นซ้อนรายการก่อนหน้า, บวก = รอหลังรายการก่อนหน้าจบ · รายการแรกไม่มีช่องนี้ (ค่าเผื่อเวลาเดิมย้ายให้แล้ว เวลารวมเท่าเดิม)",
+    text: "เซ็ตลิสต์: “เล่นซ้อน” กับ “เผื่อเวลาหลัง” รวมเป็นช่องเดียว “เข้าหลังเพลงก่อนหน้า (วิ)” — ติดลบ = เล่นซ้อนเพลงก่อนหน้า, บวก = รอหลังเพลงก่อนหน้าจบ, ใต้ช่องบอกความหมายของตัวเลขให้ · เพลงแรกไม่มีช่องนี้ (ค่าเผื่อเวลาเดิมย้ายให้แล้ว เวลารวมเท่าเดิม)",
     who: editors,
   },
   {

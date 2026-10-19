@@ -15,7 +15,7 @@
 //        name (16 unnamed controls per row on a 16-row set), and the Labels were not
 //        bound to their fields.
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { makeSession, makeSupabaseFake } from "@/test/fakes/supabase";
 
 const h = vi.hoisted(() => ({ supa: null as unknown }));
@@ -97,16 +97,16 @@ describe("SetlistBuilder · the overlap label fits its cell (CQ-42)", () => {
   // but the first, which has nothing before it.
   it("is short, and the long phrase no longer sits in the label", () => {
     mount(THREE);
-    const labels = screen.getAllByText("ตั้งเวลา (วิ)");
+    const labels = screen.getAllByText("เข้าหลังเพลงก่อนหน้า (วิ)");
     expect(labels).toHaveLength(THREE.length - 1);
     expect(screen.queryByText(/เริ่มก่อนเพลงก่อนจบ/)).toBeNull();
   });
 
   it("the explanation moved to the field, as its title", () => {
     mount(THREE);
-    const field = screen.getAllByLabelText("ตั้งเวลา (วิ)")[0];
-    expect(field).toHaveAttribute("title", expect.stringContaining("ติดลบ = เล่นซ้อน"));
-    expect(field).toHaveAttribute("title", expect.stringContaining("บวก = รอหลังรายการก่อนหน้าจบ"));
+    const field = screen.getAllByLabelText("เข้าหลังเพลงก่อนหน้า (วิ)")[0];
+    expect(field).toHaveAttribute("title", expect.stringContaining("ติดลบ = เล่นซ้อนเพลงก่อนหน้า"));
+    expect(field).toHaveAttribute("title", expect.stringContaining("บวก = รอหลังเพลงก่อนหน้าจบ"));
   });
 });
 
@@ -137,10 +137,10 @@ describe("SetlistBuilder · every row control has a name (CQ-50)", () => {
     // the old separate "เผื่อเวลาหลัง" field is gone - its job is a positive ตั้งเวลา
     expect(screen.queryByText(/เผื่อเวลาหลัง/)).toBeNull();
     expect(screen.getAllByLabelText(/ความยาว \(m:ss\)/)).toHaveLength(THREE.length);
-    expect(screen.getAllByLabelText("ตั้งเวลา (วิ)")).toHaveLength(THREE.length - 1);
+    expect(screen.getAllByLabelText("เข้าหลังเพลงก่อนหน้า (วิ)")).toHaveLength(THREE.length - 1);
     // ids are keyed by the row, so no two rows share one
     const ids = [
-      ...screen.getAllByLabelText("ตั้งเวลา (วิ)").map((b) => b.id),
+      ...screen.getAllByLabelText("เข้าหลังเพลงก่อนหน้า (วิ)").map((b) => b.id),
       ...screen.getAllByLabelText(/ความยาว \(m:ss\)/).map((b) => b.id),
     ];
     expect(ids.every(Boolean)).toBe(true);
@@ -149,10 +149,23 @@ describe("SetlistBuilder · every row control has a name (CQ-50)", () => {
 
   it("each row's label reaches THAT row's input", () => {
     mount(THREE);
-    const fields = screen.getAllByLabelText("ตั้งเวลา (วิ)");
+    const fields = screen.getAllByLabelText("เข้าหลังเพลงก่อนหน้า (วิ)");
     // rows two and three each hold their own; row one (nothing before it) holds none
     const rows = fields.map((b) => b.closest("[class*='slab']"));
     expect(new Set(rows).size).toBe(THREE.length - 1);
     expect(within(rows[0] as HTMLElement).getByDisplayValue("เพลงสอง")).toBeInTheDocument();
+  });
+});
+
+// พี่ 2026-10-19 "ควรใช้คำเดียวกัน": what the number does, in words, under the field - for
+// the value as it is being typed.
+describe("SetlistBuilder · the timing field says what its number does", () => {
+  it("reads -5 as an overlap, 3 as a wait, 0 as straight after", () => {
+    mount([THREE[0], { ...THREE[1], buffer_before_seconds: -5 }, THREE[2]]);
+    const meanings = () => screen.getAllByTestId("timing-meaning").map((p) => p.textContent);
+    expect(meanings()).toEqual(["เล่นซ้อนเพลงก่อนหน้า 5 วิ", "เริ่มทันทีที่เพลงก่อนหน้าจบ"]);
+    const field = screen.getAllByLabelText("เข้าหลังเพลงก่อนหน้า (วิ)")[0];
+    fireEvent.change(field, { target: { value: "3" } });
+    expect(meanings()[0]).toBe("รอ 3 วิ หลังเพลงก่อนหน้าจบ แล้วค่อยเริ่มเพลงนี้");
   });
 });

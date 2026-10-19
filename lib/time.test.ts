@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   computeSetlistTimes,
   foldWaitsIntoNext,
+  timingMeaning,
   deadlineInfo,
   formatClockOfDay,
   formatCountdown,
@@ -323,5 +324,13 @@ describe("foldWaitsIntoNext", () => {
       [1, 0],
       [2, 5],
     ]);
+  });
+});
+
+describe("timingMeaning", () => {
+  it("says what a row's buffer_before does", () => {
+    expect(timingMeaning(-5)).toBe("เล่นซ้อนเพลงก่อนหน้า 5 วิ");
+    expect(timingMeaning(3)).toBe("รอ 3 วิ หลังเพลงก่อนหน้าจบ แล้วค่อยเริ่มเพลงนี้");
+    expect(timingMeaning(0)).toBe("เริ่มทันทีที่เพลงก่อนหน้าจบ");
   });
 });
