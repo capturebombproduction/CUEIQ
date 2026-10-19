@@ -414,6 +414,9 @@ export interface PracticeSong {
   event_id: string;
   song_id: string;
   sort_order: number;
+  /** "เล่นซ้อน" in the room's own set: seconds this song comes in before the one
+   *  above it ends (0048). Optional: a row read before 0048 has none. */
+  overlap_seconds?: number | null;
   created_by: string | null;
   created_at: string;
 }

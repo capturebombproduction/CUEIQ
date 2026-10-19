@@ -142,7 +142,10 @@ const engine = () => h.engines[h.engines.length - 1];
 const hero = () => screen.getByRole("region", { name: "Now playing" });
 
 async function pick(title: string, path: string) {
-  fireEvent.click(screen.getByRole("button", { name: new RegExp(title) }));
+  // the Queue's row: with no show this month the Setlist card shows the room's own set,
+  // the same songs
+  const queue = screen.getByRole("region", { name: "Queue" });
+  fireEvent.click(within(queue).getByRole("button", { name: new RegExp(title) }));
   await waitFor(() => expect(engine().loads).toContain(path));
 }
 

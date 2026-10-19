@@ -77,6 +77,23 @@ export function overlapLead(bufferBefore: number | null | undefined): number {
 }
 
 /**
+ * The room's own set (พี่ 2026-10-19: "อยากให้สามารถสร้างเองได้") — its practice list,
+ * already in order and already playable, as a play queue. Nothing sits between two
+ * songs here, so every song after the first comes straight after the one above and
+ * carries its own "เล่นซ้อน".
+ */
+export function roomQueue(
+  entries: { item: { id: string; overlap_seconds?: number | null }; song: Song }[]
+): QueueEntry[] {
+  return entries.map(({ item, song }, i) => ({
+    itemId: item.id,
+    song,
+    adjacent: i > 0,
+    overlap: i > 0 ? overlapLead(-(Number(item.overlap_seconds) || 0)) : 0,
+  }));
+}
+
+/**
  * The show's playable songs in running order. A row with no song link (MC,
  * ถ่ายรูป, a title typed but never linked to the library) is not something to
  * play and is skipped; a SONG row that can't play — unlinked, or linked to a

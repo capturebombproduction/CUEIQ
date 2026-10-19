@@ -1,7 +1,9 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
+  ArrowDown,
+  ArrowUp,
   AudioLines,
   Check,
   CornerDownRight,
@@ -12,6 +14,7 @@ import {
   Play,
   Plus,
   Square,
+  X,
 } from "lucide-react";
 import { toast } from "sonner";
 import { createClient } from "@/lib/supabase/client";
@@ -24,6 +27,7 @@ import {
   MAX_OVERLAP_SECONDS,
   orderShowsForPractice,
   overlapLead,
+  roomQueue,
   setlistQueue,
   type QueueEntry,
   type SetlistShow,
@@ -31,7 +35,41 @@ import {
 import { Button } from "@/components/ui/button";
 import { FIELD } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
-import type { Song } from "@/lib/types";
+import type { PracticeSong, Song } from "@/lib/types";
+
+/** The dropdown's value for the room's own set (a show's is its id). */
+const ROOM = "room";
+/** The set this room last played from, per device (a convenience: lost = the default). */
+const pickKey = (eventId: string) => `cueiq:practice-set:${eventId}`;
+function readPick(eventId: string): string | null {
+  try {
+    return window.localStorage.getItem(pickKey(eventId));
+  } catch {
+    return null;
+  }
+}
+function writePick(eventId: string, value: string) {
+  try {
+    window.localStorage.setItem(pickKey(eventId), value);
+  } catch {
+    /* private window / blocked storage: the default next time */
+  }
+}
+
+/** The room's own set (พี่ 2026-10-19: "อยากให้สามารถสร้างเองได้") — its practice
+ *  list, which the band's members build, order and overlap themselves. */
+export type RoomSet = {
+  /** the room's list, in order, playable songs only */
+  entries: { item: PracticeSong; song: Song }[];
+  /** may change it: a member of the band (the practice_songs write gate) */
+  canCurate: boolean;
+  /** the "เพิ่มเพลง" picker — the player's, so both places add the same way */
+  addButton: ReactNode;
+  onMove: (itemId: string, dir: -1 | 1) => void;
+  onRemove: (itemId: string) => void;
+  /** an overlap changed on screen (the card saves it) */
+  onOverlap: (itemId: string, seconds: number) => void;
+};
 
 // How long the −/+ keys wait for another press before saving: three quick presses
 // are one write, not three racing each other to the server.
@@ -111,7 +149,9 @@ function whenLabel(date: string, today: string): string {
  * See lib/practice-setlist.ts for why it exists.
  */
 export function SetlistRunCard({
+  eventId,
   groupId,
+  room,
   songsById,
   playable,
   running,
@@ -121,7 +161,10 @@ export function SetlistRunCard({
   canEdit,
   onOverlapChange,
 }: {
+  /** the practice room — its own set runs under this id */
+  eventId: string;
   groupId: string;
+  room: RoomSet;
   songsById: Map<string, Song>;
   playable: (s: Song) => boolean;
   /** The run in progress, if any: which show, where in its queue, how long it is,
@@ -138,14 +181,16 @@ export function SetlistRunCard({
   const today = bkkTodayKey();
   const [shows, setShows] = useState<SetlistShow[] | null>(null);
   const [failed, setFailed] = useState(false);
-  const [showId, setShowId] = useState("");
+  // What the dropdown says: a show's id, ROOM, or "" = not chosen here yet (then the
+  // set this room last played from, else the next show, else the room's own).
+  const [pick, setPick] = useState(() => readPick(eventId) ?? "");
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(0); // writes in flight
   // The overlap each row holds ON THE SERVER — what a failed write goes back to.
   const savedRef = useRef(new Map<string, number>());
-  // Presses waiting out SAVE_AFTER_MS, by row.
+  // Presses waiting out SAVE_AFTER_MS, by row. `showId` null = a row of the room's set.
   const pendingRef = useRef(
-    new Map<string, { seconds: number; timer: number; showId: string }>()
+    new Map<string, { seconds: number; timer: number; showId: string | null }>()
   );
   // Per row, the writes go out one after another — in the order pressed, never two
   // racing to the server on venue wifi — and only the newest may put a number back.
@@ -170,28 +215,67 @@ export function SetlistRunCard({
         return;
       }
       const ordered = orderShowsForPractice((data ?? []) as SetlistShow[], bkkTodayKey());
-      savedRef.current = new Map(
-        ordered.flatMap((s) =>
-          s.setlist_items.map((r) => [r.id, overlapLead(r.buffer_before_seconds)] as const)
+      ordered.forEach((s) =>
+        s.setlist_items.forEach((r) =>
+          savedRef.current.set(r.id, overlapLead(r.buffer_before_seconds))
         )
       );
       setShows(ordered);
-      setShowId((cur) => cur || ordered[0]?.id || "");
     })();
     return () => {
       alive = false;
     };
   }, [groupId]);
 
-  const show = shows?.find((s) => s.id === showId) ?? null;
+  // The room's own rows: what the server had when they came in (a write that lands
+  // moves it on, in write() below).
+  room.entries.forEach(({ item }) => {
+    if (!savedRef.current.has(item.id)) {
+      savedRef.current.set(item.id, overlapLead(-(Number(item.overlap_seconds) || 0)));
+    }
+  });
+
+  const loading = shows === null && !failed;
+  const selected: string | null =
+    pick === ROOM
+      ? ROOM
+      : shows?.some((s) => s.id === pick)
+        ? pick
+        : loading
+          ? null // the shows are still on their way — the pick may be one of them
+          : shows?.[0]?.id ?? ROOM;
+  const isRoom = selected === ROOM;
+  const show = !isRoom && selected ? shows?.find((s) => s.id === selected) ?? null : null;
   const { queue, missing } = useMemo(
-    () => (show ? setlistQueue(show, songsById, playable) : { queue: [], missing: [] }),
-    [show, songsById, playable]
+    () =>
+      isRoom
+        ? { queue: roomQueue(room.entries), missing: [] as string[] }
+        : show
+          ? setlistQueue(show, songsById, playable)
+          : { queue: [], missing: [] },
+    [isRoom, room.entries, show, songsById, playable]
   );
-  const runningHere = running && show && running.showId === show.id ? running : null;
+  const runId = isRoom ? eventId : show?.id ?? null;
+  const runningHere = running && runId && running.showId === runId ? running : null;
+
+  function choose(value: string) {
+    // Leaving the room's set for a show (or back) ends any editing: who may edit
+    // differs between the two, and the pending presses go out first.
+    if ((value === ROOM) !== isRoom) {
+      flushPending();
+      setEditing(false);
+    }
+    setPick(value);
+    writePick(eventId, value);
+  }
 
   // On screen (and into a playing run) at once; the write follows.
-  function applyLocal(itemId: string, seconds: number) {
+  function applyLocal(itemId: string, seconds: number, inRoom: boolean) {
+    onOverlapChange(itemId, seconds);
+    if (inRoom) {
+      room.onOverlap(itemId, seconds);
+      return;
+    }
     setShows((prev) =>
       prev
         ? prev.map((s) => ({
@@ -202,7 +286,6 @@ export function SetlistRunCard({
           }))
         : prev
     );
-    onOverlapChange(itemId, seconds);
   }
 
   function commit(itemId: string) {
@@ -219,20 +302,27 @@ export function SetlistRunCard({
     chainRef.current.set(itemId, queued);
   }
 
-  async function write(itemId: string, seconds: number, showId: string, seq: number) {
+  async function write(itemId: string, seconds: number, showId: string | null, seq: number) {
     let note: string | null = null;
     try {
-      // the same column, and the same sign, as the setlist builder's "เล่นซ้อน (วิ)"
-      const { data, error } = await createClient()
-        .from("setlist_items")
-        .update({ buffer_before_seconds: seconds > 0 ? -seconds : 0 })
-        .eq("id", itemId)
-        .select("id");
+      // A show's row: the same column, and the same sign, as the setlist builder's
+      // "เล่นซ้อน (วิ)". The room's own: practice_songs.overlap_seconds (0048).
+      const { data, error } = showId
+        ? await createClient()
+            .from("setlist_items")
+            .update({ buffer_before_seconds: seconds > 0 ? -seconds : 0 })
+            .eq("id", itemId)
+            .select("id")
+        : await createClient()
+            .from("practice_songs")
+            .update({ overlap_seconds: seconds })
+            .eq("id", itemId)
+            .select("id");
       if (error) note = writeFailureMessage(error.code, error.message, await hasLiveSession());
       else if (wroteNothing(data)) note = await noRowsMessage();
       else {
         savedRef.current.set(itemId, seconds);
-        tellLiveMode(showId);
+        if (showId) tellLiveMode(showId);
       }
     } catch (e) {
       note = e instanceof Error ? e.message : "ต่อเน็ตไม่ได้";
@@ -241,19 +331,19 @@ export function SetlistRunCard({
     // Only the newest press puts the number back: one queued behind this write, or
     // still waiting out its pause, decides what the row ends up as.
     if (seqRef.current.get(itemId) === seq && !pendingRef.current.has(itemId)) {
-      applyLocal(itemId, savedRef.current.get(itemId) ?? 0);
+      applyLocal(itemId, savedRef.current.get(itemId) ?? 0, showId == null);
     }
     toast.error("บันทึกเล่นซ้อนไม่สำเร็จ", { description: note });
   }
 
   function setLead(itemId: string, seconds: number) {
-    if (!show) return;
+    if (!isRoom && !show) return;
     const n = Math.max(0, Math.min(MAX_OVERLAP_SECONDS, Math.round(seconds)));
     const p = pendingRef.current.get(itemId);
     if (p) window.clearTimeout(p.timer);
-    applyLocal(itemId, n);
+    applyLocal(itemId, n, isRoom);
     const timer = window.setTimeout(() => commit(itemId), SAVE_AFTER_MS);
-    pendingRef.current.set(itemId, { seconds: n, timer, showId: show.id });
+    pendingRef.current.set(itemId, { seconds: n, timer, showId: isRoom || !show ? null : show.id });
   }
 
   function flushPending() {
@@ -269,23 +359,21 @@ export function SetlistRunCard({
     []
   );
 
-  if (failed) {
-    return (
-      <p className="slab px-3 py-2.5 text-[12.5px] text-muted-foreground">
-        ซ้อมตามเซ็ตลิสต์: โหลดเซ็ตลิสต์ของงานไม่ได้ — ต้องต่อเน็ต
-      </p>
-    );
-  }
-  if (!shows) {
+  if (selected === null || runId === null) {
     return (
       <p className="flex items-center gap-2 px-1 text-[12.5px] text-muted-foreground">
         <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden /> กำลังโหลดเซ็ตลิสต์ของงาน…
       </p>
     );
   }
-  if (shows.length === 0 || !show) return null; // no show with a playable set this month
 
-  const canSetOverlaps = canEdit && queue.some((q) => q.adjacent);
+  // The room's set: the band's members order it and set its overlaps. A show's: its
+  // editors set the overlaps (they are the show's own, the ones Live Mode plays).
+  const canSetOverlaps = isRoom
+    ? room.canCurate && room.entries.length > 0
+    : canEdit && queue.some((q) => q.adjacent);
+  const runName = (id: string) =>
+    id === eventId ? "เซ็ตของห้องนี้" : shows?.find((s) => s.id === id)?.name ?? "อีกงาน";
 
   return (
     <section aria-label="Setlist" className="space-y-2.5">
@@ -297,16 +385,32 @@ export function SetlistRunCard({
       </div>
       <select
         aria-label="เลือกงานที่จะซ้อม"
-        value={show.id}
-        onChange={(e) => setShowId(e.target.value)}
+        value={selected}
+        onChange={(e) => choose(e.target.value)}
         className={cn(FIELD, "h-11 w-full min-w-0 px-3 text-base sm:text-sm")}
       >
-        {shows.map((s) => (
+        <option value={ROOM}>
+          เซ็ตของห้องนี้ (สร้างเอง)
+          {room.entries.length > 0 ? ` · ${room.entries.length} เพลง` : ""}
+        </option>
+        {(shows ?? []).map((s) => (
           <option key={s.id} value={s.id}>
             {whenLabel(s.event_date, today)} · {s.name}
           </option>
         ))}
       </select>
+      {failed && (
+        <p className="px-0.5 text-[12.5px] text-muted-foreground">
+          โหลดเซ็ตลิสต์ของงานไม่ได้ — ต้องต่อเน็ต (เซ็ตของห้องนี้ยังเล่นได้)
+        </p>
+      )}
+      {isRoom && room.entries.length === 0 && (
+        <p className="slab px-4 py-6 text-center text-sm text-muted-foreground">
+          {room.canCurate
+            ? "ยังไม่มีเพลงในเซ็ตนี้ — กด “เพิ่มเพลง” แล้วเรียงลำดับ ตั้งเล่นซ้อนได้เอง"
+            : "วงนี้ยังไม่ได้สร้างเซ็ตของห้องนี้"}
+        </p>
+      )}
 
       <ol className="stack">
         {queue.map((q, i) => {
@@ -360,10 +464,46 @@ export function SetlistRunCard({
                   ซ้อน <span className="num text-foreground">{q.overlap}</span> วิ
                 </p>
               ) : null}
+              {editing && isRoom ? (
+                <div className="slab flex min-h-[50px] w-full items-center gap-1 pl-3 pr-1 text-[14.5px]">
+                  <span className="num w-5 shrink-0 text-right text-[14px] text-faint">{i + 1}</span>
+                  <span className="ml-2 min-w-0 flex-1 truncate">{q.song.title}</span>
+                  <Button
+                    type="button"
+                    size="icon"
+                    variant="ghost"
+                    aria-label={`เลื่อนขึ้น · ${q.song.title}`}
+                    disabled={i === 0}
+                    onClick={() => room.onMove(q.itemId, -1)}
+                  >
+                    <ArrowUp aria-hidden />
+                  </Button>
+                  <Button
+                    type="button"
+                    size="icon"
+                    variant="ghost"
+                    aria-label={`เลื่อนลง · ${q.song.title}`}
+                    disabled={i === queue.length - 1}
+                    onClick={() => room.onMove(q.itemId, 1)}
+                  >
+                    <ArrowDown aria-hidden />
+                  </Button>
+                  <Button
+                    type="button"
+                    size="icon"
+                    variant="ghost"
+                    aria-label={`เอาออกจากเซ็ต · ${q.song.title}`}
+                    className="text-muted-foreground hover:text-destructive"
+                    onClick={() => room.onRemove(q.itemId)}
+                  >
+                    <X aria-hidden />
+                  </Button>
+                </div>
+              ) : (
               <button
                 type="button"
                 aria-current={active ? "true" : undefined}
-                onClick={() => onPlay(show.id, queue, i)}
+                onClick={() => onPlay(runId, queue, i)}
                 className={cn(
                   "slab flex min-h-[50px] w-full items-center gap-3 px-3 text-left text-[14.5px] transition-colors duration-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
                   active
@@ -379,6 +519,7 @@ export function SetlistRunCard({
                   <AudioLines className="h-4 w-4 shrink-0" strokeWidth={2.8} aria-hidden />
                 ) : null}
               </button>
+              )}
             </li>
           );
         })}
@@ -393,7 +534,9 @@ export function SetlistRunCard({
             <span className="min-w-0 flex-1 text-[12.5px] text-muted-foreground">
               {saving > 0
                 ? "กำลังบันทึก…"
-                : "บันทึกลงเซ็ตลิสต์ของงานนี้ — Live Mode ใช้ค่าเดียวกัน"}
+                : isRoom
+                  ? "บันทึกลงเซ็ตของห้องนี้ — ไม่กระทบเซ็ตลิสต์ของงานจริง"
+                  : "บันทึกลงเซ็ตลิสต์ของงานนี้ — Live Mode ใช้ค่าเดียวกัน"}
             </span>
             <Button
               size="sm"
@@ -413,9 +556,12 @@ export function SetlistRunCard({
             className="text-muted-foreground"
             onClick={() => setEditing(true)}
           >
-            <Pencil aria-hidden /> ตั้งเล่นซ้อน
+            <Pencil aria-hidden /> {isRoom ? "แก้เซ็ต · เรียง / เล่นซ้อน" : "ตั้งเล่นซ้อน"}
           </Button>
         ))}
+
+      {/* the room's set grows from the library, the same picker the Queue uses */}
+      {isRoom && room.canCurate && <div className="flex justify-end">{room.addButton}</div>}
 
       {missing.length > 0 && (
         <p className="px-0.5 text-[12.5px] text-muted-foreground">
@@ -435,9 +581,9 @@ export function SetlistRunCard({
                     ? `เพลงถัดไปเข้าก่อนจบ ${running.nextOverlap} วิ`
                     : "จบแล้วเล่นเพลงถัดไปเอง"
                 }`
-              : `กำลังเล่นตามเซ็ตของ “${
-                  shows.find((s) => s.id === running.showId)?.name ?? "อีกงาน"
-                }” อยู่ (เพลงที่ ${running.index + 1}/${running.total})`}
+              : `กำลังเล่นตามเซ็ตของ “${runName(running.showId)}” อยู่ (เพลงที่ ${
+                  running.index + 1
+                }/${running.total})`}
           </span>
           <Button variant="secondary" onClick={onStop}>
             <Square className="h-3.5 w-3.5" /> หยุดเล่นต่อ
@@ -447,7 +593,7 @@ export function SetlistRunCard({
         <Button
           className="h-12 w-full"
           disabled={queue.length === 0}
-          onClick={() => onPlay(show.id, queue, 0)}
+          onClick={() => onPlay(runId, queue, 0)}
         >
           <Play className="h-4 w-4" /> เล่นทั้งเซ็ต ({queue.length} เพลง)
         </Button>

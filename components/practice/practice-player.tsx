@@ -809,6 +809,51 @@ export function PracticePlayer({
     toast.success(`เพิ่ม “${song.title}” เข้าลิสต์ซ้อม`);
   }
 
+  // The room's own set (พี่ 2026-10-19): ↑ / ↓ swap a song with its neighbour. The
+  // list is renumbered 1..n and every row whose number changed is written — rows added
+  // on two phones at once can share a number, and a swap of two equal numbers would
+  // move nothing. Writes go out one after another, in the order pressed (moveChainRef),
+  // so a quick ↓ ↓ never lands as ↓ alone on venue wifi.
+  const moveChainRef = useRef<Promise<void>>(Promise.resolve());
+  function moveSong(itemId: string, dir: -1 | 1) {
+    const snapshot = items;
+    const order = practiceSongs.map((x) => x.item);
+    const at = order.findIndex((i) => i.id === itemId);
+    const to = at + dir;
+    if (at < 0 || to < 0 || to >= order.length) return;
+    const moved = order.slice();
+    [moved[at], moved[to]] = [moved[to], moved[at]];
+    const renumbered = moved.map((i, n) => ({ ...i, sort_order: n + 1 }));
+    const changed = renumbered.filter(
+      (i) => snapshot.find((s) => s.id === i.id)?.sort_order !== i.sort_order
+    );
+    // rows the set leaves out (a song that lost its audio) keep their place after it
+    const rest = snapshot.filter((i) => !renumbered.some((r) => r.id === i.id));
+    setItems([...renumbered, ...rest]);
+    moveChainRef.current = moveChainRef.current.then(async () => {
+      try {
+        for (const row of changed) {
+          const { data, error } = await createClient()
+            .from("practice_songs")
+            .update({ sort_order: row.sort_order })
+            .eq("id", row.id)
+            .select("id");
+          if (error || wroteNothing(data)) {
+            toast.error("เรียงเพลงไม่สำเร็จ", {
+              description: error ? await writeFailureNote(error) : await noRowsMessage(),
+            });
+            setItems(snapshot);
+            return;
+          }
+        }
+      } catch {
+        // thrown, not answered (no network): the chain must stay usable for the next press
+        toast.error("เรียงเพลงไม่สำเร็จ", { description: "ต่อเน็ตไม่ได้" });
+        setItems(snapshot);
+      }
+    });
+  }
+
   async function removeSong(itemId: string) {
     const snapshot = items;
     const it = snapshot.find((i) => i.id === itemId);
@@ -1321,7 +1366,21 @@ export function PracticePlayer({
       </div>
 
       <SetlistRunCard
+        eventId={eventId}
         groupId={groupId}
+        room={{
+          entries: practiceSongs,
+          canCurate,
+          addButton: (
+            <AddPracticeSongDialog library={library} listedIds={listedIds} onAdd={addSong} />
+          ),
+          onMove: moveSong,
+          onRemove: (id) => void removeSong(id),
+          onOverlap: (id, seconds) =>
+            setItems((prev) =>
+              prev.map((i) => (i.id === id ? { ...i, overlap_seconds: seconds } : i))
+            ),
+        }}
         songsById={songsById}
         playable={playable}
         running={

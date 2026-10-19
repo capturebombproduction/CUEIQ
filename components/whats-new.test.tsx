@@ -404,16 +404,25 @@ describe("the 2026-10-17c round (the fades, a minimized window)", () => {
 describe("the 2026-10-17d round (เล่นซ้อน counts the real time)", () => {
   const OVERLAP = "เพลงก่อนหน้าจบตอนเพลงถัดไปเข้า";
 
-  it("comes back on a device that closed the 2026-10-17c round, first", async () => {
-    expect(WHATS_NEW_ROUND).toBe("2026-10-17d");
-    localStorage.setItem(KEY, "2026-10-17c");
-    await mount(false);
-    expect(screen.getByTestId("whats-new")).toHaveTextContent(OVERLAP);
-    expect(whatsNewItems(MEMBER)[0]).toContain(OVERLAP);
-  });
-
   it("band people hear it; label staff do not", () => {
     expect(has(whatsNewItems(MEMBER), OVERLAP)).toBe(true);
     expect(has(whatsNewItems(STAFF), OVERLAP)).toBe(false);
+  });
+});
+
+describe("the 2026-10-19 round (the practice room's own set)", () => {
+  const OWN_SET = "ห้องซ้อม: สร้างเซ็ตเองได้";
+
+  it("comes back on a device that closed the 2026-10-17d round, first", async () => {
+    expect(WHATS_NEW_ROUND).toBe("2026-10-19");
+    localStorage.setItem(KEY, "2026-10-17d");
+    await mount(false);
+    expect(screen.getByTestId("whats-new")).toHaveTextContent(OWN_SET);
+    expect(whatsNewItems(MEMBER)[0]).toContain(OWN_SET);
+  });
+
+  it("band people hear it; label staff do not", () => {
+    expect(has(whatsNewItems(MEMBER), OWN_SET)).toBe(true);
+    expect(has(whatsNewItems(STAFF), OWN_SET)).toBe(false);
   });
 });

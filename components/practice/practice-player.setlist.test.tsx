@@ -4,7 +4,8 @@
 // itself, and picking some other song by hand leaves the run instead of being
 // yanked back into it when that song ends.
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
+import { useState } from "react";
+import { render, screen, fireEvent, waitFor, act, within } from "@testing-library/react";
 import { ConfirmProvider } from "@/components/ui/confirm-dialog";
 import { bkkTodayKey } from "@/lib/time";
 import type { PracticeSong, Song } from "@/lib/types";
@@ -762,5 +763,94 @@ describe("PracticePlayer — เล่นซ้อน: the bar's time ends where
     act(() => engine().onDuration(200));
     expect(screen.getByTestId("song-ends-at").textContent).toBe("3:20");
     expect(screen.queryByTestId("hand-over-tick")).toBeNull();
+  });
+});
+
+// พี่ 2026-10-19 "ห้องซ้อมมันล็อค setlist ตามงาน อยากให้สามารถสร้างเองได้": the room's own
+// list is a set of its own in the same card - ordered by the band, with its own เล่นซ้อน,
+// saved to practice_songs and never to a show's setlist.
+describe("PracticePlayer — เซ็ตของห้องนี้ (สร้างเอง)", () => {
+  function Room({ start }: { start: PracticeSong[] }) {
+    const [list, setList] = useState(start);
+    return (
+      <ConfirmProvider>
+        <PracticePlayer
+          eventId="room-1"
+          groupId="g1"
+          currentUserId="u1"
+          songs={songs}
+          items={list}
+          setItems={setList}
+          markers={{}}
+          setMarkers={() => {}}
+          canManage={false}
+          canCurate
+        />
+      </ConfirmProvider>
+    );
+  }
+  const own = [
+    { id: "p1", song_id: "iam", sort_order: 1, overlap_seconds: 0 },
+    { id: "p2", song_id: "boot", sort_order: 2, overlap_seconds: 4 },
+  ] as PracticeSong[];
+  const setCard = () => screen.getByRole("region", { name: "Setlist" });
+  const pickRoom = async () => {
+    await screen.findByRole("button", { name: /เล่นทั้งเซ็ต/ });
+    fireEvent.change(screen.getByLabelText("เลือกงานที่จะซ้อม"), { target: { value: "room" } });
+  };
+  beforeEach(() => window.localStorage.clear());
+
+  it("plays the room's songs in its own order, the second coming in over the first", async () => {
+    render(<Room start={own} />);
+    await pickRoom();
+    const chips = within(setCard()).queryAllByText(
+      (_, el) => el?.tagName === "P" && el.textContent?.replace(/\s+/g, " ").trim() === "ซ้อน 4 วิ"
+    );
+    expect(chips).toHaveLength(1);
+    fireEvent.click(within(setCard()).getByRole("button", { name: /เล่นทั้งเซ็ต \(2 เพลง\)/ }));
+    await waitFor(() => expect(engine().loads).toEqual(["iam.wav"]));
+    act(() => {
+      engine().position = 195.5;
+      engine().onTime(195.5);
+    });
+    await waitFor(() => expect(engine().loads).toEqual(["iam.wav", "boot.wav"]));
+    expect(engine().handOffs).toEqual(["iam.wav"]);
+  });
+
+  it("a member sets its เล่นซ้อน: saved to the room's list, the show's setlist untouched", async () => {
+    render(<Room start={own} />);
+    await pickRoom();
+    fireEvent.click(within(setCard()).getByRole("button", { name: /แก้เซ็ต/ }));
+    fireEvent.click(screen.getByRole("button", { name: "เพิ่มเวลาเล่นซ้อน · [SYSTEM_BOOT] SE" }));
+    expect(screen.getByLabelText("เล่นซ้อน [SYSTEM_BOOT] SE 5 วินาที")).toBeTruthy();
+    await waitFor(() => expect(h.updates).toHaveLength(1), { timeout: 2000 });
+    expect(h.updates[0]).toEqual({ table: "practice_songs", values: { overlap_seconds: 5 }, id: "p2" });
+    expect(h.broadcasts).toEqual([]); // no Live Mode plays this set
+  });
+
+  it("↓ moves a song down, writes the new order, and the set plays in it", async () => {
+    render(<Room start={own} />);
+    await pickRoom();
+    fireEvent.click(within(setCard()).getByRole("button", { name: /แก้เซ็ต/ }));
+    expect(screen.getByRole("button", { name: "เลื่อนขึ้น · I Am Who I Am" })).toHaveProperty("disabled", true);
+    fireEvent.click(screen.getByRole("button", { name: "เลื่อนลง · I Am Who I Am" }));
+    await waitFor(() => expect(h.updates).toHaveLength(2));
+    expect(h.updates).toEqual([
+      { table: "practice_songs", values: { sort_order: 1 }, id: "p2" },
+      { table: "practice_songs", values: { sort_order: 2 }, id: "p1" },
+    ]);
+    fireEvent.click(screen.getByRole("button", { name: /เสร็จ/ }));
+    fireEvent.click(within(setCard()).getByRole("button", { name: /เล่นทั้งเซ็ต/ }));
+    await waitFor(() => expect(engine().loads).toEqual(["boot.wav"]));
+  });
+
+  it("remembers the room's set as this room's pick", async () => {
+    const first = render(<Room start={own} />);
+    await pickRoom();
+    first.unmount();
+    render(<Room start={own} />);
+    await waitFor(() =>
+      expect((screen.getByLabelText("เลือกงานที่จะซ้อม") as HTMLSelectElement).value).toBe("room")
+    );
   });
 });
