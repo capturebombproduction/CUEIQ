@@ -178,6 +178,29 @@ export function runSecondsOf(block: number, nextLead: number): number {
 }
 
 /**
+ * The old "เผื่อเวลาหลัง" (a row's buffer_after) as the one "ตั้งเวลา" the builder shows
+ * now (พี่ 2026-10-19): each row's wait moves onto the row after it - added to that row's
+ * buffer_before, so an overlap there nets out the same (wait 3 then -5 = -2) - and a last
+ * row's, with no row after it, is dropped. The run times come out the same either way;
+ * what changes is that no number is left in a field the screen no longer has. For rows
+ * saved before the change: a setlist version being restored (0049 did the live rows).
+ */
+export function foldWaitsIntoNext<
+  T extends { sort_order: number; buffer_before_seconds: number; buffer_after_seconds: number },
+>(rows: T[]): T[] {
+  const ordered = rows.slice().sort((a, b) => a.sort_order - b.sort_order);
+  return ordered.map((row, i) => {
+    const carried = i > 0 ? Math.max(0, ordered[i - 1].buffer_after_seconds || 0) : 0;
+    const before = (row.buffer_before_seconds || 0) + carried;
+    return {
+      ...row,
+      buffer_before_seconds: Math.max(-300, Math.min(300, before)),
+      buffer_after_seconds: 0,
+    };
+  });
+}
+
+/**
  * Compute Start / End / Accumulated / Hard-out status for a setlist.
  * `showStartSec` is seconds-of-day (default 0 = treat as pure durations).
  */
@@ -196,11 +219,12 @@ export function computeSetlistTimes(
   let cursor = showStartSec;
   let prevStartSec = showStartSec;
   const rows: RowTiming[] = items.map((it, i) => {
-    // Negative buffer_before = this song overlaps the PREVIOUS one (continuous
-    // play / no gap) → it pulls the timeline back and shortens the total.
-    // The first item has nothing to overlap, so clamp it to ≥0.
-    const rawBb = it.buffer_before_seconds || 0;
-    const bb = i === 0 ? Math.max(0, rawBb) : rawBb;
+    // buffer_before = the row's "ตั้งเวลา" against the PREVIOUS row (พี่ 2026-10-19):
+    // negative = it comes in that long before the previous one ends (continuous play),
+    // pulling the timeline back; positive = it waits that long after it ends. The first
+    // row has no previous one - the builder offers no field there, and a number left
+    // on a row moved to the top counts for nothing.
+    const bb = i === 0 ? 0 : it.buffer_before_seconds || 0;
     const ba = Math.max(0, it.buffer_after_seconds || 0);
     const dur = Math.max(0, it.duration_seconds || 0);
     const slotStartSec = cursor;
@@ -229,10 +253,12 @@ export function computeSetlistTimes(
   // own length in full. The overlap used to come off the NEXT row instead (A 4:00, then
   // B 3:20 at -5: A read "จบ 4:00 · สะสม 4:00", B a 3:15 block) - the same show end, but
   // every row the overlap touched read the full song.
+  // A WAIT before the next row (a positive buffer_before) is this row's too, the way Live
+  // Mode counts it: its countdown runs on, silent, until the next one comes in.
   for (let i = 0; i + 1 < rows.length; i++) {
     const row = rows[i];
     const next = rows[i + 1];
-    if (next.startSec >= row.slotEndSec) continue;
+    if (next.startSec === row.slotEndSec) continue;
     row.slotEndSec = next.startSec;
     row.endSec = Math.min(row.endSec, next.startSec);
     row.blockSeconds = row.slotEndSec - row.slotStartSec;

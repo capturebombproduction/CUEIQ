@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   computeSetlistTimes,
+  foldWaitsIntoNext,
   deadlineInfo,
   formatClockOfDay,
   formatCountdown,
@@ -166,16 +167,25 @@ describe("computeSetlistTimes — the run-sheet engine", () => {
     expect(r.rows[0].accumulatedSec).toBe(180); // accumulated is relative to start
   });
 
-  it("applies pre/post buffers to the block", () => {
-    const r = computeSetlistTimes([item(180, 30, 60)]);
-    expect(r.rows[0]).toMatchObject({
-      slotStartSec: 0,
-      startSec: 30,
-      endSec: 210,
-      slotEndSec: 270,
-      blockSeconds: 270,
+  // พี่ 2026-10-19 "ตั้งเวลา": a positive buffer_before is a wait after the row before -
+  // counted on THAT row (its countdown runs on in silence), as Live Mode counts it.
+  it("a wait before a row is the previous row's; a post-buffer is the row's own", () => {
+    const r = computeSetlistTimes([item(100), item(180, 30, 60)]);
+    expect(r.rows[0]).toMatchObject({ startSec: 0, endSec: 100, slotEndSec: 130, blockSeconds: 130 });
+    expect(r.rows[1]).toMatchObject({
+      slotStartSec: 130,
+      startSec: 130,
+      endSec: 310,
+      slotEndSec: 370,
+      blockSeconds: 240,
     });
-    expect(r.totalSeconds).toBe(270);
+    expect(r.totalSeconds).toBe(370);
+  });
+
+  it("the first row has no row before it: a number left there counts for nothing", () => {
+    const r = computeSetlistTimes([item(180, 30)]);
+    expect(r.rows[0]).toMatchObject({ startSec: 0, endSec: 180, blockSeconds: 180 });
+    expect(r.totalSeconds).toBe(180);
   });
 
   it("clamps a negative buffer_before on the FIRST item to zero", () => {
@@ -285,5 +295,33 @@ describe("runSecondsOf - how long a row runs when the next one comes in over its
     expect(runSecondsOf(10, 60)).toBe(0);
     expect(runSecondsOf(240, -5)).toBe(240);
     expect(runSecondsOf(0, 5)).toBe(0);
+  });
+});
+
+// พี่ 2026-10-19: the old "เผื่อเวลาหลัง" becomes the next row's ตั้งเวลา - same run times.
+describe("foldWaitsIntoNext", () => {
+  const r = (sort_order: number, before: number, after: number) => ({
+    sort_order,
+    buffer_before_seconds: before,
+    buffer_after_seconds: after,
+    duration_seconds: 100,
+  });
+  it("moves each row's wait onto the row after it, netting out an overlap there", () => {
+    const rows = [r(1, 0, 8), r(2, -5, 3), r(3, 0, 0)];
+    const folded = foldWaitsIntoNext(rows);
+    expect(folded.map((x) => [x.buffer_before_seconds, x.buffer_after_seconds])).toEqual([
+      [0, 0],
+      [3, 0], // -5 + 8
+      [3, 0],
+    ]);
+    // the show runs exactly as long
+    expect(computeSetlistTimes(folded).totalSeconds).toBe(computeSetlistTimes(rows).totalSeconds);
+  });
+  it("goes by sort_order, not by array order", () => {
+    const folded = foldWaitsIntoNext([r(2, 0, 0), r(1, 0, 5)]);
+    expect(folded.map((x) => [x.sort_order, x.buffer_before_seconds])).toEqual([
+      [1, 0],
+      [2, 5],
+    ]);
   });
 });

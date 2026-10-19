@@ -68,6 +68,7 @@ import {
 } from "@/lib/types";
 import {
   computeSetlistTimes,
+  foldWaitsIntoNext,
   formatDuration,
   parseClockToSeconds,
   parseDurationToSeconds,
@@ -123,9 +124,12 @@ function DurationField({
 }
 
 /**
- * "เล่นซ้อน" — how many seconds this item starts BEFORE the previous one ends,
- * held as a negative number because that is how พี่ reads it (and how Quick Show
- * takes it). A controlled numeric field cannot express that on a phone: iOS's
+ * "ตั้งเวลา" (พี่ 2026-10-19: "รวมให้เป็นตั้งเวลา ติดลบก็คือเล่นซ้อนเหมือนเดิม ถ้าเป็นค่า
+ * บวกก็คือรอเพิ่มหลังเพลงก่อนหน้าจบ") — one signed number against the item BEFORE: -5 =
+ * comes in 5 s before it ends ("เล่นซ้อน", how Quick Show takes it too), 3 = waits 3 s
+ * after it ends. It replaced the separate "เล่นซ้อน" and "เผื่อเวลาหลัง" fields, which
+ * did two halves of one job (0049 folded the old waits into this number).
+ * A controlled numeric field cannot express a minus on a phone: iOS's
  * numeric keypad has no minus key, and even where one exists the intermediate
  * text "-" parses to NaN, so a controlled value would snap back to 0 the instant
  * the minus was typed and the user could never reach "-5". So the text is buffered
@@ -155,7 +159,7 @@ function OverlapInput({
     const t = raw.trim();
     if (t === "" || t === "-") return null; // mid-typing, not a value yet
     const n = Number(t);
-    return Number.isFinite(n) ? Math.max(-300, Math.min(0, Math.round(n))) : null;
+    return Number.isFinite(n) ? Math.max(-300, Math.min(300, Math.round(n))) : null;
   };
   return (
     <Input
@@ -163,7 +167,7 @@ function OverlapInput({
       title={title}
       type="text"
       inputMode="text"
-      placeholder="เช่น -5"
+      placeholder="-5 หรือ 3"
       className="num"
       value={text}
       disabled={disabled}
@@ -637,7 +641,8 @@ export function SetlistBuilder({
       // song deleted SINCE the save would violate the FK on insert (on-delete-
       // set-null only nulls live rows) — restore those as unlinked instead.
       const libraryIds = new Set(songs.map((s) => s.id));
-      const rows = snapshot.map(({ song_id, ...s }) => ({
+      // a version saved with the old "เผื่อเวลาหลัง" comes back as the one ตั้งเวลา field
+      const rows = foldWaitsIntoNext(snapshot).map(({ song_id, ...s }) => ({
         tenant_id: tenantId,
         event_id: eventId,
         ...s,
@@ -1893,15 +1898,18 @@ export function SetlistBuilder({
                     </Button>
                   )}
                 </div>
-                {!showTiming(it) && (
+                {idx > 0 && !showTiming(it) && (
                   <button
                     type="button"
                     onClick={() => setTimingOpen((prev) => new Set(prev).add(it.id))}
                     className="order-3 col-span-2 justify-self-start min-h-11 rounded-[2px] px-2 text-[13px] text-muted-foreground underline-offset-2 hover:text-foreground hover:underline sm:hidden"
                   >
-                    + เล่นซ้อน / เผื่อเวลา
+                    + ตั้งเวลา (ซ้อน / รอ)
                   </button>
                 )}
+                {/* The first item has no item before it to overlap or wait for: no
+                    field at all, so nothing can be set there by mistake (พี่ 2026-10-19). */}
+                {idx > 0 && (
                 <div className={`order-4 space-y-1 sm:order-none sm:col-span-2 ${showTiming(it) ? "" : "hidden sm:block"}`}>
                   {/* The words "เริ่มก่อนเพลงก่อนจบ" used to be in this label; at sm–lg the
                       cell is 105–130px, the label needed ~180px and wrapped to two lines,
@@ -1911,7 +1919,7 @@ export function SetlistBuilder({
                     htmlFor={`sl-${it.id}-overlap`}
                     className="text-[13px] font-medium text-muted-foreground"
                   >
-                    เล่นซ้อน (วิ)
+                    ตั้งเวลา (วิ)
                   </Label>
                   {/* type="number" made this unreachable on iOS, whose numeric keypad
                       has no minus key: an iPad user could only type positives, which
@@ -1919,40 +1927,15 @@ export function SetlistBuilder({
                       accepted and simply never happened. See OverlapInput. */}
                   <OverlapInput
                     id={`sl-${it.id}-overlap`}
-                    title="เริ่มก่อนเพลงก่อนหน้าจบกี่วินาที (ติดลบ เช่น -5)"
+                    title="ติดลบ = เล่นซ้อน เข้าก่อนรายการก่อนหน้าจบ (เช่น -5) · บวก = รอหลังรายการก่อนหน้าจบ (เช่น 3)"
                     seconds={it.buffer_before_seconds}
                     disabled={!rowEditable}
                     onChange={(s) => setLocal(it.id, { buffer_before_seconds: s })}
                     onCommit={(s) => persist(it.id, { buffer_before_seconds: s })}
                   />
                 </div>
-                <div className={`order-5 space-y-1 sm:order-none sm:col-span-2 ${showTiming(it) ? "" : "hidden sm:block"}`}>
-                  <Label
-                    htmlFor={`sl-${it.id}-after`}
-                    className="text-[13px] font-medium text-muted-foreground"
-                  >
-                    เผื่อเวลาหลัง (วิ)
-                  </Label>
-                  <Input
-                    id={`sl-${it.id}-after`}
-                    type="number"
-                    min={0}
-                    className="num"
-                    value={it.buffer_after_seconds}
-                    disabled={!rowEditable}
-                    onChange={(e) =>
-                      setLocal(it.id, {
-                        buffer_after_seconds: Math.max(0, Number(e.target.value) || 0),
-                      })
-                    }
-                    onBlur={(e) =>
-                      persist(it.id, {
-                        buffer_after_seconds: Math.max(0, Number(e.target.value) || 0),
-                      })
-                    }
-                  />
-                </div>
-                <div className="order-2 space-y-1 sm:order-none sm:col-span-6">
+                )}
+                <div className={`order-2 space-y-1 sm:order-none ${idx > 0 ? "sm:col-span-8" : "sm:col-span-10"}`}>
                   <Label className="text-[13px] font-medium text-muted-foreground">ไมค์ + สมาชิก</Label>
                   <MicSlotsDialog
                     item={it}

@@ -1375,7 +1375,6 @@ describe("LiveMode · the warning ladder", () => {
     kind: "se",
     title: "Opening SE",
     duration_seconds: 80,
-    buffer_before_seconds: 4,
     buffer_after_seconds: 8,
   });
   const heading = () => screen.getByRole("heading", { level: 2 });
@@ -1387,11 +1386,12 @@ describe("LiveMode · the warning ladder", () => {
     });
 
   it("a 1:32 SE starts neutral, then warns, urges and inverts at its own scaled thresholds", async () => {
-    // Block 92 s = 4 + 80 + 8. The split is the point: a screen that fed the ladder
+    // Block 92 s = 80 + 8 + the 4 s the next row waits after it (พี่ 2026-10-19: a positive
+    // "ตั้งเวลา" is a wait counted on the row before). The split is the point: a screen that fed the ladder
     // duration_seconds (80 → 40/20) instead of the block `remaining` runs on would
     // still be neutral at 46 s left, and this test would catch it. A second item, so
     // NEXT can actually be pressed when the overtime invite appears.
-    const items = [SE, makeItem(2, { title: "Track 2" })];
+    const items = [SE, makeItem(2, { title: "Track 2", buffer_before_seconds: 4 })];
     supa.setTable("setlist_items", ok(items));
     await mountLive({ items });
     await startShowFromUi();
@@ -2645,10 +2645,14 @@ describe("LiveMode · the NOW waveform is the file on the item's clock", () => {
     expect(heights().slice(100).every((x) => x < 10)).toBe(true);
   });
 
-  it("a legacy row's positive buffer-before is no delay: the player starts the file at the item's 0:00", async () => {
-    // 60 + 240 = a 300 s block; the 240 s file sounds from 0:00, so 0:00-2:00 is its loud half
+  it("a wait before the next row is this row's silent tail: the player starts the file at the item's 0:00", async () => {
+    // 240 + the next row's 60 s wait = a 300 s block; the 240 s file sounds from 0:00, so
+    // 0:00-2:00 is its loud half
     await mountLive({
-      items: [makeItem(1, { song_id: "song-1", duration_seconds: 240, buffer_before_seconds: 60 }), ITEMS[1]],
+      items: [
+        makeItem(1, { song_id: "song-1", duration_seconds: 240 }),
+        { ...ITEMS[1], buffer_before_seconds: 60 },
+      ],
       songSignal: signal(240),
     });
     const h = heights();
@@ -2713,9 +2717,12 @@ describe("LiveMode · CONSOLE's clip is the file on the item's clock", () => {
     expect(levels().slice(100).every((x) => x < 0.1)).toBe(true);
   });
 
-  it("a legacy row's positive buffer-before is no delay here either: the file from the clip's 0:00", async () => {
+  it("a wait before the next row is no delay here either: the file from the clip's 0:00", async () => {
     await mountLive({
-      items: [makeItem(1, { song_id: "song-1", duration_seconds: 240, buffer_before_seconds: 60 }), ITEMS[1]],
+      items: [
+        makeItem(1, { song_id: "song-1", duration_seconds: 240 }),
+        { ...ITEMS[1], buffer_before_seconds: 60 },
+      ],
       songSignal: signal(240),
     });
     const l = levels();

@@ -54,7 +54,8 @@ import { canEditAnyGroup, canLiveEdit, canViewLibrary, type Perms } from "@/lib/
 // 2026-10-17d (พี่: "ตัวนับเวลายังไม่คำนวนเวลาจริงใหม่"): a row the next one comes in over ends
 // when it comes in, on every screen that counts (lib/time.ts runSecondsOf).
 // 2026-10-19 (พี่: "ห้องซ้อมมันล็อค setlist ตามงาน อยากให้สามารถสร้างเองได้"): the room's own set.
-const ROUND = "2026-10-19";
+// 2026-10-19b (พี่, same day): the setlist's เล่นซ้อน + เผื่อเวลาหลัง are one "ตั้งเวลา" field.
+const ROUND = "2026-10-19b";
 /** For tests that need "this device already read the current round". */
 export const WHATS_NEW_ROUND = ROUND;
 const KEY = "cueiq:whats-new-seen";
@@ -123,6 +124,10 @@ const phoneWeb = () =>
   window.matchMedia?.("(max-width: 1023px)").matches === true;
 
 const ITEMS: Item[] = [
+  {
+    text: "เซ็ตลิสต์: “เล่นซ้อน” กับ “เผื่อเวลาหลัง” รวมเป็นช่องเดียว “ตั้งเวลา (วิ)” — ติดลบ = เล่นซ้อนรายการก่อนหน้า, บวก = รอหลังรายการก่อนหน้าจบ · รายการแรกไม่มีช่องนี้ (ค่าเผื่อเวลาเดิมย้ายให้แล้ว เวลารวมเท่าเดิม)",
+    who: editors,
+  },
   {
     text: "ห้องซ้อม: สร้างเซ็ตเองได้ — เลือก “เซ็ตของห้องนี้ (สร้างเอง)” ใน Setlist แล้วเพิ่มเพลง เรียงลำดับ ตั้งเล่นซ้อนได้ ไม่กระทบเซ็ตลิสต์ของงานจริง",
     who: (r) => r.canPractice,

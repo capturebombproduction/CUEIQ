@@ -148,13 +148,19 @@ function cleanVolumes(raw: unknown): Record<string, number> | null {
 }
 
 function blockSeconds(it: SetlistItem) {
-  // A negative buffer_before is a lead-in for overlapping the PREVIOUS track, not
-  // part of this item's own countdown — clamp it to 0 here.
-  return (
-    Math.max(0, it.buffer_before_seconds || 0) +
-    (it.duration_seconds || 0) +
-    (it.buffer_after_seconds || 0)
-  );
+  // buffer_before is the row's "ตั้งเวลา" against the row BEFORE it (พี่ 2026-10-19: one
+  // signed number - negative = comes in over its end, positive = waits that long after
+  // it), so none of it is this row's own countdown: a wait is the previous row's
+  // (waitOf, in runBlock). buffer_after is legacy (0049 folded it into the next row's
+  // buffer_before) and still counts where a row has one.
+  return (it.duration_seconds || 0) + (it.buffer_after_seconds || 0);
+}
+
+// How long after the row before it ends a row comes in - a positive buffer_before - in
+// seconds. That row's countdown runs on through the wait (in silence, its file done) and
+// Auto takes this one when it is over: the way a "เผื่อเวลาหลัง" always ran.
+function waitOf(it: SetlistItem | undefined): number {
+  return Math.max(0, it?.buffer_before_seconds ?? 0);
 }
 
 // How early a row comes in over the end of the row before it - "เล่นซ้อน", a negative
@@ -172,14 +178,14 @@ function leadOf(it: SetlistItem | undefined): number {
 // Hard Out all read the full song while the next was already playing.
 function runBlock(list: SetlistItem[], i: number): number {
   const it = list[i];
-  return it ? runSecondsOf(blockSeconds(it), leadOf(list[i + 1])) : 0;
+  return it ? runSecondsOf(blockSeconds(it) + waitOf(list[i + 1]), leadOf(list[i + 1])) : 0;
 }
 
 // Where a row's FILE starts on its own clock, for everything that DRAWS it (the NOW card's
 // waveform and sections, CONSOLE's clips, bar grid and sections): always 0:00, because the
 // player starts the file the moment the item starts - every seek is the item's elapsed time.
-// A positive buffer_before (legacy rows only; the builder now takes 0 or an overlap lead) is
-// counted in the block but is no delay; a negative one pre-rolls the file under the previous
+// A positive buffer_before is a wait counted on the row BEFORE (waitOf), never a delay
+// inside this row; a negative one pre-rolls the file under the previous
 // item and starts this item's clock |lead| in, so file time still equals item time.
 const FILE_START_SEC = 0;
 

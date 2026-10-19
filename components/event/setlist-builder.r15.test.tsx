@@ -93,17 +93,20 @@ describe("SetlistBuilder · an empty set is not 'in time' (CQ-26)", () => {
 });
 
 describe("SetlistBuilder · the overlap label fits its cell (CQ-42)", () => {
+  // พี่ 2026-10-19: one "ตั้งเวลา" (negative = overlap, positive = wait) on every row
+  // but the first, which has nothing before it.
   it("is short, and the long phrase no longer sits in the label", () => {
     mount(THREE);
-    const labels = screen.getAllByText("เล่นซ้อน (วิ)");
-    expect(labels).toHaveLength(THREE.length);
+    const labels = screen.getAllByText("ตั้งเวลา (วิ)");
+    expect(labels).toHaveLength(THREE.length - 1);
     expect(screen.queryByText(/เริ่มก่อนเพลงก่อนจบ/)).toBeNull();
   });
 
   it("the explanation moved to the field, as its title", () => {
     mount(THREE);
-    const field = screen.getAllByLabelText("เล่นซ้อน (วิ)")[0];
-    expect(field).toHaveAttribute("title", expect.stringContaining("เริ่มก่อนเพลงก่อนหน้าจบ"));
+    const field = screen.getAllByLabelText("ตั้งเวลา (วิ)")[0];
+    expect(field).toHaveAttribute("title", expect.stringContaining("ติดลบ = เล่นซ้อน"));
+    expect(field).toHaveAttribute("title", expect.stringContaining("บวก = รอหลังรายการก่อนหน้าจบ"));
   });
 });
 
@@ -129,17 +132,15 @@ describe("SetlistBuilder · every row control has a name (CQ-50)", () => {
     expect(unnamed).toEqual([]);
   });
 
-  it("binds the length, overlap and buffer labels to their own row's field", () => {
+  it("binds the length and timing labels to their own row's field", () => {
     mount(THREE);
-    // the number field is a spinbutton and is found by its visible label
-    const buffers = screen.getAllByRole("spinbutton", { name: /เผื่อเวลาหลัง/ });
-    expect(buffers).toHaveLength(THREE.length);
+    // the old separate "เผื่อเวลาหลัง" field is gone - its job is a positive ตั้งเวลา
+    expect(screen.queryByText(/เผื่อเวลาหลัง/)).toBeNull();
     expect(screen.getAllByLabelText(/ความยาว \(m:ss\)/)).toHaveLength(THREE.length);
-    expect(screen.getAllByLabelText("เล่นซ้อน (วิ)")).toHaveLength(THREE.length);
+    expect(screen.getAllByLabelText("ตั้งเวลา (วิ)")).toHaveLength(THREE.length - 1);
     // ids are keyed by the row, so no two rows share one
     const ids = [
-      ...buffers.map((b) => b.id),
-      ...screen.getAllByLabelText("เล่นซ้อน (วิ)").map((b) => b.id),
+      ...screen.getAllByLabelText("ตั้งเวลา (วิ)").map((b) => b.id),
       ...screen.getAllByLabelText(/ความยาว \(m:ss\)/).map((b) => b.id),
     ];
     expect(ids.every(Boolean)).toBe(true);
@@ -148,10 +149,10 @@ describe("SetlistBuilder · every row control has a name (CQ-50)", () => {
 
   it("each row's label reaches THAT row's input", () => {
     mount(THREE);
-    const buffers = screen.getAllByRole("spinbutton", { name: /เผื่อเวลาหลัง/ });
-    // the three rows' fields sit in three different rows
-    const rows = buffers.map((b) => b.closest("[class*='slab']"));
-    expect(new Set(rows).size).toBe(THREE.length);
-    expect(within(rows[1] as HTMLElement).getByDisplayValue("เพลงสอง")).toBeInTheDocument();
+    const fields = screen.getAllByLabelText("ตั้งเวลา (วิ)");
+    // rows two and three each hold their own; row one (nothing before it) holds none
+    const rows = fields.map((b) => b.closest("[class*='slab']"));
+    expect(new Set(rows).size).toBe(THREE.length - 1);
+    expect(within(rows[0] as HTMLElement).getByDisplayValue("เพลงสอง")).toBeInTheDocument();
   });
 });

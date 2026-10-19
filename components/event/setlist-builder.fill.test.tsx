@@ -113,27 +113,27 @@ describe("SetlistBuilder — fill-to-fit beside the run-time badge", () => {
 // is never folded. The look was checked in a real browser at 390px.
 describe("SetlistBuilder — folding the timing tweaks on a phone", () => {
   const overlapBoxes = () =>
-    screen.getAllByText("เล่นซ้อน (วิ)").map((l) => l.closest("div.space-y-1")!);
+    screen.getAllByText("ตั้งเวลา (วิ)").map((l) => l.closest("div.space-y-1")!);
   const isFolded = (el: Element) => el.className.split(" ").includes("hidden");
 
   it("keeps them open on a row that uses them, folds them on one that does not", () => {
     const items = set(118);
-    items[0] = { ...items[0], buffer_after_seconds: 5 };
+    items[1] = { ...items[1], buffer_before_seconds: 5 };
     mount(items);
-    const boxes = overlapBoxes();
-    expect(isFolded(boxes[0])).toBe(false); // row 1 has a 5 s buffer
-    expect(isFolded(boxes[1])).toBe(true); // row 2 uses neither
+    const boxes = overlapBoxes(); // row 1 has none (nothing before it to time against)
+    expect(isFolded(boxes[0])).toBe(false); // row 2 waits 5 s
+    expect(isFolded(boxes[1])).toBe(true); // row 3 does not
   });
 });
 
 // Review 2026-09-28, round two.
 describe("SetlistBuilder — review fixes", () => {
   const overlapBoxes = () =>
-    screen.getAllByText("เล่นซ้อน (วิ)").map((l) => l.closest("div.space-y-1")!);
+    screen.getAllByText("ตั้งเวลา (วิ)").map((l) => l.closest("div.space-y-1")!);
 
   it("clearing a buffer to 0 does not fold the timing fields away mid-edit", () => {
     const items = set(118);
-    items[0] = { ...items[0], buffer_after_seconds: 5 };
+    items[1] = { ...items[1], buffer_before_seconds: 5 };
     mount(items);
     const buffer = screen.getAllByDisplayValue("5")[0];
     fireEvent.change(buffer, { target: { value: "" } });
