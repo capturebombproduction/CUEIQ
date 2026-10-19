@@ -413,15 +413,17 @@ describe("the 2026-10-17d round (เล่นซ้อน counts the real time)"
 describe("the 2026-10-19 round (the practice room's own set)", () => {
   const OWN_SET = "ห้องซ้อม: สร้างเซ็ตเองได้";
 
-  it("comes back on a device that closed the 2026-10-19 round, with the one timing field for editors", async () => {
-    expect(WHATS_NEW_ROUND).toBe("2026-10-19c");
-    localStorage.setItem(KEY, "2026-10-19");
+  it("comes back on a device that closed the 2026-10-19c round, with the one timing field for editors", async () => {
+    expect(WHATS_NEW_ROUND).toBe("2026-10-19d");
+    localStorage.setItem(KEY, "2026-10-19c");
     await mount(false);
     expect(screen.getByTestId("whats-new")).toHaveTextContent(OWN_SET);
     // a member never sees the builder's field, so is not told about it
     expect(whatsNewItems(MEMBER)[0]).toContain(OWN_SET);
     expect(has(whatsNewItems(MEMBER), "เข้าหลังเพลงก่อนหน้า (วิ)")).toBe(false);
     expect(has(whatsNewItems(ADMIN), "เข้าหลังเพลงก่อนหน้า (วิ)")).toBe(true);
+    // the practice room's waits are every band member's
+    expect(has(whatsNewItems(MEMBER), "บวก (รอ")).toBe(true);
   });
 
   it("band people hear it; label staff do not", () => {

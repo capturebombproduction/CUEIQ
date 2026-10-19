@@ -55,7 +55,7 @@ import {
 import { BreakTimer } from "@/components/practice/break-timer";
 import { Metronome } from "@/components/practice/metronome";
 import { SetlistRunCard } from "@/components/practice/setlist-run-card";
-import type { QueueEntry } from "@/lib/practice-setlist";
+import { timingParts, type QueueEntry } from "@/lib/practice-setlist";
 import { cn } from "@/lib/utils";
 import { hasThai } from "@/lib/thai";
 import { useSongCovers } from "@/lib/song-covers";
@@ -233,6 +233,20 @@ export function PracticePlayer({
   const startOverlapRef = useRef<(key: string) => void>(() => {});
   const overlapTimerRef = useRef<number | null>(null);
   const overlapDoneRef = useRef<string | null>(null);
+  // "เข้าหลังเพลงก่อนหน้า" as a WAIT (พี่ 2026-10-19: "ในเทรนนิ่งยังกดเป็นค่าบวกไม่ได้"): the
+  // song ended and the next one starts after that many seconds of silence. gapKey is
+  // the "show:pos" whose wait is running (the card says so); anything the user does to
+  // the set in the meantime - another song, ▶, stop, the set again - calls it off.
+  const gapTimerRef = useRef<number | null>(null);
+  const startGapRef = useRef<(key: string) => void>(() => {});
+  const [gapKey, setGapKey] = useState<string | null>(null);
+  function clearGap() {
+    if (gapTimerRef.current != null) {
+      window.clearTimeout(gapTimerRef.current);
+      gapTimerRef.current = null;
+    }
+    setGapKey(null);
+  }
   // The run's next song's file, fetched while this one plays, so its turn — an
   // overlap's above all, which has a second to land on — never waits on a read.
   const nextFileRef = useRef<{ songId: string; blob: Promise<Blob | null> } | null>(null);
@@ -347,6 +361,7 @@ export function PracticePlayer({
     };
     return () => {
       if (overlapTimerRef.current != null) window.clearTimeout(overlapTimerRef.current);
+      if (gapTimerRef.current != null) window.clearTimeout(gapTimerRef.current);
       flushRun(); // log whatever was playing when we leave
       engine.destroy();
       engineRef.current = null;
@@ -412,7 +427,10 @@ export function PracticePlayer({
       return;
     }
     // Picking some other song by hand leaves the setlist run behind.
-    if (!opts?.fromRun) setRun(null);
+    if (!opts?.fromRun) {
+      setRun(null);
+      clearGap();
+    }
     const token = ++selectTokenRef.current;
     if (opts?.overlap) overlapReadRef.current = token;
     flushRun(); // finalize the previous song's practice time
@@ -486,6 +504,7 @@ export function PracticePlayer({
     const entry = queue[index];
     if (!entry) return;
     setRun({ showId, queue, pos: index });
+    clearGap();
     overlapDoneRef.current = null; // a set played again overlaps again
     const engine = engineRef.current;
     if (engine && entry.song.id === currentId) {
@@ -508,14 +527,15 @@ export function PracticePlayer({
     void selectSong(entry.song, { fromRun: true });
   }
 
-  /** An edited "เล่นซ้อน" reaches a set already playing, from its next song on. */
+  /** An edited "เข้าหลังเพลงก่อนหน้า" (signed) reaches a set already playing, from its
+   *  next song on. */
   function setRunOverlap(itemId: string, seconds: number) {
     setRun((r) =>
       r
         ? {
             ...r,
             queue: r.queue.map((q) =>
-              q.itemId === itemId && q.adjacent ? { ...q, overlap: seconds } : q
+              q.itemId === itemId && q.adjacent ? { ...q, ...timingParts(seconds) } : q
             ),
           }
         : r
@@ -595,14 +615,37 @@ export function PracticePlayer({
       toast.success("ซ้อมครบทั้งเซ็ตแล้ว");
       return;
     }
+    const entry = run.queue[next];
+    if (entry.wait > 0) {
+      // On the song clock, like an overlap: slowed to 0.5× the set keeps its shape and
+      // the pause runs twice as long.
+      const key = `${run.showId}:${run.pos}`;
+      clearGap();
+      setGapKey(key);
+      gapTimerRef.current = window.setTimeout(() => {
+        gapTimerRef.current = null;
+        startGapRef.current(key);
+      }, (entry.wait / speed) * 1000);
+      return;
+    }
     setRun({ ...run, pos: next });
-    void selectSong(run.queue[next].song, { fromRun: true });
+    void selectSong(entry.song, { fromRun: true });
+  };
+  // The wait is over: the next song, if the set is still where the wait began.
+  startGapRef.current = (key) => {
+    setGapKey(null);
+    if (!run || `${run.showId}:${run.pos}` !== key || loadingId) return;
+    const entry = run.queue[run.pos + 1];
+    if (!entry) return;
+    setRun({ ...run, pos: run.pos + 1 });
+    void selectSong(entry.song, { fromRun: true });
   };
 
   function togglePlay() {
     const engine = engineRef.current;
     if (!engine || !currentId) return;
     engine.unlock();
+    clearGap(); // ▶ in a wait plays this song again; its end waits again
     if (loadingId && !engine.handingOff && overlapReadRef.current === selectTokenRef.current) {
       // "เล่นซ้อน" still READING the next song: the song now playing has not been
       // handed over yet. A plain pause here was undone - the read landed, the next
@@ -1376,9 +1419,9 @@ export function PracticePlayer({
           ),
           onMove: moveSong,
           onRemove: (id) => void removeSong(id),
-          onOverlap: (id, seconds) =>
+          onTiming: (id, seconds) =>
             setItems((prev) =>
-              prev.map((i) => (i.id === id ? { ...i, overlap_seconds: seconds } : i))
+              prev.map((i) => (i.id === id ? { ...i, buffer_before_seconds: seconds } : i))
             ),
         }}
         songsById={songsById}
@@ -1389,13 +1432,17 @@ export function PracticePlayer({
                 showId: run.showId,
                 index: run.pos,
                 total: run.queue.length,
-                nextOverlap: run.queue[run.pos + 1]?.overlap ?? 0,
+                nextTiming: run.queue[run.pos + 1]?.timing ?? 0,
+                waiting: gapKey === `${run.showId}:${run.pos}`,
               }
             : null
         }
         loadingSongId={loadingId}
         onPlay={playFromRun}
-        onStop={() => setRun(null)}
+        onStop={() => {
+          setRun(null);
+          clearGap();
+        }}
         canEdit={canManage}
         onOverlapChange={setRunOverlap}
       />

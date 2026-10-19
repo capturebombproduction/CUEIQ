@@ -509,11 +509,11 @@ describe("PracticePlayer — เล่นซ้อน", () => {
   it("an editor sets it with − / + and it is saved, once, to the show's own setlist", async () => {
     mount({ canManage: true });
     fireEvent.click(await screen.findByRole("button", { name: /ตั้งเล่นซ้อน/ }));
-    const plus = screen.getByRole("button", { name: "เพิ่มเวลาเล่นซ้อน · Neon Lullaby" });
+    const plus = screen.getByRole("button", { name: "เข้าเร็วขึ้น · Neon Lullaby" });
     fireEvent.click(plus);
     await new Promise((r) => setTimeout(r, 150)); // a person's pace between presses
     fireEvent.click(plus);
-    expect(screen.getByLabelText("เล่นซ้อน Neon Lullaby 7 วินาที")).toBeTruthy();
+    expect(screen.getByLabelText("เข้าหลังเพลงก่อนหน้า · Neon Lullaby -7 วินาที")).toBeTruthy();
     expect(h.updates).toHaveLength(0); // waits for the presses to stop
     await waitFor(() => expect(h.updates).toHaveLength(1), { timeout: 2000 });
     await new Promise((r) => setTimeout(r, 150));
@@ -532,21 +532,21 @@ describe("PracticePlayer — เล่นซ้อน", () => {
     h.failUpdate = true;
     mount({ canManage: true });
     fireEvent.click(await screen.findByRole("button", { name: /ตั้งเล่นซ้อน/ }));
-    fireEvent.click(screen.getByRole("button", { name: "ลดเวลาเล่นซ้อน · Neon Lullaby" }));
-    expect(screen.getByLabelText("เล่นซ้อน Neon Lullaby 4 วินาที")).toBeTruthy();
-    await waitFor(() => expect(toastError).toHaveBeenCalledWith("บันทึกเล่นซ้อนไม่สำเร็จ"), {
+    fireEvent.click(screen.getByRole("button", { name: "เข้าช้าลง · Neon Lullaby" }));
+    expect(screen.getByLabelText("เข้าหลังเพลงก่อนหน้า · Neon Lullaby -4 วินาที")).toBeTruthy();
+    await waitFor(() => expect(toastError).toHaveBeenCalledWith("บันทึก “เข้าหลังเพลงก่อนหน้า” ไม่สำเร็จ"), {
       timeout: 2000,
     });
-    expect(screen.getByLabelText("เล่นซ้อน Neon Lullaby 5 วินาที")).toBeTruthy();
+    expect(screen.getByLabelText("เข้าหลังเพลงก่อนหน้า · Neon Lullaby -5 วินาที")).toBeTruthy();
   });
 
   it("an overlap taken out mid-set is heard at once: the next song waits for the end", async () => {
     mount({ canManage: true });
     await startSet();
     fireEvent.click(screen.getByRole("button", { name: /ตั้งเล่นซ้อน/ }));
-    const minus = screen.getByRole("button", { name: "ลดเวลาเล่นซ้อน · Neon Lullaby" });
+    const minus = screen.getByRole("button", { name: "เข้าช้าลง · Neon Lullaby" });
     for (let i = 0; i < 5; i++) fireEvent.click(minus);
-    expect(screen.getByLabelText("เล่นซ้อน Neon Lullaby 0 วินาที")).toBeTruthy();
+    expect(screen.getByLabelText("เข้าหลังเพลงก่อนหน้า · Neon Lullaby 0 วินาที")).toBeTruthy();
     at(199);
     await new Promise((r) => setTimeout(r, 50));
     expect(engine().loads).toEqual(["boot.wav"]);
@@ -565,7 +565,7 @@ describe("PracticePlayer — เล่นซ้อน", () => {
     h.updatePlan = [{ fail: true, delay: 900 }, { delay: 0 }];
     mount({ canManage: true });
     fireEvent.click(await screen.findByRole("button", { name: /ตั้งเล่นซ้อน/ }));
-    const plus = screen.getByRole("button", { name: "เพิ่มเวลาเล่นซ้อน · Neon Lullaby" });
+    const plus = screen.getByRole("button", { name: "เข้าเร็วขึ้น · Neon Lullaby" });
     fireEvent.click(plus); // 6 — its write leaves at ~0.7 s and fails at ~1.6 s
     await waitFor(() => expect(mine()).toEqual(["send -6"]), { timeout: 2000 });
     fireEvent.click(plus); // 7 — saved at ~1.5 s, while 6 is still out
@@ -574,7 +574,7 @@ describe("PracticePlayer — เล่นซ้อน", () => {
     });
     await new Promise((r) => setTimeout(r, 50));
     expect(toastError).toHaveBeenCalledTimes(1); // 6 did fail, and says so
-    expect(screen.getByLabelText("เล่นซ้อน Neon Lullaby 7 วินาที")).toBeTruthy(); // = the server
+    expect(screen.getByLabelText("เข้าหลังเพลงก่อนหน้า · Neon Lullaby -7 วินาที")).toBeTruthy(); // = the server
   });
 
   // 2026-10-07 review: the second notice used to ride a channel that was still leaving,
@@ -595,9 +595,9 @@ describe("PracticePlayer — เล่นซ้อน", () => {
     h.leaveMs = 1500;
     mount({ canManage: true });
     fireEvent.click(await screen.findByRole("button", { name: /ตั้งเล่นซ้อน/ }));
-    fireEvent.click(screen.getByRole("button", { name: "เพิ่มเวลาเล่นซ้อน · Neon Lullaby" }));
+    fireEvent.click(screen.getByRole("button", { name: "เข้าเร็วขึ้น · Neon Lullaby" }));
     await waitFor(() => expect(h.broadcasts).toHaveLength(1), { timeout: 2000 });
-    fireEvent.click(screen.getByRole("button", { name: "เพิ่มเวลาเล่นซ้อน · I Am Who I Am" }));
+    fireEvent.click(screen.getByRole("button", { name: "เข้าเร็วขึ้น · I Am Who I Am" }));
     await waitFor(() => expect(h.broadcasts).toHaveLength(2), { timeout: 4000 });
     expect(h.broadcasts.every((b) => b.topic === "live:show-1" && b.event === "setlist-changed")).toBe(true);
   }, 10_000);
@@ -605,7 +605,7 @@ describe("PracticePlayer — เล่นซ้อน", () => {
   it("a saved overlap tells a Live Mode screen open on that show to pull the setlist", async () => {
     mount({ canManage: true });
     fireEvent.click(await screen.findByRole("button", { name: /ตั้งเล่นซ้อน/ }));
-    fireEvent.click(screen.getByRole("button", { name: "เพิ่มเวลาเล่นซ้อน · Neon Lullaby" }));
+    fireEvent.click(screen.getByRole("button", { name: "เข้าเร็วขึ้น · Neon Lullaby" }));
     await waitFor(() =>
       expect(h.broadcasts).toEqual([{ topic: "live:show-1", event: "setlist-changed" }])
     , { timeout: 2000 });
@@ -790,8 +790,8 @@ describe("PracticePlayer — เซ็ตของห้องนี้ (สร�
     );
   }
   const own = [
-    { id: "p1", song_id: "iam", sort_order: 1, overlap_seconds: 0 },
-    { id: "p2", song_id: "boot", sort_order: 2, overlap_seconds: 4 },
+    { id: "p1", song_id: "iam", sort_order: 1, buffer_before_seconds: 0 },
+    { id: "p2", song_id: "boot", sort_order: 2, buffer_before_seconds: -4 },
   ] as PracticeSong[];
   const setCard = () => screen.getByRole("region", { name: "Setlist" });
   const pickRoom = async () => {
@@ -821,10 +821,10 @@ describe("PracticePlayer — เซ็ตของห้องนี้ (สร�
     render(<Room start={own} />);
     await pickRoom();
     fireEvent.click(within(setCard()).getByRole("button", { name: /แก้เซ็ต/ }));
-    fireEvent.click(screen.getByRole("button", { name: "เพิ่มเวลาเล่นซ้อน · [SYSTEM_BOOT] SE" }));
-    expect(screen.getByLabelText("เล่นซ้อน [SYSTEM_BOOT] SE 5 วินาที")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "เข้าเร็วขึ้น · [SYSTEM_BOOT] SE" }));
+    expect(screen.getByLabelText("เข้าหลังเพลงก่อนหน้า · [SYSTEM_BOOT] SE -5 วินาที")).toBeTruthy();
     await waitFor(() => expect(h.updates).toHaveLength(1), { timeout: 2000 });
-    expect(h.updates[0]).toEqual({ table: "practice_songs", values: { overlap_seconds: 5 }, id: "p2" });
+    expect(h.updates[0]).toEqual({ table: "practice_songs", values: { buffer_before_seconds: -5 }, id: "p2" });
     expect(h.broadcasts).toEqual([]); // no Live Mode plays this set
   });
 
@@ -852,9 +852,9 @@ describe("PracticePlayer — เซ็ตของห้องนี้ (สร�
     await pickRoom();
     fireEvent.click(within(setCard()).getByRole("button", { name: /แก้เซ็ต/ }));
     const row = screen.getByRole("button", { name: "เลื่อนขึ้น · [SYSTEM_BOOT] SE" });
-    const more = screen.getByRole("button", { name: "เพิ่มเวลาเล่นซ้อน · [SYSTEM_BOOT] SE" });
+    const more = screen.getByRole("button", { name: "เข้าเร็วขึ้น · [SYSTEM_BOOT] SE" });
     expect(row.compareDocumentPosition(more) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    const value = screen.getByLabelText("เล่นซ้อน [SYSTEM_BOOT] SE 4 วินาที");
+    const value = screen.getByLabelText("เข้าหลังเพลงก่อนหน้า · [SYSTEM_BOOT] SE -4 วินาที");
     expect(value.textContent?.replace(/\s+/g, " ").trim()).toBe("-4 วินาที");
     expect(within(setCard()).getByText("เล่นซ้อนเพลงก่อนหน้า 4 วิ")).toBeTruthy();
     expect(within(setCard()).getAllByText("เข้าหลังเพลงก่อนหน้า")).toHaveLength(1); // not on song 1
@@ -873,10 +873,10 @@ describe("PracticePlayer — เซ็ตของห้องนี้ (สร�
   });
 });
 
-// 2026-10-19: a show row may now WAIT after the one above (a positive ตั้งเวลา). The room's
-// overlap −/+ is not offered over it - a press would turn the show's wait into an overlap.
-describe("PracticePlayer — a show row that waits", () => {
-  it("says so instead of offering −/+ that would overwrite it", async () => {
+// พี่ 2026-10-19 "ในเทรนนิ่งยังกดเป็นค่าบวกไม่ได้": the practice room takes the whole
+// "เข้าหลังเพลงก่อนหน้า" - negative overlaps, positive WAITS - and the set run waits for real.
+describe("PracticePlayer — a positive เข้าหลังเพลงก่อนหน้า waits", () => {
+  it("a show row's wait is shown signed, and + goes on past 0 into a wait", async () => {
     h.shows = [
       {
         id: "show-1",
@@ -887,9 +887,87 @@ describe("PracticePlayer — a show row that waits", () => {
     ];
     mount({ canManage: true });
     await screen.findByRole("button", { name: /เล่นทั้งเซ็ต/ });
-    expect(screen.queryByRole("button", { name: /ตั้งเล่นซ้อน/ })).toBeTruthy();
+    const chip = (_: string, el: Element | null) =>
+      el?.tagName === "P" && el.textContent?.replace(/\s+/g, " ").trim() === "รอ 3 วิ หลังเพลงก่อนหน้าจบ";
+    expect(screen.getAllByText(chip)).toHaveLength(1); // the chip
     fireEvent.click(screen.getByRole("button", { name: /ตั้งเล่นซ้อน/ }));
-    expect(screen.queryByRole("button", { name: "เพิ่มเวลาเล่นซ้อน · Neon Lullaby" })).toBeNull();
-    expect(screen.getByText(/รอ 3 วิ หลังเพลงก่อนหน้าจบ.*แก้ในเซ็ตลิสต์ของงาน/)).toBeTruthy();
+    const value = screen.getByLabelText("เข้าหลังเพลงก่อนหน้า · Neon Lullaby 3 วินาที");
+    expect(value.textContent?.replace(/\s+/g, " ").trim()).toBe("+3 วินาที");
+    fireEvent.click(screen.getByRole("button", { name: "เข้าช้าลง · Neon Lullaby" }));
+    expect(screen.getByText("รอ 4 วิ หลังเพลงก่อนหน้าจบ แล้วค่อยเริ่มเพลงนี้")).toBeTruthy();
+    await waitFor(() => expect(h.updates).toHaveLength(1), { timeout: 2000 });
+    expect(h.updates[0]).toEqual({ table: "setlist_items", values: { buffer_before_seconds: 4 }, id: "r2" });
+  });
+
+  it("from 0, + makes a wait (it used to stop at 0)", async () => {
+    mount({ canManage: true });
+    await screen.findByRole("button", { name: /เล่นทั้งเซ็ต/ });
+    fireEvent.click(screen.getByRole("button", { name: /ตั้งเล่นซ้อน/ }));
+    // r2 is -0 here (row() sets no buffer): straight after
+    const later = screen.getByRole("button", { name: "เข้าช้าลง · Neon Lullaby" });
+    expect(later).toHaveProperty("disabled", false);
+    fireEvent.click(later);
+    expect(screen.getByLabelText("เข้าหลังเพลงก่อนหน้า · Neon Lullaby 1 วินาที")).toBeTruthy();
+  });
+
+  function RoomSet({ start }: { start: PracticeSong[] }) {
+    const [list, setList] = useState(start);
+    return (
+      <ConfirmProvider>
+        <PracticePlayer
+          eventId="room-1"
+          groupId="g1"
+          currentUserId="u1"
+          songs={songs}
+          items={list}
+          setItems={setList}
+          markers={{}}
+          setMarkers={() => {}}
+          canManage={false}
+          canCurate
+        />
+      </ConfirmProvider>
+    );
+  }
+  const waiting = [
+    { id: "p1", song_id: "iam", sort_order: 1, buffer_before_seconds: 0 },
+    { id: "p2", song_id: "boot", sort_order: 2, buffer_before_seconds: 1 },
+    { id: "p3", song_id: "other", sort_order: 3, buffer_before_seconds: 0 },
+  ] as PracticeSong[];
+  const playRoomSet = async () => {
+    window.localStorage.clear();
+    render(<RoomSet start={waiting} />);
+    await screen.findByRole("button", { name: /เล่นทั้งเซ็ต/ });
+    fireEvent.change(screen.getByLabelText("เลือกงานที่จะซ้อม"), { target: { value: "room" } });
+    fireEvent.click(screen.getByRole("button", { name: /เล่นทั้งเซ็ต \(3 เพลง\)/ }));
+    await waitFor(() => expect(engine().loads).toEqual(["iam.wav"]));
+  };
+
+  it("the set waits that long after the song ends, then plays the next", async () => {
+    await playRoomSet();
+    expect(screen.getByText(/จบแล้วรอ 1 วิ แล้วเล่นเพลงถัดไป/)).toBeTruthy();
+    end();
+    await new Promise((r) => setTimeout(r, 400));
+    expect(engine().loads).toEqual(["iam.wav"]); // still in the wait
+    expect(screen.getByText(/รอ 1 วิ แล้วเริ่มเพลงถัดไป/)).toBeTruthy();
+    await waitFor(() => expect(engine().loads).toEqual(["iam.wav", "boot.wav"]), { timeout: 2000 });
+    expect(engine().handOffs).toEqual([]); // a wait never overlaps
+  });
+
+  it("stop in the wait calls it off", async () => {
+    await playRoomSet();
+    end();
+    fireEvent.click(screen.getByRole("button", { name: /หยุดเล่นต่อ/ }));
+    await new Promise((r) => setTimeout(r, 1300));
+    expect(engine().loads).toEqual(["iam.wav"]);
+  });
+
+  it("a song picked by hand in the wait wins over it", async () => {
+    await playRoomSet();
+    end();
+    fireEvent.click(within(screen.getByRole("region", { name: "Queue" })).getByRole("button", { name: /Transmission Failure/ }));
+    await waitFor(() => expect(engine().loads).toEqual(["iam.wav", "other.wav"]));
+    await new Promise((r) => setTimeout(r, 1300));
+    expect(engine().loads).toEqual(["iam.wav", "other.wav"]);
   });
 });

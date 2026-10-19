@@ -26,7 +26,7 @@ import { bkkTodayKey, monthBeforeKey, TIMING_LABEL, timingMeaning } from "@/lib/
 import {
   MAX_OVERLAP_SECONDS,
   orderShowsForPractice,
-  overlapLead,
+  clampTiming,
   roomQueue,
   setlistQueue,
   type QueueEntry,
@@ -67,8 +67,8 @@ export type RoomSet = {
   addButton: ReactNode;
   onMove: (itemId: string, dir: -1 | 1) => void;
   onRemove: (itemId: string) => void;
-  /** an overlap changed on screen (the card saves it) */
-  onOverlap: (itemId: string, seconds: number) => void;
+  /** a "เข้าหลังเพลงก่อนหน้า" changed on screen, signed (the card saves it) */
+  onTiming: (itemId: string, seconds: number) => void;
 };
 
 // How long the −/+ keys wait for another press before saving: three quick presses
@@ -167,15 +167,21 @@ export function SetlistRunCard({
   room: RoomSet;
   songsById: Map<string, Song>;
   playable: (s: Song) => boolean;
-  /** The run in progress, if any: which show, where in its queue, how long it is,
-   *  and how early its next song comes in. */
-  running: { showId: string; index: number; total: number; nextOverlap: number } | null;
+  /** The run in progress, if any: which show, where in its queue, how long it is, how
+   *  its next song comes in (signed, as set), and whether the run is in that wait now. */
+  running: {
+    showId: string;
+    index: number;
+    total: number;
+    nextTiming: number;
+    waiting: boolean;
+  } | null;
   loadingSongId: string | null;
   onPlay: (showId: string, queue: QueueEntry[], index: number) => void;
   onStop: () => void;
   /** may edit the band's shows (admin / the band's Ar) — the overlaps are theirs */
   canEdit: boolean;
-  /** an overlap changed here — so a run already playing hears it */
+  /** a timing changed here (signed) — so a run already playing hears it */
   onOverlapChange: (itemId: string, seconds: number) => void;
 }) {
   const today = bkkTodayKey();
@@ -186,7 +192,7 @@ export function SetlistRunCard({
   const [pick, setPick] = useState(() => readPick(eventId) ?? "");
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(0); // writes in flight
-  // The overlap each row holds ON THE SERVER — what a failed write goes back to.
+  // The timing each row holds ON THE SERVER (signed) — what a failed write goes back to.
   const savedRef = useRef(new Map<string, number>());
   // Presses waiting out SAVE_AFTER_MS, by row. `showId` null = a row of the room's set.
   const pendingRef = useRef(
@@ -217,7 +223,7 @@ export function SetlistRunCard({
       const ordered = orderShowsForPractice((data ?? []) as SetlistShow[], bkkTodayKey());
       ordered.forEach((s) =>
         s.setlist_items.forEach((r) =>
-          savedRef.current.set(r.id, overlapLead(r.buffer_before_seconds))
+          savedRef.current.set(r.id, clampTiming(r.buffer_before_seconds))
         )
       );
       setShows(ordered);
@@ -231,7 +237,7 @@ export function SetlistRunCard({
   // moves it on, in write() below).
   room.entries.forEach(({ item }) => {
     if (!savedRef.current.has(item.id)) {
-      savedRef.current.set(item.id, overlapLead(-(Number(item.overlap_seconds) || 0)));
+      savedRef.current.set(item.id, clampTiming(item.buffer_before_seconds));
     }
   });
 
@@ -269,11 +275,12 @@ export function SetlistRunCard({
     writePick(eventId, value);
   }
 
-  // On screen (and into a playing run) at once; the write follows.
+  // On screen (and into a playing run) at once; the write follows. `seconds` is signed,
+  // as buffer_before_seconds: -5 over the song above, 3 after it.
   function applyLocal(itemId: string, seconds: number, inRoom: boolean) {
     onOverlapChange(itemId, seconds);
     if (inRoom) {
-      room.onOverlap(itemId, seconds);
+      room.onTiming(itemId, seconds);
       return;
     }
     setShows((prev) =>
@@ -281,7 +288,7 @@ export function SetlistRunCard({
         ? prev.map((s) => ({
             ...s,
             setlist_items: s.setlist_items.map((r) =>
-              r.id === itemId ? { ...r, buffer_before_seconds: seconds > 0 ? -seconds : 0 } : r
+              r.id === itemId ? { ...r, buffer_before_seconds: seconds } : r
             ),
           }))
         : prev
@@ -305,19 +312,13 @@ export function SetlistRunCard({
   async function write(itemId: string, seconds: number, showId: string | null, seq: number) {
     let note: string | null = null;
     try {
-      // A show's row: the same column, and the same sign, as the setlist builder's
-      // "เล่นซ้อน (วิ)". The room's own: practice_songs.overlap_seconds (0048).
-      const { data, error } = showId
-        ? await createClient()
-            .from("setlist_items")
-            .update({ buffer_before_seconds: seconds > 0 ? -seconds : 0 })
-            .eq("id", itemId)
-            .select("id")
-        : await createClient()
-            .from("practice_songs")
-            .update({ overlap_seconds: seconds })
-            .eq("id", itemId)
-            .select("id");
+      // The same column name, and the same sign, as the setlist builder's
+      // "เข้าหลังเพลงก่อนหน้า (วิ)": a show's row, or the room's own (0050).
+      const { data, error } = await createClient()
+        .from(showId ? "setlist_items" : "practice_songs")
+        .update({ buffer_before_seconds: seconds })
+        .eq("id", itemId)
+        .select("id");
       if (error) note = writeFailureMessage(error.code, error.message, await hasLiveSession());
       else if (wroteNothing(data)) note = await noRowsMessage();
       else {
@@ -333,12 +334,12 @@ export function SetlistRunCard({
     if (seqRef.current.get(itemId) === seq && !pendingRef.current.has(itemId)) {
       applyLocal(itemId, savedRef.current.get(itemId) ?? 0, showId == null);
     }
-    toast.error("บันทึกเล่นซ้อนไม่สำเร็จ", { description: note });
+    toast.error(`บันทึก “${TIMING_LABEL}” ไม่สำเร็จ`, { description: note });
   }
 
-  function setLead(itemId: string, seconds: number) {
+  function setTiming(itemId: string, seconds: number) {
     if (!isRoom && !show) return;
-    const n = Math.max(0, Math.min(MAX_OVERLAP_SECONDS, Math.round(seconds)));
+    const n = clampTiming(seconds);
     const p = pendingRef.current.get(itemId);
     if (p) window.clearTimeout(p.timer);
     applyLocal(itemId, n, isRoom);
@@ -479,11 +480,7 @@ export function SetlistRunCard({
                   one's. The number is the show's, signed: -5 = over the last 5 s of the
                   one above; − / + move along that line (− = more overlap). */}
               {editing && i > 0 ? (
-                (q.wait ?? 0) > 0 ? (
-                  <p className="py-1.5 pl-8 text-[12px] text-faint">
-                    {TIMING_LABEL}: {timingMeaning(q.wait ?? 0)} — แก้ในเซ็ตลิสต์ของงาน
-                  </p>
-                ) : q.adjacent ? (
+                q.adjacent ? (
                   <div className="space-y-0.5 py-1.5 pl-8">
                     <div className="flex flex-wrap items-center gap-2">
                       <CornerDownRight className="h-3.5 w-3.5 text-muted-foreground" aria-hidden />
@@ -492,9 +489,9 @@ export function SetlistRunCard({
                         type="button"
                         size="icon"
                         variant="secondary"
-                        aria-label={`เพิ่มเวลาเล่นซ้อน · ${q.song.title}`}
-                        disabled={q.overlap >= MAX_OVERLAP_SECONDS}
-                        onClick={() => setLead(q.itemId, q.overlap + 1)}
+                        aria-label={`เข้าเร็วขึ้น · ${q.song.title}`}
+                        disabled={q.timing <= -MAX_OVERLAP_SECONDS}
+                        onClick={() => setTiming(q.itemId, q.timing - 1)}
                       >
                         <Minus aria-hidden />
                       </Button>
@@ -504,24 +501,26 @@ export function SetlistRunCard({
                           screenshot 2026-10-19): the unit is spelled out, light. */}
                       <output
                         className="min-w-[4.5rem] text-center"
-                        aria-label={`เล่นซ้อน ${q.song.title} ${q.overlap} วินาที`}
+                        aria-label={`${TIMING_LABEL} · ${q.song.title} ${q.timing} วินาที`}
                       >
-                        <span className="num text-[15px]">{q.overlap > 0 ? `-${q.overlap}` : "0"}</span>{" "}
+                        <span className="num text-[15px]">
+                          {q.timing > 0 ? `+${q.timing}` : String(q.timing)}
+                        </span>{" "}
                         <span className="text-[12px] font-normal text-muted-foreground">วินาที</span>
                       </output>
                       <Button
                         type="button"
                         size="icon"
                         variant="secondary"
-                        aria-label={`ลดเวลาเล่นซ้อน · ${q.song.title}`}
-                        disabled={q.overlap <= 0}
-                        onClick={() => setLead(q.itemId, q.overlap - 1)}
+                        aria-label={`เข้าช้าลง · ${q.song.title}`}
+                        disabled={q.timing >= MAX_OVERLAP_SECONDS}
+                        onClick={() => setTiming(q.itemId, q.timing + 1)}
                       >
                         <Plus aria-hidden />
                       </Button>
                     </div>
                     <p className="pl-5 text-[12px] text-muted-foreground">
-                      {timingMeaning(-q.overlap)}
+                      {timingMeaning(q.timing)}
                     </p>
                   </div>
                 ) : (
@@ -533,6 +532,11 @@ export function SetlistRunCard({
                 <p className="flex items-center gap-1.5 py-1 pl-8 text-[12.5px] text-muted-foreground">
                   <CornerDownRight className="h-3.5 w-3.5" aria-hidden />
                   เล่นซ้อนเพลงก่อนหน้า <span className="num text-foreground">{q.overlap}</span> วิ
+                </p>
+              ) : q.wait > 0 ? (
+                <p className="flex items-center gap-1.5 py-1 pl-8 text-[12.5px] text-muted-foreground">
+                  <CornerDownRight className="h-3.5 w-3.5" aria-hidden />
+                  รอ <span className="num text-foreground">{q.wait}</span> วิ หลังเพลงก่อนหน้าจบ
                 </p>
               ) : null}
             </li>
@@ -592,9 +596,13 @@ export function SetlistRunCard({
           <span className="text-[12.5px] text-muted-foreground">
             {runningHere
               ? `กำลังเล่นเพลงที่ ${running.index + 1}/${running.total} — ${
-                  running.nextOverlap > 0
-                    ? `เพลงถัดไปเข้าก่อนจบ ${running.nextOverlap} วิ`
-                    : "จบแล้วเล่นเพลงถัดไปเอง"
+                  running.waiting
+                    ? `รอ ${running.nextTiming} วิ แล้วเริ่มเพลงถัดไป…`
+                    : running.nextTiming < 0
+                      ? `เพลงถัดไปเข้าก่อนจบ ${-running.nextTiming} วิ`
+                      : running.nextTiming > 0
+                        ? `จบแล้วรอ ${running.nextTiming} วิ แล้วเล่นเพลงถัดไป`
+                        : "จบแล้วเล่นเพลงถัดไปเอง"
                 }`
               : `กำลังเล่นตามเซ็ตของ “${runName(running.showId)}” อยู่ (เพลงที่ ${
                   running.index + 1

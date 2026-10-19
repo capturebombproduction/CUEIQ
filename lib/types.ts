@@ -414,8 +414,12 @@ export interface PracticeSong {
   event_id: string;
   song_id: string;
   sort_order: number;
-  /** "เล่นซ้อน" in the room's own set: seconds this song comes in before the one
-   *  above it ends (0048). Optional: a row read before 0048 has none. */
+  /** "เข้าหลังเพลงก่อนหน้า" in the room's own set, signed like a setlist row's (0050):
+   *  -5 = over the last 5 s of the song above, 3 = 3 s after it ends. Optional: a
+   *  row read before 0050 has none. */
+  buffer_before_seconds?: number | null;
+  /** 0048's overlap-only number (positive = a lead). Superseded by
+   *  buffer_before_seconds in 0050; kept for desktop apps still on v0.1.40/41. */
   overlap_seconds?: number | null;
   created_by: string | null;
   created_at: string;

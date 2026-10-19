@@ -3,7 +3,9 @@ import type { Song } from "@/lib/types";
 import {
   orderShowsForPractice,
   overlapLead,
+  roomQueue,
   setlistQueue,
+  timingParts,
   type SetlistShow,
 } from "./practice-setlist";
 
@@ -131,9 +133,32 @@ describe("setlistQueue", () => {
     expect(overlapLead(-5)).toBe(5);
     expect(overlapLead(-2.6)).toBe(3);
     expect(overlapLead(0)).toBe(0);
-    expect(overlapLead(8)).toBe(0); // a legacy wait — practice never waits
+    expect(overlapLead(8)).toBe(0); // a wait is not an overlap (timingParts has it)
     expect(overlapLead(null)).toBe(0);
     expect(overlapLead(undefined)).toBe(0);
     expect(overlapLead(-900)).toBe(300);
+  });
+});
+
+// พี่ 2026-10-19: one signed number - negative overlaps, positive waits - in the room too.
+describe("timingParts / roomQueue", () => {
+  it("splits a signed timing into its overlap and its wait", () => {
+    expect(timingParts(-5)).toEqual({ timing: -5, overlap: 5, wait: 0 });
+    expect(timingParts(3)).toEqual({ timing: 3, overlap: 0, wait: 3 });
+    expect(timingParts(0)).toEqual({ timing: 0, overlap: 0, wait: 0 });
+    expect(timingParts(900)).toEqual({ timing: 300, overlap: 0, wait: 300 });
+  });
+  it("reads the room's rows signed, and never times the first song", () => {
+    const song = (id: string) => ({ id, title: id }) as Song;
+    const q = roomQueue([
+      { item: { id: "a", buffer_before_seconds: 4 }, song: song("a") },
+      { item: { id: "b", buffer_before_seconds: -3 }, song: song("b") },
+      { item: { id: "c", buffer_before_seconds: 2 }, song: song("c") },
+    ]);
+    expect(q.map((e) => [e.itemId, e.timing, e.overlap, e.wait])).toEqual([
+      ["a", 0, 0, 0],
+      ["b", -3, 3, 0],
+      ["c", 2, 0, 2],
+    ]);
   });
 });

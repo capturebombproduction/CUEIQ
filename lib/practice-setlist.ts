@@ -64,14 +64,30 @@ export type QueueEntry = {
    */
   adjacent: boolean;
   /**
-   * The show's "ตั้งเวลา" as a WAIT (a positive buffer_before, พี่ 2026-10-19): seconds
-   * after the previous row ends. The run does not wait, but the card must not offer
-   * its overlap −/+ over it - a press would turn the show's wait into an overlap.
+   * "เข้าหลังเพลงก่อนหน้า" as set (พี่ 2026-10-19), signed like buffer_before_seconds:
+   * -5 = over the last 5 s of the entry before (= overlap 5), 3 = 3 s after it ends
+   * (= wait 3), 0 = straight after. 0 on an entry that is not `adjacent`.
    */
-  wait?: number;
+  timing: number;
+  /** The positive half of `timing`: seconds the run waits, silent, after the entry
+   *  before ends ("ในเทรนนิ่งยังกดเป็นค่าบวกไม่ได้", พี่ 2026-10-19). */
+  wait: number;
 };
 
-/** The longest lead the setlist builder accepts (its OverlapInput clamps to -300). */
+/** An entry's overlap and wait, from its signed timing. */
+export function timingParts(timing: number): Pick<QueueEntry, "timing" | "overlap" | "wait"> {
+  const t = clampTiming(timing);
+  return { timing: t, overlap: Math.max(0, -t), wait: Math.max(0, t) };
+}
+
+/** A signed timing kept to what the setlist builder accepts (-300..300), whole seconds. */
+export function clampTiming(seconds: number | null | undefined): number {
+  const n = Math.round(Number(seconds) || 0);
+  return Math.max(-MAX_OVERLAP_SECONDS, Math.min(MAX_OVERLAP_SECONDS, n));
+}
+
+/** The longest lead - and wait - the setlist builder accepts (its OverlapInput clamps
+ *  to -300..300). */
 export const MAX_OVERLAP_SECONDS = 300;
 
 /** A setlist row's buffer_before_seconds read as a lead: -5 → 5; 0, a positive
@@ -89,13 +105,13 @@ export function overlapLead(bufferBefore: number | null | undefined): number {
  * carries its own "เล่นซ้อน".
  */
 export function roomQueue(
-  entries: { item: { id: string; overlap_seconds?: number | null }; song: Song }[]
+  entries: { item: { id: string; buffer_before_seconds?: number | null }; song: Song }[]
 ): QueueEntry[] {
   return entries.map(({ item, song }, i) => ({
     itemId: item.id,
     song,
     adjacent: i > 0,
-    overlap: i > 0 ? overlapLead(-(Number(item.overlap_seconds) || 0)) : 0,
+    ...timingParts(i > 0 ? Number(item.buffer_before_seconds) || 0 : 0),
   }));
 }
 
@@ -123,8 +139,7 @@ export function setlistQueue(
         itemId: row.id,
         song,
         adjacent,
-        overlap: adjacent ? overlapLead(row.buffer_before_seconds) : 0,
-        wait: adjacent ? Math.max(0, Number(row.buffer_before_seconds) || 0) : 0,
+        ...timingParts(adjacent ? Number(row.buffer_before_seconds) || 0 : 0),
       });
       lastQueued = i;
     } else if (row.song_id || row.kind === "song") {

@@ -57,7 +57,9 @@ import { canEditAnyGroup, canLiveEdit, canViewLibrary, type Perms } from "@/lib/
 // 2026-10-19b (พี่, same day): the setlist's เล่นซ้อน + เผื่อเวลาหลัง are one field.
 // 2026-10-19c: that field's name, "เข้าหลังเพลงก่อนหน้า", the same in the practice room, with
 // what the number does in words under it - told again to the devices that read 19b's name.
-const ROUND = "2026-10-19c";
+// 2026-10-19d (พี่: "ในเทรนนิ่งยังกดเป็นค่าบวกไม่ได้"): the practice room takes a positive one
+// too, and its set run really waits.
+const ROUND = "2026-10-19d";
 /** For tests that need "this device already read the current round". */
 export const WHATS_NEW_ROUND = ROUND;
 const KEY = "cueiq:whats-new-seen";
@@ -131,7 +133,7 @@ const ITEMS: Item[] = [
     who: editors,
   },
   {
-    text: "ห้องซ้อม: สร้างเซ็ตเองได้ — เลือก “เซ็ตของห้องนี้ (สร้างเอง)” ใน Setlist แล้วเพิ่มเพลง เรียงลำดับ ตั้งเล่นซ้อนได้ ไม่กระทบเซ็ตลิสต์ของงานจริง",
+    text: "ห้องซ้อม: สร้างเซ็ตเองได้ — เลือก “เซ็ตของห้องนี้ (สร้างเอง)” ใน Setlist แล้วเพิ่มเพลง เรียงลำดับ ตั้ง “เข้าหลังเพลงก่อนหน้า” ได้ทั้งติดลบ (เล่นซ้อน) และบวก (รอ — เล่นทั้งเซ็ตจะเว้นให้จริง) ไม่กระทบเซ็ตลิสต์ของงานจริง",
     who: (r) => r.canPractice,
   },
   {
