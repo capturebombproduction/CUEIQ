@@ -420,7 +420,11 @@ export function SetlistRunCard({
               {/* The overlap INTO this song sits between it and the one above:
                   "↳ ซ้อน 5 วิ" = it comes in 5 s before that one ends. */}
               {editing && i > 0 ? (
-                q.adjacent ? (
+                (q.wait ?? 0) > 0 ? (
+                  <p className="py-1 pl-8 text-[12px] text-faint">
+                    งานนี้ตั้งรอ <span className="num">{q.wait}</span> วิ หลังเพลงบนจบ — แก้ในเซ็ตลิสต์ของงาน
+                  </p>
+                ) : q.adjacent ? (
                   <div className="flex items-center gap-2 py-1.5 pl-8">
                     <CornerDownRight className="h-3.5 w-3.5 text-muted-foreground" aria-hidden />
                     <span className="text-[12.5px] text-muted-foreground">เข้าก่อนจบ</span>

@@ -854,3 +854,24 @@ describe("PracticePlayer — เซ็ตของห้องนี้ (สร�
     );
   });
 });
+
+// 2026-10-19: a show row may now WAIT after the one above (a positive ตั้งเวลา). The room's
+// overlap −/+ is not offered over it - a press would turn the show's wait into an overlap.
+describe("PracticePlayer — a show row that waits", () => {
+  it("says so instead of offering −/+ that would overwrite it", async () => {
+    h.shows = [
+      {
+        id: "show-1",
+        name: "Wait show",
+        event_date: bkkTodayKey(),
+        setlist_items: [row("r1", 1, "boot"), { ...row("r2", 2, "neon"), buffer_before_seconds: 3 }],
+      },
+    ];
+    mount({ canManage: true });
+    await screen.findByRole("button", { name: /เล่นทั้งเซ็ต/ });
+    expect(screen.queryByRole("button", { name: /ตั้งเล่นซ้อน/ })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /ตั้งเล่นซ้อน/ }));
+    expect(screen.queryByRole("button", { name: "เพิ่มเวลาเล่นซ้อน · Neon Lullaby" })).toBeNull();
+    expect(screen.getByText(/งานนี้ตั้งรอ/)).toBeTruthy();
+  });
+});

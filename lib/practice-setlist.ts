@@ -63,6 +63,12 @@ export type QueueEntry = {
    * one ends as it always has — and there is no overlap here to show or to set.
    */
   adjacent: boolean;
+  /**
+   * The show's "ตั้งเวลา" as a WAIT (a positive buffer_before, พี่ 2026-10-19): seconds
+   * after the previous row ends. The run does not wait, but the card must not offer
+   * its overlap −/+ over it - a press would turn the show's wait into an overlap.
+   */
+  wait?: number;
 };
 
 /** The longest lead the setlist builder accepts (its OverlapInput clamps to -300). */
@@ -118,6 +124,7 @@ export function setlistQueue(
         song,
         adjacent,
         overlap: adjacent ? overlapLead(row.buffer_before_seconds) : 0,
+        wait: adjacent ? Math.max(0, Number(row.buffer_before_seconds) || 0) : 0,
       });
       lastQueued = i;
     } else if (row.song_id || row.kind === "song") {
