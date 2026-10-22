@@ -331,8 +331,9 @@ describe("PracticePlayer — ซ้อมตามเซ็ตลิสต์", 
     await new Promise((r) => setTimeout(r, 30));
     release();
     // a fixed 30 ms here was not enough under a loaded full run (the one flaky test): wait for
-    // neon, then give a wrong jump the same 30 ms to show itself
-    await waitFor(() => expect(engine().loads).toEqual(["boot.wav", "neon.wav"]));
+    // neon, then give a wrong jump the same 30 ms to show itself. The default 1 s wait still
+    // timed out on a busy machine (got only boot, so slow, not the bug) - hence 5 s
+    await waitFor(() => expect(engine().loads).toEqual(["boot.wav", "neon.wav"]), { timeout: 5000 });
     await new Promise((r) => setTimeout(r, 30));
     // without the guard the end would move the set to row 3 and play iam instead
     expect(engine().loads).toEqual(["boot.wav", "neon.wav"]);

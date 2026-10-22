@@ -68,7 +68,7 @@ class FakeAudioContext {
   createGain() {
     return { gain: { value: 1 }, connect: () => {}, disconnect: () => {} };
   }
-  decodeAudioData = vi.fn((_arr: ArrayBuffer) =>
+  decodeAudioData = vi.fn(() =>
     Promise.resolve({ duration: 200 } as unknown as AudioBuffer)
   );
 }
