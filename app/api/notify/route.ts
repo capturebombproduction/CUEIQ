@@ -406,11 +406,17 @@ export async function POST(req: Request) {
   // notification worse than not sending the deep link at all.
   const linkFor = new Map<string, string>();
   if (kind === "run_order_live") {
+    // The festival's REAL band events only - the same set the board itself links
+    // (app/(app)/events/[id]/run-order/page.tsx). A practice room or a template that
+    // happens to share the name and date has the smaller id often enough to win
+    // runOrderLinksFor's tie-break, and would send a band its practice room.
     let fq = admin
       .from("events")
       .select("id, group_id")
       .eq("tenant_id", tenantId)
-      .eq("name", festivalName);
+      .eq("name", festivalName)
+      .eq("is_template", false)
+      .eq("is_practice", false);
     fq = festivalDate ? fq.eq("event_date", festivalDate) : fq.is("event_date", null);
     const [{ data: festEvents }, { data: memberRows }] = await Promise.all([
       fq,

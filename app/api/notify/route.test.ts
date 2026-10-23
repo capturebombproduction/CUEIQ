@@ -38,6 +38,10 @@ const h = vi.hoisted(() => ({
   approveAsked: [] as unknown[],
   /** how many run_sequence rows are live (run_order_live's anti-spoof) */
   liveCount: 1,
+  /** the festival's events (run_order_live's per-recipient links); eq filters apply */
+  festEvents: [] as Row[],
+  /** group_roles rows (run_order_live's per-recipient links) */
+  groupRoles: [] as Row[],
 }));
 
 vi.mock("@/lib/supabase/server", () => ({
@@ -62,6 +66,7 @@ vi.mock("@/lib/push", () => ({ vapidConfigured: () => false, sendPush: vi.fn() }
 function table(name: string) {
   h.queried.push(name);
   let roles: unknown[] | null = null;
+  const eqs: [string, unknown][] = [];
   const single = (): Row | null => {
     if (name === "songs")
       return {
@@ -87,10 +92,18 @@ function table(name: string) {
   const many = (): Row[] => {
     if (name === "tenant_members")
       return h.members.filter((m) => !roles || roles.includes(m.role));
+    // the festival lookup: every .eq() on a column the row has must hold
+    if (name === "events")
+      return h.festEvents.filter((r) => eqs.every(([c, v]) => !(c in r) || r[c] === v));
+    if (name === "group_roles") return h.groupRoles;
     return []; // notifications (dedupe), push_subscriptions, …
   };
   const q: Record<string, unknown> = {};
-  for (const m of ["select", "eq", "gt", "is", "or", "limit", "order"]) q[m] = () => q;
+  for (const m of ["select", "gt", "is", "or", "limit", "order"]) q[m] = () => q;
+  q.eq = (col: string, val: unknown) => {
+    eqs.push([col, val]);
+    return q;
+  };
   q.in = (col: string, vals: unknown[]) => {
     if (name === "tenant_members" && col === "role") {
       roles = vals;
@@ -147,6 +160,8 @@ beforeEach(() => {
   h.canApprove = true;
   h.approveAsked = [];
   h.liveCount = 1;
+  h.festEvents = [];
+  h.groupRoles = [];
 });
 
 describe("song_pending goes to the admins, who can open the Library", () => {
@@ -267,6 +282,24 @@ describe("run_order_live comes only from someone who could start the show", () =
     expect(await res.json()).not.toEqual({ ok: true, sent: 0 });
     expect(h.inserted.map((r) => r.user_id).sort()).toEqual(["admin-1", "member-1", "staff-a"]);
     expect(h.inserted.every((r) => r.type === "run_order_live")).toBe(true);
+  });
+
+  it("a band member is linked to the band's real show, never to a practice room or template of the same name", async () => {
+    h.members = [ADMIN, { user_id: "member-1", role: "member" }];
+    h.groupRoles = [{ user_id: "member-1", group_id: "band-1" }];
+    const ev = (id: string, extra: Row = {}) => ({
+      id,
+      group_id: "band-1",
+      tenant_id: "tenant-1",
+      name: "Plus One Live",
+      is_template: false,
+      is_practice: false,
+      ...extra,
+    });
+    // smaller ids first: without the filters either one wins the tie-break
+    h.festEvents = [ev("aa-practice", { is_practice: true }), ev("ab-template", { is_template: true }), ev("ev-1")];
+    const { links } = await send({ kind: "run_order_live", eventId: "ev-1" });
+    expect(links["member-1"]).toBe("/events/ev-1/run-order/live");
   });
 
   it("a board that is not live still sends nothing, approver or not", async () => {
