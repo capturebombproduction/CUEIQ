@@ -253,6 +253,18 @@ function resolveItemAudio(it: SetlistItem, songAudio: SongAudioMap): SetlistItem
   return { ...it, audio_path: sa?.path ?? null, audio_name: sa?.name ?? null };
 }
 
+/** Does the element still hold THIS file? playingId says which row the element was last
+ *  loaded for, not with which bytes: a file picked in Live for a paused row swaps the row's
+ *  object URL while the paused element keeps the old one, and "resume the same track" then
+ *  played the replaced file (2026-10-24). `src` reads back resolved; object URLs already are. */
+function holdsFile(el: HTMLMediaElement, url: string): boolean {
+  try {
+    return el.src === new URL(url, document.baseURI).href;
+  } catch {
+    return el.src === url;
+  }
+}
+
 export function LiveMode({
   eventId,
   groupId,
@@ -2872,7 +2884,10 @@ export function LiveMode({
       });
       if (cur && audio) {
         const url = audioUrls[cur.id];
-        if (playingId === cur.id) {
+        // the row's file was replaced while it sat paused: load the new one at the
+        // show's position (the branch below) instead of resuming the old bytes
+        const replaced = playingId === cur.id && !!url && audio.paused && !holdsFile(audio, url);
+        if (playingId === cur.id && !replaced) {
           // resuming the same (paused) track — continue from where it stopped
           if (url) {
             audio.play().catch((err) => onPlayRejected(cur.id, err));
@@ -3349,8 +3364,10 @@ export function LiveMode({
     if (!audio || !sid || !url) return;
     const anchor = committedRef.current.anchor ?? state.itemStartedAt;
     const pos = anchor ? (Date.now() - anchor) / 1000 : 0;
-    if (playingId !== sid) audio.src = url;
-    audio.currentTime = filePos(sid, pos, playingId === sid ? audio : null);
+    // not a file replaced while paused (a sounding element is never swapped here)
+    const held = playingId === sid && (!audio.paused || holdsFile(audio, url));
+    if (!held) audio.src = url;
+    audio.currentTime = filePos(sid, pos, held ? audio : null);
     setPlayingId(sid);
     audio
       .play()
@@ -3508,8 +3525,9 @@ export function LiveMode({
       });
       const url = cur ? audioUrls[cur.id] : undefined;
       if (cur && url && audio) {
-        if (playingId !== cur.id) {
-          // a different track is loaded — switch to the anchor track and seek
+        if (playingId !== cur.id || (!haveLocalAudio && !holdsFile(audio, url))) {
+          // a different track is loaded (or this row's file was replaced while it
+          // sat paused) — switch to the anchor track and seek
           audio.src = url;
           audio.currentTime = filePos(cur.id, offset);
           setPlayingId(cur.id);

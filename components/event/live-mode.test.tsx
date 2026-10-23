@@ -3623,6 +3623,77 @@ describe("LiveMode · a pause stops the clock of the row it stopped", () => {
   });
 });
 
+// 2026-10-24: a row paused mid-song keeps its OLD file loaded in the element. Picking a new
+// file for it in Live swapped the row's object URL, but ▶ took the "resume the same track"
+// branch (playingId === the row) and played the replaced bytes on.
+describe("LiveMode · a file picked for a paused row is the file that resumes", () => {
+  async function pausedAt30WithNewFile() {
+    const media = instrumentMediaElements();
+    h.saved = [{ itemId: "item-1", blob: new Blob(["old"]), name: "old.wav", path: null }];
+    await mountLive();
+    await startShowFromUi();
+    const primary = media.first()!;
+    const oldSrc = media.state(primary).src;
+    expect(oldSrc).toBeTruthy();
+    expect(media.state(primary).paused).toBe(false);
+    await act(async () => {
+      vi.advanceTimersByTime(30_000);
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("run-toggle")); // pause at 0:30
+    });
+    expect(media.state(primary).paused).toBe(true);
+
+    fireEvent.click(screen.getAllByTitle("เปลี่ยนไฟล์เพลง (อัปโหลดขึ้นคลาวด์)")[0]);
+    const input = document.querySelector('input[type="file"][accept="audio/*"]') as HTMLInputElement;
+    await act(async () => {
+      fireEvent.change(input, { target: { files: [new File(["new"], "new.wav", { type: "audio/wav" })] } });
+    });
+    await act(async () => {});
+    return { media, primary, oldSrc };
+  }
+
+  it("▶ plays the NEW file, from where the row was paused", async () => {
+    const { media, primary, oldSrc } = await pausedAt30WithNewFile();
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("run-toggle")); // resume
+    });
+    expect(media.state(primary).src).toBeTruthy();
+    expect(media.state(primary).src).not.toBe(oldSrc);
+    expect(media.state(primary).paused).toBe(false);
+    expect(media.state(primary).currentTime).toBeCloseTo(30, 0);
+  });
+
+  it("switching to Auto plays the NEW file too", async () => {
+    const { media, primary, oldSrc } = await pausedAt30WithNewFile();
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /^Auto$/ }));
+    });
+    expect(media.state(primary).src).not.toBe(oldSrc);
+    expect(media.state(primary).paused).toBe(false);
+    expect(media.state(primary).currentTime).toBeCloseTo(30, 0);
+  });
+
+  it("a row paused WITHOUT a new file still resumes its own element, untouched", async () => {
+    const media = instrumentMediaElements();
+    h.saved = [{ itemId: "item-1", blob: new Blob(["old"]), name: "old.wav", path: null }];
+    await mountLive();
+    await startShowFromUi();
+    const primary = media.first()!;
+    const src = media.state(primary).src;
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("run-toggle"));
+    });
+    const writes = media.calls.filter((c) => c.element === primary && c.type === "src").length;
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("run-toggle"));
+    });
+    expect(media.state(primary).src).toBe(src);
+    expect(media.calls.filter((c) => c.element === primary && c.type === "src")).toHaveLength(writes);
+    expect(media.state(primary).paused).toBe(false);
+  });
+});
+
 // พี่ 2026-10-07: the NOW card's keys (Auto Mute / MC / Auto Loudness) act on the track
 // that is SOUNDING, and only for that moment. In Manual they used to fade the cued row
 // (nothing heard; a cued song came in silent), and a duck was saved as the song's level -
