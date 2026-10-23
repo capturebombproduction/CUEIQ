@@ -3766,7 +3766,9 @@ export function LiveMode({
     const sounding = playingId ?? committedRef.current.id;
     let gaveBack = false;
     for (const id of Object.keys(duckRef.current)) {
-      if (state.begun && id === sounding) continue;
+      // …but a track that played out to its own end is not sounding, whatever the show is
+      // still committed to: kept, the duck was where a replay of it started (Auto Mute: 0)
+      if (state.begun && id === sounding && endedItemRef.current !== id) continue;
       const prev = duckRef.current[id];
       delete duckRef.current[id];
       // On a reset, here only: the reset just freed the viewers, and a level sent now

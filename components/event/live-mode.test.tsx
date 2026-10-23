@@ -3847,6 +3847,52 @@ describe("LiveMode · the fade keys ride the track that is sounding, for that mo
     expect(saved["item-1"] ?? 100).toBe(100);
   });
 
+  // 2026-10-24: the 'ended' clears playingId, but the show stays committed to the song, and
+  // the duck give-back counted that as still sounding: the duck stayed, and a replay of the
+  // song started at it - after Auto Mute, silent.
+  it("a ducked song that runs out on its own gets its own level back", async () => {
+    const media = instrumentMediaElements();
+    h.saved = [{ itemId: "item-1", blob: new Blob(["a"]), name: "track-1.wav", path: null }];
+    await mountLive();
+    await startShowFromUi();
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /^MC$/ }));
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(3_000);
+    });
+    expect(volumeSends().at(-1)).toMatchObject({ itemId: "item-1", target: 30 });
+    await act(async () => {
+      media.first()!.dispatchEvent(new Event("ended"));
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(500); // volume messages are spaced 120 ms apart
+    });
+    expect(volumeSends().at(-1)).toMatchObject({ itemId: "item-1", target: 100 });
+    const levels = screen.getAllByTitle(/^ความดังของแทร็คนี้/) as HTMLInputElement[];
+    expect(levels.every((l) => l.value === "100")).toBe(true);
+  });
+
+  it("…while a ducked song that is only PAUSED keeps its duck", async () => {
+    instrumentMediaElements();
+    h.saved = [{ itemId: "item-1", blob: new Blob(["a"]), name: "track-1.wav", path: null }];
+    await mountLive();
+    await startShowFromUi();
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /^MC$/ }));
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(3_000);
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("run-toggle")); // pause
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(500);
+    });
+    expect(volumeSends().at(-1)).toMatchObject({ itemId: "item-1", target: 30 });
+  });
+
   it("…while MC with nothing sounding still sets the cued row's level ahead of its turn", async () => {
     instrumentMediaElements();
     await mountLive(); // no file on this device: nothing sounds
