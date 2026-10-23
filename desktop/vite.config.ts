@@ -3,7 +3,11 @@ import react from "@vitejs/plugin-react";
 import { fileURLToPath, URL } from "node:url";
 import { createRequire } from "node:module";
 
-const { version: desktopVersion } = createRequire(import.meta.url)("./package.json");
+const desktopPkg = createRequire(import.meta.url)("./package.json") as {
+  version: string;
+  dependencies: Record<string, string>;
+};
+const desktopVersion = desktopPkg.version;
 
 // The desktop renderer reuses the web app's components + lib straight from the repo
 // root via the same "@/..." alias, so the look + logic stay identical. The shared
@@ -21,8 +25,12 @@ export default defineConfig({
     // failed, copied…) went nowhere in the .exe. React too: plugin-react 4 deduped
     // react/react-dom itself, plugin-react 6 (Vite 8) does not - without these two
     // the shared components got the root copy, desktop/src its own, and every hook
-    // threw "Cannot read properties of null (reading useContext)" at boot.
-    dedupe: ["sonner", "react", "react-dom"],
+    // threw "Cannot read properties of null (reading 'useContext')" at boot.
+    // Every other runtime dependency too, so a context-holding package (Radix, a
+    // LucideProvider, the router) can never split between the two trees either - the
+    // review of 2026-10-23 found lucide-react bundled twice. The root and desktop
+    // lockfiles keep these on the same versions (vitest.config.ts refuses a major split).
+    dedupe: Object.keys(desktopPkg.dependencies),
     alias: {
       // Override JUST the Supabase client with a localStorage-backed one (the web
       // lib's cookie session doesn't work under Electron's file:// origin). MUST
