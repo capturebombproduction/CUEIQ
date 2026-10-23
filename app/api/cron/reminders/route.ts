@@ -28,9 +28,13 @@ function authorized(req: Request): boolean {
   return cronSecretMatches(req.headers.get("authorization") ?? "", `Bearer ${secret}`);
 }
 
-function bandName(groups: unknown): string {
+function bandOf(groups: unknown): { name?: string; exempt_from_deadline?: boolean } | null {
   const g = Array.isArray(groups) ? groups[0] : groups;
-  return (g as { name?: string } | null)?.name ?? "";
+  return (g as { name?: string; exempt_from_deadline?: boolean } | null) ?? null;
+}
+
+function bandName(groups: unknown): string {
+  return bandOf(groups)?.name ?? "";
 }
 
 export async function GET(req: Request) {
@@ -71,6 +75,19 @@ async function runReminders(): Promise<Response> {
   let inserted = 0;
   let pushed = 0;
 
+  // Every read and write below that the reminders depend on reports its own failure
+  // instead of reading as "nothing to do". Each one used to coalesce a failed answer
+  // to an empty list: a broken shows query was a quiet day, a broken band-roles read
+  // was a band with nobody in it, and the run said ok:true — the exact silence the
+  // header promises this job never has. Worse, a failed dedupe read looked like
+  // "nobody has been told yet" and the whole band got the same push twice. A failure
+  // skips only its own step (one band's broken read must not cost another band its
+  // reminder); the run then reports what failed and answers 500.
+  const failures: string[] = [];
+  const failed = (step: string, error: { message: string }) => {
+    failures.push(`${step}: ${error.message}`);
+  };
+
   // 0) Yesterday's reminders are superseded by today's (or about something that
   // is over) — stop them counting as unread, or the bell sits at "9+" for good and
   // buries the rows that matter. See lib/notification-expiry.ts. Housekeeping
@@ -103,17 +120,20 @@ async function runReminders(): Promise<Response> {
   ) {
     const ids = Array.from(new Set(recipientIds));
     if (ids.length === 0) return;
-    const { data: existing } = await admin
+    const { data: existing, error: dedupeError } = await admin
       .from("notifications")
       .select("user_id")
       .eq("type", type)
       .eq("meta->>event_id", eventId)
       .gt("created_at", dedupeSince);
+    // No answer to "who has already been told" = no reminder. Guessing "nobody" is
+    // how a re-run pushed the same reminder to the whole band again.
+    if (dedupeError) return failed(`dedupe ${type} ${eventId}`, dedupeError);
     const got = new Set((existing ?? []).map((r) => r.user_id as string));
     const targets = ids.filter((id) => !got.has(id));
     if (targets.length === 0) return;
     const link = `/events/${eventId}`;
-    await admin.from("notifications").insert(
+    const { error: insertError } = await admin.from("notifications").insert(
       targets.map((uid) => ({
         tenant_id: tenantId,
         user_id: uid,
@@ -124,18 +144,22 @@ async function runReminders(): Promise<Response> {
         meta: { event_id: eventId, group_id: groupId },
       }))
     );
+    // Not pushed either: the row is what the bell shows and what the dedupe above
+    // reads, so a push without one is a reminder a re-run would send again.
+    if (insertError) return failed(`insert ${type} ${eventId}`, insertError);
     inserted += targets.length;
     pushed += await pushToUsers(admin, targets, { title, body, link });
   }
 
   // 1) Upcoming shows today / tomorrow → the whole band (Ar + members).
-  const { data: shows } = await admin
+  const { data: shows, error: showsError } = await admin
     .from("events")
     .select("id, name, group_id, tenant_id, event_date, show_start_time, groups(name)")
     .eq("is_template", false)
     .eq("is_practice", false)
     .gte("event_date", today)
     .lte("event_date", tomorrow);
+  if (showsError) failed("shows", showsError);
   // Their call times, for the reminder's body (lib/next-show.ts). Best-effort: a
   // failed read sends the reminder as it always was — name and band.
   const showIds = (shows ?? []).map((e) => e.id as string);
@@ -150,10 +174,14 @@ async function runReminders(): Promise<Response> {
     Object.fromEntries((shows ?? []).map((e) => [e.id as string, e.show_start_time as string | null]))
   );
   for (const ev of shows ?? []) {
-    const { data: roles } = await admin
+    const { data: roles, error: rolesError } = await admin
       .from("group_roles")
       .select("user_id")
       .eq("group_id", ev.group_id as string);
+    if (rolesError) {
+      failed(`band roles ${ev.id}`, rolesError);
+      continue;
+    }
     const band = bandName(ev.groups);
     const when = ev.event_date === today ? "วันนี้" : "พรุ่งนี้";
     await fan(
@@ -173,21 +201,29 @@ async function runReminders(): Promise<Response> {
   }
 
   // 2) Deadlines within the next 2 days that aren't approved yet → the band's Ar.
-  const { data: deadlines } = await admin
+  const { data: deadlines, error: deadlinesError } = await admin
     .from("events")
-    .select("id, name, group_id, tenant_id, deadline, status, groups(name)")
+    .select("id, name, group_id, tenant_id, deadline, status, groups(name, exempt_from_deadline)")
     .eq("is_template", false)
     .eq("is_practice", false)
     .not("deadline", "is", null)
     .gte("deadline", now.toISOString())
     .lte("deadline", in2days)
     .neq("status", "approved");
+  if (deadlinesError) failed("deadlines", deadlinesError);
   for (const ev of deadlines ?? []) {
-    const { data: roles } = await admin
+    // A band exempt from deadlines (0009) never sees one in the app — DeadlineChip
+    // hides it — so it must not be woken up by a push about one either.
+    if (bandOf(ev.groups)?.exempt_from_deadline) continue;
+    const { data: roles, error: rolesError } = await admin
       .from("group_roles")
       .select("user_id")
       .eq("group_id", ev.group_id as string)
       .eq("role", "artist_manager");
+    if (rolesError) {
+      failed(`band managers ${ev.id}`, rolesError);
+      continue;
+    }
     const band = bandName(ev.groups);
     await fan(
       ev.id as string,
@@ -207,13 +243,14 @@ async function runReminders(): Promise<Response> {
   // went ahead with a call sheet no admin had checked. The whole rule (grace
   // period, and the deliberate silence once the show has passed) lives in
   // lib/approval-nag.ts, tested there and proven red.
-  const { data: pending } = await admin
+  const { data: pending, error: pendingError } = await admin
     .from("events")
     .select("id, name, group_id, tenant_id, event_date, status, updated_at, groups(name)")
     .eq("is_template", false)
     .eq("is_practice", false)
     .eq("status", "pending_review")
     .gte("event_date", today);
+  if (pendingError) failed("pending approvals", pendingError);
   const waiting = approvalsNeedingNag(
     (pending ?? []).map((e) => ({
       id: e.id as string,
@@ -228,11 +265,12 @@ async function runReminders(): Promise<Response> {
     // Approvers are tenant-wide (admin / label_staff), the same set /api/notify
     // reaches for event_submitted — NOT the band's own Ar, who is the person
     // waiting for the answer and would only be told about their own patience.
-    const { data: approvers } = await admin
+    const { data: approvers, error: approversError } = await admin
       .from("tenant_members")
       .select("user_id, tenant_id")
       .in("role", ["admin", "label_staff"]);
-    for (const row of waiting) {
+    if (approversError) failed("approvers", approversError);
+    for (const row of approversError ? [] : waiting) {
       const ev = (pending ?? []).find((e) => e.id === row.id);
       if (!ev) continue;
       const ids = (approvers ?? [])
@@ -250,5 +288,20 @@ async function runReminders(): Promise<Response> {
     }
   }
 
+  if (failures.length) {
+    // Everything that could still go out has gone out; now say what could not. Same
+    // key as a thrown run (reportCronFailure dedupes per key), so one bad morning is
+    // one row in the Dev Inbox, not one per step.
+    await reportCronFailure("reminders", `incomplete run: ${failures.join("; ")}`, {
+      failures,
+      inserted,
+      pushed,
+      expired,
+    });
+    return NextResponse.json(
+      { error: "reminder run incomplete", failures, inserted, pushed, expired },
+      { status: 500 }
+    );
+  }
   return NextResponse.json({ ok: true, inserted, pushed, expired });
 }
