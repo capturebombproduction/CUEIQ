@@ -229,7 +229,7 @@ function isTransportFailure(message: string | null | undefined): boolean {
  * (getSession() returns null once the token expires and the refresh can't reach
  * Supabase), so every venue fetch failure was answered with "เซสชันหมดอายุ …
  * เข้าสู่ระบบใหม่". On the desktop that is the one instruction that makes it
- * worse: SIGNED_OUT fires clearMgmtOutbox() (desktop/src/App.tsx), throwing away
+ * worse: signing out fires clearMgmtOutbox() (desktop/src/App.tsx), throwing away
  * every queued offline management edit — and with no network they cannot log back
  * in. The desktop calls this state offlineAuthed and supports it on purpose.
  *

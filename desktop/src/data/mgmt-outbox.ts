@@ -338,6 +338,27 @@ export async function listMgmtConflicts(): Promise<{ key: number; rec: ConflictR
 }
 
 /**
+ * Every record still on this machine — queued ops AND parked conflicts, of EVERY
+ * account. For the sign-in screen: a session that died on its own (lib/sign-out-intent.ts)
+ * leaves its owner's queue here, and the person has to know to sign back in with that
+ * same account. Under the outbox lock so it reads AFTER a deliberate sign-out's wipe,
+ * which is queued on the same lock before the sign-in screen even mounts.
+ */
+export function queuedMgmtWorkCount(): Promise<number> {
+  return withOutboxLock(async () => {
+    try {
+      const [ops, conflicts] = await Promise.all([
+        listStore<OpRec>(OPS),
+        listStore<ConflictRec>(CONFLICTS),
+      ]);
+      return ops.length + conflicts.length;
+    } catch {
+      return 0;
+    }
+  });
+}
+
+/**
  * Move a rejected op into the conflicts store. Returns TRUE only when the row is
  * PROVEN persisted (tx.oncomplete — IndexedDB rolls the whole transaction back on
  * error/abort, so nothing else counts): the caller deletes the queued op right

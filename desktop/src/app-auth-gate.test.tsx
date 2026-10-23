@@ -68,6 +68,7 @@ vi.mock("~/pages/admin", () => ({ Admin: () => <div data-testid="page-admin" /> 
 vi.mock("~/pages/my-show", () => ({ MyShow: () => <div data-testid="page-my-show" /> }));
 
 import { App } from "./App";
+import { duringDeliberateSignOut } from "@/lib/sign-out-intent";
 
 const STORAGE_KEY = "sb-kewyqqxohckurwuepucv-auth-token";
 
@@ -275,13 +276,51 @@ describe("desktop auth gate — signing out on a shared band device", () => {
     // offline pass — model that, or the assertion below would pass for the wrong
     // reason (the gate staying open on a stale stored session).
     window.localStorage.clear();
+    // The person pressed Sign out: useSignOut wraps its auth.signOut() in this, and
+    // auth-js runs the listener INSIDE that call.
     await act(async () => {
-      emitAuthEvent("SIGNED_OUT", null);
+      await duringDeliberateSignOut(async () => emitAuthEvent("SIGNED_OUT", null));
     });
 
     expect(cacheSpies.clearCache).toHaveBeenCalledTimes(1);
     expect(cacheSpies.clearMgmtOutbox).toHaveBeenCalledTimes(1);
     expect(screen.getByTestId("page-login")).toBeInTheDocument();
+  });
+
+  it("a session that dies on its own keeps the queued writes — only the cache goes", async () => {
+    // 2026-10-24: auth-js emits the same SIGNED_OUT when a refresh is rejected for
+    // good — the refresh token revoked from another device (a 0.1.43 desktop's
+    // all-device sign-out, a password change), or a venue's captive portal answering
+    // the refresh with a 4xx page. Nobody pressed anything and nobody was asked, yet
+    // the old listener wiped every edit made offline at the venue. Each op carries
+    // its owner's id, so keeping them can never flush as the next account.
+    seedStoredSession();
+    await boot("/");
+    expect(screen.getByTestId("shell")).toBeInTheDocument();
+
+    window.localStorage.clear(); // auth-js removes the stored session before it emits
+    await act(async () => {
+      emitAuthEvent("SIGNED_OUT", null);
+    });
+
+    expect(cacheSpies.clearMgmtOutbox).not.toHaveBeenCalled();
+    // the cache is only a copy of server data — the next account must not see it
+    expect(cacheSpies.clearCache).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId("page-login")).toBeInTheDocument();
+  });
+
+  it("a deliberate sign-out that has finished does not make the next involuntary one deliberate", async () => {
+    seedStoredSession();
+    await boot("/");
+    await duringDeliberateSignOut(async () => {});
+    await duringDeliberateSignOut(async () => {
+      throw new Error("signOut threw");
+    }).catch(() => {});
+    window.localStorage.clear();
+    await act(async () => {
+      emitAuthEvent("SIGNED_OUT", null);
+    });
+    expect(cacheSpies.clearMgmtOutbox).not.toHaveBeenCalled();
   });
 
   it("does not wipe anything on an ordinary token refresh", async () => {

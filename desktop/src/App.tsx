@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Routes, Route, Navigate, useLocation } from "react-router-dom";
 import type { Session } from "@supabase/supabase-js";
 import { createClient } from "@/lib/supabase/client";
+import { isDeliberateSignOut } from "@/lib/sign-out-intent";
 import { RefreshButton } from "@/components/refresh-button";
 import { HeaderBrand } from "@/components/header-brand";
 import { StageLight } from "@/components/stage-light";
@@ -82,12 +83,18 @@ function useAuth(): AuthState {
       // signs out, so the NEXT account on this machine can never boot offline
       // into the previous user's cached workspace/events (different per-band perms).
       // (A real sign-out also removes the persisted session, so the offline pass
-      // closes with it — SIGNED_OUT is never emitted for mere network failures.)
-      // The mgmt outbox goes too: queued writes must never flush as the next
-      // account (the "ค้างซิงค์" chip makes pending work visible before sign-out).
+      // closes with it. A dead network never emits SIGNED_OUT; a refresh that gets
+      // a definite rejection does — from the server or from a portal posing as it.)
+      // The cache is only ever a copy of server data, so it goes on EVERY sign-out.
+      // The mgmt outbox is not a copy — it is venue work that never reached the
+      // server — so it goes only when the person pressed Sign out (and was asked
+      // about it there, see useSignOut). When the session died on its own (refresh
+      // token revoked elsewhere, a captive portal's 4xx), the queue stays: each op
+      // carries its owner's id, so it can never flush as the next account, and it
+      // goes out when the same account signs back in (the login screen says so).
       if (event === "SIGNED_OUT") {
         clearCache();
-        clearMgmtOutbox().catch(() => {});
+        if (isDeliberateSignOut()) clearMgmtOutbox().catch(() => {});
       }
       next(session);
     });

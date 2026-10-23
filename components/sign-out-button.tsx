@@ -6,6 +6,7 @@ import { toast } from "sonner";
 import { createClient } from "@/lib/supabase/client";
 import { cleanupPushOnSignOut } from "@/components/notifications/push-cleanup";
 import { isLiveShowActive } from "@/lib/live-guard";
+import { duringDeliberateSignOut } from "@/lib/sign-out-intent";
 import {
   acknowledgeUnsavedWork,
   commitFocusedField,
@@ -18,7 +19,9 @@ import { Button } from "@/components/ui/button";
  * How many management writes the desktop still has queued offline (ops) or parked
  * as conflicts. Signing out on the desktop wipes BOTH stores
  * (desktop/src/App.tsx SIGNED_OUT → clearMgmtOutbox) and this product has no undo,
- * so we must ask before throwing that work away.
+ * so we must ask before throwing that work away. Every account's records count,
+ * not only this one's: a session that died on its own left its owner's queue
+ * behind (lib/sign-out-intent.ts), and this wipe takes that too.
  *
  * Read straight from the same IndexedDB the outbox writes
  * (desktop/src/data/mgmt-outbox.ts) — the web bundle must not import desktop
@@ -146,11 +149,15 @@ export function useSignOut(): () => Promise<void> {
     // still alive — best-effort, never throws (see push-cleanup.ts).
     await cleanupPushOnSignOut();
     const supabase = createClient();
-    // "local" = this device only, as the row says ("ออกจากระบบเครื่องนี้"). auth-js
-    // defaults to "global", which revokes every session of the account — a band
-    // sharing one login would drop the stage laptop when the phone signs out.
-    const { error } = await supabase.auth.signOut({ scope: "local" });
-    if (error) {
+    // Every SIGNED_OUT this emits is one the person asked for — the desktop wipes
+    // its offline queue only for those (lib/sign-out-intent.ts). A session that
+    // dies on its own (revoked elsewhere) keeps the queue for its owner.
+    const signedOut = await duringDeliberateSignOut(async () => {
+      // "local" = this device only, as the row says ("ออกจากระบบเครื่องนี้"). auth-js
+      // defaults to "global", which revokes every session of the account — a band
+      // sharing one login would drop the stage laptop when the phone signs out.
+      const { error } = await supabase.auth.signOut({ scope: "local" });
+      if (!error) return true;
       // Dead network (offline venue): auth-js keeps the local session when
       // the server /logout call fails, so the tap would silently do nothing
       // — and the desktop's SIGNED_OUT cache/outbox wipe (shared band
@@ -178,10 +185,11 @@ export function useSignOut(): () => Promise<void> {
         .getSession()
         .then(({ data }) => !!data.session)
         .catch(() => false);
-      if (stillOn) {
-        toast.error("ออกจากระบบไม่สำเร็จ — ยังเข้าใช้งานด้วยบัญชีเดิมอยู่ ลองใหม่อีกครั้ง");
-        return;
-      }
+      return !stillOn;
+    });
+    if (!signedOut) {
+      toast.error("ออกจากระบบไม่สำเร็จ — ยังเข้าใช้งานด้วยบัญชีเดิมอยู่ ลองใหม่อีกครั้ง");
+      return;
     }
     // Past every bail-out: the sign-out is happening. Only NOW forget the
     // failed write — the person has been told and has chosen to go.
