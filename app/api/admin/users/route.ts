@@ -73,11 +73,13 @@ function sanitizeGroupRoles(
   return out;
 }
 
+/** null when the read FAILED - an empty set would drop every band role as "not ours". */
 async function tenantGroupIdSet(
   admin: ReturnType<typeof createAdminClient>,
   tenantId: string
-): Promise<Set<string>> {
-  const { data } = await admin.from("groups").select("id").eq("tenant_id", tenantId);
+): Promise<Set<string> | null> {
+  const { data, error } = await admin.from("groups").select("id").eq("tenant_id", tenantId);
+  if (error) return null;
   return new Set((data ?? []).map((g) => g.id as string));
 }
 
@@ -105,6 +107,12 @@ async function targetEmail(
     return { ok: false };
   }
   return { ok: true, email: data.user?.email ?? null };
+}
+
+/** A read this answer depends on failed. Never answer it as "nothing there": a list of
+ *  band-less users, saved back from the console, takes every user's bands away. */
+function readFailed() {
+  return NextResponse.json({ error: "อ่านข้อมูลผู้ใช้ไม่สำเร็จ ลองใหม่อีกครั้ง" }, { status: 503 });
 }
 
 /** Shared answer when targetEmail() can't resolve the target (fail closed). */
@@ -179,13 +187,18 @@ export async function GET() {
     authEmailById(admin),
   ]);
 
+  // A FAILED READ IS NOT AN EMPTY ONE (lib/read-guard.ts): a group_roles hiccup used to
+  // answer 200 with every user band-less, and the console's next save on a user then
+  // replaced their real band roles with nothing (2026-10-24 review).
+  if (membersRes.error || rolesRes.error) return readFailed();
   const members = membersRes.data ?? [];
   const groupRoles = rolesRes.data ?? [];
   const userIds = members.map((m) => m.user_id as string);
 
-  const { data: profiles } = userIds.length
+  const { data: profiles, error: profErr } = userIds.length
     ? await admin.from("profiles").select("id, email, full_name").in("id", userIds)
-    : { data: [] as { id: string; email: string | null; full_name: string | null }[] };
+    : { data: [] as { id: string; email: string | null; full_name: string | null }[], error: null };
+  if (profErr) return readFailed();
 
   const profById = new Map(
     (profiles ?? []).map((p) => [p.id as string, p])
@@ -242,6 +255,7 @@ export async function POST(req: Request) {
   const admin = createAdminClient();
   const { tenantId } = gate;
   const groupIds = await tenantGroupIdSet(admin, tenantId);
+  if (!groupIds) return readFailed();
   const groupRoles = sanitizeGroupRoles(body?.groupRoles, groupIds);
 
   // 1) create the auth user (email pre-confirmed — no verification email)
@@ -369,6 +383,7 @@ export async function PATCH(req: Request) {
   if (roleProvided) {
     const { tenantId } = gate;
     const groupIds = await tenantGroupIdSet(admin, tenantId);
+    if (!groupIds) return readFailed();
     const groupRoles = sanitizeGroupRoles(body?.groupRoles, groupIds);
 
     const { error: memErr } = await admin
@@ -378,7 +393,17 @@ export async function PATCH(req: Request) {
       });
     if (memErr) return NextResponse.json({ error: memErr.message }, { status: 400 });
 
-    // replace the user's band roles wholesale
+    // replace the user's band roles wholesale - delete, then insert, so keep what they had:
+    // an insert that failed after the delete left the user with no band at all
+    const prevRes = await admin
+      .from("group_roles")
+      .select("group_id, role")
+      .eq("tenant_id", tenantId)
+      .eq("user_id", userId);
+    if (prevRes.error) return readFailed();
+    const rowsFor = (list: { group_id: string; role: string }[]) =>
+      list.map((g) => ({ tenant_id: tenantId, group_id: g.group_id, user_id: userId, role: g.role }));
+
     const { error: delErr } = await admin
       .from("group_roles")
       .delete()
@@ -387,15 +412,12 @@ export async function PATCH(req: Request) {
     if (delErr) return NextResponse.json({ error: delErr.message }, { status: 400 });
 
     if (groupRoles.length) {
-      const { error: grErr } = await admin.from("group_roles").insert(
-        groupRoles.map((g) => ({
-          tenant_id: tenantId,
-          group_id: g.group_id,
-          user_id: userId,
-          role: g.role,
-        }))
-      );
-      if (grErr) return NextResponse.json({ error: grErr.message }, { status: 400 });
+      const { error: grErr } = await admin.from("group_roles").insert(rowsFor(groupRoles));
+      if (grErr) {
+        const prev = (prevRes.data ?? []) as { group_id: string; role: string }[];
+        if (prev.length) await admin.from("group_roles").insert(rowsFor(prev));
+        return NextResponse.json({ error: grErr.message }, { status: 400 });
+      }
     }
   }
 

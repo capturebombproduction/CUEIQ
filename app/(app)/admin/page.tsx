@@ -2,6 +2,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { Inbox, Users } from "lucide-react";
 import { getWorkspace } from "@/lib/queries";
+import { assertReadsSucceeded } from "@/lib/read-guard";
 import { isAdmin } from "@/lib/permissions";
 import { createAdminClient, hasServiceRole } from "@/lib/supabase/admin";
 import { UserManager, type ManagedUser } from "@/components/admin/user-manager";
@@ -25,12 +26,17 @@ async function listUsers(tenantId: string): Promise<ManagedUser[]> {
     admin.from("tenant_members").select("user_id, role").eq("tenant_id", tenantId),
     admin.from("group_roles").select("user_id, group_id, role").eq("tenant_id", tenantId),
   ]);
+  // A failed read is not a band-less user (api/admin/users GET): the console edits what it
+  // is shown, and saving a user it showed with no bands takes theirs away.
+  assertReadsSucceeded("AdminPage.listUsers", { "สมาชิกค่าย": membersRes, "สิทธิ์ในวง": rolesRes });
   const members = membersRes.data ?? [];
   const groupRoles = rolesRes.data ?? [];
   const userIds = members.map((m) => m.user_id as string);
-  const { data: profiles } = userIds.length
+  const profRes = userIds.length
     ? await admin.from("profiles").select("id, email, full_name").in("id", userIds)
-    : { data: [] as { id: string; email: string | null; full_name: string | null }[] };
+    : { data: [] as { id: string; email: string | null; full_name: string | null }[], error: null };
+  assertReadsSucceeded("AdminPage.listUsers", { "โปรไฟล์": profRes });
+  const profiles = profRes.data;
   const profById = new Map((profiles ?? []).map((p) => [p.id as string, p]));
 
   return members
