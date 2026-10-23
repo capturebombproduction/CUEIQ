@@ -87,6 +87,12 @@ const exeArg = arg("exe");
 const appDir = arg("app");
 const only = arg("only");
 const timeoutSec = Number(arg("timeout", "135"));
+// Every fresh profile this run makes (see runScenario). Nothing used to remove them,
+// so each local run left a dozen behind in the OS temp dir — 387 of them, 1.8 GB, on
+// the dev box by 2026-10-23. A green run now deletes its own at the end; a red one
+// keeps them, because the profile IS the evidence. --keep keeps them either way.
+const workDirs = [];
+const keepWork = process.argv.includes("--keep");
 
 /**
  * Where electron's binary actually is — ASKED, not assumed.
@@ -402,6 +408,7 @@ async function runScenario(s, extraEnv = {}) {
   // run at once at all: app.requestSingleInstanceLock() keeps its lock file inside
   // userData, so two processes sharing a profile would be one process.
   const work = fs.mkdtempSync(path.join(os.tmpdir(), `cueiq-smoke-${s.name}-`));
+  workDirs.push(work);
   const verdictFile = path.join(work, "verdict.json");
   const userDataDir = path.join(work, "userData");
   fs.mkdirSync(userDataDir);
@@ -843,6 +850,7 @@ async function runAudibleScenario(s) {
   const host = new URL(SMOKE_SUPABASE_URL).host;
 
   const work = fs.mkdtempSync(path.join(os.tmpdir(), "cueiq-smoke-audio-"));
+  workDirs.push(work);
   const wavPath = path.join(work, "tone.wav");
   const wav = makeToneWav();
   fs.writeFileSync(wavPath, wav);
@@ -1074,5 +1082,19 @@ if (control && control.netProbe) {
   }
 }
 
+if (failed || keepWork) {
+  console.log(`\n   scenario profiles kept for inspection:`);
+  for (const dir of workDirs) console.log(`      ${dir}`);
+} else {
+  // Best effort: on Windows a just-killed electron can hold its profile a moment
+  // longer, and a temp dir left behind must never turn a green run red.
+  for (const dir of workDirs) {
+    try {
+      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 400 });
+    } catch {
+      console.log(`   could not remove ${dir} (left in the temp dir)`);
+    }
+  }
+}
 if (failed) process.exit(1);
 console.log(`\nsmoke: all ${results.length} scenario(s) passed`);
