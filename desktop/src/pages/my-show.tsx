@@ -50,10 +50,19 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { AudioOutputPicker, AUDIO_SINK_KEY, loadAudioSink } from "@/components/event/audio-output-picker";
 import { KindChip } from "@/components/event/kind";
+import { TimingInput } from "@/components/event/timing-input";
 import { HeaderBrand } from "@/components/header-brand";
 import { StageLight } from "@/components/stage-light";
 import { cn } from "@/lib/utils";
-import { formatCountdown, formatDuration, isSettled, nowClock, runSecondsOf } from "@/lib/time";
+import {
+  formatCountdown,
+  formatDuration,
+  isSettled,
+  nowClock,
+  runSecondsOf,
+  TIMING_LABEL,
+  timingMeaning,
+} from "@/lib/time";
 import { liveZone, zoneCaption } from "@/lib/live-zone";
 import { restoreShow, SNAPSHOT_ALIVE_MS, STALE_RESTORE_MS } from "@/lib/live-restore";
 import { fadeLevel, nextFadeFrame } from "@/lib/fade";
@@ -93,22 +102,42 @@ const INITIAL: ShowState = {
 
 const LIVE_SNAPSHOT_KEY = "cueiq:solo:live";
 
+// A row's own length. Its "เข้าหลังเพลงก่อนหน้า" is against the row BEFORE it, so none of it
+// is this row's: a wait is the previous row's (waitOf, in runBlock), as in Live Mode. The
+// old บัฟเฟอร์ (time after a row) is the next row's wait now - solo-store folds it on read.
 function blockSeconds(it: SoloItem) {
-  return (it.durationSeconds || 0) + (it.bufferAfterSeconds || 0);
+  return it.durationSeconds || 0;
 }
 
-// How early a song comes in over the end of the row before it ("สวน"); 0 = after it. Only
-// a song carries one (the field is a song's).
+// How long after the row before it ends a row comes in - a positive timing - in seconds.
+// That row's countdown runs on through the wait (in silence, its file done) and Auto takes
+// this one when it is over.
+function waitOf(it: SoloItem | undefined): number {
+  return Math.max(0, it?.timingSeconds ?? 0);
+}
+
+// How early a row comes in over the end of the row before it - "เล่นซ้อน", a negative
+// timing - in seconds; 0 = after it. Any row, as in a show's setlist: an MC with no sound
+// of its own leaves the song before it to finish (goto).
 function leadOf(it: SoloItem | undefined): number {
-  return it?.kind === "song" ? Math.max(0, it.overlapLeadSeconds ?? 0) : 0;
+  return Math.max(0, -(it?.timingSeconds ?? 0));
 }
 
 // How long row i RUNS - Live Mode's runBlock (lib/time.ts runSecondsOf, พี่ 2026-10-17 "A จบ
-// ตอน B เข้า"): its block, less how early the next song comes in over its end. The show moves
-// on the moment that song comes in, and it counts its own length in full (overlapSwap).
+// ตอน B เข้า"): its block and the wait after it, less how early the next row comes in over
+// its end. The show moves on the moment that row comes in, and it counts its own length in
+// full (overlapSwap).
 function runBlock(list: SoloItem[], i: number): number {
   const it = list[i];
-  return it ? runSecondsOf(blockSeconds(it), leadOf(list[i + 1])) : 0;
+  return it ? runSecondsOf(blockSeconds(it) + waitOf(list[i + 1]), leadOf(list[i + 1])) : 0;
+}
+
+/** The short form of a row's timing for a chip: "เล่นซ้อน 5 วิ" / "รอ 3 วิ"; null at 0. */
+function timingChip(seconds: number): string | null {
+  const s = Math.round(seconds || 0);
+  if (s < 0) return `เล่นซ้อน ${-s} วิ`;
+  if (s > 0) return `รอ ${s} วิ`;
+  return null;
 }
 
 function fmtTime(sec: number) {
@@ -116,11 +145,6 @@ function fmtTime(sec: number) {
   const m = Math.floor(sec / 60);
   const s = Math.floor(sec % 60);
   return `${m}:${s.toString().padStart(2, "0")}`;
-}
-
-/** สวน is DISPLAYED negative (Live-Mode negative-buffer convention): 5 → "-0:05". */
-function fmtOverlap(lead: number) {
-  return lead > 0 ? `-${fmtTime(lead)}` : fmtTime(0);
 }
 
 /** "3:45" → 225, "-0:05" → -5; a plain number is taken as seconds. null = unparseable. */
@@ -975,8 +999,8 @@ export function MyShow() {
     }
   }
 
-  // `runOut`: Auto's own move, the moment the row before ran out - where a song set to come in
-  // over it ("สวน", leadOf) does (overlapSwap). A row tapped is a cut, as before.
+  // `runOut`: Auto's own move, the moment the row before ran out - where a row set to come in
+  // over it ("เล่นซ้อน", leadOf) does (overlapSwap). A row tapped is a cut, as before.
   function goto(index: number, runOut = false) {
     if (index < 0 || index >= items.length) return;
     if (state.begun && index === state.currentIndex) return;
@@ -1010,8 +1034,8 @@ export function MyShow() {
         const a = audioRef.current;
         const sounding = !!a && !a.paused && !!playingId && playingId !== it.id;
         if (runOut && leadOf(it) > 0 && sounding) {
-          // "สวน": in over the sounding song's last seconds - and a song whose file is
-          // missing leaves that song alone to finish. A Loop has no last seconds (it would
+          // "เล่นซ้อน": in over the sounding song's last seconds - and a row with no file
+          // (an MC, a song whose file is missing) leaves that song alone to finish. A Loop has no last seconds (it would
           // go round under it for good), so it stops as before.
           if (url) overlapSwap(it.id, url);
           else if (items.find((x) => x.id === playingId)?.loop) playItemAudio(it);
@@ -1358,8 +1382,7 @@ export function MyShow() {
           fileName: f.name,
           blob,
           durationSeconds: dur,
-          bufferAfterSeconds: 0,
-          overlapLeadSeconds: 0,
+          timingSeconds: 0,
           loop: false,
           volume: 100,
           sortOrder: base + i,
@@ -1398,8 +1421,7 @@ export function MyShow() {
       fileName: null,
       blob: null,
       durationSeconds: 300,
-      bufferAfterSeconds: 0,
-      overlapLeadSeconds: 0,
+      timingSeconds: 0,
       loop: false,
       volume: 100,
       sortOrder: base,
@@ -1779,14 +1801,14 @@ export function MyShow() {
                   </div>
                   <p className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-muted-foreground">
                     <span className="tabular-nums">
-                      เวลาเต็ม (รวมบัฟเฟอร์) <b className="text-foreground">{formatDuration(runBlock(items, state.currentIndex + 1))}</b>
+                      เวลาเต็ม <b className="text-foreground">{formatDuration(runBlock(items, state.currentIndex + 1))}</b>
                     </span>
-                    {(next.overlapLeadSeconds ?? 0) > 0 && (
+                    {timingChip(next.timingSeconds) && (
                       <span
                         className="rounded bg-primary/10 px-1.5 py-0.5 text-xs font-medium text-primary"
-                        title={`เพลงนี้จะดังสวนขึ้นมาก่อนรายการปัจจุบันจบ ${fmtTime(next.overlapLeadSeconds ?? 0)}`}
+                        title={timingMeaning(next.timingSeconds)}
                       >
-                        สวน {fmtOverlap(next.overlapLeadSeconds ?? 0)}
+                        {timingChip(next.timingSeconds)}
                       </span>
                     )}
                   </p>
@@ -2068,12 +2090,12 @@ export function MyShow() {
                         >
                           {it.title || "—"}
                         </span>
-                        {(it.overlapLeadSeconds ?? 0) > 0 && (
+                        {i > 0 && timingChip(it.timingSeconds) && (
                           <span
                             className="shrink-0 rounded bg-primary/10 px-1 text-[10px] font-medium text-primary"
-                            title={`เพลงนี้ดังสวนขึ้นมาก่อนรายการก่อนหน้าจบ ${fmtTime(it.overlapLeadSeconds ?? 0)}`}
+                            title={timingMeaning(it.timingSeconds)}
                           >
-                            สวน {fmtOverlap(it.overlapLeadSeconds ?? 0)}
+                            {timingChip(it.timingSeconds)}
                           </span>
                         )}
                         <span className="shrink-0 tabular-nums text-xs text-muted-foreground">
@@ -2157,7 +2179,7 @@ export function MyShow() {
                         </div>
                       )}
 
-                      {/* inline edit row: title · duration · buffer */}
+                      {/* inline edit row: title · duration · เข้าหลังเพลงก่อนหน้า */}
                       {editing && (
                         <div className="flex w-full flex-wrap items-center gap-2 pb-1 pl-8 text-xs">
                           <input
@@ -2184,41 +2206,22 @@ export function MyShow() {
                               className="h-7 w-16 rounded-md border bg-background px-2 text-center tabular-nums"
                             />
                           </label>
-                          <label className="flex items-center gap-1 text-muted-foreground">
-                            <Timer className="h-3 w-3" /> บัฟเฟอร์
-                            <input
-                              key={`${it.id}-b${it.bufferAfterSeconds}`}
-                              defaultValue={fmtTime(it.bufferAfterSeconds)}
-                              onBlur={(e) => {
-                                const sec = parseMmss(e.target.value);
-                                if (sec != null && sec >= 0 && sec !== it.bufferAfterSeconds)
-                                  updateItem(it.id, { bufferAfterSeconds: sec });
-                                else e.target.value = fmtTime(it.bufferAfterSeconds);
-                              }}
-                              title="บัฟเฟอร์ต่อท้ายรายการนี้ (พูด/เปลี่ยนชุด) — นาที:วินาที นับรวมในเวลาของช่วง"
-                              className="h-7 w-16 rounded-md border bg-background px-2 text-center tabular-nums"
-                            />
-                          </label>
-                          {it.kind === "song" && (
-                            <label className="flex items-center gap-1 text-muted-foreground">
-                              <Volume2 className="h-3 w-3" /> สวน
-                              <input
-                                key={`${it.id}-o${it.overlapLeadSeconds ?? 0}`}
-                                defaultValue={fmtOverlap(it.overlapLeadSeconds ?? 0)}
-                                onBlur={(e) => {
-                                  // ค่าติดลบเหมือนบัฟเฟอร์ติดลบใน Live Mode: -0:05 =
-                                  // เพลงนี้ดังสวนตอนรายการก่อนหน้ายังไม่จบ 5 วิ (เก็บเป็น
-                                  // lead บวกภายใน; พิมพ์บวกมาก็ตีความให้เหมือนกัน)
-                                  const sec = parseMmss(e.target.value);
-                                  const cur = it.overlapLeadSeconds ?? 0;
-                                  if (sec != null && Math.abs(sec) !== cur)
-                                    updateItem(it.id, { overlapLeadSeconds: Math.abs(sec) });
-                                  else e.target.value = fmtOverlap(cur);
+                          {/* "เข้าหลังเพลงก่อนหน้า": the setlist builder's one signed field (พี่
+                              2026-10-23), on every row but the first - it has no row above */}
+                          {i > 0 && (
+                            <label className="flex flex-wrap items-center gap-1 text-muted-foreground">
+                              <Timer className="h-3 w-3" /> {TIMING_LABEL} (วิ)
+                              <TimingInput
+                                aria-label={`${TIMING_LABEL} · ${it.title}`}
+                                title="ติดลบ = เล่นซ้อนเพลงก่อนหน้า (เช่น -5) · บวก = รอหลังเพลงก่อนหน้าจบ (เช่น 3) · 0 = เริ่มทันทีที่เพลงก่อนหน้าจบ · ทำงานในโหมด Auto"
+                                seconds={it.timingSeconds}
+                                className="h-7 w-16 px-2 text-center text-xs"
+                                onChange={() => {}}
+                                onCommit={(sec) => {
+                                  if (sec !== it.timingSeconds) updateItem(it.id, { timingSeconds: sec });
                                 }}
-                                placeholder="-0:05"
-                                title="ใส่ค่าติดลบ เช่น -0:05 = เพลงนี้ดังสวนขึ้นมาก่อนรายการก่อนหน้าจบ 5 วิ (เหมือนบัฟเฟอร์ติดลบใน Live Mode) — 0:00 = ปิด · ทำงานในโหมด Auto"
-                                className="h-7 w-16 rounded-md border bg-background px-2 text-center tabular-nums"
                               />
+                              <span className="text-[11px]">{timingMeaning(it.timingSeconds)}</span>
                             </label>
                           )}
                         </div>

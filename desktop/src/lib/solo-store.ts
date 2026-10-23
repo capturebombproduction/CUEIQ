@@ -22,11 +22,16 @@ export interface SoloItem {
   blob: Blob | null;
   /** Countdown length of this slot (auto-detected from the file for songs; editable). */
   durationSeconds: number;
-  /** Extra time appended after the song (talk/changeover) before the slot ends. */
-  bufferAfterSeconds: number;
-  /** เล่นสวน: this song pre-rolls |lead| sec BEFORE the previous slot ends (Auto),
-   *  overlapping it — the Quick Show port of Live Mode's negative buffer_before. */
-  overlapLeadSeconds: number;
+  /** "เข้าหลังเพลงก่อนหน้า" (TIMING_LABEL), signed, against the row ABOVE - a show's
+   *  buffer_before_seconds: -5 = comes in 5 s before it ends (Auto: over its last
+   *  seconds), 3 = waits 3 s after it ends, 0 = straight after. The first row's counts
+   *  for nothing. */
+  timingSeconds: number;
+  /** Legacy (บัฟเฟอร์ - time after this row): folded into the next row's timingSeconds
+   *  on read (foldSoloTimings) and 0 from then on. */
+  bufferAfterSeconds?: number;
+  /** Legacy (สวน - this song's lead over the row above): folded the same way. */
+  overlapLeadSeconds?: number;
   loop: boolean;
   volume: number; // 0–100 preset for this track
   sortOrder: number;
@@ -54,21 +59,45 @@ function openDB(): Promise<IDBDatabase> {
   });
 }
 
+/**
+ * The old two fields as the one "เข้าหลังเพลงก่อนหน้า" (พี่ 2026-10-23: "รวมช่องบัฟเฟอร์/สวน
+ * ... ช่องเดียวแบบ setlist"), the way 0049 folded a show's buffer_after into the next
+ * row's buffer_before: a row's บัฟเฟอร์ becomes the next row's wait, less that row's สวน
+ * (wait 15 then a 5 s lead = 10). A lead only ever counted on a song, and never on the
+ * first row; a last row's บัฟเฟอร์ has no row after it and is dropped, as 0049 did. The
+ * run times come out the same, the last row's tail aside. Already folded rows (both old
+ * fields 0) come back as they are, so this runs on every read.
+ */
+export function foldSoloTimings(sorted: SoloItem[]): SoloItem[] {
+  return sorted.map((row, i) => {
+    const carried = i > 0 ? Math.max(0, sorted[i - 1].bufferAfterSeconds || 0) : 0;
+    const lead = i > 0 && row.kind === "song" ? Math.max(0, row.overlapLeadSeconds || 0) : 0;
+    return {
+      ...row,
+      timingSeconds: Math.round((row.timingSeconds ?? 0) + carried - lead),
+      bufferAfterSeconds: 0,
+      overlapLeadSeconds: 0,
+    };
+  });
+}
+
+/** A stored row the fold changed - written back once, so the next launch reads it as is. */
+const foldedAway = (stored: SoloItem, row: SoloItem) =>
+  !!stored.bufferAfterSeconds ||
+  !!stored.overlapLeadSeconds ||
+  (stored.timingSeconds ?? 0) !== row.timingSeconds;
+
 export async function listSoloItems(): Promise<SoloItem[]> {
+  let stored: SoloItem[];
   try {
     const db = await openDB();
-    return await new Promise<SoloItem[]>((resolve, reject) => {
+    stored = await new Promise<SoloItem[]>((resolve, reject) => {
       const tx = db.transaction(ITEMS, "readonly");
       const req = tx.objectStore(ITEMS).getAll();
       req.onsuccess = () => {
         db.close();
         const rows = (req.result as SoloItem[]) ?? [];
-        resolve(
-          rows
-            .sort((a, b) => a.sortOrder - b.sortOrder)
-            // fields added after first release default in-place (records predate them)
-            .map((r) => ({ ...r, overlapLeadSeconds: r.overlapLeadSeconds ?? 0 }))
-        );
+        resolve(rows.sort((a, b) => a.sortOrder - b.sortOrder));
       };
       req.onerror = () => {
         db.close();
@@ -82,6 +111,12 @@ export async function listSoloItems(): Promise<SoloItem[]> {
   } catch {
     return [];
   }
+  const rows = foldSoloTimings(stored);
+  const changed = rows.filter((row, i) => foldedAway(stored[i], row));
+  // Best-effort: a write that fails leaves the old fields, and the next read folds
+  // them again to the same numbers.
+  if (changed.length > 0) await putSoloItems(changed).catch(() => {});
+  return rows;
 }
 
 export async function putSoloItem(item: SoloItem): Promise<void> {

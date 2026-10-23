@@ -135,8 +135,7 @@ function song(title: string, over: Partial<SoloItem> = {}): SoloItem {
     fileName: `${title}.mp3`,
     blob: audioBlob(),
     durationSeconds: 180,
-    bufferAfterSeconds: 0,
-    overlapLeadSeconds: 0,
+    timingSeconds: 0,
     loop: false,
     volume: 100,
     sortOrder: 1,
@@ -306,21 +305,18 @@ function nativeBridge() {
 // 1. The clock
 // ─────────────────────────────────────────────────────────────────────────────
 
-const OPENING = song("Opening", {
-  durationSeconds: 180,
-  bufferAfterSeconds: 15,
-  sortOrder: 1,
-});
+const OPENING = song("Opening", { durationSeconds: 180, sortOrder: 1 });
 const SECOND = song("Second", { durationSeconds: 200, sortOrder: 2 });
 const MC = mcBreak("MC Break", { durationSeconds: 300, sortOrder: 3 });
-const threeUp = () => [{ ...OPENING }, { ...SECOND }, { ...MC }];
+// Second waits 15 s after Opening ends ("เข้าหลังเพลงก่อนหน้า" +15): Opening's slot
+const threeUp = () => [{ ...OPENING }, { ...SECOND, timingSeconds: 15 }, { ...MC }];
 
 describe("Quick Show — the running order and the clock", () => {
   it("renders every row with its block length in mm:ss", async () => {
     await boot(threeUp());
 
-    // 3:00 + 0:15 of buffer, 3:20, 5:00 — the buffer is part of the SLOT, which
-    // is what the countdown counts down.
+    // 3:00 + the 0:15 Second waits after it, 3:20, 5:00 — the wait is part of
+    // Opening's SLOT, which is what the countdown counts down (as Live Mode's waitOf).
     expect(within(rowButton("Opening")).getByText("3:15")).toBeInTheDocument();
     expect(within(rowButton("Second")).getByText("3:20")).toBeInTheDocument();
     expect(within(rowButton("MC Break")).getByText("5:00")).toBeInTheDocument();
@@ -338,7 +334,7 @@ describe("Quick Show — the running order and the clock", () => {
 
     expect(media.state(primary).src).toBe(urlFor(OPENING));
     expect(media.callsFor(primary).filter((c) => c.type === "play")).toHaveLength(1);
-    // duration + buffer, not duration alone
+    // duration + the wait after it, not duration alone
     expect(countdown()).toBe("3:15");
 
     await tick(30_000);
@@ -852,7 +848,7 @@ describe("Quick Show — Auto mode", () => {
   // 20 s in full. It used to run Alpha's 10 s with Bravo already sounding, then show Bravo
   // 5 s short - "ตัวนับเวลา ... ดันไปคิดเวลาเพลงเต็มตามปกติ".
   it("เล่นสวน: the row runs out when the next song comes in, which counts its own length", async () => {
-    const [a1, a2, a3] = [{ ...A1 }, { ...A2, overlapLeadSeconds: 5 }, { ...A3 }];
+    const [a1, a2, a3] = [{ ...A1 }, { ...A2, timingSeconds: -5 }, { ...A3 }];
     await bootAuto([a1, a2, a3]);
     const first = media.first() as HTMLMediaElement;
     const second = media.second() as HTMLMediaElement;
@@ -877,11 +873,40 @@ describe("Quick Show — Auto mode", () => {
   });
 
   it("each row lists how long it runs: the overlap comes off the row it cuts short", async () => {
-    const [a1, a2, a3] = [{ ...A1 }, { ...A2, overlapLeadSeconds: 5 }, { ...A3 }];
+    const [a1, a2, a3] = [{ ...A1 }, { ...A2, timingSeconds: -5 }, { ...A3 }];
     await bootAuto([a1, a2, a3]);
     // Alpha 10 s less Bravo's 5 s: 0:05; Bravo its own 0:20
     expect(within(rowFor("Alpha")).getByText("0:05")).toBeInTheDocument();
     expect(within(rowFor("Bravo")).getByText("0:20")).toBeInTheDocument();
+  });
+
+  // A positive number is a wait: Alpha's countdown runs on, silent, until Bravo comes in.
+  it("a wait: the row above runs on until the next one comes in, which counts its own length", async () => {
+    const [a1, a2, a3] = [{ ...A1 }, { ...A2, timingSeconds: 3 }, { ...A3 }];
+    await bootAuto([a1, a2, a3]);
+    expect(within(rowFor("Alpha")).getByText("0:13")).toBeInTheDocument();
+    expect(within(rowFor("Bravo")).getByText("0:20")).toBeInTheDocument();
+
+    await tick(12_000);
+    expect(positionLabel()).toBe("1 / 3");
+    await tick(1_000);
+    expect(positionLabel()).toBe("2 / 3");
+    expect(countdown()).toBe("0:20");
+  });
+
+  // As in a show's setlist: any row may come in over the one above - an MC over a song's
+  // last seconds leaves that song to finish under it.
+  it("an MC set to come in over a song: the song plays its end out under it", async () => {
+    const mc = mcBreak("Talk", { durationSeconds: 60, sortOrder: 2, timingSeconds: -5 });
+    const [a1, a3] = [{ ...A1 }, { ...A3 }];
+    await bootAuto([a1, mc, a3]);
+    const first = media.first() as HTMLMediaElement;
+    expect(within(rowFor("Alpha")).getByText("0:05")).toBeInTheDocument();
+
+    await tick(5_000);
+    expect(positionLabel()).toBe("2 / 3");
+    expect(media.state(first).src).toBe(urlFor(a1));
+    expect(media.state(first).paused).toBe(false);
   });
 
   it("does not pre-roll an item with no lead set", async () => {
@@ -906,10 +931,13 @@ const countdownCard = () => heading().parentElement as HTMLElement;
 
 describe("Quick Show — the warning ladder", () => {
   it("a 1:32 item starts neutral, then warns and urges at its own scaled thresholds", async () => {
-    // Block 92 s = 80 + 12 after. The split is the point: a page that fed the ladder
+    // Block 92 s = 80 + the 12 the next row waits. The split is the point: a page that fed the ladder
     // durationSeconds (80 → 40/20) instead of the block `remaining` runs on would
     // still be neutral at 46 s left, and this test would catch it.
-    await boot([song("SE", { durationSeconds: 80, bufferAfterSeconds: 12, sortOrder: 1 })]);
+    await boot([
+      song("SE", { durationSeconds: 80, sortOrder: 1 }),
+      mcBreak("After", { durationSeconds: 60, sortOrder: 2, timingSeconds: 12 }),
+    ]);
     await click(startButton());
 
     // The zone is on the card as data, and each step is a stage.css class (the same
@@ -1191,5 +1219,39 @@ describe("Quick Show — an AIFF is never added", () => {
     expect(toast.error).toHaveBeenCalledWith("ใช้ไฟล์นี้ไม่ได้", expect.anything());
     expect(store.writes).toHaveLength(0);
     expect(store.items[0].blob).toBe(gone);
+  });
+});
+
+// พี่ 2026-10-23: "รวมช่องบัฟเฟอร์/สวนใน My Show เป็นช่อง เข้าหลังเพลงก่อนหน้า ช่องเดียวแบบ setlist".
+describe("Quick Show — เข้าหลังเพลงก่อนหน้า, one signed field as in the setlist", () => {
+  const editButton = () => screen.getByRole("button", { name: /แก้ไข/ });
+
+  it("every row but the first has it; -5 is saved on the row that comes in, said in words", async () => {
+    await boot([{ ...A1 }, { ...A2 }, { ...A3 }]);
+    await click(editButton());
+
+    expect(screen.queryByText(/บัฟเฟอร์/)).toBeNull();
+    expect(screen.queryByText(/สวน/)).toBeNull();
+    const fields = screen.getAllByLabelText(/เข้าหลังเพลงก่อนหน้า/);
+    expect(fields).toHaveLength(2); // Bravo and the MC - Alpha has no row above it
+    expect(screen.queryByLabelText("เข้าหลังเพลงก่อนหน้า · Alpha")).toBeNull();
+
+    const bravo = screen.getByLabelText("เข้าหลังเพลงก่อนหน้า · Bravo");
+    await act(async () => {
+      fireEvent.change(bravo, { target: { value: "-5" } });
+      fireEvent.blur(bravo);
+    });
+    await settle();
+
+    expect(store.items.find((it) => it.id === A2.id)?.timingSeconds).toBe(-5);
+    expect(screen.getByText("เล่นซ้อนเพลงก่อนหน้า 5 วิ")).toBeInTheDocument();
+    expect(within(rowFor("Alpha")).getByText("0:05")).toBeInTheDocument();
+  });
+
+  it("a positive one is a wait, shown on the row as one", async () => {
+    await boot([{ ...A1 }, { ...A2, timingSeconds: 3 }, { ...A3 }]);
+    expect(within(rowFor("Bravo")).getByText("รอ 3 วิ")).toBeInTheDocument();
+    await click(editButton());
+    expect(screen.getByText("รอ 3 วิ หลังเพลงก่อนหน้าจบ แล้วค่อยเริ่มเพลงนี้")).toBeInTheDocument();
   });
 });
