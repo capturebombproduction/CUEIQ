@@ -891,6 +891,10 @@ export function MyShow() {
   function fadeKey(target: number, ms = 2000) {
     const audio = audioRef.current;
     const sounding = playingId && audio && !audio.paused ? playingId : null;
+    // Auto Mute with nothing sounding has nothing to mute - and as a level set ahead of
+    // the cued row's turn it saved a 0: pressed after the last song ran out on its own,
+    // that song opened the next show silent (Live Mode's fadeKey, 2026-10-24).
+    if (!sounding && target <= 0) return;
     const id = sounding ?? items[state.currentIndex]?.id;
     if (!id) return;
     if (sounding && !(id in duckRef.current)) duckRef.current[id] = volumesRef.current[id] ?? 100;

@@ -2806,9 +2806,13 @@ export function LiveMode({
   // track the move is for that moment: the level it had comes back once it stops
   // sounding, and it is never saved as the song's level (intendedVolumes(true)).
   // Nothing sounding: the current row, as before - a level set ahead of its turn.
+  // …except Auto Mute: with nothing sounding there is nothing to mute, and as a level set
+  // ahead of its turn it saved a 0 - Auto Mute is how a show ends, pressed after the last
+  // song has run out on its own, so that song opened the next run silent (2026-10-24).
   function fadeKey(target: number, ms = 2000) {
     const audio = audioRef.current;
     const sounding = playingId && audio && !audio.paused ? playingId : null;
+    if (!sounding && target <= 0) return;
     const id = sounding ?? items[state.currentIndex]?.id;
     if (!id) return;
     if (sounding && !(id in duckRef.current)) {
@@ -3734,6 +3738,9 @@ export function LiveMode({
       // On a reset, here only: the reset just freed the viewers, and a level sent now
       // would land on devices that are their own again (and be saved there).
       if (isControllerRef.current && state.begun) setVolumeFor(id, prev);
+      // a key's fade still on its way down stops here: left running, it carried on to 0
+      // after the reset had given the level back, and the 0 was saved (2026-10-24)
+      else if (fadeTargetRef.current?.itemId === id) fadeVolumeFor(id, prev, 0);
       else setVolumes((v) => ({ ...v, [id]: prev }));
       gaveBack = true;
     }

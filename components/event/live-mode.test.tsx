@@ -2489,7 +2489,10 @@ describe("LiveMode · STAGE | CONSOLE", () => {
     expect(screen.getByRole("button", { name: "Live tools" })).toBe(tools);
   });
 
+  // a file that plays: Mute with nothing sounding has nothing to mute (fadeKey)
   it("CONSOLE's fader and fades drive Live's own volume, for the cued item (the wire says so)", async () => {
+    instrumentMediaElements();
+    h.saved = [{ itemId: "item-1", blob: new Blob(["a"]), name: "track-1.wav", path: null }];
     await mountLive();
     await startShowFromUi();
     fireEvent.click(screen.getByTestId("live-view-console"));
@@ -3678,6 +3681,71 @@ describe("LiveMode · the fade keys ride the track that is sounding, for that mo
       vi.advanceTimersByTime(500); // volume messages are spaced 120 ms apart
     });
     expect(volumeSends().at(-1)).toMatchObject({ itemId: "item-1", target: 100 });
+  });
+
+  // 2026-10-24 review: Auto Mute is how a show ends, so it gets pressed after the last song
+  // has already run out on its own. With nothing on the player the key used to take the
+  // cued row - that same song - fade it to 0 and save the 0 as its level: the next run of
+  // this event opened on a silent song.
+  it("a song that ran out on its own, then Auto Mute: its saved level stays its own", async () => {
+    const media = instrumentMediaElements();
+    h.saved = [{ itemId: "item-1", blob: new Blob(["a"]), name: "track-1.wav", path: null }];
+    await mountLive();
+    await startShowFromUi();
+    const primary = media.first()!;
+    await act(async () => {
+      primary.dispatchEvent(new Event("ended"));
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /Auto Mute/ }));
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(3_500);
+    });
+    await act(async () => {
+      window.dispatchEvent(new Event("pagehide")); // the flush that saves the levels
+    });
+    const saved = JSON.parse(localStorage.getItem(VOL_KEY) ?? "{}");
+    expect(saved["item-1"] ?? 100).toBe(100);
+  });
+
+  it("…while MC with nothing sounding still sets the cued row's level ahead of its turn", async () => {
+    instrumentMediaElements();
+    await mountLive(); // no file on this device: nothing sounds
+    await startShowFromUi();
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /^MC$/ }));
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(500);
+    });
+    expect(volumeSends().at(-1)).toMatchObject({ itemId: "item-1", target: 30 });
+  });
+
+  it("Auto Mute, then a reset before its fade has landed: the song keeps its own level", async () => {
+    instrumentMediaElements();
+    h.saved = [{ itemId: "item-1", blob: new Blob(["a"]), name: "track-1.wav", path: null }];
+    await mountLive();
+    await startShowFromUi();
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /Auto Mute/ }));
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(1_000); // a third of the way down
+    });
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("reset"));
+    });
+    confirm.mockRestore();
+    await act(async () => {
+      vi.advanceTimersByTime(3_000); // past where the fade would have landed
+    });
+    await act(async () => {
+      window.dispatchEvent(new Event("pagehide"));
+    });
+    const saved = JSON.parse(localStorage.getItem(VOL_KEY) ?? "{}");
+    expect(saved["item-1"] ?? 100).toBe(100);
   });
 });
 

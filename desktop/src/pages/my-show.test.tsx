@@ -1057,6 +1057,23 @@ describe("Quick Show — the fade keys ride the track that is sounding", () => {
     const level = screen.getByTitle("ความดังของแทร็คนี้ (จำค่าไว้ให้)") as HTMLInputElement;
     expect(level.value).toBe("100");
   });
+
+  // 2026-10-24 review: Auto Mute is how a show ends, so it gets pressed after the last song
+  // has already run out on its own. With nothing on the player the key used to take the
+  // cued row - that same song - fade it to 0 and save the 0 as its level: the next show
+  // opened on a silent song.
+  it("a song that ran out on its own, then Auto Mute: its saved level stays its own", async () => {
+    await boot(threeUp());
+    const primary = media.first() as HTMLMediaElement;
+    await click(startButton());
+    await act(async () => {
+      primary.dispatchEvent(new Event("ended"));
+    });
+    await click(screen.getByRole("button", { name: /Auto Mute/ }));
+    await tick(4_000);
+    await tick(1_000); // the level save (600 ms)
+    expect(store.items.find((it) => it.title === "Opening")?.volume ?? 100).toBe(100);
+  });
 });
 
 
