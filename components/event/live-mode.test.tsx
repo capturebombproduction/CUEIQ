@@ -3694,6 +3694,73 @@ describe("LiveMode · a file picked for a paused row is the file that resumes", 
   });
 });
 
+// 2026-10-24: the per-row level reached the element in an effect, one commit AFTER play():
+// a row set to 30 % opened for a frame at the previous song's 100 %. The level now goes on
+// before play(), as overlapSwap/crossfadeSwap already did for the spare element.
+describe("LiveMode · a row starts at its own level, not the last song's", () => {
+  const VOL_KEY = `cueiq:vol:${EVENT_ID}`;
+  const held = () => [
+    { itemId: "item-1", blob: new Blob(["one"]), name: "one.wav", path: null },
+    { itemId: "item-2", blob: new Blob(["two"]), name: "two.wav", path: null },
+  ];
+  /** The last volume written to `el` before the play() that followed its last src write. */
+  function volumeAtPlay(media: MediaInstrumentation, el: HTMLMediaElement): number | undefined {
+    const calls = media.calls.filter((c) => c.element === el);
+    let srcAt = -1;
+    calls.forEach((c, i) => {
+      if (c.type === "src") srcAt = i;
+    });
+    const playAt = calls.findIndex((c, i) => i > srcAt && c.type === "play");
+    expect(playAt).toBeGreaterThan(srcAt);
+    const vols = calls.slice(0, playAt).filter((c) => c.type === "volume");
+    return vols.length ? (vols[vols.length - 1].value as number) : undefined;
+  }
+
+  it("Manual: ▶ on the cued row - 30 % from its first frame", async () => {
+    localStorage.setItem(VOL_KEY, JSON.stringify({ "item-2": 30 }));
+    const media = instrumentMediaElements();
+    h.saved = held();
+    await mountLive();
+    await startShowFromUi();
+    const primary = media.first()!;
+    expect(media.state(primary).volume).toBeCloseTo(1); // item 1 at full
+    await act(async () => {
+      vi.advanceTimersByTime(1_000);
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("next")); // cue item 2, item 1 sounds on
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("run-toggle")); // commit it
+    });
+    expect(media.state(primary).paused).toBe(false);
+    expect(volumeAtPlay(media, primary)).toBeCloseTo(0.3);
+  });
+
+  it("Auto: the next row at the last one's end - 30 % from its first frame", async () => {
+    localStorage.setItem(VOL_KEY, JSON.stringify({ "item-2": 30 }));
+    const media = instrumentMediaElements();
+    h.saved = held();
+    await mountLive();
+    await startShowFromUi();
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /^Auto$/ }));
+    });
+    // item 1 is 4:00; Auto moves on at its end (NEXT is Manual's key)
+    for (let i = 0; i < 245; i++) {
+      await act(async () => {
+        vi.advanceTimersByTime(1_000);
+      });
+    }
+    expect(stateSends().at(-1)!.payload.currentIndex).toBe(1);
+    // the element the last file went onto is the one the next row plays on
+    const lastFile = [...media.calls].reverse().find((c) => c.type === "src" && /^blob:/.test(String(c.value)))!;
+    const sounding = lastFile.element;
+    expect(media.state(sounding).paused).toBe(false);
+    expect(volumeAtPlay(media, sounding)).toBeCloseTo(0.3);
+  });
+});
+
 // พี่ 2026-10-07: the NOW card's keys (Auto Mute / MC / Auto Loudness) act on the track
 // that is SOUNDING, and only for that moment. In Manual they used to fade the cued row
 // (nothing heard; a cued song came in silent), and a duck was saved as the song's level -

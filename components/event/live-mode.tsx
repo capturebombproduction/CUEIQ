@@ -441,6 +441,16 @@ export function LiveMode({
   // where the running fade IS, unrounded (lib/fade.ts): while it runs it drives its track's
   // element itself, and a fade that replaces it starts from here, not the rounded slider
   const fadeNowRef = useRef<{ itemId: string; level: number } | null>(null);
+  // A row's own level, on the element BEFORE its play(). The effect that applies it runs
+  // after the next commit, and until then the element still carries the previous track's
+  // level: a row set to 30 % opened for a frame at the last song's 100 %. overlapSwap and
+  // crossfadeSwap already did this for the spare element. A fade running on the row owns
+  // its level - the element takes where the fade IS.
+  function levelOnto(el: HTMLMediaElement, itemId: string) {
+    const fading = fadeNowRef.current;
+    const level = fading?.itemId === itemId ? fading.level : levelOf(itemId);
+    el.volume = Math.min(1, Math.max(0, level / 100));
+  }
   // throttle state for volume broadcasts (slider drag would otherwise flood the channel)
   const volBcastRef = useRef<{
     last: number;
@@ -2902,6 +2912,7 @@ export function LiveMode({
           } else {
             audio.src = url;
             audio.currentTime = filePos(cur.id, offset);
+            levelOnto(audio, cur.id);
             setPlayingId(cur.id);
             audio.play().catch((err) => onPlayRejected(cur.id, err));
             setAudioPlaying(true);
@@ -3194,6 +3205,7 @@ export function LiveMode({
       audio.pause();
       audio.src = url;
       audio.currentTime = 0;
+      levelOnto(audio, itemId);
       audio.play().catch((err) => onPlayRejected(itemId, err));
       setPlayingId(itemId);
       setAudioPlaying(true);
@@ -3366,7 +3378,10 @@ export function LiveMode({
     const pos = anchor ? (Date.now() - anchor) / 1000 : 0;
     // not a file replaced while paused (a sounding element is never swapped here)
     const held = playingId === sid && (!audio.paused || holdsFile(audio, url));
-    if (!held) audio.src = url;
+    if (!held) {
+      audio.src = url;
+      levelOnto(audio, sid);
+    }
     audio.currentTime = filePos(sid, pos, held ? audio : null);
     setPlayingId(sid);
     audio
@@ -3530,6 +3545,7 @@ export function LiveMode({
           // sat paused) — switch to the anchor track and seek
           audio.src = url;
           audio.currentTime = filePos(cur.id, offset);
+          levelOnto(audio, cur.id);
           setPlayingId(cur.id);
         } else if (!haveLocalAudio) {
           // same track but it wasn't actively playing — resync its position
