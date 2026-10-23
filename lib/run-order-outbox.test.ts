@@ -4,6 +4,7 @@ import {
   compactPatch,
   applyRunSeqOverlay,
   mergeOp,
+  patchAlreadyHolds,
   type RunSeqOp,
   type RunSeqPatch,
 } from "@/lib/run-order-outbox";
@@ -234,5 +235,34 @@ describe("rebasing a press that merged in mid-flush", () => {
   it("carries a cleared value through as the new precondition", () => {
     const replayed = op({ patch: { offset_min: null }, expect: { offset_min: 7 } });
     expect(rebased(replayed)).toEqual({ offset_min: null });
+  });
+});
+
+// A replay whose earlier attempt LANDED but whose answer was lost: the row already
+// holds the patch, so the conditional UPDATE matches nothing. That is the operator's
+// own press, done — it used to be parked as someone else's conflict.
+describe("a press that already landed is not a conflict", () => {
+  it("classifyReplay: nothing matched, row there, and it already holds the patch → done", () => {
+    expect(classifyReplay(0, true, true)).toBe("done");
+    expect(classifyReplay(0, true, false)).toBe("conflict");
+    expect(classifyReplay(0, false, true)).toBe("dropped");
+  });
+
+  it("patchAlreadyHolds compares timestamps as instants, not strings", () => {
+    const patch: RunSeqPatch = { status: "live", actual_start: "2026-10-24T12:00:00.000Z" };
+    expect(patchAlreadyHolds(patch, { status: "live", actual_start: "2026-10-24T12:00:00+00:00" })).toBe(true);
+    expect(patchAlreadyHolds(patch, { status: "live", actual_start: "2026-10-24T12:00:05+00:00" })).toBe(false);
+    expect(patchAlreadyHolds(patch, { status: "next", actual_start: "2026-10-24T12:00:00+00:00" })).toBe(false);
+  });
+
+  it("null is a value: a cleared column holds only when the server's is null too", () => {
+    expect(patchAlreadyHolds({ offset_min: null }, { offset_min: null })).toBe(true);
+    expect(patchAlreadyHolds({ offset_min: null }, { offset_min: 5 })).toBe(false);
+    expect(patchAlreadyHolds({ offset_min: 0 }, { offset_min: null })).toBe(false);
+    expect(patchAlreadyHolds({ offset_min: 0 }, { offset_min: 0 })).toBe(true);
+  });
+
+  it("an empty patch holds nothing (never a silent 'done')", () => {
+    expect(patchAlreadyHolds({}, { status: "live" })).toBe(false);
   });
 });

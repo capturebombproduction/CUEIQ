@@ -174,10 +174,45 @@ export function applyRunSeqOverlay<T extends { id: string }>(
  */
 export function classifyReplay(
   rows: number,
-  stillExists: boolean
+  stillExists: boolean,
+  alreadyHolds = false
 ): "done" | "dropped" | "conflict" {
   if (rows > 0) return "done";
-  return stillExists ? "conflict" : "dropped";
+  if (!stillExists) return "dropped";
+  // The row matched nothing because it ALREADY says what we were going to write:
+  // our own earlier attempt landed and only its answer was lost (venue wifi drops
+  // the response as readily as the request). That is this press, done — not
+  // someone else driving the board.
+  return alreadyHolds ? "done" : "conflict";
+}
+
+/** The columns a probe may read back — the patch's own, never anything else. */
+const PATCH_COLUMNS: (keyof RunSeqPatch)[] = [
+  "status",
+  "actual_start",
+  "actual_end",
+  "offset_min",
+  "buffer_seconds",
+];
+
+/**
+ * Does the server row already hold every value this patch writes? Timestamps are
+ * compared as instants: PostgREST answers `…+00:00` for what we sent as `….000Z`.
+ */
+export function patchAlreadyHolds(patch: RunSeqPatch, row: Record<string, unknown>): boolean {
+  const keys = PATCH_COLUMNS.filter((k) => patch[k] !== undefined);
+  if (keys.length === 0) return false;
+  return keys.every((k) => {
+    const want = patch[k];
+    const have = row[k];
+    if (want === null || have === null || have === undefined) return want === null && have == null;
+    if (k === "actual_start" || k === "actual_end") {
+      const a = Date.parse(String(want));
+      const b = Date.parse(String(have));
+      return Number.isFinite(a) && a === b;
+    }
+    return String(want) === String(have);
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -570,22 +605,27 @@ async function doFlush(): Promise<RunSeqFlushResult> {
       // Only ask whether the row still exists when nothing matched; on the happy
       // path this would be a second round trip per op for no information.
       let stillExists = false;
+      let alreadyHolds = false;
       if (matched === 0) {
         // The session can also expire DURING the flush — a long queue on venue
         // wifi is minutes of round trips. Re-ask before reading anything into an
         // empty answer, because from here the next step either parks or deletes.
         if (!(await hasLiveSession())) continue;
+        // Read back the patched columns too, so "the row already says this" (an
+        // earlier attempt whose answer was lost) is not parked as a conflict.
+        const cols = PATCH_COLUMNS.filter((k) => op.patch[k] !== undefined);
         const { data: probe, error: probeErr } = await supabase
           .from("run_sequence")
-          .select("id")
+          .select(["id", ...cols].join(", "))
           .eq("id", op.rowId)
           .maybeSingle();
         // Couldn't find out → don't guess. Leaving it queued is the reversible
         // choice; parking or dropping on a failed probe is not.
         if (probeErr) continue;
         stillExists = !!probe;
+        alreadyHolds = !!probe && patchAlreadyHolds(op.patch, probe as unknown as Record<string, unknown>);
       }
-      const verdict = classifyReplay(matched, stillExists);
+      const verdict = classifyReplay(matched, stillExists, alreadyHolds);
       if (verdict === "conflict") parked.push(op);
       else {
         // "done" or "dropped" — either way it leaves the queue, and it leaves NOW
