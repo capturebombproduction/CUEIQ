@@ -473,7 +473,8 @@ export interface PracticeRun {
   id: string;
   tenant_id: string;
   group_id: string;
-  event_id: string;
+  /** null = its room was deleted (0051): the run is kept as the band's history. */
+  event_id: string | null;
   song_id: string | null;
   song_title: string;
   seconds: number;

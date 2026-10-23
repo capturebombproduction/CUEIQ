@@ -4,10 +4,11 @@ import { describe, expect, it } from "vitest";
 
 // 2026-10-19: deleting Seishin's practice room took 104 runs, its journal and its
 // attendance with it - 0024 made every practice table's event_id NOT NULL + ON DELETE
-// CASCADE. 0051 keeps what the band did and wrote (runs, journal) and drops only what
-// IS the room (its song list, its check-in strip). Read the migrations in order and
-// pin the delete rule each one ends on, so a later migration cannot put the cascade
-// back without this failing.
+// CASCADE. 0051 keeps what the band DID there (practice_runs) and still deletes what
+// the confirm says goes: the room's list, its check-in strip, and the journal people
+// typed (staff-only coaching notes included - a room-less note could never be deleted).
+// Read the migrations in order and pin the delete rule each one ends on, so a later
+// migration cannot change either side without this failing.
 
 const dir = path.resolve(__dirname, "../supabase/migrations");
 
@@ -39,11 +40,11 @@ function eventIdRule(table: string): { onDelete: string; notNull: boolean } {
 }
 
 describe("a practice room's delete keeps the band's history (0051)", () => {
-  it.each(["practice_runs", "practice_logs"])("%s.event_id is nullable and SET NULL", (t) => {
-    expect(eventIdRule(t)).toEqual({ onDelete: "set null", notNull: false });
+  it("practice_runs.event_id is nullable and SET NULL", () => {
+    expect(eventIdRule("practice_runs")).toEqual({ onDelete: "set null", notNull: false });
   });
 
-  it.each(["practice_songs", "practice_attendance"])("%s still goes with its room", (t) => {
+  it.each(["practice_songs", "practice_attendance", "practice_logs"])("%s still goes with its room", (t) => {
     expect(eventIdRule(t)).toEqual({ onDelete: "cascade", notNull: true });
   });
 });
