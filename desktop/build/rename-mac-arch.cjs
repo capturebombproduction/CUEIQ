@@ -46,7 +46,8 @@ exports.default = async function renameMacArch(context) {
 
   const dmgs = paths.filter((p) => /-Mac-(Apple-Silicon|Intel)\.dmg$/.test(p) && fs.existsSync(p));
   if (dmgs.length === 0) return paths;
-  const version = require("../package.json").version;
+  const pkg = require("../package.json");
+  const version = pkg.version;
   const files = [];
   for (const p of dmgs) {
     const name = path.basename(p);
@@ -56,7 +57,15 @@ exports.default = async function renameMacArch(context) {
     files.push({ url: name, sha512: await sha512Base64(p), size: fs.statSync(p).size });
   }
   const feed = path.join(path.dirname(dmgs[0]), "latest-mac.yml");
-  fs.writeFileSync(feed, macFeedYml({ version, files, releaseDate: new Date().toISOString() }));
+  fs.writeFileSync(
+    feed,
+    macFeedYml({
+      version,
+      files,
+      releaseDate: new Date().toISOString(),
+      minimumSystemVersion: pkg.build?.mac?.minimumSystemVersion,
+    })
+  );
   console.log(`[rename-mac-arch] wrote ${feed} (${files.map((f) => f.url).join(", ")})`);
   return [...paths, feed];
 };

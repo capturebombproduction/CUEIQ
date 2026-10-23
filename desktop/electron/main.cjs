@@ -491,6 +491,14 @@ async function checkMacFeed() {
     setUpdateState({ state: "uptodate", latest });
     return;
   }
+  // A release this macOS cannot run is not offered at all - neither the self-swap (it
+  // deletes this bundle first) nor the .dmg link. update-feed.cjs macOsBelow.
+  if (updateFeed.macOsBelow(process.getSystemVersion(), feed?.minimumSystemVersion)) {
+    console.log(`AUTOUPDATE_MAC_OS_TOO_OLD ${process.getSystemVersion()} < ${feed.minimumSystemVersion} (${latest})`);
+    macPlan = null;
+    setUpdateState({ state: "uptodate", latest: app.getVersion() });
+    return;
+  }
   const asset = updateFeed.macAssetFor(feed, process.arch, rosetta);
   const failedBefore = updateFeed.macFailedRoute(latest, macSwapFailed, macStageFailed);
   macBlocker = failedBefore ? failedBefore.blocker : asset ? macSelfUpdateBlocker() : "no-feed";

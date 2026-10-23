@@ -63,8 +63,12 @@ function macDmgUrl(version, arch, underRosetta = false) {
  *       size: 123
  *   releaseDate: '…'
  */
-function macFeedYml({ version, files, releaseDate }) {
-  const lines = [`version: ${version}`, "files:"];
+function macFeedYml({ version, files, releaseDate, minimumSystemVersion }) {
+  const lines = [`version: ${version}`];
+  // The macOS this release needs (package.json mac.minimumSystemVersion). The app being
+  // replaced reads it BEFORE it swaps itself out - see macOsBelow.
+  if (minimumSystemVersion) lines.push(`minimumSystemVersion: '${minimumSystemVersion}'`);
+  lines.push("files:");
   for (const f of files) {
     lines.push(`  - url: ${f.url}`, `    sha512: ${f.sha512}`, `    size: ${f.size}`);
   }
@@ -93,7 +97,30 @@ function parseFeedYml(text) {
       cur = null; // a top-level key ends the files list
     }
   }
-  return { version, files: files.filter((f) => f.sha512 && f.size > 0) };
+  const min = /^minimumSystemVersion:\s*['"]?(\d+(?:\.\d+){0,2})['"]?\s*$/m.exec(String(text));
+  return {
+    version,
+    files: files.filter((f) => f.sha512 && f.size > 0),
+    minimumSystemVersion: min ? min[1] : null,
+  };
+}
+
+/** Is this Mac's macOS (process.getSystemVersion(), "12.7.6") older than what the release
+ *  needs ("13.0")? The Mac self-update deletes the old bundle before the new one first
+ *  launches (mac-update.cjs), so offering a build this macOS cannot start would leave the
+ *  operator with no app at all - Electron 45 / v0.1.43 was the first to need 13.0.
+ *  Unknown on either side = false: a feed without the field (every release before it)
+ *  behaves exactly as before. */
+function macOsBelow(current, minimum) {
+  const parts = (v) => {
+    const m = /^(\d+)(?:\.(\d+))?(?:\.(\d+))?$/.exec(String(v ?? "").trim());
+    return m ? [Number(m[1]), Number(m[2] ?? 0), Number(m[3] ?? 0)] : null;
+  };
+  const c = parts(current);
+  const m = parts(minimum);
+  if (!c || !m) return false;
+  for (let i = 0; i < 3; i++) if (c[i] !== m[i]) return c[i] < m[i];
+  return false;
 }
 
 /** This Mac's entry in a parsed latest-mac.yml, or null. */
@@ -184,6 +211,7 @@ module.exports = {
   macDmgUrl,
   macFeedYml,
   parseFeedYml,
+  macOsBelow,
   macAssetFor,
   macBundleFromExe,
   macBundleBlocker,

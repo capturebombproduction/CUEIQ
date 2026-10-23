@@ -384,6 +384,8 @@ describe("the build's feed (rename-mac-arch.cjs) is what the app will check agai
       sha512: sha512(intelBytes),
       size: 7000,
     });
+    // what the release needs, from package.json - the app being replaced checks it first
+    expect(fs.readFileSync(yml, "utf8")).toContain("minimumSystemVersion: '13.0'");
   });
 
   it("a Windows-only build writes no Mac feed", async () => {

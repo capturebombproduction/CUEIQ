@@ -17,8 +17,11 @@ const feed = require("../../electron/update-feed.cjs") as {
   LATEST_MAC_YML_URL: string;
   macDmgName: (v: string, arch: string, rosetta?: boolean) => string;
   releaseAssetUrl: (v: string, name: string) => string;
-  macFeedYml: (f: { version: string; files: FeedFile[]; releaseDate: string }) => string;
-  parseFeedYml: (t: unknown) => { version: string; files: FeedFile[] } | null;
+  macFeedYml: (f: { version: string; files: FeedFile[]; releaseDate: string; minimumSystemVersion?: string }) => string;
+  parseFeedYml: (
+    t: unknown
+  ) => { version: string; files: FeedFile[]; minimumSystemVersion: string | null } | null;
+  macOsBelow: (current: unknown, minimum: unknown) => boolean;
   macAssetFor: (
     feed: { version: string; files: FeedFile[] } | null,
     arch: string,
@@ -107,7 +110,7 @@ describe("latest-mac.yml", () => {
 
   it("reads back exactly what the build writes", () => {
     const yml = feed.macFeedYml({ version: "0.1.26", files, releaseDate: "2026-10-04T01:02:03.000Z" });
-    expect(feed.parseFeedYml(yml)).toEqual({ version: "0.1.26", files });
+    expect(feed.parseFeedYml(yml)).toEqual({ version: "0.1.26", files, minimumSystemVersion: null });
     expect(feed.versionFromLatestYml(yml)).toBe("0.1.26");
   });
 
@@ -125,6 +128,7 @@ describe("latest-mac.yml", () => {
     expect(feed.parseFeedYml(yml)).toEqual({
       version: "0.1.27",
       files: [{ url: "CueIQ-0.1.27-Mac-Intel.dmg", sha512: "ZZZ=", size: 99 }],
+      minimumSystemVersion: null,
     });
   });
 
@@ -132,7 +136,7 @@ describe("latest-mac.yml", () => {
     const yml = ["version: 0.1.26", "files:", "  - url: a.dmg", "    size: 5", "  - url: b.dmg", "    sha512: X=="].join(
       "\n"
     );
-    expect(feed.parseFeedYml(yml)).toEqual({ version: "0.1.26", files: [] });
+    expect(feed.parseFeedYml(yml)).toEqual({ version: "0.1.26", files: [], minimumSystemVersion: null });
     expect(feed.parseFeedYml("<html>Not Found</html>")).toBeNull();
     expect(feed.parseFeedYml(undefined)).toBeNull();
   });
@@ -148,6 +152,43 @@ describe("latest-mac.yml", () => {
     expect(feed.macDmgUrl("0.1.26", "arm64")).toBe(
       feed.releaseAssetUrl("0.1.26", feed.macDmgName("0.1.26", "arm64"))
     );
+  });
+});
+
+// Electron 45 (v0.1.43) needs macOS 13. The Mac self-update deletes the old bundle before the
+// new one first launches, so a Mac on macOS 12 that took it would be left with no app. The
+// feed says what the release needs; the app being replaced checks it before offering.
+describe("a release this macOS cannot run is not offered", () => {
+  const files: FeedFile[] = [{ url: "CueIQ-0.1.43-Mac-Intel.dmg", sha512: "AAAA=", size: 1 }];
+
+  it("the feed carries the release's minimum macOS, and reads it back", () => {
+    const yml = feed.macFeedYml({ version: "0.1.43", files, releaseDate: "x", minimumSystemVersion: "13.0" });
+    expect(yml).toContain("minimumSystemVersion: '13.0'");
+    expect(feed.parseFeedYml(yml)).toEqual({ version: "0.1.43", files, minimumSystemVersion: "13.0" });
+  });
+
+  it.each([
+    ["12.7.6", "13.0", true],
+    ["10.15.7", "13", true],
+    ["13.0", "13.0", false],
+    ["13.6.1", "13.0", false],
+    ["26.0.1", "13.0", false],
+  ])("macOS %s against %s → too old: %s", (current, minimum, tooOld) => {
+    expect(feed.macOsBelow(current, minimum)).toBe(tooOld);
+  });
+
+  // Every release before 0.1.43 has no such field; those feeds must behave as before.
+  it("unknown on either side is not 'too old'", () => {
+    expect(feed.macOsBelow("12.7.6", null)).toBe(false);
+    expect(feed.macOsBelow("", "13.0")).toBe(false);
+    expect(feed.macOsBelow("12.7.6", "thirteen")).toBe(false);
+  });
+
+  it("main.cjs checks it before it plans a swap or offers the .dmg", () => {
+    const main = fs.readFileSync(path.join(__dirname, "../../electron/main.cjs"), "utf8");
+    const check = main.indexOf("updateFeed.macOsBelow(process.getSystemVersion(), feed?.minimumSystemVersion)");
+    expect(check).toBeGreaterThan(-1);
+    expect(check).toBeLessThan(main.indexOf("const asset = updateFeed.macAssetFor(feed"));
   });
 });
 
