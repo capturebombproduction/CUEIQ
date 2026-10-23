@@ -6,7 +6,7 @@ import {
   performingMembers,
   type ExportData,
 } from "@/lib/export-excel";
-import type { Member, MicAssignment } from "@/lib/types";
+import type { Member, MicAssignment, SetlistItem } from "@/lib/types";
 
 function member(over: Partial<Member> & { id: string; name: string }): Member {
   return {
@@ -171,5 +171,34 @@ describe("buildRunSheetWorkbook", () => {
     expect(flat(wb, "Lineup")).toContain("ยังไม่มีสมาชิก");
     // and the run-sheet header drops the ไลน์อัพ line rather than printing "0 คน"
     expect(flat(wb, "Run Sheet")).not.toContain("ไลน์อัพ");
+  });
+
+  // พี่ 2026-10-19 "ควรใช้คำเดียวกัน": the printout still said "Buf ก่อน(s)" / "Buf หลัง(s)" -
+  // the builder's two old fields - for the one "เข้าหลังเพลงก่อนหน้า" every screen sets now.
+  it("prints the timing under its one name, signed, with none on the first row", () => {
+    const setItem = (id: string, sort: number, bb: number) =>
+      ({
+        id,
+        tenant_id: "t1",
+        event_id: "e1",
+        kind: "song",
+        title: id,
+        duration_seconds: 180,
+        buffer_before_seconds: bb,
+        buffer_after_seconds: 0,
+        mic_slots: [],
+        notes: null,
+        sort_order: sort,
+      }) as SetlistItem;
+    const wb = buildRunSheetWorkbook(
+      data({ setlist: [setItem("Opener", 1, 7), setItem("Overlap", 2, -5), setItem("Wait", 3, 3)] })
+    );
+    const sheet = rows(wb, "Run Sheet");
+    const head = sheet.find((r) => r[0] === "#")!;
+    expect(flat(wb, "Run Sheet")).not.toContain("Buf");
+    const col = head.indexOf("เข้าหลังเพลงก่อนหน้า (วิ)");
+    expect(col).toBeGreaterThan(-1);
+    const at = (title: string) => sheet.find((r) => r[2] === title)![col];
+    expect([at("Opener"), at("Overlap"), at("Wait")]).toEqual(["", "-5", "+3"]);
   });
 });

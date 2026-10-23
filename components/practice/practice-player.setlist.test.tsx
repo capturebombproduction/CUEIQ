@@ -269,7 +269,14 @@ const mount = ({ canManage = false } = {}) =>
     </ConfirmProvider>
   );
 const engine = () => h.engines[h.engines.length - 1];
-const end = () => act(() => engine().onEnded());
+// as the engine does at a song's end: not playing any more, then ended
+const end = () =>
+  act(() => {
+    const e = engine();
+    e.playing = false;
+    e.onPlayingChange(false);
+    e.onEnded();
+  });
 
 describe("PracticePlayer — ซ้อมตามเซ็ตลิสต์", () => {
   it("plays the set in order, each song starting as the last one ends, then stops", async () => {
@@ -771,7 +778,7 @@ describe("PracticePlayer — เล่นซ้อน: the bar's time ends where
 // list is a set of its own in the same card - ordered by the band, with its own เล่นซ้อน,
 // saved to practice_songs and never to a show's setlist.
 describe("PracticePlayer — เซ็ตของห้องนี้ (สร้างเอง)", () => {
-  function Room({ start }: { start: PracticeSong[] }) {
+  function Room({ start, library = songs }: { start: PracticeSong[]; library?: Song[] }) {
     const [list, setList] = useState(start);
     return (
       <ConfirmProvider>
@@ -779,7 +786,7 @@ describe("PracticePlayer — เซ็ตของห้องนี้ (สร�
           eventId="room-1"
           groupId="g1"
           currentUserId="u1"
-          songs={songs}
+          songs={library}
           items={list}
           setItems={setList}
           markers={{}}
@@ -863,6 +870,27 @@ describe("PracticePlayer — เซ็ตของห้องนี้ (สร�
     expect(within(setCard()).getByText("เล่นซ้อนเพลงก่อนหน้า 5 วิ")).toBeTruthy();
   });
 
+  // A row the set leaves out (here: a song with no file; on a desktop, one only another
+  // device holds) kept its old number while the rest were numbered 1..n around it, so two
+  // rows could share one - and a device that does play it read the order as it liked.
+  it("a move numbers the whole list, a row the set leaves out keeping its place", async () => {
+    const library = [...songs, { ...song("dead", "No File Yet"), audio_path: null } as unknown as Song];
+    const start = [
+      { id: "p1", song_id: "iam", sort_order: 1, buffer_before_seconds: 0 },
+      { id: "p2", song_id: "dead", sort_order: 2, buffer_before_seconds: 0 },
+      { id: "p3", song_id: "boot", sort_order: 3, buffer_before_seconds: 0 },
+    ] as PracticeSong[];
+    render(<Room start={start} library={library} />);
+    await pickRoom();
+    fireEvent.click(within(setCard()).getByRole("button", { name: /แก้เซ็ต/ }));
+    fireEvent.click(screen.getByRole("button", { name: "เลื่อนขึ้น · [SYSTEM_BOOT] SE" }));
+    await waitFor(() => expect(h.updates).toHaveLength(2));
+    expect(h.updates).toEqual([
+      { table: "practice_songs", values: { sort_order: 1 }, id: "p3" },
+      { table: "practice_songs", values: { sort_order: 3 }, id: "p1" },
+    ]);
+  });
+
   it("remembers the room's set as this room's pick", async () => {
     const first = render(<Room start={own} />);
     await pickRoom();
@@ -871,6 +899,54 @@ describe("PracticePlayer — เซ็ตของห้องนี้ (สร�
     await waitFor(() =>
       expect((screen.getByLabelText("เลือกงานที่จะซ้อม") as HTMLSelectElement).value).toBe("room")
     );
+  });
+
+  // The pick was read in the first render: the server has no localStorage and drew the
+  // "loading" line, the browser read "room" and drew the set - React threw the page's
+  // HTML away and drew it again, every time the room opened on that pick.
+  it("a remembered pick opens the room without a hydration mismatch", async () => {
+    const { renderToString } = await import("react-dom/server");
+    const { hydrateRoot } = await import("react-dom/client");
+    window.localStorage.setItem("cueiq:practice-set:room-1", "room");
+    const el = <Room start={own} />;
+    const server = vi.spyOn(Storage.prototype, "getItem").mockReturnValue(null); // no storage there
+    const html = renderToString(el);
+    server.mockRestore();
+    const container = document.createElement("div");
+    container.innerHTML = html;
+    document.body.appendChild(container);
+    const errors: unknown[] = [];
+    let root: { unmount: () => void } | null = null;
+    try {
+      await act(async () => {
+        root = hydrateRoot(container, el, { onRecoverableError: (e) => errors.push(e) });
+      });
+      await waitFor(() =>
+        expect((within(container).getByLabelText("เลือกงานที่จะซ้อม") as HTMLSelectElement).value).toBe("room")
+      );
+      expect(errors).toEqual([]);
+    } finally {
+      act(() => root?.unmount());
+      container.remove();
+    }
+  });
+
+  it("with no show coming up, it opens on the room's own set, not last week's show", async () => {
+    const past = new Date(Date.now() - 7 * 86400000).toISOString().slice(0, 10);
+    h.shows = [{ id: "show-old", name: "Last week", event_date: past, setlist_items: [row("r1", 1, "boot")] }];
+    render(<Room start={own} />);
+    await screen.findByRole("button", { name: /เล่นทั้งเซ็ต/ });
+    expect((screen.getByLabelText("เลือกงานที่จะซ้อม") as HTMLSelectElement).value).toBe("room");
+    // …and last week's show is still there to pick
+    expect(within(screen.getByLabelText("เลือกงานที่จะซ้อม")).getByRole("option", { name: /Last week/ })).toBeTruthy();
+  });
+
+  it("…but a room with no songs of its own yet opens on the last show", async () => {
+    const past = new Date(Date.now() - 7 * 86400000).toISOString().slice(0, 10);
+    h.shows = [{ id: "show-old", name: "Last week", event_date: past, setlist_items: [row("r1", 1, "boot")] }];
+    render(<Room start={[]} />);
+    await screen.findByRole("button", { name: /เล่นทั้งเซ็ต/ });
+    expect((screen.getByLabelText("เลือกงานที่จะซ้อม") as HTMLSelectElement).value).toBe("show-old");
   });
 });
 
@@ -911,6 +987,17 @@ describe("PracticePlayer — a positive เข้าหลังเพลงก�
     expect(screen.getByLabelText("เข้าหลังเพลงก่อนหน้า · Neon Lullaby 1 วินาที")).toBeTruthy();
   });
 
+  const hook = {
+    id: "m1",
+    tenant_id: "t1",
+    group_id: "g1",
+    song_id: "iam",
+    label: "Hook",
+    position_seconds: 30,
+    sort_order: 1,
+    created_by: null,
+    created_at: "2026-10-23T00:00:00Z",
+  };
   function RoomSet({ start }: { start: PracticeSong[] }) {
     const [list, setList] = useState(start);
     return (
@@ -922,7 +1009,7 @@ describe("PracticePlayer — a positive เข้าหลังเพลงก�
           songs={songs}
           items={list}
           setItems={setList}
-          markers={{}}
+          markers={{ iam: [hook] }}
           setMarkers={() => {}}
           canManage={false}
           canCurate
@@ -970,5 +1057,45 @@ describe("PracticePlayer — a positive เข้าหลังเพลงก�
     await waitFor(() => expect(engine().loads).toEqual(["iam.wav", "other.wav"]));
     await new Promise((r) => setTimeout(r, 1300));
     expect(engine().loads).toEqual(["iam.wav", "other.wav"]);
+  });
+
+  // The song that just ended, played again in the wait, is not cut off by the next one
+  // a second later: only ▶ called the wait off, so these four went on into it.
+  it.each([
+    [
+      "its row in the Queue",
+      () =>
+        fireEvent.click(
+          within(screen.getByRole("region", { name: "Queue" })).getByRole("button", { name: /I Am Who I Am/ })
+        ),
+    ],
+    ["one of its sections", () => fireEvent.click(screen.getByTitle(/ไปที่ Hook/))],
+    ["⏮", () => fireEvent.click(screen.getByRole("button", { name: "กลับต้นเพลง / เพลงก่อนหน้า" }))],
+    [
+      "the scrubber",
+      () => {
+        act(() => engine().onDuration(200)); // the bar's length is the song's
+        fireEvent.change(screen.getByLabelText("ตำแหน่งในเพลง"), { target: { value: "40" } });
+      },
+    ],
+  ])("taking up the ended song again by %s calls the wait off", async (_, again) => {
+    await playRoomSet();
+    end();
+    expect(screen.getByText(/รอ 1 วิ แล้วเริ่มเพลงถัดไป/)).toBeTruthy();
+    again();
+    expect(screen.queryByText(/รอ 1 วิ แล้วเริ่มเพลงถัดไป/)).toBeNull();
+    await new Promise((r) => setTimeout(r, 1300));
+    expect(engine().loads).toEqual(["iam.wav"]);
+  });
+
+  it("a wait still running when the song is sounding again does not cut in", async () => {
+    await playRoomSet();
+    end();
+    // the song started again by a path that never said so (the engine's own play)
+    await act(async () => {
+      await (engine() as unknown as { play: () => Promise<void> }).play();
+    });
+    await new Promise((r) => setTimeout(r, 1300));
+    expect(engine().loads).toEqual(["iam.wav"]);
   });
 });

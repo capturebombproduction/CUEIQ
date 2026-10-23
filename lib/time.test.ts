@@ -219,6 +219,15 @@ describe("computeSetlistTimes — the run-sheet engine", () => {
     expect(r.rows[1]).toMatchObject({ startSec: 200, blockSeconds: 180 });
   });
 
+  // An overlap that cannot pull a row before the start of the one above (a 0:00 MC, or a
+  // lead longer than the row) leaves it coming in right where that row ends: its block
+  // still took the lead off its own length (4:00 at -5 read 3:55).
+  it("a lead that cannot move a row leaves its block its own length", () => {
+    const r = computeSetlistTimes([item(120), item(0), item(240, -5)]);
+    expect(r.rows[2]).toMatchObject({ startSec: 120, endSec: 360, blockSeconds: 240 });
+    expect(r.rows.reduce((n, row) => n + row.blockSeconds, 0)).toBe(r.totalSeconds);
+  });
+
   it("a row the next one starts over runs past the hard out only to where it ends", () => {
     // the hard out is at 2:30; song 1 (3:00) now ends at 2:00 under song 2
     const r = computeSetlistTimes([item(180), item(180, -60)], 0, 150);

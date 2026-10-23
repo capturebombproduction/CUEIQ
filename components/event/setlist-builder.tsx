@@ -21,6 +21,7 @@ import {
   X,
 } from "lucide-react";
 import { KindTile } from "@/components/event/kind";
+import { TimingInput } from "@/components/event/timing-input";
 import { RunMeter } from "@/components/event/run-meter";
 import { createClient } from "@/lib/supabase/client";
 import { newLocalRowId } from "@/lib/mgmt-outbox";
@@ -120,77 +121,6 @@ function DurationField({
         } else {
           onCommit(s);
         }
-      }}
-    />
-  );
-}
-
-/**
- * "เข้าหลังเพลงก่อนหน้า" (TIMING_LABEL; พี่ 2026-10-19: "รวมให้เป็นตั้งเวลา ติดลบก็คือเล่นซ้อนเหมือนเดิม ถ้าเป็นค่า
- * บวกก็คือรอเพิ่มหลังเพลงก่อนหน้าจบ") — one signed number against the item BEFORE: -5 =
- * comes in 5 s before it ends ("เล่นซ้อน", how Quick Show takes it too), 3 = waits 3 s
- * after it ends. It replaced the separate "เล่นซ้อน" and "เผื่อเวลาหลัง" fields, which
- * did two halves of one job (0049 folded the old waits into this number).
- * A controlled numeric field cannot express a minus on a phone: iOS's
- * numeric keypad has no minus key, and even where one exists the intermediate
- * text "-" parses to NaN, so a controlled value would snap back to 0 the instant
- * the minus was typed and the user could never reach "-5". So the text is buffered
- * here and only a COMPLETE number is propagated; blur normalizes and commits.
- */
-function OverlapInput({
-  id,
-  title,
-  seconds,
-  disabled,
-  onChange,
-  onCommit,
-}: {
-  /** so a <Label htmlFor> can name the field */
-  id?: string;
-  title?: string;
-  seconds: number;
-  disabled?: boolean;
-  onChange: (s: number) => void;
-  onCommit: (s: number) => void;
-}) {
-  const [text, setText] = useState(String(seconds));
-  useEffect(() => {
-    setText(String(seconds));
-  }, [seconds]);
-  const parse = (raw: string): number | null => {
-    const t = raw.trim();
-    if (t === "" || t === "-") return null; // mid-typing, not a value yet
-    const n = Number(t);
-    return Number.isFinite(n) ? Math.max(-300, Math.min(300, Math.round(n))) : null;
-  };
-  return (
-    <Input
-      id={id}
-      title={title}
-      type="text"
-      inputMode="text"
-      placeholder="-5 หรือ 3"
-      className="num"
-      value={text}
-      disabled={disabled}
-      onChange={(e) => {
-        setText(e.target.value);
-        const n = parse(e.target.value);
-        if (n != null) onChange(n);
-      }}
-      onKeyDown={(e) => {
-        if (e.key === "Enter") (e.target as HTMLInputElement).blur();
-      }}
-      onBlur={(e) => {
-        const n = parse(e.target.value) ?? 0;
-        setText(String(n));
-        // onChange first: clearing the field (or leaving it as a bare "-") never
-        // parsed, so the parent still held the OLD value while blur wrote the new
-        // one to the DB. The row's เริ่ม/จบ/สะสม, the total and the Hard Out badge
-        // are all computed from that stale local copy — and a later version save
-        // would have written it back over what the DB now says.
-        onChange(n);
-        onCommit(n);
       }}
     />
   );
@@ -1927,8 +1857,8 @@ export function SetlistBuilder({
                   {/* type="number" made this unreachable on iOS, whose numeric keypad
                       has no minus key: an iPad user could only type positives, which
                       Math.min(0, …) silently flattened to 0 — the overlap looked
-                      accepted and simply never happened. See OverlapInput. */}
-                  <OverlapInput
+                      accepted and simply never happened. See TimingInput. */}
+                  <TimingInput
                     id={`sl-${it.id}-overlap`}
                     title="ติดลบ = เล่นซ้อนเพลงก่อนหน้า (เช่น -5) · บวก = รอหลังเพลงก่อนหน้าจบ (เช่น 3) · 0 = เริ่มทันทีที่เพลงก่อนหน้าจบ"
                     seconds={it.buffer_before_seconds}

@@ -423,6 +423,7 @@ export function PracticePlayer({
     if (!engine || !(song.audio_path || localSongIds.has(song.id))) return;
     engine.unlock(); // sync, inside the tap — unlocks audio on iOS Safari
     if (song.id === currentId && !opts?.overlap) {
+      clearGap(); // the song that ended, played again in the wait: its end waits again
       engine.toggle(); // pausing mid-set is not leaving the set
       return;
     }
@@ -634,7 +635,8 @@ export function PracticePlayer({
   // The wait is over: the next song, if the set is still where the wait began.
   startGapRef.current = (key) => {
     setGapKey(null);
-    if (!run || `${run.showId}:${run.pos}` !== key || loadingId) return;
+    // …and never over the song sounding again - whatever took it up again in the wait
+    if (!run || `${run.showId}:${run.pos}` !== key || loadingId || engineRef.current?.playing) return;
     const entry = run.queue[run.pos + 1];
     if (!entry) return;
     setRun({ ...run, pos: run.pos + 1 });
@@ -674,13 +676,17 @@ export function PracticePlayer({
     engine.toggle();
   }
 
+  // A move inside the song that ended (⏮, the scrubber, a section) takes it up again:
+  // the set's wait after it is off, and its end waits again.
   function seek(to: number) {
+    clearGap();
     engineRef.current?.seek(to);
   }
 
   function jumpTo(pos: number) {
     const engine = engineRef.current;
     if (!engine) return;
+    clearGap();
     engine.unlock();
     engine.seek(pos);
     if (!engine.playing) void engine.play();
@@ -864,15 +870,20 @@ export function PracticePlayer({
     const at = order.findIndex((i) => i.id === itemId);
     const to = at + dir;
     if (at < 0 || to < 0 || to >= order.length) return;
-    const moved = order.slice();
-    [moved[at], moved[to]] = [moved[to], moved[at]];
+    // The two swap places in the WHOLE list and all of it is numbered 1..n again. A row
+    // the set leaves out here (a song that lost its audio, or one only another device
+    // holds the file of) keeps its place: numbering just the rows shown left it holding
+    // a number one of them now had, and the device that does play it read the order as
+    // it liked.
+    const moved = snapshot.slice().sort((a, b) => a.sort_order - b.sort_order);
+    const from = moved.findIndex((i) => i.id === order[at].id);
+    const into = moved.findIndex((i) => i.id === order[to].id);
+    [moved[from], moved[into]] = [moved[into], moved[from]];
     const renumbered = moved.map((i, n) => ({ ...i, sort_order: n + 1 }));
     const changed = renumbered.filter(
       (i) => snapshot.find((s) => s.id === i.id)?.sort_order !== i.sort_order
     );
-    // rows the set leaves out (a song that lost its audio) keep their place after it
-    const rest = snapshot.filter((i) => !renumbered.some((r) => r.id === i.id));
-    setItems([...renumbered, ...rest]);
+    setItems(renumbered);
     moveChainRef.current = moveChainRef.current.then(async () => {
       try {
         for (const row of changed) {

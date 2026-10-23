@@ -14,7 +14,14 @@ import {
   formatDuration,
   parseClockToSeconds,
   shortClock,
+  TIMING_LABEL,
 } from "@/lib/time";
+
+/** -5 / 0 / +3: "เข้าหลังเพลงก่อนหน้า" with its sign, as it is set. */
+function signedSeconds(seconds: number | null | undefined): string {
+  const n = Math.round(Number(seconds) || 0);
+  return n > 0 ? `+${n}` : String(n);
+}
 
 export interface ExportData {
   event: Pick<
@@ -169,8 +176,9 @@ export function buildRunSheetWorkbook(data: ExportData): XLSX.WorkBook {
     "เริ่ม",
     "จบ",
     "ความยาว",
-    "Buf ก่อน(s)",
-    "Buf หลัง(s)",
+    // the one name every screen sets it by (พี่ 2026-10-19), not the builder's two old
+    // fields: buffer_after went into the next row's (0049) and has no field any more
+    `${TIMING_LABEL} (วิ)`,
     "สะสม",
     "ไมค์",
     "โน้ต",
@@ -184,8 +192,8 @@ export function buildRunSheetWorkbook(data: ExportData): XLSX.WorkBook {
       hasClock ? formatClockOfDay(t.startSec) : "",
       hasClock ? formatClockOfDay(t.endSec) : "",
       formatDuration(it.duration_seconds),
-      it.buffer_before_seconds,
-      it.buffer_after_seconds,
+      // signed as the practice room shows it; the first row has none (it counts for nothing)
+      i === 0 ? "" : signedSeconds(it.buffer_before_seconds),
       formatDuration(t.accumulatedSec),
       micSlotsText(it),
       it.notes ?? "",
@@ -226,8 +234,7 @@ export function buildRunSheetWorkbook(data: ExportData): XLSX.WorkBook {
     { wch: 7 },
     { wch: 7 },
     { wch: 8 },
-    { wch: 10 },
-    { wch: 10 },
+    { wch: 18 },
     { wch: 8 },
     { wch: 26 },
     { wch: 30 },

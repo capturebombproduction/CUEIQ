@@ -47,8 +47,7 @@ function item(id: string, sortOrder: number, over: Partial<SoloItem> = {}): Solo
     fileName: null,
     blob: null,
     durationSeconds: 120,
-    bufferAfterSeconds: 0,
-    overlapLeadSeconds: 0,
+    timingSeconds: 0,
     loop: false,
     volume: 100,
     sortOrder,
@@ -80,49 +79,83 @@ describe("listSoloItems — the running order comes back in show order", () => {
     expect(rows.map((r) => r.sortOrder)).toEqual([1, 2, 3]);
   });
 
-  it("defaults overlapLeadSeconds on records that predate the field", async () => {
-    // เล่นสวน arrived after the first release, so a show built before it has
-    // records with no such property at all. The page does arithmetic on this
-    // value on every Auto tick (`blockSeconds(cur) - …` against `lead`), and
-    // `undefined` there poisons the comparison rather than throwing — the
-    // pre-roll simply never fires and nothing says why.
+  it("defaults timingSeconds on records that predate the field", async () => {
+    // A show built before "เข้าหลังเพลงก่อนหน้า" has records with no such property at
+    // all. The page does arithmetic on this value on every Auto tick, and `undefined`
+    // there poisons the comparison rather than throwing — the overlap simply never
+    // fires and nothing says why.
     const legacy = item("legacy", 1) as Partial<SoloItem>;
-    delete legacy.overlapLeadSeconds;
+    delete legacy.timingSeconds;
     await putSoloItem(legacy as SoloItem);
 
     const [row] = await listSoloItems();
 
-    expect("overlapLeadSeconds" in (legacy as object)).toBe(false); // the record really lacks it
-    expect(row.overlapLeadSeconds).toBe(0);
+    expect("timingSeconds" in (legacy as object)).toBe(false); // the record really lacks it
+    expect(row.timingSeconds).toBe(0);
   });
 
-  it("does not overwrite a lead the operator actually set", async () => {
-    // The other half of the same line: `?? 0` must not become `|| 0`, and the
-    // default must not be applied to every record on the way past. A 5-second
-    // สวน that quietly reset itself to 0 on every launch would be reported as
-    // "the overlap doesn't work", not as a store bug.
-    await putSoloItem(item("with-lead", 1, { kind: "song", overlapLeadSeconds: 5 }));
-    await putSoloItem(item("no-lead", 2, { kind: "song", overlapLeadSeconds: 0 }));
+  it("does not overwrite a timing the operator actually set", async () => {
+    // `?? 0` must not become `|| 0`, and the default must not be applied to every
+    // record on the way past: a -5 that quietly reset itself to 0 on every launch
+    // would be reported as "the overlap doesn't work", not as a store bug.
+    await putSoloItem(item("first", 1, { kind: "song" }));
+    await putSoloItem(item("over", 2, { kind: "song", timingSeconds: -5 }));
+    await putSoloItem(item("wait", 3, { kind: "song", timingSeconds: 3 }));
+    await putSoloItem(item("straight", 4, { kind: "song", timingSeconds: 0 }));
 
     const rows = await listSoloItems();
 
-    expect(rows.map((r) => r.overlapLeadSeconds)).toEqual([5, 0]);
+    expect(rows.map((r) => r.timingSeconds)).toEqual([0, -5, 3, 0]);
+  });
+
+  // พี่ 2026-10-23 "รวมช่องบัฟเฟอร์/สวนใน My Show เป็นช่อง เข้าหลังเพลงก่อนหน้า ช่องเดียวแบบ setlist":
+  // บัฟเฟอร์ (a row's own tail) and สวน (a song's lead over the row above) become the
+  // setlist's one signed number on the row that comes in, the way 0049 folded a show's
+  // buffer_after into the next row's buffer_before: wait 15 then a 5 s lead = 10.
+  it("folds the old บัฟเฟอร์ / สวน into the one signed field, against the row above", async () => {
+    await putSoloItem(item("a", 1, { kind: "song", bufferAfterSeconds: 15, overlapLeadSeconds: 4 }));
+    await putSoloItem(item("b", 2, { kind: "song", overlapLeadSeconds: 5 }));
+    await putSoloItem(item("c", 3, { kind: "break", bufferAfterSeconds: 8, overlapLeadSeconds: 7 }));
+    await putSoloItem(item("d", 4, { kind: "song", bufferAfterSeconds: 20 }));
+
+    const rows = await listSoloItems();
+
+    // a: the first row has no row above (its lead never counted); b: 15 - 5; c: a lead
+    // on an MC never counted; d: c's 8. d's own 20 has no row after it to go to.
+    expect(rows.map((r) => r.timingSeconds)).toEqual([0, 10, 0, 8]);
+    expect(rows.every((r) => !r.bufferAfterSeconds && !r.overlapLeadSeconds)).toBe(true);
+  });
+
+  it("writes the fold back once, so a second launch reads the same show", async () => {
+    await putSoloItem(item("a", 1, { kind: "song", bufferAfterSeconds: 15 }));
+    await putSoloItem(item("b", 2, { kind: "song" }));
+
+    await listSoloItems();
+    const stored = await rawRows();
+    const again = await listSoloItems();
+
+    expect(stored.map((r) => [r.id, r.timingSeconds ?? 0, r.bufferAfterSeconds ?? 0])).toEqual([
+      ["a", 0, 0],
+      ["b", 15, 0],
+    ]);
+    expect(again.map((r) => r.timingSeconds)).toEqual([0, 15]);
   });
 
   it("round-trips the fields the countdown is computed from", async () => {
+    await putSoloItem(item("first", 1, { kind: "song" }));
     await putSoloItem(
-      item("song", 1, {
+      item("song", 2, {
         kind: "song",
         title: "Opening",
         fileName: "opening.mp3",
         durationSeconds: 225,
-        bufferAfterSeconds: 15,
+        timingSeconds: -5,
         loop: true,
         volume: 80,
       })
     );
 
-    const [row] = await listSoloItems();
+    const [, row] = await listSoloItems();
 
     expect(row).toMatchObject({
       id: "song",
@@ -130,13 +163,30 @@ describe("listSoloItems — the running order comes back in show order", () => {
       title: "Opening",
       fileName: "opening.mp3",
       durationSeconds: 225,
-      bufferAfterSeconds: 15,
+      timingSeconds: -5,
       loop: true,
       volume: 80,
-      sortOrder: 1,
+      sortOrder: 2,
     });
   });
 });
+
+/** What IndexedDB itself holds, without listSoloItems in between. */
+function rawRows(): Promise<SoloItem[]> {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(DB_NAME, 1);
+    req.onsuccess = () => {
+      const db = req.result;
+      const get = db.transaction("items", "readonly").objectStore("items").getAll();
+      get.onsuccess = () => {
+        db.close();
+        resolve((get.result as SoloItem[]).sort((x, y) => x.sortOrder - y.sortOrder));
+      };
+      get.onerror = () => reject(get.error);
+    };
+    req.onerror = () => reject(req.error);
+  });
+}
 
 describe("putSoloItems / deleteSoloItem", () => {
   it("writes a whole renumbered order in one pass", async () => {
