@@ -305,6 +305,17 @@ export async function POST(req: Request) {
     const { data: canView } = await supabase.rpc("can_view_group", { gid: groupId });
     if (canView !== true) return json(req, { error: "forbidden" }, 403);
   }
+  // 3c) ...and "the show went live" only from someone who could have made it live. The
+  // anti-spoof above proves a row IS live, and it stays live for the whole show, so any
+  // member of any band could re-send "งานเริ่มแล้ว" to the entire label once every
+  // dedupe window. Going live is an approver's write (run_sequence_update is
+  // can_approve, 0033) and the caller only notifies after that write committed
+  // (components/event/event-live-caller.tsx), so the honest caller always passes.
+  // Asked under the caller's OWN session — the very predicate the policy uses.
+  if (RUN_ORDER_KINDS.has(kind)) {
+    const { data: canApprove } = await supabase.rpc("can_approve", { tid: tenantId });
+    if (canApprove !== true) return json(req, { error: "forbidden" }, 403);
+  }
 
   // 4) Resolve recipient user ids.
   let recipientIds: string[] = [];

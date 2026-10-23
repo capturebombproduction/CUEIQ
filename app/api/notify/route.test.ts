@@ -33,12 +33,23 @@ const h = vi.hoisted(() => ({
   songStatus: "pending",
   /** can_view_group under the CALLER's session */
   canView: true as boolean,
+  /** can_approve under the CALLER's session, and the tenant it was asked about */
+  canApprove: true as boolean,
+  approveAsked: [] as unknown[],
+  /** how many run_sequence rows are live (run_order_live's anti-spoof) */
+  liveCount: 1,
 }));
 
 vi.mock("@/lib/supabase/server", () => ({
   createClient: async () => ({
     auth: { getUser: async () => ({ data: { user: { id: "caller" } } }) },
-    rpc: async (fn: string) => ({ data: fn === "can_view_group" ? h.canView : null, error: null }),
+    rpc: async (fn: string, args: Record<string, unknown>) => {
+      if (fn === "can_approve") h.approveAsked.push(args);
+      return {
+        data: fn === "can_view_group" ? h.canView : fn === "can_approve" ? h.canApprove : null,
+        error: null,
+      };
+    },
   }),
 }));
 vi.mock("@/lib/supabase/admin", () => ({
@@ -95,7 +106,11 @@ function table(name: string) {
   };
   q.delete = () => q;
   q.then = (ok: (v: unknown) => unknown, bad: (e: unknown) => unknown) =>
-    Promise.resolve({ data: many(), error: null }).then(ok, bad);
+    Promise.resolve(
+      name === "run_sequence"
+        ? { data: null, count: h.liveCount, error: null } // select(…, { count, head })
+        : { data: many(), error: null }
+    ).then(ok, bad);
   return q;
 }
 
@@ -129,6 +144,9 @@ beforeEach(() => {
   h.eventStatus = "pending_review";
   h.songStatus = "pending";
   h.canView = true;
+  h.canApprove = true;
+  h.approveAsked = [];
+  h.liveCount = 1;
 });
 
 describe("song_pending goes to the admins, who can open the Library", () => {
@@ -216,6 +234,44 @@ describe("the caller must be able to see the band", () => {
       })
     );
     expect(res.status).toBe(403);
+    expect(h.inserted).toEqual([]);
+  });
+});
+
+// 2026-10-24 review (verified on the code + the live policies): "🔴 งานเริ่มแล้ว (Live)" goes to the WHOLE
+// label, and its anti-spoof only proves the board IS live — true for the whole show. So
+// any member of any band could re-send it to every account once per dedupe window.
+// Only someone who could have started the board (can_approve, the run_sequence_update
+// policy) may announce it.
+describe("run_order_live comes only from someone who could start the show", () => {
+  const post = (body: Record<string, unknown>) =>
+    POST(
+      new Request("http://localhost/api/notify", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      })
+    );
+
+  it("a member who cannot approve is refused, and nothing is written", async () => {
+    h.canApprove = false;
+    const res = await post({ kind: "run_order_live", eventId: "ev-1" });
+    expect(res.status).toBe(403);
+    expect(h.inserted).toEqual([]);
+    expect(h.approveAsked).toEqual([{ tid: "tenant-1" }]); // the event's tenant, not one from the body
+  });
+
+  it("an approver who started it reaches the whole label", async () => {
+    h.members = [ADMIN, STAFF_A, { user_id: "member-1", role: "member" }];
+    const { res } = await send({ kind: "run_order_live", eventId: "ev-1" });
+    expect(await res.json()).not.toEqual({ ok: true, sent: 0 });
+    expect(h.inserted.map((r) => r.user_id).sort()).toEqual(["admin-1", "member-1", "staff-a"]);
+    expect(h.inserted.every((r) => r.type === "run_order_live")).toBe(true);
+  });
+
+  it("a board that is not live still sends nothing, approver or not", async () => {
+    h.liveCount = 0;
+    await send({ kind: "run_order_live", eventId: "ev-1" });
     expect(h.inserted).toEqual([]);
   });
 });
