@@ -261,7 +261,9 @@ export function computeSetlistTimes(
       startSec,
       endSec,
       slotEndSec,
-      blockSeconds: bb + dur + ba,
+      // not bb + dur + ba: a lead the clamp above took back (a 0:00 row above, or one
+      // longer than it) is not off this row's own length
+      blockSeconds: slotEndSec - slotStartSec,
       accumulatedSec: cursor - showStartSec,
       overHardOut: foldedHardOutSec != null ? slotEndSec > foldedHardOutSec : false,
     };

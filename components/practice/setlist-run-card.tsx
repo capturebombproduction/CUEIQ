@@ -189,7 +189,15 @@ export function SetlistRunCard({
   const [failed, setFailed] = useState(false);
   // What the dropdown says: a show's id, ROOM, or "" = not chosen here yet (then the
   // set this room last played from, else the next show, else the room's own).
-  const [pick, setPick] = useState(() => readPick(eventId) ?? "");
+  // The remembered one is read once the card is on screen: the server has no
+  // localStorage, and a first render that read it drew something other than the
+  // server's HTML ("room" = the whole set, not "loading") - React threw the page away
+  // and drew it again each time a room opened on its own set.
+  const [pick, setPick] = useState("");
+  useEffect(() => {
+    const remembered = readPick(eventId);
+    if (remembered) setPick((p) => p || remembered);
+  }, [eventId]);
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(0); // writes in flight
   // The timing each row holds ON THE SERVER (signed) — what a failed write goes back to.
@@ -249,7 +257,11 @@ export function SetlistRunCard({
         ? pick
         : loading
           ? null // the shows are still on their way — the pick may be one of them
-          : shows?.[0]?.id ?? ROOM;
+          : // the next show, else the room's own: a show already played is there to
+            // pick, never picked for the band (orderShowsForPractice lists it after) -
+            // unless the room has no songs of its own to play yet
+            shows?.find((s) => s.event_date >= today)?.id ??
+            (room.entries.length > 0 ? ROOM : shows?.[0]?.id ?? ROOM);
   const isRoom = selected === ROOM;
   const show = !isRoom && selected ? shows?.find((s) => s.id === selected) ?? null : null;
   const { queue, missing } = useMemo(
