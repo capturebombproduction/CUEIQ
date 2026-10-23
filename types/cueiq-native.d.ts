@@ -8,7 +8,9 @@
 interface CueiqNative {
   isElectron: true;
   fetchAudio: (url: string) => Promise<ArrayBuffer>;
-  putAudio: (url: string, bytes: Uint8Array, contentType?: string) => Promise<void>;
+  /** `timeoutMs`: main aborts the PUT itself at this deadline (lib/audio-remote.ts
+   *  uploadTimeoutMs); an older main ignores it and the renderer's backstop answers. */
+  putAudio: (url: string, bytes: Uint8Array, contentType?: string, timeoutMs?: number) => Promise<void>;
   pickAudioFile: () => Promise<{ name: string; bytes: Uint8Array } | null>;
   setShowRunning: (running: boolean) => Promise<void>;
   /** Which beforeunload guard is armed: a running show, an unsaved edit, or

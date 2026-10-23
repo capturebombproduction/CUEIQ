@@ -8,9 +8,10 @@ contextBridge.exposeInMainWorld("cueiqNative", {
   isElectron: true,
   // GET a presigned R2 URL's bytes via the main process (no browser CORS).
   fetchAudio: (url) => ipcRenderer.invoke("cueiq:fetch-audio", url),
-  // PUT bytes to a presigned R2 URL via the main process (no browser CORS).
-  putAudio: (url, bytes, contentType) =>
-    ipcRenderer.invoke("cueiq:put-audio", url, bytes, contentType),
+  // PUT bytes to a presigned R2 URL via the main process (no browser CORS), aborted
+  // by main at timeoutMs (see putAudioBytes in main.cjs).
+  putAudio: (url, bytes, contentType, timeoutMs) =>
+    ipcRenderer.invoke("cueiq:put-audio", url, bytes, contentType, timeoutMs),
   // Native file picker → { name, bytes } | null.
   pickAudioFile: () => ipcRenderer.invoke("cueiq:pick-audio-file"),
   // Tell main a show has started/ended running, so it can hold the display awake

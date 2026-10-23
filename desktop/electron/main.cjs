@@ -212,16 +212,38 @@ async function fetchAudioBytes(url) {
   return res.arrayBuffer();
 }
 
-/** PUT bytes to a presigned R2 URL in the main process (no CORS). */
-async function putAudioBytes(url, bytes, contentType) {
+/** PUT bytes to a presigned R2 URL in the main process (no CORS).
+ *  `timeoutMs` is the renderer's deadline for this file (lib/audio-remote.ts
+ *  uploadTimeoutMs). Aborting HERE is what really stops the bytes: the renderer can
+ *  only stop waiting, and a transfer it gave up on would otherwise keep pulling the
+ *  venue's uplink while the offline queue starts a second copy of the same master.
+ *  Clamped, because it arrives over IPC from the renderer. */
+async function putAudioBytes(url, bytes, contentType, timeoutMs) {
   assertNotOfflineSmoke();
   assertR2Url(url);
-  const res = await net.fetch(url, {
-    method: "PUT",
-    body: Buffer.from(bytes),
-    headers: contentType ? { "Content-Type": contentType } : undefined,
-    redirect: "error", // see fetchAudioBytes — never let a redirect leave the pinned host
-  });
+  const ms =
+    typeof timeoutMs === "number" && Number.isFinite(timeoutMs)
+      ? Math.min(Math.max(timeoutMs, 10_000), 3 * 60 * 60_000)
+      : null;
+  const signal = ms ? AbortSignal.timeout(ms) : undefined;
+  let res;
+  try {
+    res = await net.fetch(url, {
+      method: "PUT",
+      body: Buffer.from(bytes),
+      headers: contentType ? { "Content-Type": contentType } : undefined,
+      redirect: "error", // see fetchAudioBytes — never let a redirect leave the pinned host
+      ...(signal ? { signal } : {}),
+    });
+  } catch (e) {
+    // Read off the signal, not the error: what net.fetch rejects with on an abort
+    // (TimeoutError, AbortError, net::ERR_ABORTED) is not ours to rely on. ASCII and
+    // stable: the renderer matches "timed out" to make it terminal.
+    if (signal && signal.aborted) {
+      throw new Error(`upload timed out after ${Math.round(ms / 1000)} s`);
+    }
+    throw e;
+  }
   if (!res.ok) throw new Error(`upload failed (${res.status})`);
 }
 
@@ -309,8 +331,8 @@ function setShowThrottling(contents, running) {
 
 function registerIpc() {
   ipcMain.handle("cueiq:fetch-audio", (_e, url) => fetchAudioBytes(url));
-  ipcMain.handle("cueiq:put-audio", (_e, url, bytes, contentType) =>
-    putAudioBytes(url, bytes, contentType)
+  ipcMain.handle("cueiq:put-audio", (_e, url, bytes, contentType, timeoutMs) =>
+    putAudioBytes(url, bytes, contentType, timeoutMs)
   );
   ipcMain.handle("cueiq:pick-audio-file", () => pickAudioFile());
   // Renderer tells us when a show starts/ends running; see the SPA's live paths.

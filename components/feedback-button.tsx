@@ -244,11 +244,11 @@ export function FeedbackButton({
       for (const f of files) {
         const key = buildFeedbackImagePath(tenantId!, userId!, f.name);
         try {
-          // BOUNDED. uploadEventAudio is built for 88 MB masters and its PUT takes
-          // no signal and no timeout; on a black-holed venue AP a screenshot upload
-          // would never settle, and this dialog would sit in front of the whole app
-          // — including a running show — with every way out disabled. A screenshot
-          // is a few hundred KB: past a minute it is not coming back.
+          // BOUNDED TIGHTER. uploadEventAudio's own deadline is sized for 88 MB
+          // masters (two minutes at the least); on a black-holed venue AP this dialog
+          // would sit that long in front of the whole app — including a running show
+          // — with every way out disabled. A screenshot is a few hundred KB: past a
+          // minute it is not coming back.
           await Promise.race([
             uploadEventAudio(key, f, f.type),
             new Promise((_, reject) =>

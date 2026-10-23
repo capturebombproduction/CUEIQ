@@ -46,8 +46,8 @@ configureAudioTransport({
   ...(native
     ? {
         fetchBlob: async (url: string) => new Blob([await native.fetchAudio(url)]),
-        putBlob: async (url: string, body: Blob, contentType?: string) =>
-          native.putAudio(url, new Uint8Array(await body.arrayBuffer()), contentType),
+        putBlob: async (url: string, body: Blob, contentType?: string, timeoutMs?: number) =>
+          native.putAudio(url, new Uint8Array(await body.arrayBuffer()), contentType, timeoutMs),
       }
     : {}),
 });

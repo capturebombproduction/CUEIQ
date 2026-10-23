@@ -29,7 +29,9 @@ const PRESIGN_ENDPOINT = "/api/audio/presign";
 // ---------------------------------------------------------------------------
 type AuthHeaderProvider = () => Promise<Record<string, string>>;
 type BlobFetcher = (url: string) => Promise<Blob>;
-type BlobPutter = (url: string, body: Blob, contentType?: string) => Promise<void>;
+/** `timeoutMs` = how long this file's PUT may take (uploadTimeoutMs) — the desktop
+ *  hands it to the main process so a transfer we gave up on is actually cancelled. */
+type BlobPutter = (url: string, body: Blob, contentType?: string, timeoutMs?: number) => Promise<void>;
 let endpointBase = "";
 let getAuthHeaders: AuthHeaderProvider | null = null;
 // Byte-transfer overrides. The web leaves these null → the browser fetches the
@@ -178,6 +180,33 @@ const STALL_TIMEOUT_MS = 45_000;
  * progress + cancel channel on the IPC itself (desktop/electron/main.cjs).
  */
 const NATIVE_TRANSFER_TIMEOUT_MS = 15 * 60_000;
+
+/**
+ * The upload's deadline, from the file's size. A PUT reports no progress we can
+ * watch (fetch has no upload events, and under Electron the bytes go through the
+ * main process's net.fetch in one piece), so it gets a flat cap — but a cap that
+ * scales: an 8 MB mp3 and an 88 MB WAV are not the same wait. The floor is the same
+ * ~100 kB/s NATIVE_TRANSFER_TIMEOUT_MS is built on, so an 88 MB master gets the
+ * same 15 minutes a download of it does.
+ *
+ * Before this the PUT had no bound at all. On a black-holed venue AP it never
+ * settled: the Library's file button stayed disabled until a reload, and on the
+ * desktop the catch that keeps the bytes and queues them for later (⭐#1 step 6)
+ * never ran — the one moment that queue exists for.
+ */
+const UPLOAD_FLOOR_BYTES_PER_S = 100 * 1024;
+const UPLOAD_MIN_TIMEOUT_MS = 2 * 60_000;
+export function uploadTimeoutMs(bytes: number): number {
+  const scaled = Math.ceil((Math.max(0, bytes) / UPLOAD_FLOOR_BYTES_PER_S) * 1000);
+  return Math.max(UPLOAD_MIN_TIMEOUT_MS, scaled);
+}
+/** The renderer waits this much longer than the main process's own abort, so that
+ *  abort (which really stops the bytes) is normally the one that answers. */
+const NATIVE_UPLOAD_GRACE_MS = 30_000;
+/** ASCII "timeout" on purpose: isQueueableWriteError (lib/mgmt-outbox.ts) reads the
+ *  message, and only ASCII, to decide that this failure is transient and the bytes
+ *  are worth queueing. A Thai-only message would read as a permanent rejection. */
+export const UPLOAD_TIMEOUT_MESSAGE = "timeout — หมดเวลาอัปโหลดไฟล์เสียง (เครือข่ายไม่ตอบสนอง)";
 
 /**
  * A failure that must NOT be retried, tagged so withRetry can tell it apart from
@@ -385,22 +414,50 @@ export async function uploadEventAudio(
   file: File | Blob,
   contentType?: string
 ): Promise<void> {
+  // One deadline per attempt, and hitting it is TERMINAL: a link that could not move
+  // this file in its whole deadline will not move it in the next 700 ms, and three
+  // attempts would hold the Library's button for three deadlines.
+  const deadline = uploadTimeoutMs(file.size);
   await withRetry(async () => {
     const url = await presign(path, "put");
     const type = contentType || (file as File).type || "";
     if (putBlobImpl) {
-      // Electron: PUT the bytes via the main process (no browser CORS).
-      await putBlobImpl(url, file instanceof Blob ? file : new Blob([file]), type || undefined);
+      // Electron: PUT the bytes via the main process (no browser CORS). Main aborts
+      // the transfer itself at `deadline`; the race is the backstop in case the IPC
+      // never answers at all.
+      try {
+        await raceAbort(
+          putBlobImpl(url, file instanceof Blob ? file : new Blob([file]), type || undefined, deadline),
+          deadline + NATIVE_UPLOAD_GRACE_MS,
+          undefined,
+          { timeoutMessage: UPLOAD_TIMEOUT_MESSAGE }
+        );
+      } catch (e) {
+        // main's own abort ("upload timed out after …", desktop/electron/main.cjs)
+        if (!isTerminalError(e) && /timed out/i.test(e instanceof Error ? e.message : "")) {
+          throw terminalError(UPLOAD_TIMEOUT_MESSAGE);
+        }
+        throw e;
+      }
       return;
     }
-    const res = await fetch(url, {
-      method: "PUT",
-      body: file,
-      // Content-Type is NOT part of the presigned signature (we sign only host), so
-      // sending it is safe and lets R2 store a sensible type for playback.
-      headers: type ? { "Content-Type": type } : undefined,
-    });
-    if (!res.ok) throw httpError(`อัปโหลดไฟล์เสียงไม่สำเร็จ (${res.status})`, res.status);
+    const t = boundedSignal(deadline);
+    try {
+      const res = await fetch(url, {
+        method: "PUT",
+        body: file,
+        // Content-Type is NOT part of the presigned signature (we sign only host), so
+        // sending it is safe and lets R2 store a sensible type for playback.
+        headers: type ? { "Content-Type": type } : undefined,
+        signal: t.signal,
+      });
+      if (!res.ok) throw httpError(`อัปโหลดไฟล์เสียงไม่สำเร็จ (${res.status})`, res.status);
+    } catch (e) {
+      if (t.signal.aborted) throw terminalError(UPLOAD_TIMEOUT_MESSAGE);
+      throw e;
+    } finally {
+      t.done();
+    }
   });
 }
 
