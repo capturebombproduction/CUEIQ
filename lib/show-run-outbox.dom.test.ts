@@ -78,7 +78,7 @@ let supa: SupabaseFake;
  *  probe, so a script has to answer by verb. Defaults: the update lands, and the
  *  probe (only issued when the module decides to ask) says the row is gone. */
 function scriptEvents(opts: {
-  update?: ScriptResult | ((call: RecordedCall) => ScriptResult);
+  update?: ScriptResult | ((call: RecordedCall) => ScriptResult | Promise<ScriptResult>);
   probe?: ScriptResult | (() => ScriptResult);
 } = {}) {
   supa.setTable("events", (call) => {
@@ -343,6 +343,66 @@ describe("persistLastRun", () => {
 
     await persistLastRun("ev1", 754, AT);
     expect(await pendingCount()).toBe(1);
+  });
+});
+
+// ─── an older value never wins over a newer one ──────────────────────────────
+// The queue holds ONE value per show, "last value wins". Two ways the older value
+// used to win anyway: the flush deleted by key after its replay, so a press made
+// while that replay was in flight (same key, newer value) vanished unsent; and a
+// direct save that succeeded left the older queued value behind, so the next flush
+// replayed it over the newer one.
+describe("last value wins, across the queue and a direct save", () => {
+  it("a จบโชว์ pressed while the replay is in flight survives the flush and is sent next", async () => {
+    await enqueue(op("ev1", 100));
+    let pressed = false;
+    scriptEvents({
+      update: async (call) => {
+        if (!pressed) {
+          pressed = true;
+          await enqueue(op("ev1", 754)); // the operator, mid-replay
+        }
+        return ok([{ id: call.eq.id }]);
+      },
+    });
+
+    await flushOutbox();
+    expect(await pendingCount()).toBe(1);
+
+    await flushOutbox();
+    expect(updates().at(-1)!.values).toEqual({ last_run_seconds: 754, last_run_at: AT_ISO });
+    expect(await pendingCount()).toBe(0);
+  });
+
+  it("a direct save supersedes an older queued value — the next flush does not replay it over the newer one", async () => {
+    await enqueue(op("ev1", 100)); // the offline run; its first replay met the anon minute
+    scriptEvents();
+    await new Promise((r) => setTimeout(r, 5)); // queued earlier than the save (minutes, really)
+    expect(await persistLastRun("ev1", 754, AT)).toBe("saved");
+
+    await flushOutbox();
+    expect(updates()).toHaveLength(1); // only the direct save — nothing replayed after it
+    expect(updates()[0].values).toEqual({ last_run_seconds: 754, last_run_at: AT_ISO });
+    expect(await pendingCount()).toBe(0);
+  });
+
+  it("...but a value queued while that direct save was in flight is newer, and stays", async () => {
+    let queued = false;
+    scriptEvents({
+      update: async (call) => {
+        if (!queued) {
+          queued = true;
+          await new Promise((r) => setTimeout(r, 5)); // a later ms than the save began
+          await enqueue(op("ev1", null, null)); // ล้าง, pressed while จบโชว์ was in flight
+        }
+        return ok([{ id: call.eq.id }]);
+      },
+    });
+    expect(await persistLastRun("ev1", 754, AT)).toBe("saved");
+    expect(await pendingCount()).toBe(1);
+
+    await flushOutbox();
+    expect(updates().at(-1)!.values).toEqual({ last_run_seconds: null, last_run_at: null });
   });
 });
 

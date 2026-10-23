@@ -131,6 +131,38 @@ async function removeOp(key: string): Promise<void> {
 }
 
 /**
+ * Delete the op under `key` only if the record stored there NOW passes `stillOurs`
+ * — read and deleted in ONE transaction, so nothing can land in between. A bare
+ * delete by key was wrong twice: the flush deleted a press the operator made while
+ * its replay was in flight (same key, newer value, never sent), and nothing at all
+ * removed a queued value that a later direct save had superseded.
+ */
+async function removeOpIf(key: string, stillOurs: (rec: QueuedOp) => boolean): Promise<void> {
+  const db = await openDB();
+  return new Promise((resolve) => {
+    const tx = db.transaction(STORE, "readwrite");
+    const store = tx.objectStore(STORE);
+    const req = store.get(key);
+    req.onsuccess = () => {
+      const rec = req.result as QueuedOp | undefined;
+      if (rec && stillOurs(rec)) store.delete(key);
+    };
+    tx.oncomplete = () => {
+      db.close();
+      resolve();
+    };
+    tx.onerror = () => {
+      db.close();
+      resolve();
+    };
+    settleOnAbort(tx, () => {
+      db.close();
+      resolve();
+    });
+  });
+}
+
+/**
  * How many writes are waiting to sync (for the status chip) — or `null` when the
  * queue could not be READ AT ALL: no IndexedDB, a blocked/aborted transaction, a
  * store the browser has evicted or corrupted.
@@ -256,7 +288,10 @@ export async function flushOutbox(): Promise<{ flushed: number; remaining: numbe
   for (const { key, rec } of ops) {
     try {
       await apply(rec.op);
-      await removeOp(key);
+      // Only if what is queued now is still the value just written: a จบโชว์ / ล้าง
+      // pressed while this replay was in flight put a NEWER value under the same key,
+      // and deleting by key alone threw it away unsent.
+      await removeOpIf(key, (now) => now.op.seconds === rec.op.seconds && now.op.at === rec.op.at);
       flushed++;
     } catch (err) {
       if (err instanceof WroteNothingError && (await hasLiveSession())) {
@@ -335,6 +370,7 @@ export async function persistLastRun(
   seconds: number | null,
   at: number | null
 ): Promise<ShowRunSaveOutcome> {
+  const startedAt = Date.now();
   try {
     const supabase = createClient();
     const { data, error } = await supabase
@@ -348,7 +384,17 @@ export async function persistLastRun(
     // Same anon-fallback hole as apply() above: a 204/error:null with no row
     // touched must NOT be read as success, or จบโชว์ reports a save that never
     // happened and nothing is queued to retry it. Fall through to enqueue().
-    if (!error && !wroteNothing(data)) return announceSave("saved");
+    if (!error && !wroteNothing(data)) {
+      // An older value still queued for this show is superseded now. Left there, the
+      // next flush replays it OVER this one: an offline จบโชว์ whose first replay met
+      // the anon minute after reconnect, then a second run saved online — and the
+      // server ends up holding the first run's time. Only ops queued before this call
+      // began: one queued while this request was in flight is newer, and stays (so is
+      // one stamped in the very millisecond it began - which came first is unknowable).
+      const key = opKey({ kind: "event_last_run", eventId, seconds, at });
+      await removeOpIf(key, (rec) => rec.queuedAt < startedAt).catch(() => {});
+      return announceSave("saved");
+    }
   } catch {
     /* network failure → fall through to queue */
   }
