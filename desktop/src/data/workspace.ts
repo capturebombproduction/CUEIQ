@@ -28,6 +28,11 @@ const WS_CACHE_KEY = "workspace";
 export const WORKSPACE_AUTH_TIMEOUT_MS = 5000;
 export const WORKSPACE_READ_TIMEOUT_MS = 8000;
 
+/** loadWorkspace's rejection when the machine is offline and holds nothing of the
+ *  signed-in account yet: a fresh install, or one whose first load never finished.
+ *  The Shell asks for the network once instead of showing the generic failure. */
+export const COLD_OFFLINE = "workspace: offline, and nothing of this account is cached here";
+
 /** Resolves to `null` if `p` has not settled within `ms`.
  *
  *  THE CANONICAL COPY of this helper (events-list, event-bundle, run-order and
@@ -103,19 +108,21 @@ export async function loadWorkspace(): Promise<WorkspaceData> {
   // access token getSession() tries a network refresh and returns null offline
   // (the /login bounce this offline pass exists to prevent) — the stored session
   // survives network failures and only disappears on a real sign-out.
+  // Nothing of this account cached (a fresh install, a first load that never finished)
+  // used to come back as empty(stored user) - and every page then said "บัญชีนี้ยังไม่ได้
+  // ผูกกับ Label", the same wrong lead the failed membership read below no longer gives.
   if (isOffline()) {
     const cached = cachedForStoredUser();
     if (cached) return cached;
-    const stored = getStoredSessionUser();
-    return empty(stored ? { id: stored.id, email: stored.email, name: null } : null);
+    throw new Error(COLD_OFFLINE);
   }
 
   // Flaky network even though navigator says online (venue router, no internet):
   // auth-js resolves getUser() with `user: null` on a network failure rather than
   // rejecting, so treat null-user and rejection the SAME — fall back to the cache
   // under the stored-identity owner check (an instant storage read, no doomed
-  // refresh attempt). A genuinely signed-out device has no stored session, so it
-  // still lands on empty().
+  // refresh attempt). With nothing cached, no answer about the account is a failed
+  // read, not "not linked": reject, as the membership read below does.
   // …and a request that NEVER answers is the same situation as one that fails, so
   // it takes the same branch. Unbounded, this is the hang described on
   // WORKSPACE_AUTH_TIMEOUT_MS above.
@@ -127,7 +134,7 @@ export async function loadWorkspace(): Promise<WorkspaceData> {
   if (!user) {
     const cached = cachedForStoredUser();
     if (cached) return cached;
-    return empty(null);
+    throw new Error("workspace: the account read failed");
   }
 
   const name =
@@ -199,6 +206,9 @@ export async function loadWorkspace(): Promise<WorkspaceData> {
   if (!tenant || blipped) {
     const cached = readCache<WorkspaceData>(WS_CACHE_KEY);
     if (cached && cached.user?.id === user.id && cached.membership) return cached;
+    // …and with nothing cached, a batch that FAILED is not a tenant with no bands
+    // (tenant null reads as "ไม่ได้ผูกกับ Label"; no group_roles hides an Ar's band).
+    if (blipped) throw new Error("workspace: the tenant/groups read failed");
   }
 
   const groupRoles = (groupRolesRes.data ?? []) as GroupRoleRow[];

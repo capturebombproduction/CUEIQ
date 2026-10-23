@@ -14,7 +14,8 @@ vi.mock("@/lib/supabase/client", () => ({
   createClient: () => ({ auth: { signInWithPassword: h.signIn } }),
 }));
 vi.mock("next/navigation", () => ({ useRouter: () => ({ replace: h.replace, refresh: h.refresh }) }));
-vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
+const toast = vi.hoisted(() => ({ success: vi.fn(), error: vi.fn() }));
+vi.mock("sonner", () => ({ toast }));
 
 import { LoginForm } from "@/components/auth/login-form";
 import { loginIdToEmail } from "@/lib/username";
@@ -55,6 +56,33 @@ describe("LoginForm", () => {
     for (const id of ["loginId", "password"]) {
       expect(document.getElementById(id)!.className).toContain("sm:text-base");
     }
+  });
+
+  // 2026-10-24: a first launch of the desktop with no network said "Failed to fetch" under
+  // "เข้าสู่ระบบไม่สำเร็จ" - read as a wrong password. No answer is said as no answer.
+  it("says the server could not be reached, not that the sign-in was wrong", async () => {
+    toast.error.mockClear();
+    h.signIn.mockResolvedValueOnce({
+      error: Object.assign(new Error("Failed to fetch"), { name: "AuthRetryableFetchError", status: 0 }),
+    } as never);
+    render(<LoginForm />);
+    fireEvent.submit(document.querySelector("form")!);
+    await waitFor(() => expect(toast.error).toHaveBeenCalled());
+    expect(toast.error).toHaveBeenCalledWith("เชื่อมต่อเซิร์ฟเวอร์ไม่ได้", {
+      description: "เข้าสู่ระบบต้องต่อเน็ต — เช็คเน็ตแล้วลองใหม่",
+    });
+    expect(h.replace).not.toHaveBeenCalled();
+  });
+
+  it("still shows the server's own answer for a refused sign-in", async () => {
+    toast.error.mockClear();
+    h.signIn.mockResolvedValueOnce({
+      error: Object.assign(new Error("Invalid login credentials"), { name: "AuthApiError", status: 400 }),
+    } as never);
+    render(<LoginForm />);
+    fireEvent.submit(document.querySelector("form")!);
+    await waitFor(() => expect(toast.error).toHaveBeenCalled());
+    expect(toast.error).toHaveBeenCalledWith("เข้าสู่ระบบไม่สำเร็จ", { description: "Invalid login credentials" });
   });
 
   // CQ-59: a phone held sideways is ~390px tall and the slab is ~480px, so the sign-in

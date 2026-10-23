@@ -30,7 +30,12 @@ vi.mock("~/data/mgmt-outbox", () => ({
   MGMT_OUTBOX_EVENT: "cueiq:mgmt-outbox",
 }));
 
-import { loadWorkspace, WORKSPACE_AUTH_TIMEOUT_MS, WORKSPACE_READ_TIMEOUT_MS } from "./workspace";
+import {
+  COLD_OFFLINE,
+  loadWorkspace,
+  WORKSPACE_AUTH_TIMEOUT_MS,
+  WORKSPACE_READ_TIMEOUT_MS,
+} from "./workspace";
 import {
   EVENTS_LIST_SESSION_TIMEOUT_MS,
   EVENTS_LIST_TIMEOUT_MS,
@@ -165,15 +170,11 @@ describe("loadWorkspace — a request that never answers", () => {
     supa.auth.hang("getUser");
 
     const p = loadWorkspace();
+    // the rejection is observed before the clock moves, so it is never unhandled
+    const settled = expect(p).rejects.toThrow();
     await vi.advanceTimersByTimeAsync(WORKSPACE_AUTH_TIMEOUT_MS);
-    const ws = await p;
-
-    expect(ws.groups).toEqual([]);
-    expect(ws.groupRoles).toEqual([]);
-    expect(ws.membership).toBeNull();
-    expect(ws.tenant).toBeNull();
-    expect(ws.user).toBeNull();
-    expect(JSON.stringify(ws)).not.toContain(OTHER_USER_ID);
+    // Not the stranger's workspace - and no empty one posing as "not linked" either.
+    await settled;
   });
 
   it("serves the cache when the parallel table read never settles", async () => {
@@ -229,15 +230,15 @@ describe("loadWorkspace — auth that answers, badly", () => {
     expect(supa.calls).toHaveLength(0);
   });
 
-  it("returns an empty workspace rather than a stranger's when there is no owner match", async () => {
+  // Never a stranger's cache - and, since 2026-10-24, not an empty workspace either:
+  // empty() made every page say "บัญชีนี้ยังไม่ได้ผูกกับ Label" while the account was fine
+  // and only the answer was missing. The Shell shows its failure screen with a retry.
+  it("rejects rather than serve a stranger's cache when there is no owner match", async () => {
     seedStoredSession(USER_ID);
     seedWorkspaceCache(OTHER_USER_ID);
     supa.auth.setSession(null);
 
-    const ws = await loadWorkspace();
-
-    expect(ws.groups).toEqual([]);
-    expect(ws.user).toBeNull();
+    await expect(loadWorkspace()).rejects.toThrow();
   });
 });
 
@@ -266,6 +267,26 @@ describe("loadWorkspace — a failed membership read is not 'no membership'", ()
     supa.setScript({ tenant_members: fail("Service Unavailable", 503), group_roles: fail("Service Unavailable", 503) });
     const ws = await loadWorkspace();
     expect(ws.membership?.role).toBe("member");
+  });
+
+  it("rejects on a cold device when the tenant/groups read errors after membership answered", async () => {
+    supa.setScript({
+      tenant_members: ok({ tenant_id: TENANT_ID, role: "member" }),
+      group_roles: ok([{ group_id: GROUP_ID, role: "member" }]),
+      tenants: fail("Service Unavailable", 503),
+      groups: fail("Service Unavailable", 503),
+    });
+    await expect(loadWorkspace()).rejects.toThrow();
+  });
+
+  it("rejects on a cold device when only group_roles errors (an Ar would lose their band)", async () => {
+    supa.setScript({
+      tenant_members: ok({ tenant_id: TENANT_ID, role: "member" }),
+      group_roles: fail("Service Unavailable", 503),
+      tenants: ok({ id: TENANT_ID, name: "A Lot Of Tone" }),
+      groups: ok([{ id: GROUP_ID, name: "Seishin Kakumei" }]),
+    });
+    await expect(loadWorkspace()).rejects.toThrow();
   });
 
   it("an answered read with no membership row is still 'not linked' (empty, with the user)", async () => {
@@ -298,12 +319,20 @@ describe("loadWorkspace — offline", () => {
     seedWorkspaceCache(OTHER_USER_ID);
     setOnline(false);
 
-    const ws = await loadWorkspace();
+    // The app stays signed in; it has nothing of this user's to show yet, and says so.
+    await expect(loadWorkspace()).rejects.toThrow(COLD_OFFLINE);
+  });
 
-    expect(ws.groups).toEqual([]);
-    // The stored identity still comes through — the app stays signed in, it just
-    // has nothing of this user's to show yet.
-    expect(ws.user?.id).toBe(USER_ID);
+  // 2026-10-24: a fresh install (or a first load that never finished) opened offline
+  // came back as empty(stored user), and every page said "บัญชีนี้ยังไม่ได้ผูกกับ Label".
+  // It rejects with COLD_OFFLINE, so the Shell asks for the network once.
+  it("rejects with COLD_OFFLINE on a cold device, without touching the network", async () => {
+    seedStoredSession();
+    setOnline(false);
+
+    await expect(loadWorkspace()).rejects.toThrow(COLD_OFFLINE);
+    expect(supa.calls).toHaveLength(0);
+    expect(supa.auth.getUser).not.toHaveBeenCalled();
   });
 });
 

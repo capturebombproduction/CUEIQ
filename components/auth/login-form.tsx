@@ -50,7 +50,15 @@ export function LoginForm({
     });
     setLoading(false);
     if (error) {
-      toast.error("เข้าสู่ระบบไม่สำเร็จ", { description: error.message });
+      // No answer from the server is not a wrong password. A first launch of the desktop
+      // at a venue with no network showed "Failed to fetch" here (auth-js names that
+      // AuthRetryableFetchError, the same as a 502/503/504 from a server that is down).
+      const unreachable =
+        error.name === "AuthRetryableFetchError" ||
+        (typeof navigator !== "undefined" && navigator.onLine === false);
+      toast.error(unreachable ? "เชื่อมต่อเซิร์ฟเวอร์ไม่ได้" : "เข้าสู่ระบบไม่สำเร็จ", {
+        description: unreachable ? "เข้าสู่ระบบต้องต่อเน็ต — เช็คเน็ตแล้วลองใหม่" : error.message,
+      });
       return;
     }
     toast.success("ยินดีต้อนรับกลับ");

@@ -16,7 +16,7 @@ import { makeSupabaseFake } from "@/test/fakes/supabase";
 
 const h = vi.hoisted(() => ({
   supa: null as unknown,
-  state: { loading: true, ws: null as unknown, reload: () => {} },
+  state: { loading: true, ws: null as unknown, coldOffline: false, reload: () => {} },
 }));
 vi.mock("@/lib/supabase/client", () => ({ createClient: () => h.supa }));
 vi.mock("~/components/mgmt-sync-status", () => ({ MgmtSyncStatus: () => null }));
@@ -37,7 +37,7 @@ const fallback = () => document.querySelector('[data-cueiq-screen="shell-fallbac
 
 beforeEach(() => {
   h.supa = makeSupabaseFake();
-  h.state = { loading: true, ws: null, reload: vi.fn() };
+  h.state = { loading: true, ws: null, coldOffline: false, reload: vi.fn() };
 });
 
 describe("desktop Shell fallback — loading", () => {
@@ -76,7 +76,7 @@ describe("desktop Shell fallback — loading", () => {
 
 describe("desktop Shell fallback — the workspace failed to load", () => {
   beforeEach(() => {
-    h.state = { loading: false, ws: null, reload: vi.fn() };
+    h.state = { loading: false, ws: null, coldOffline: false, reload: vi.fn() };
   });
 
   it("says so, marks itself failed, and still offers a retry, sign-out and Quick Show", () => {
@@ -87,6 +87,25 @@ describe("desktop Shell fallback — the workspace failed to load", () => {
     expect(screenEl.getByRole("button", { name: "ลองใหม่" })).toBeTruthy();
     expect(screenEl.getByRole("button", { name: /ออกจากระบบ/ })).toBeTruthy();
     expect(screenEl.getByTestId("quick-show-link")).toBeTruthy();
+  });
+
+  // 2026-10-24: a first launch with no network opened every page on "บัญชีนี้ยังไม่ได้ผูกกับ
+  // Label". Offline with nothing cached is its own failure, and asks for the network once.
+  it("offline on a cold device: asks to connect once, keeps retry and Quick Show", () => {
+    h.state = { loading: false, ws: null, coldOffline: true, reload: vi.fn() };
+    renderShell();
+    expect(fallback().getAttribute("data-cueiq-failed")).toBe("1");
+    expect(screen.getByText("ออฟไลน์อยู่ — เครื่องนี้ยังไม่มีข้อมูลของบัญชีนี้")).toBeTruthy();
+    expect(screen.getByTestId("cold-offline-hint").textContent).toContain("ต่อเน็ตครั้งแรกเพื่อโหลดข้อมูล");
+    expect(screen.queryByText(/โหลดข้อมูลไม่สำเร็จ/)).toBeNull();
+    const screenEl = within(fallback());
+    expect(screenEl.getByRole("button", { name: "ลองใหม่" })).toBeTruthy();
+    expect(screenEl.getByTestId("quick-show-link")).toBeTruthy();
+  });
+
+  it("the generic failure carries no first-launch hint", () => {
+    renderShell();
+    expect(screen.queryByTestId("cold-offline-hint")).toBeNull();
   });
 
   it("the retry button calls reload", () => {

@@ -32,7 +32,16 @@ import { useWorkspace } from "~/data/workspace-context";
  *  black-holed makes this screen stretch, and a failed load used to render the
  *  bare "กำลังโหลด…" FOREVER (`loading || !ws`) with no retry and no way to reach
  *  Quick Show — the one runner that needs neither network nor login. */
-function ShellFallback({ failed, onRetry }: { failed: boolean; onRetry: () => void }) {
+function ShellFallback({
+  failed,
+  coldOffline,
+  onRetry,
+}: {
+  failed: boolean;
+  /** Offline with nothing of this account on the machine yet (a fresh install). */
+  coldOffline: boolean;
+  onRetry: () => void;
+}) {
   return (
     // data-cueiq-screen — see the note on App.tsx's BootScreen. THIS one carries the
     // round's sharpest distinction: "shell" means the offline cache was honoured and
@@ -53,8 +62,20 @@ function ShellFallback({ failed, onRetry }: { failed: boolean; onRetry: () => vo
             <HeaderBrand />
           </h1>
           <p className="mt-3 text-[14px] text-muted-foreground">
-            {failed ? "โหลดข้อมูลไม่สำเร็จ — อาจออฟไลน์อยู่หรือเน็ตมีปัญหา" : "กำลังโหลด…"}
+            {!failed
+              ? "กำลังโหลด…"
+              : coldOffline
+                ? "ออฟไลน์อยู่ — เครื่องนี้ยังไม่มีข้อมูลของบัญชีนี้"
+                : "โหลดข้อมูลไม่สำเร็จ — อาจออฟไลน์อยู่หรือเน็ตมีปัญหา"}
           </p>
+          {/* A first launch with no network used to open every page on "บัญชีนี้ยังไม่ได้
+              ผูกกับ Label" - an account problem that was never there. The workspace
+              provider reloads by itself on the browser's "online" event. */}
+          {failed && coldOffline && (
+            <p data-testid="cold-offline-hint" className="mt-1.5 text-[12.5px] text-muted-foreground">
+              ต่อเน็ตครั้งแรกเพื่อโหลดข้อมูล ต่อแล้วจะโหลดให้เอง — ครั้งต่อไปเปิดได้แม้ไม่มีเน็ต
+            </p>
+          )}
           <div className="mt-5 flex justify-center gap-2">
             {/* The boot screen's RefreshButton look (44 px, the turn icon): a slow boot
                 passes through both screens, and the one button should not change shape. */}
@@ -73,11 +94,11 @@ function ShellFallback({ failed, onRetry }: { failed: boolean; onRetry: () => vo
 }
 
 export function Shell() {
-  const { loading, ws, reload } = useWorkspace();
+  const { loading, ws, coldOffline, reload } = useWorkspace();
   const { pathname } = useLocation();
 
   if (loading || !ws) {
-    return <ShellFallback failed={!loading} onRetry={reload} />;
+    return <ShellFallback failed={!loading} coldOffline={!!coldOffline} onRetry={reload} />;
   }
 
   const name = ws.user?.name ?? null;
