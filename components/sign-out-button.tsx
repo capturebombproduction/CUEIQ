@@ -146,7 +146,10 @@ export function useSignOut(): () => Promise<void> {
     // still alive — best-effort, never throws (see push-cleanup.ts).
     await cleanupPushOnSignOut();
     const supabase = createClient();
-    const { error } = await supabase.auth.signOut();
+    // "local" = this device only, as the row says ("ออกจากระบบเครื่องนี้"). auth-js
+    // defaults to "global", which revokes every session of the account — a band
+    // sharing one login would drop the stage laptop when the phone signs out.
+    const { error } = await supabase.auth.signOut({ scope: "local" });
     if (error) {
       // Dead network (offline venue): auth-js keeps the local session when
       // the server /logout call fails, so the tap would silently do nothing
