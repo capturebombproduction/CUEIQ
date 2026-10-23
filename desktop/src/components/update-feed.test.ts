@@ -42,6 +42,12 @@ const feed = require("../../electron/update-feed.cjs") as {
     download: () => Promise<unknown>;
     install: () => Promise<unknown>;
   }) => Promise<unknown>;
+  shouldPromptAtLaunch: (d: {
+    platform: string;
+    version: string;
+    skipped: string | null;
+    busy: string | null;
+  }) => boolean;
 };
 type FeedFile = { url: string; sha512: string; size: number };
 
@@ -300,6 +306,11 @@ describe("main.cjs uses them", () => {
   it("the press goes through pressUpdate", () => {
     expect(body("async function applyUpdate()")).toContain("updateFeed.pressUpdate(");
   });
+  it("the launch box asks shouldPromptAtLaunch, with the show/unsaved state", () => {
+    const fn = body("async function promptAtLaunch(");
+    expect(fn).toContain("updateFeed.shouldPromptAtLaunch(");
+    expect(fn).toContain("busy: updateBusyReason()");
+  });
   it("the 6-hour re-check asks shouldRecheck", () => {
     expect(body("function initAutoUpdate()")).toContain("updateFeed.shouldRecheck(updateState.state)");
   });
@@ -326,5 +337,23 @@ describe("macFailedRoute", () => {
   it("a NEWER version is tried in the app again", () => {
     expect(feed.macFailedRoute("0.1.35", { version: "0.1.34" }, { version: "0.1.34", dmg })).toBeNull();
     expect(feed.macFailedRoute("0.1.34", null, null)).toBeNull();
+  });
+});
+
+// 2026-10-24 review: the Windows launch check can answer after the show has started, and its
+// box takes the keyboard - the next Space cue pressed "อัปเดตเลย" instead of the show.
+describe("shouldPromptAtLaunch", () => {
+  const base = { platform: "win32", version: "0.1.45", skipped: null, busy: null };
+  it("asks at a quiet launch", () => {
+    expect(feed.shouldPromptAtLaunch(base)).toBe(true);
+  });
+  it("never while a show runs or an edit is unsaved - the header chip carries it", () => {
+    expect(feed.shouldPromptAtLaunch({ ...base, busy: "show" })).toBe(false);
+    expect(feed.shouldPromptAtLaunch({ ...base, busy: "unsaved" })).toBe(false);
+  });
+  it("not on the Mac, not for a version declined for good, not without a version", () => {
+    expect(feed.shouldPromptAtLaunch({ ...base, platform: "darwin" })).toBe(false);
+    expect(feed.shouldPromptAtLaunch({ ...base, skipped: "0.1.45" })).toBe(false);
+    expect(feed.shouldPromptAtLaunch({ ...base, version: "" })).toBe(false);
   });
 });

@@ -814,8 +814,13 @@ async function finishPendingMacUpdate() {
  *  the Mac: there a parentless box is app-modal (see backgroundNotice), and a launch can be
  *  the reopen of a show in progress — the chip in the header is enough. */
 async function promptAtLaunch(version) {
-  if (process.platform !== "win32") return;
-  if (!version || version === readSkippedVersion()) return;
+  const ask = updateFeed.shouldPromptAtLaunch({
+    platform: process.platform,
+    version,
+    skipped: readSkippedVersion(),
+    busy: updateBusyReason(), // a show on, or an edit unsaved: the chip waits, no box
+  });
+  if (!ask) return;
   try {
     // NO parent window on purpose: a parented box is MODAL and disables the
     // window under it (this file relies on that at the exit confirm). The check

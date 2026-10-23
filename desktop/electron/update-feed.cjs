@@ -182,6 +182,20 @@ async function pressUpdate({ state, recheck, download, install }) {
 }
 
 /**
+ * Windows' launch check: ask "อัปเดตเลย / ไว้ก่อน" now? Never while a show runs or an edit is
+ * unsaved (`busy`, main.cjs updateBusyReason()). The check can resolve late on a venue
+ * hotspot, after the show has started, and the box - parentless, but a window of this app -
+ * takes the keyboard: the operator's next Space cue pressed its default "อัปเดตเลย", so the
+ * cue was lost and a ~100 MB download started over the hotspot mid-show (2026-10-24
+ * review). The header chip still offers the update; Windows only (see promptAtLaunch).
+ */
+function shouldPromptAtLaunch({ platform, version, skipped, busy }) {
+  if (platform !== "win32") return false;
+  if (!version || version === skipped) return false;
+  return !busy;
+}
+
+/**
  * Mac: an in-app update of `latest` that already failed this session goes the .dmg route,
  * however often the feed is read again - its swap on the disk (`swapFailed`, { version,
  * dmg, result }) or its staging from the checked .dmg (`stageFailed`, { version, dmg }).
@@ -219,4 +233,5 @@ module.exports = {
   shouldRecheck,
   pressUpdate,
   macFailedRoute,
+  shouldPromptAtLaunch,
 };
