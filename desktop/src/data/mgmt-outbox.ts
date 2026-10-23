@@ -25,6 +25,7 @@ import {
   nextOpRev,
   planEnqueue,
   shouldApplyOnFlush,
+  snapshotBreaksUniqueKey,
   type ChildListOp,
   type MgmtOp,
   type NewMgmtOp,
@@ -410,6 +411,12 @@ async function applyChildListOp(
   const supabase = createClient();
   const table = CHILD_TABLES[op.kind];
   const isLineup = op.kind === "lineup.upsert";
+
+  // A snapshot the database can never hold (two photo rounds of one name, queued
+  // offline) parks BEFORE any write. Sent, it took the collision path below, which wipes
+  // the event's rows and then fails on the same key: every phone saw an empty schedule,
+  // and "fix it on the online version" had nothing left to fix (2026-10-24 review).
+  if (snapshotBreaksUniqueKey(op.kind, op.rows)) return { conflict: DUPLICATE_ROW_REASON };
 
   if (!force) {
     // Online-wins guard: no updated_at on the child tables, so compare the

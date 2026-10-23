@@ -299,6 +299,27 @@ export const CHILD_WRITE_COLUMNS: Record<Exclude<ChildListKind, "lineup.upsert">
 };
 
 /**
+ * Does the snapshot break a unique key ON ITS OWN - two of its rows the database could
+ * never hold together, whatever is online? Today that is schedule_items'
+ * photo-round key (mig 0042): one kind='photo' row per event per name, the name
+ * space-trimmed (Postgres btrim) and an unnamed row counting as "ถ่ายรูป". Offline nothing
+ * asks the server, so such a snapshot reaches the queue - and its replay's collision path
+ * wiped every row of the event before failing on it (desktop mgmt-outbox applyChildListOp).
+ */
+export function snapshotBreaksUniqueKey(kind: ChildListKind, rows: unknown[]): boolean {
+  if (kind !== "schedule.upsert") return false;
+  const seen = new Set<string>();
+  for (const r of rows as Record<string, unknown>[]) {
+    if (r?.kind !== "photo") continue;
+    const label = typeof r.label === "string" ? r.label.replace(/^ +| +$/g, "") : "";
+    const key = label || "ถ่ายรูป";
+    if (seen.has(key)) return true;
+    seen.add(key);
+  }
+  return false;
+}
+
+/**
  * Project rows down to the write columns with normalized values, so the stored
  * op, the flush payload, and both sides of the fingerprint are byte-comparable:
  * undefined → null, editor "HH:MM" times → the server's "HH:MM:SS". Lineup rows
