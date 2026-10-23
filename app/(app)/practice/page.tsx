@@ -2,6 +2,7 @@ import { redirect } from "next/navigation";
 import { Headphones } from "lucide-react";
 import { createClient } from "@/lib/supabase/server";
 import { getWorkspace } from "@/lib/queries";
+import { assertReadsSucceeded } from "@/lib/read-guard";
 import { canEditGroup, viewableGroups } from "@/lib/permissions";
 import { CreatePracticeButton } from "@/components/practice/create-practice-button";
 import { PracticeRoomList, type PracticeRoomRow } from "@/components/practice/practice-room-list";
@@ -25,15 +26,17 @@ export default async function PracticePage() {
   // Per-band scope: a band-tier user sees only their own band's practice rooms;
   // admin/ceo see every band's.
   const viewableGroupIds = viewableGroups(ws.perms, ws.groups).map((g) => g.id);
-  const { data } = await supabase
+  const roomsRes = await supabase
     .from("events")
     .select("*, groups(name, color)")
     .eq("tenant_id", tid)
     .in("group_id", viewableGroupIds) // only bands this user may view
     .eq("is_practice", true)
     .order("created_at", { ascending: false });
+  // a failed read is not "no practice rooms yet" - that screen's button makes a second one
+  assertReadsSucceeded("PracticePage", { "ห้องซ้อม": roomsRes });
 
-  const rooms = (data ?? []) as (EventRow & PracticeRoomRow)[];
+  const rooms = (roomsRes.data ?? []) as (EventRow & PracticeRoomRow)[];
   // What each room's slab says (songs, homework, problems, last session). Display
   // only; a read that fails leaves its numbers out rather than showing 0.
   const stats = await loadPracticeRoomStats(

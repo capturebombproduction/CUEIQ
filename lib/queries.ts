@@ -579,10 +579,12 @@ export async function getMembers(
   const supabase = await createClient();
   const base = supabase.from("members").select("*").eq("tenant_id", tenantId);
   const scoped = groupIds ? base.in("group_id", groupIds) : base;
-  const { data } = await scoped
+  const res = await scoped
     .order("group_id", { ascending: true })
     .order("sort_order", { ascending: true });
-  return (data ?? []) as Member[];
+  // a failed read is not a band with no members: Artists would offer to add them again
+  assertReadsSucceeded("getMembers", { "สมาชิกวง": res });
+  return (res.data ?? []) as Member[];
 }
 
 /** Songs in the tenant's library (newest first). Pass `groupIds` to scope to a
@@ -595,6 +597,8 @@ export async function getSongs(
   const supabase = await createClient();
   const base = supabase.from("songs").select("*").eq("tenant_id", tenantId);
   const scoped = groupIds ? base.in("group_id", groupIds) : base;
-  const { data } = await scoped.order("created_at", { ascending: false });
-  return (data ?? []) as Song[];
+  const res = await scoped.order("created_at", { ascending: false });
+  // a failed read is not an empty library: the Library would offer to upload them again
+  assertReadsSucceeded("getSongs", { "คลังเพลง": res });
+  return (res.data ?? []) as Song[];
 }

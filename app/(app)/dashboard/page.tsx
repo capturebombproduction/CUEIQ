@@ -2,6 +2,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { Plus, Music2 } from "lucide-react";
 import { getWorkspace } from "@/lib/queries";
+import { assertReadsSucceeded } from "@/lib/read-guard";
 import { createClient } from "@/lib/supabase/server";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -44,7 +45,7 @@ export default async function DashboardPage() {
   // for anyone who cannot drive Live Mode — the practice room its "ซ้อม" opens.
   // Best-effort: a failed read here only drops those two extras, never the list.
   const canRunLive = canLiveEdit(ws.perms);
-  const [{ data }, { data: tplRows }, { data: callRows }, { data: roomRows }, { data: runRows }] = await Promise.all([
+  const [eventsRes, { data: tplRows }, { data: callRows }, { data: roomRows }, { data: runRows }] = await Promise.all([
     supabase
       .from("events")
       .select("*, groups(name, color, exempt_from_deadline)")
@@ -85,6 +86,10 @@ export default async function DashboardPage() {
           .order("created_at", { ascending: false })
           .limit(50),
   ]);
+  // ...but the list itself is no extra: a failed read rendered "No events yet" over a
+  // season of shows (lib/read-guard.ts; 2026-10-24 review). The error boundary retries.
+  assertReadsSucceeded("DashboardPage", { "รายการงาน": eventsRes });
+  const data = eventsRes.data;
   const callTimes = callTimeByEvent(
     (callRows ?? []) as { event_id: string; start_time: string | null; kind: string | null }[],
     Object.fromEntries((data ?? []).map((e) => [e.id, e.show_start_time]))

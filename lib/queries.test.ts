@@ -1,5 +1,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { eventBundleReadFailure, getEventBundle, getWorkspace, isEventIdShaped } from "@/lib/queries";
+import {
+  eventBundleReadFailure,
+  getEventBundle,
+  getMembers,
+  getSongs,
+  getWorkspace,
+  isEventIdShaped,
+} from "@/lib/queries";
 import { SONG_SHOW_COLUMNS } from "@/lib/song-columns";
 import {
   makeSupabaseFake,
@@ -424,5 +431,34 @@ describe("getEventBundle — the songs it reads", () => {
     expect(reads).toHaveLength(1);
     expect(reads[0].columns).toBe(SONG_SHOW_COLUMNS);
     expect(reads[0].eq).toEqual({ group_id: "g1" });
+  });
+});
+
+// 2026-10-24 review (Argon, verified): getSongs / getMembers coalesced a failed read to
+// [] - the Library then showed a band with no songs and Artists one with no members, and
+// the obvious next move on that screen is to upload or add them again, as duplicates.
+describe("getSongs / getMembers — a failed read is not an empty band", () => {
+  beforeEach(() => {
+    h.supa = makeSupabaseFake({
+      session: makeSession(),
+      script: {
+        songs: fail("canceling statement due to statement timeout", 500),
+        members: fail("canceling statement due to statement timeout", 500),
+      },
+    });
+  });
+
+  it("getSongs throws instead of answering []", async () => {
+    await expect(getSongs("tenant-1", ["band-1"])).rejects.toThrow();
+  });
+
+  it("getMembers throws instead of answering []", async () => {
+    await expect(getMembers("tenant-1", ["band-1"])).rejects.toThrow();
+  });
+
+  it("a genuinely empty band is still an empty list", async () => {
+    h.supa = makeSupabaseFake({ session: makeSession(), script: { songs: ok([]), members: ok([]) } });
+    await expect(getSongs("tenant-1", ["band-1"])).resolves.toEqual([]);
+    await expect(getMembers("tenant-1", ["band-1"])).resolves.toEqual([]);
   });
 });
