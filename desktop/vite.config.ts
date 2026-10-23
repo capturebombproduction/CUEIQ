@@ -18,9 +18,11 @@ export default defineConfig({
     // components resolve "sonner" from the repo root while desktop/src resolves
     // it from desktop/node_modules — two stores, and the one Toaster listened to
     // only one of them, so every toast fired by a shared component (saved,
-    // failed, copied…) went nowhere in the .exe. plugin-react already does this
-    // for react/react-dom.
-    dedupe: ["sonner"],
+    // failed, copied…) went nowhere in the .exe. React too: plugin-react 4 deduped
+    // react/react-dom itself, plugin-react 6 (Vite 8) does not - without these two
+    // the shared components got the root copy, desktop/src its own, and every hook
+    // threw "Cannot read properties of null (reading useContext)" at boot.
+    dedupe: ["sonner", "react", "react-dom"],
     alias: {
       // Override JUST the Supabase client with a localStorage-backed one (the web
       // lib's cookie session doesn't work under Electron's file:// origin). MUST
