@@ -183,6 +183,65 @@ describe("ErrorMonitor", () => {
   });
 });
 
+// lib/csp.ts ships the policy report-only; these reports are what decides whether
+// it can be enforced, so they take the same deduped, RLS-gated path as any error.
+describe("ErrorMonitor · CSP reports", () => {
+  const violation = (props: Record<string, unknown>) =>
+    Object.assign(new Event("securitypolicyviolation"), props);
+
+  afterEach(() => {
+    delete (window as { __cspv?: unknown }).__cspv;
+  });
+
+  it("logs a violation the browser reports after mount", async () => {
+    render(<ErrorMonitor userId={ME} tenantId={TENANT} />);
+    await act(async () => {
+      document.dispatchEvent(
+        violation({ effectiveDirective: "script-src-elem", blockedURI: "inline", sourceFile: "https://x.test/a.js", lineNumber: 3, sample: "alert(1)" })
+      );
+    });
+    expect(h.log).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "csp", message: "CSP script-src-elem blocked inline", url: "https://x.test/a.js:3", stack: "alert(1)" })
+    );
+  });
+
+  // Most violations happen while the page parses, before React mounts anything:
+  // the root layout's pre-paint script keeps them in window.__cspv.
+  it("logs the violations buffered before it mounted, once", async () => {
+    (window as { __cspv?: unknown[] }).__cspv = [{ d: "connect-src", b: "https://evil.test/x", s: "", l: 0 }];
+    const { unmount } = render(<ErrorMonitor userId={ME} tenantId={TENANT} />);
+    expect(h.log).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "csp", message: "CSP connect-src blocked https://evil.test/x" })
+    );
+    unmount();
+    h.log.mockClear();
+    render(<ErrorMonitor userId={ME} tenantId={TENANT} />);
+    expect(h.log).not.toHaveBeenCalled();
+  });
+
+  // A refused presigned R2 URL carries X-Amz-Signature in its query.
+  it("never stores a blocked URL's query string", async () => {
+    render(<ErrorMonitor userId={ME} tenantId={TENANT} />);
+    await act(async () => {
+      document.dispatchEvent(
+        violation({ effectiveDirective: "media-src", blockedURI: "https://b.acct.r2.cloudflarestorage.com/song.mp3?X-Amz-Signature=secret" })
+      );
+    });
+    const arg = (h.log.mock.calls.at(-1) as unknown as [{ message: string }])[0];
+    expect(arg.message).toBe("CSP media-src blocked https://b.acct.r2.cloudflarestorage.com/song.mp3");
+    expect(JSON.stringify(h.log.mock.calls)).not.toContain("secret");
+  });
+
+  it("stops listening on unmount", async () => {
+    const { unmount } = render(<ErrorMonitor userId={ME} tenantId={TENANT} />);
+    unmount();
+    await act(async () => {
+      document.dispatchEvent(violation({ effectiveDirective: "img-src", blockedURI: "https://x.test/i.png" }));
+    });
+    expect(h.log).not.toHaveBeenCalled();
+  });
+});
+
 describe("the reload button", () => {
   it("reloads the page", async () => {
     const reload = vi.fn();

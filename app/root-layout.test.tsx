@@ -7,6 +7,11 @@ import path from "node:path";
 import postcss from "postcss";
 import { isValidElement, type ReactElement } from "react";
 
+// proxy.ts mints a nonce per request and hands it over in x-nonce (lib/csp.ts).
+vi.mock("next/headers", () => ({
+  headers: async () => new Headers({ "x-nonce": "n0nce" }),
+}));
+
 vi.mock("next/font/google", () => ({
   Kanit: () => ({ variable: "font-kanit" }),
   Barlow_Condensed: () => ({ variable: "font-barlow" }),
@@ -17,6 +22,7 @@ import manifestFor from "@/app/manifest";
 import { Toaster } from "@/components/ui/sonner";
 import { SkinRefresher } from "@/components/skin-refresher";
 import { THEME_COLOR } from "@/lib/theme-mode";
+import { CSP_BUFFER_JS } from "@/lib/csp";
 
 type El = ReactElement<Record<string, unknown>>;
 function all(node: unknown, out: El[] = []): El[] {
@@ -27,7 +33,7 @@ function all(node: unknown, out: El[] = []): El[] {
   }
   return out;
 }
-const tree = () => all(RootLayout({ children: <div /> }));
+const tree = async () => all(await RootLayout({ children: <div /> }));
 
 describe("root layout — viewport", () => {
   it("covers the whole screen, so the safe-area insets are real numbers", () => {
@@ -55,8 +61,8 @@ describe("root layout — viewport", () => {
     expect(viewport.themeColor).toBe(THEME_COLOR.dark);
   });
 
-  it("switches the status bar to the light colour before first paint on a light device", () => {
-    const script = tree().find((e) => e.type === "script")!;
+  it("switches the status bar to the light colour before first paint on a light device", async () => {
+    const script = (await tree()).find((e) => e.type === "script")!;
     const js = (script.props.dangerouslySetInnerHTML as { __html: string }).__html;
     expect(js).toContain('meta[name="theme-color"]');
     expect(js).toContain(THEME_COLOR.light);
@@ -65,14 +71,14 @@ describe("root layout — viewport", () => {
 });
 
 describe("root layout — always-mounted pieces", () => {
-  it("refreshes a saved band colour on every page", () => {
-    expect(tree().filter((e) => e.type === SkinRefresher)).toHaveLength(1);
+  it("refreshes a saved band colour on every page", async () => {
+    expect((await tree()).filter((e) => e.type === SkinRefresher)).toHaveLength(1);
   });
 
-  it("mounts the Toaster bare: no pastel richColors, no second opinion on placement", () => {
+  it("mounts the Toaster bare: no pastel richColors, no second opinion on placement", async () => {
     // Placement under the header and the rail styling are the primitive's
     // (components/ui/sonner.tsx). A prop here would silently override them.
-    const toaster = tree().find((e) => e.type === Toaster)!;
+    const toaster = (await tree()).find((e) => e.type === Toaster)!;
     expect(toaster.props.richColors).toBeUndefined();
     expect(toaster.props.position).toBeUndefined();
     expect(toaster.props.offset).toBeUndefined();
@@ -93,5 +99,22 @@ describe("web app manifest", () => {
       "192x192",
       "512x512",
     ]);
+  });
+});
+
+// lib/csp.ts ships report-only; the one inline script of ours must carry the
+// request's nonce before the policy is ever enforced, or enforcing it would block the
+// no-flash theme and the band skin on every page.
+describe("root layout — content security policy", () => {
+  it("puts the request's nonce on the pre-paint script", async () => {
+    const script = (await tree()).find((e) => e.type === "script")!;
+    expect(script.props.nonce).toBe("n0nce");
+  });
+
+  it("starts that script by buffering violations for ErrorMonitor", async () => {
+    const script = (await tree()).find((e) => e.type === "script")!;
+    const js = (script.props.dangerouslySetInnerHTML as { __html: string }).__html;
+    expect(js.startsWith(CSP_BUFFER_JS)).toBe(true);
+    expect(CSP_BUFFER_JS).toContain("securitypolicyviolation");
   });
 });

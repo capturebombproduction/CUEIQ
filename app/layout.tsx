@@ -1,4 +1,6 @@
 import type { Metadata, Viewport } from "next";
+import { headers } from "next/headers";
+import { CSP_BUFFER_JS } from "@/lib/csp";
 import { Barlow_Condensed, Kanit } from "next/font/google";
 import "./globals.css";
 import { Toaster } from "@/components/ui/sonner";
@@ -75,9 +77,12 @@ export const viewport: Viewport = {
   themeColor: THEME_COLOR.dark,
 };
 
-export default function RootLayout({
+export default async function RootLayout({
   children,
 }: Readonly<{ children: React.ReactNode }>) {
+  // proxy.ts mints it per request; absent on /share (outside its matcher), where
+  // no policy is sent either.
+  const nonce = (await headers()).get("x-nonce") ?? undefined;
   return (
     <html
       lang="th"
@@ -89,8 +94,9 @@ export default function RootLayout({
             user chose it, status-bar colour included; (2) apply the saved band
             accent color if any. */}
         <script
+          nonce={nonce}
           dangerouslySetInnerHTML={{
-            __html: `try{if(localStorage.getItem('${THEME_STORAGE_KEY}')==='light'){document.documentElement.classList.remove('dark');var m=document.querySelector('meta[name="theme-color"]');if(m)m.setAttribute('content','${THEME_COLOR.light}')}}catch(e){}try{var a=JSON.parse(localStorage.getItem('cueiq:accent')||'null');if(a&&a.css){var st=document.createElement('style');st.id='cueiq-skin';st.textContent=a.css;document.head.appendChild(st);}}catch(e){}`,
+            __html: `${CSP_BUFFER_JS}try{if(localStorage.getItem('${THEME_STORAGE_KEY}')==='light'){document.documentElement.classList.remove('dark');var m=document.querySelector('meta[name="theme-color"]');if(m)m.setAttribute('content','${THEME_COLOR.light}')}}catch(e){}try{var a=JSON.parse(localStorage.getItem('cueiq:accent')||'null');if(a&&a.css){var st=document.createElement('style');st.id='cueiq-skin';st.textContent=a.css;document.head.appendChild(st);}}catch(e){}`,
           }}
         />
         <OfflineBanner />

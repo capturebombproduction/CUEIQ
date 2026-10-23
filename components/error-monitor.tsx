@@ -18,6 +18,26 @@ function leaveTo(target: string, hashRouter: boolean) {
   }
 }
 
+/** One CSP violation, as the root layout's pre-paint buffer stores it. */
+type CspViolation = { d?: string; b?: string; s?: string; l?: number; x?: string };
+
+/** Origin + path only: a refused presigned R2 URL carries its signature in the
+ *  query, and that has no business in client_errors. "inline" / "eval" / "data"
+ *  are not URLs and pass through. */
+function noQuery(u: string | undefined): string {
+  if (!u) return "";
+  try {
+    const url = new URL(u);
+    return url.origin + url.pathname;
+  } catch {
+    return u.slice(0, 200);
+  }
+}
+
+export function cspMessage(v: CspViolation): string {
+  return `CSP ${v.d || "?"} blocked ${noQuery(v.b) || "?"}`;
+}
+
 /**
  * Global client-error capture. Mounted once in the (app) layout. Installs window
  * 'error' + 'unhandledrejection' listeners that forward to logClientError
@@ -51,11 +71,29 @@ export function ErrorMonitor({
         stack: r?.stack ?? null,
       });
     };
+    // lib/csp.ts ships the policy report-only: nothing is blocked, the browser
+    // only says what WOULD have been. Those reports are what decides enforcing.
+    const onCsp = (v: CspViolation) => {
+      logClientError({
+        userId,
+        tenantId,
+        kind: "csp",
+        message: cspMessage(v),
+        stack: v.x ? String(v.x).slice(0, 200) : null,
+        url: v.s ? `${noQuery(v.s)}:${v.l ?? 0}` : location.pathname,
+      });
+    };
+    const w = window as { __cspv?: CspViolation[] };
+    for (const v of w.__cspv?.splice(0) ?? []) onCsp(v);
+    const onViolation = (e: SecurityPolicyViolationEvent) =>
+      onCsp({ d: e.effectiveDirective || e.violatedDirective, b: e.blockedURI, s: e.sourceFile, l: e.lineNumber, x: e.sample });
     window.addEventListener("error", onError);
     window.addEventListener("unhandledrejection", onRejection);
+    document.addEventListener("securitypolicyviolation", onViolation);
     return () => {
       window.removeEventListener("error", onError);
       window.removeEventListener("unhandledrejection", onRejection);
+      document.removeEventListener("securitypolicyviolation", onViolation);
     };
   }, [userId, tenantId]);
   return null;

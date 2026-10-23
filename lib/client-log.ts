@@ -59,7 +59,7 @@ function isDevOrigin(url?: string | null, stack?: string | null): boolean {
 export async function logClientError(args: {
   userId: string;
   tenantId: string | null;
-  kind: "error" | "unhandledrejection" | "react";
+  kind: "error" | "unhandledrejection" | "react" | "csp";
   message: string;
   stack?: string | null;
   url?: string | null;
