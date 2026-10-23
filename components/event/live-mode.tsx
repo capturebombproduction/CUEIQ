@@ -1120,6 +1120,10 @@ export function LiveMode({
         const urls: Record<string, string> = {};
         const names: Record<string, string> = {};
         for (const s of saved) {
+          // A file picked, or a download landed, while this read was on its way: that one
+          // wins (the merge below), and a URL minted here for the row would be dropped
+          // unrevoked - its blob, a whole master, held for as long as the page stays open.
+          if (audioUrlsRef.current[s.itemId]) continue;
           // A row swapped to another song since this device cached it: these bytes
           // are, by the library's own record, the OLD song's (lib/audio-targets.ts).
           // Never restore them — with no master for the new song yet, nothing would

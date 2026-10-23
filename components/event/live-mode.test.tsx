@@ -46,7 +46,7 @@ vi.mock("@/lib/audio-store", () => ({
 
 import { toast } from "sonner";
 import { LiveMode } from "./live-mode";
-import { deleteAudio } from "@/lib/audio-store";
+import { deleteAudio, loadAudioForEvent } from "@/lib/audio-store";
 import { OfflineBanner } from "@/components/offline-banner";
 import { resetSongCoverCache } from "@/lib/song-covers";
 
@@ -3758,6 +3758,45 @@ describe("LiveMode · a row starts at its own level, not the last song's", () =>
     const sounding = lastFile.element;
     expect(media.state(sounding).paused).toBe(false);
     expect(volumeAtPlay(media, sounding)).toBeCloseTo(0.3);
+  });
+});
+
+// 2026-10-24: the per-show IndexedDB restore minted an object URL for every saved row, then
+// merged with "what is already there wins". A row that got its file first (picked here, or a
+// download that landed) kept that one, and the restore's URL was dropped unrevoked - its blob,
+// a whole master, held for as long as Live stayed open.
+describe("LiveMode · the audio restore never mints a URL it then drops", () => {
+  it("a file picked while the restore was on its way: the restore leaves that row alone", async () => {
+    const one = [makeItem(1)];
+    supa.setScript({ setlist_items: ok(one), songs: ok([]), show_authority: ok([]) });
+    let land!: (rows: typeof h.saved) => void;
+    vi.mocked(loadAudioForEvent).mockImplementationOnce(
+      () => new Promise((res) => (land = res as (rows: typeof h.saved) => void))
+    );
+    const mint = vi.spyOn(URL, "createObjectURL");
+    const revoke = vi.spyOn(URL, "revokeObjectURL");
+    try {
+      await mountLive({ items: one });
+      fireEvent.click(screen.getByTitle("โหลดไฟล์เพลง (อัปโหลดขึ้นคลาวด์)"));
+      const input = document.querySelector('input[type="file"][accept="audio/*"]') as HTMLInputElement;
+      await act(async () => {
+        fireEvent.change(input, { target: { files: [new File(["new"], "new.wav", { type: "audio/wav" })] } });
+      });
+      const minted = mint.mock.results.map((r) => r.value as string);
+      expect(minted).toHaveLength(1); // the picked file
+      await act(async () => {
+        land([{ itemId: "item-1", blob: new Blob(["old"]), name: "old.wav", path: null }]);
+      });
+      await act(async () => {});
+      const all = mint.mock.results.map((r) => r.value as string);
+      const freed = new Set(revoke.mock.calls.map((c) => c[0] as string));
+      // every URL minted is either the one the row holds or was freed
+      expect(all.filter((u) => u !== minted[0] && !freed.has(u))).toEqual([]);
+      expect(screen.getAllByText("new.wav").length).toBeGreaterThan(0);
+    } finally {
+      mint.mockRestore();
+      revoke.mockRestore();
+    }
   });
 });
 
