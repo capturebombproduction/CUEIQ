@@ -204,10 +204,11 @@ describe("EventWorkspace · keyboard into and along the tab strip", () => {
     expect(selected("Summary")).toBe(true);
   });
 
-  // Where a button takes no focus on a press (Safari) there is no blur to clear the
-  // press flag, so a press dragged off Summary — no click, ever — must clear it
-  // another way, or the next arrow-key move onto Summary would move focus there
-  // without selecting it.
+  // A press dragged off Summary — no click, ever — must not switch, and must not
+  // leave the press flag set, or the next arrow-key move onto Summary would move
+  // focus there without selecting it. Radix Tabs ≥1.1.16 focuses the trigger itself
+  // on a press (Safari too, where a button used to take no focus), so the press
+  // lands focus on Summary unselected — the state Chrome always had.
   it("a press dragged off Summary does not leave the arrow keys unable to select it", async () => {
     window.location.hash = "#schedule";
     const user = userEvent.setup();
@@ -216,11 +217,14 @@ describe("EventWorkspace · keyboard into and along the tab strip", () => {
     await user.tab(); // focus enters the strip on Schedule
     const summary = screen.getByRole("tab", { name: "Summary" });
 
-    fireEvent.mouseDown(summary); // a press that takes no focus…
+    fireEvent.mouseDown(summary); // a press…
     fireEvent.mouseLeave(summary); // …dragged away, released elsewhere
     expect(router.refresh).not.toHaveBeenCalled();
+    expect(selected("Summary")).toBe(false);
 
-    await user.keyboard("{Home}"); // Summary is the first tab
+    await user.keyboard("{ArrowRight}"); // along the strip…
+    await waitFor(() => expect(selected("Setlist")).toBe(true));
+    await user.keyboard("{Home}"); // …and back: Summary is the first tab
     await waitFor(() => expect(selected("Summary")).toBe(true));
     expect(document.activeElement).toBe(summary);
     expect(router.refresh).toHaveBeenCalledTimes(1);

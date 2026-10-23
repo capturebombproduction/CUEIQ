@@ -492,8 +492,9 @@ export function EventWorkspace({
                 if (e.button === 0 && !e.ctrlKey) summaryPress.current = true;
               }}
               onMouseLeave={() => {
-                // Pressed, then dragged away: no click is coming, and where the
-                // button takes no focus on a press (Safari) no blur will clear this.
+                // Pressed, then dragged away: no click is coming. (Radix Tabs
+                // ≥1.1.16 focuses the trigger on a press, so a blur now follows too;
+                // this is the clear that does not wait for one.)
                 summaryPress.current = false;
               }}
               onFocus={(e) => {
