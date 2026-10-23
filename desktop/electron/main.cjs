@@ -225,10 +225,33 @@ async function putAudioBytes(url, bytes, contentType) {
   if (!res.ok) throw new Error(`upload failed (${res.status})`);
 }
 
+/** The folder the last audio file was picked from. Electron 43+ opens every dialog in
+ *  Downloads unless it is given a defaultPath (the OS no longer remembers the last folder),
+ *  so without this the operator would walk back to their song folder on every pick. */
+const AUDIO_DIR_FILE = () => path.join(app.getPath("userData"), "last-audio-dir.json");
+
+function readLastAudioDir() {
+  try {
+    const dir = JSON.parse(fs.readFileSync(AUDIO_DIR_FILE(), "utf8")).dir;
+    return typeof dir === "string" && fs.existsSync(dir) ? dir : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function writeLastAudioDir(dir) {
+  try {
+    fs.writeFileSync(AUDIO_DIR_FILE(), JSON.stringify({ dir }), "utf8");
+  } catch {
+    /* best-effort — worst case the next pick starts in Downloads */
+  }
+}
+
 /** Native open dialog for picking a LOCAL audio file off the device. */
 async function pickAudioFile() {
   const r = await dialog.showOpenDialog({
     title: "เลือกไฟล์เพลงจากเครื่อง",
+    defaultPath: readLastAudioDir(),
     properties: ["openFile"],
     filters: [
       // no AIFF: Chromium cannot play it (lib/audio.ts unplayableAudio)
@@ -238,6 +261,7 @@ async function pickAudioFile() {
   });
   if (r.canceled || r.filePaths.length === 0) return null;
   const filePath = r.filePaths[0];
+  writeLastAudioDir(path.dirname(filePath));
   const bytes = new Uint8Array(fs.readFileSync(filePath));
   return { name: path.basename(filePath), bytes };
 }
