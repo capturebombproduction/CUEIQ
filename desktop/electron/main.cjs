@@ -230,10 +230,18 @@ async function putAudioBytes(url, bytes, contentType) {
  *  so without this the operator would walk back to their song folder on every pick. */
 const AUDIO_DIR_FILE = () => path.join(app.getPath("userData"), "last-audio-dir.json");
 
-function readLastAudioDir() {
+/** Async, and given up on after 1.5 s: the last folder can be on a network share or a
+ *  USB drive that is gone now, and a synchronous existsSync on a dead SMB path holds
+ *  the main process - every window - for the share's timeout (tens of seconds). */
+async function readLastAudioDir() {
   try {
     const dir = JSON.parse(fs.readFileSync(AUDIO_DIR_FILE(), "utf8")).dir;
-    return typeof dir === "string" && fs.existsSync(dir) ? dir : undefined;
+    if (typeof dir !== "string") return undefined;
+    const there = await Promise.race([
+      fs.promises.stat(dir).then((st) => st.isDirectory(), () => false),
+      new Promise((resolve) => setTimeout(() => resolve(false), 1500)),
+    ]);
+    return there ? dir : undefined;
   } catch {
     return undefined;
   }
@@ -251,7 +259,7 @@ function writeLastAudioDir(dir) {
 async function pickAudioFile() {
   const r = await dialog.showOpenDialog({
     title: "เลือกไฟล์เพลงจากเครื่อง",
-    defaultPath: readLastAudioDir(),
+    defaultPath: await readLastAudioDir(),
     properties: ["openFile"],
     filters: [
       // no AIFF: Chromium cannot play it (lib/audio.ts unplayableAudio)
