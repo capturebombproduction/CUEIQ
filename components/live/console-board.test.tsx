@@ -472,3 +472,39 @@ describe("the bottom panel", () => {
     expect(screen.getByTestId("console-lufs-integrated").textContent).toBe("−20.0");
   });
 });
+
+describe("the next row's way in (lib/live-entry.ts)", () => {
+  it("AUTO's last five seconds: the count takes the length's place in NEXT, and lands on the next strip", () => {
+    mount({ entry: { title: "Track 2", leadSec: 0, count: 3, manual: false }, remaining: 3, zone: "urgent" });
+    const next = screen.getByLabelText("Next channel");
+    expect(screen.getByTestId("console-next-count").textContent).toBe("เข้าใน3");
+    // the length gives way (the box keeps its height), and no overlap row for a plain follow-on
+    expect(next.textContent).not.toContain("4:00");
+    expect(screen.queryByTestId("console-next-entry")).toBeNull();
+    const strips = screen.getAllByTestId("console-strip");
+    expect(within(strips[1]).getByTestId("console-strip-count").textContent).toBe("3");
+    expect(screen.getAllByTestId("console-strip-count")).toHaveLength(1);
+  });
+
+  it("a next row that comes in OVER this one says so all along; Manual says it never comes in itself", () => {
+    const { rerender, props } = mount({ entry: { title: "Track 2", leadSec: 5, count: null, manual: false } });
+    expect(screen.getByTestId("console-next-entry").textContent).toContain("เข้าซ้อน 5 วิ");
+    expect(screen.getByTestId("console-next-entry").textContent).not.toContain("MANUAL");
+    expect(screen.getByLabelText("Next channel").textContent).toContain("4:00");
+    expect(screen.queryByTestId("console-strip-count")).toBeNull();
+    rerender(<ConsoleBoard {...props} entry={{ title: "Track 2", leadSec: 5, count: null, manual: true }} />);
+    expect(screen.getByTestId("console-next-entry").textContent).toContain("MANUAL ไม่เข้าเอง");
+    // the count over an overlap row: the line stays, the count words it as an overlap
+    rerender(<ConsoleBoard {...props} entry={{ title: "Track 2", leadSec: 5, count: 2, manual: false }} />);
+    expect(screen.getByTestId("console-next-count").textContent).toBe("เข้าซ้อนใน2");
+    expect(screen.getByTestId("console-next-entry")).toBeTruthy();
+  });
+
+  it("no way in to tell: the NEXT box is as it was", () => {
+    mount();
+    expect(screen.queryByTestId("console-next-count")).toBeNull();
+    expect(screen.queryByTestId("console-next-entry")).toBeNull();
+    expect(screen.queryByTestId("console-strip-count")).toBeNull();
+    expect(screen.getByLabelText("Next channel").textContent).toContain("4:00");
+  });
+});

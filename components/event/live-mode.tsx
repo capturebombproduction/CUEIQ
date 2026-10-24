@@ -101,6 +101,7 @@ import {
 } from "@/lib/types";
 import { formatDuration, nowClock, pad2, runSecondsOf } from "@/lib/time";
 import { liveZone } from "@/lib/live-zone";
+import { entryCue } from "@/lib/live-entry";
 import { restoreShow, SNAPSHOT_ALIVE_MS, STALE_RESTORE_MS } from "@/lib/live-restore";
 import { hardOutGap, hardOutReading } from "@/lib/live-hard-out";
 import { fadeLevel, nextFadeFrame } from "@/lib/fade";
@@ -3103,6 +3104,19 @@ export function LiveMode({
   // Warning ladder (lib/live-zone): warn/urgent scale to the item's own block.
   const zoneBlock = current ? runBlock(items, state.currentIndex) : 0;
   const zone = liveZone({ running: state.running, remaining, blockSec: zoneBlock });
+  // "เข้าใน 5 4 3 2 1" (lib/live-entry.ts): how the next row comes in - AUTO counts the last five
+  // seconds of `remaining` (it ends on the moment Auto takes the next row), a row the next one
+  // comes in over says so all along. The NOW card and CONSOLE's NEXT box; display only, and a
+  // viewer works it out from the same state. Not after จบโชว์.
+  const entry = showEnded
+    ? null
+    : entryCue({
+        auto: state.mode === "auto",
+        running: state.running,
+        remaining,
+        blockSec: zoneBlock,
+        next: next ? { title: next.title, leadSec: leadOf(next) } : null,
+      });
   // The zone's look is components/live/now-card.tsx + app/stage.css (.zone-warn /
   // .zone-urgent / .alarm-plate), on tokens no band skin writes.
 
@@ -4696,6 +4710,7 @@ export function LiveMode({
           // STAGE's running-order tap, under the same lock
           onCue={state.mode === "auto" || !isController ? null : goto}
           nextLoudness={nextLoudness}
+          entry={entry}
           alarm={signalAlarm}
         />
       ) : (
@@ -4717,6 +4732,7 @@ export function LiveMode({
           wave={nowWave}
           sections={nowSections}
           lufs={currentSongSignal?.lufs ?? null}
+          entry={entry}
           beat={
             showBeat ? (
               <BeatLight

@@ -39,6 +39,10 @@
 @keyframes slam-y { from { transform: scaleY(0); } to { transform: scaleY(1); } }
 @keyframes rail-in { from { transform: scaleX(0); } to { transform: scaleX(1); } }
 @keyframes sheet-in { from { transform: translateY(100%); } to { transform: translateY(0); } }
+/* The entry count's beat (components/live/now-card.tsx, console-board.tsx): each digit of 5 4 3 2 1 lands once,
+   a new node per second (keyed on the digit), so nothing loops. */
+@keyframes entry-tick { 0% { opacity: .35; transform: scale(1.35); } 100% { opacity: 1; transform: none; } }
+.entry-digit { display: inline-block; animation: entry-tick .45s var(--ease-snap) 1; }
 
 /* Reduced motion: everything stops, app-wide. `html.reduce-motion` is the same switch
    for QA (and the mockup's "Motion: Reduced"). !important so no utility outlives it. */

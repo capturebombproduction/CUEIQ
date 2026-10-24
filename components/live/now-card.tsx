@@ -8,6 +8,7 @@ import { sectionAt } from "@/lib/song-signal";
 import { formatDuration, isSettled } from "@/lib/time";
 import { Countdown } from "@/components/live/countdown";
 import { KindChip } from "@/components/event/kind";
+import { entryWords, type EntryCue } from "@/lib/live-entry";
 import type { SetlistKind } from "@/lib/types";
 
 const p2 = (n: number) => String(n).padStart(2, "0");
@@ -59,6 +60,78 @@ export function fittedStep(textW: number, boxW: number, currentPx: number): 0 | 
 }
 
 /**
+ * Where the NOW countdown's figures stand in their box (Barlow Condensed 800, read off the
+ * font in a browser: ascent 1.0 em, descent .2 em, a figure .719 em tall and .016 em below its
+ * baseline). On the .cd line-height of .8 the baseline falls on the line box's FOOT, so a
+ * figure fills the box's lower .72 em and drops ~.02 em under it - the figures are NOT centred
+ * in the box: the room under them is .02 em less than half of what the box spares, the room
+ * above .08 em more. (A first cut assumed them centred and laid the count over their feet on
+ * a 1440 x 900 stage.)
+ */
+const CD_LINE_EM = 0.8;
+const FIGURE_DROP_EM = 0.02;
+/** a figure's height, of its font size: sizes the count's own digit to its band */
+const FIGURE_EM = 0.72;
+/** The least room the entry count takes under the figures; less, and it rides the caption line. */
+export const ENTRY_BAND_MIN = 40;
+
+/**
+ * The band under the countdown's figures, in px, that the entry count (lib/live-entry.ts) may
+ * use: half of what the box has over the figures' own height. On a tall stage the box is
+ * taller than its width lets the figures grow (พี่ circled that empty band on 2026-10-24);
+ * on a phone, and a stage short of height, the figures fill it and this is 0 - the count then
+ * takes the caption line under the meter instead. The figures never shrink for it.
+ */
+export function entryBandPx(boxH: number, fontPx: number): number {
+  if (!(boxH > 0 && fontPx > 0)) return 0;
+  // the .cd box sits centred in the wrap; the figures' feet drop FIGURE_DROP_EM under it
+  const free = Math.floor((boxH - CD_LINE_EM * fontPx) / 2 - FIGURE_DROP_EM * fontPx);
+  return free >= ENTRY_BAND_MIN ? free : 0;
+}
+
+/** The entry count / the overlap line, at the size the band has (or the caption line's size). */
+function EntryLine({ cue, band }: { cue: EntryCue; band: number }) {
+  const big = band > 0;
+  const textPx = band >= 70 ? 20 : 16;
+  const digitPx = Math.round(Math.min(76, Math.max(36, (band - 16) / FIGURE_EM)));
+  if (cue.count !== null) {
+    return (
+      <span
+        data-testid="now-entry"
+        data-place={big ? "band" : "caption"}
+        className={cn("min-w-0 items-center gap-[.4em] font-semibold text-warning-ink", big ? "flex justify-center" : "inline-flex max-w-full align-bottom")}
+        style={big ? { fontSize: textPx } : undefined}
+      >
+        <span className="min-w-0 truncate text-foreground">{cue.title}</span>
+        <span className="shrink-0">{entryWords(cue)}</span>
+        <b
+          key={cue.count}
+          data-testid="now-entry-count"
+          className={cn("entry-digit num shrink-0 leading-[.8]", big ? "font-extrabold" : "text-[15px] stage:text-[19px]")}
+          style={big ? { fontSize: digitPx } : undefined}
+        >
+          {cue.count}
+        </b>
+      </span>
+    );
+  }
+  return (
+    <span
+      data-testid="now-entry"
+      data-place={big ? "band" : "caption"}
+      className={cn("min-w-0 items-center gap-[.35em] text-muted-foreground", big ? "flex justify-center" : "inline-flex max-w-full align-bottom")}
+      style={big ? { fontSize: textPx } : undefined}
+    >
+      <span className="min-w-0 truncate font-semibold text-foreground">{cue.title}</span>
+      <span className="shrink-0">
+        เข้าซ้อน <b className={cn("num text-foreground", big ? "text-[1.15em]" : "text-[14px] stage:text-[16px]")}>{cue.leadSec}</b> วิ
+      </span>
+      {cue.manual && <span className="shrink-0 font-semibold text-foreground">· MANUAL ไม่เข้าเอง</span>}
+    </span>
+  );
+}
+
+/**
  * Live Mode's NOW card (FINAL-SPEC-v2 §G.10): ONE shape for all four zones, so the
  * card is the same height in every one of them and the NEXT card's mic grid can
  * never slide under the dock when the ladder steps.
@@ -91,6 +164,7 @@ export function NowCard({
   sections = [],
   beat = null,
   lufs = null,
+  entry = null,
   children,
 }: {
   zone: LiveZone;
@@ -123,6 +197,8 @@ export function NowCard({
   beat?: ReactNode;
   /** the song's integrated loudness (0045), a chip beside the kind on stage */
   lufs?: number | null;
+  /** the next row's way in (lib/live-entry.ts): AUTO's 5 4 3 2 1 count, the overlap line */
+  entry?: EntryCue | null;
   /** the fade row (and the stage volume row) */
   children?: ReactNode;
 }) {
@@ -178,6 +254,34 @@ export function NowCard({
       fonts?.removeEventListener?.("loadingdone", measure);
     };
   }, [title]);
+  // The entry count's room: the band under the countdown's figures (entryBandPx), measured
+  // once before paint and again whenever the box or the figures change size. No layout (the
+  // server, jsdom): 0, so the count rides the caption line.
+  const cdCellRef = useRef<HTMLDivElement>(null);
+  const [band, setBand] = useState(0);
+  const wantsEntry = entry !== null;
+  useLayoutEffect(() => {
+    const wrap = cdCellRef.current?.querySelector<HTMLElement>(".cd-wrap");
+    const cd = cdCellRef.current?.querySelector<HTMLElement>(".cd");
+    if (!wantsEntry || !wrap || !cd) return;
+    const measure = () => {
+      const free = entryBandPx(wrap.clientHeight, parseFloat(getComputedStyle(cd).fontSize));
+      setBand((b) => (b === free ? b : free));
+    };
+    measure();
+    const ro = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(measure);
+    ro?.observe(wrap);
+    ro?.observe(cd);
+    return () => ro?.disconnect();
+  }, [wantsEntry]);
+  // Never on the overtime plate: it says one thing ("กด NEXT เมื่อพร้อม"), and the count cannot run
+  // past zero anyway (Auto has moved on by then).
+  const entryInBand = entry !== null && band > 0 && !over;
+  // Where the band does not exist, the caption line carries it: the count always (the zone's
+  // own "เหลือไม่ถึง …" says less than 5 4 3 2 1), the overlap line where the line would only
+  // say "เวลาคงเหลือของรายการ".
+  const entryInCaption =
+    entry !== null && !entryInBand && (entry.count !== null || (zone === "ok" && !section && blockSec > 0));
   return (
     <section
       data-zone={zone}
@@ -372,8 +476,18 @@ export function NowCard({
           The cap is 340 px (พี่ 2026-10-04: "ขยายขนาดตัวหนังสืออันเวลาหลัก" - it was 236, and the
           box held far more: at 1440 x 900 the numerals are ~48 mm tall now, ~33 before). Below it
           the width and height fit decide, as they always did. */}
-      <div className="mt-2 [@media(orientation:landscape)_and_(max-height:599.98px)_and_(pointer:coarse)]:mt-1 stage:mt-1 stage:grid stage:min-h-0 stage:flex-1 stage:[&_.cd-wrap]:!h-auto stage:[&_.cd-wrap]:[container-type:size] stage:[&_.cd]:![--cd-max:340px] stage:supports-[width:1cqi]:[&_.cd]:![font-size:min(var(--cd-max),calc(100cqi/var(--cd-em,1.84)),calc(100cqb/0.8))] [--cd-col:min(80vw,100vw_-_72px,600px)] [@media(orientation:landscape)_and_(max-height:599.98px)_and_(pointer:coarse)]:[--cd-col:calc(50vw_-_68px)] stage:[--cd-col:calc(100vw_-_760px)] stage:[--cd-h:max(48px,calc(100vh_-_600px))] [@media(orientation:landscape)_and_(max-height:599.98px)_and_(pointer:coarse)]:[&_.cd-wrap]:!h-[96px] [@media(orientation:landscape)_and_(max-height:599.98px)_and_(pointer:coarse)]:[&_.cd]:![--cd-max:120px]">
+      <div ref={cdCellRef} className="relative mt-2 [@media(orientation:landscape)_and_(max-height:599.98px)_and_(pointer:coarse)]:mt-1 stage:mt-1 stage:grid stage:min-h-0 stage:flex-1 stage:[&_.cd-wrap]:!h-auto stage:[&_.cd-wrap]:[container-type:size] stage:[&_.cd]:![--cd-max:340px] stage:supports-[width:1cqi]:[&_.cd]:![font-size:min(var(--cd-max),calc(100cqi/var(--cd-em,1.84)),calc(100cqb/0.8))] [--cd-col:min(80vw,100vw_-_72px,600px)] [@media(orientation:landscape)_and_(max-height:599.98px)_and_(pointer:coarse)]:[--cd-col:calc(50vw_-_68px)] stage:[--cd-col:calc(100vw_-_760px)] stage:[--cd-h:max(48px,calc(100vh_-_600px))] [@media(orientation:landscape)_and_(max-height:599.98px)_and_(pointer:coarse)]:[&_.cd-wrap]:!h-[96px] [@media(orientation:landscape)_and_(max-height:599.98px)_and_(pointer:coarse)]:[&_.cd]:![--cd-max:120px]">
         <Countdown seconds={Math.round(remaining)} max={164} />
+        {/* The entry count in the band under the figures (out of the flow: the figures keep
+            every px they had). */}
+        {entryInBand && entry && (
+          <div
+            className="pointer-events-none absolute inset-x-0 bottom-0 flex items-center justify-center px-2"
+            style={{ height: band }}
+          >
+            <EntryLine cue={entry} band={band} />
+          </div>
+        )}
       </div>
 
       {over ? (
@@ -453,7 +567,9 @@ export function NowCard({
             over && "font-semibold"
           )}
         >
-          {zone === "ok" && section ? (
+          {entryInCaption && entry ? (
+            <EntryLine cue={entry} band={0} />
+          ) : zone === "ok" && section ? (
             <span data-testid="now-section">
               ท่อน <b className="num text-[14px] text-foreground stage:text-[16px]">{section.now ?? "—"}</b>
               {section.next ? (

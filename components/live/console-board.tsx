@@ -20,6 +20,7 @@ import { ConsoleAnalyzer } from "@/components/live/console-analyzer";
 import { cn } from "@/lib/utils";
 import { formatCountdown, formatDuration, formatOvertime } from "@/lib/time";
 import { thresholds, type LiveZone } from "@/lib/live-zone";
+import { entryWords, type EntryCue } from "@/lib/live-entry";
 import { CLIP_LEVEL, METER_FLOOR_DB, meterPos, toDb, type OutputKind, type SignalTap } from "@/lib/live-signal";
 import { decodeWaveform } from "@/lib/song-analysis";
 import { beatAt, sectionAt, waveOverBlock, type LiveMarker } from "@/lib/song-signal";
@@ -96,6 +97,7 @@ export function ConsoleBoard({
   onOutput,
   onCue,
   nextLoudness,
+  entry = null,
   alarm = null,
 }: {
   items: readonly ConsoleItem[];
@@ -135,6 +137,8 @@ export function ConsoleBoard({
   onCue: ((i: number) => void) | null;
   /** the next song against this one, dB (lib/song-signal.ts loudnessDelta) */
   nextLoudness: number | null;
+  /** the next row's way in (lib/live-entry.ts): AUTO's 5 4 3 2 1 count, the overlap line */
+  entry?: EntryCue | null;
   /** NO SIGNAL / STALLED / DEVICE LOST: the same band STAGE lays over its NOW card */
   alarm?: ReactNode;
 }) {
@@ -301,7 +305,7 @@ export function ConsoleBoard({
 
         <ClipEditor item={current} elapsed={elapsed} running={running} sections={curMarkers} section={section} />
 
-        <BottomPanel items={items} index={index} playingId={playingId} liveRef={stripLive} tap={tap} />
+        <BottomPanel items={items} index={index} playingId={playingId} liveRef={stripLive} tap={tap} count={entry?.count ?? null} />
       </div>
 
       <aside aria-label="Playback" className="flex min-h-0 flex-col gap-2 [container-type:size]">
@@ -445,8 +449,32 @@ export function ConsoleBoard({
               <div className="flex min-w-0 items-center gap-2">
                 <span className="nlabel text-[16px]">Next</span>
                 <span className="min-w-0 flex-1 truncate text-[13px] font-medium">{next.title || "—"}</span>
-                <span className="num shrink-0 text-[15px]">{formatDuration(next.block)}</span>
+                {/* AUTO's last five seconds: the count takes the length's place, so the box keeps
+                    its height (the meters above would shrink under a new row for five seconds) */}
+                {entry?.count != null ? (
+                  <span data-testid="console-next-count" className="flex shrink-0 items-baseline gap-1 text-[12px] font-semibold text-warning-ink">
+                    {entryWords(entry)}
+                    <b key={entry.count} className="entry-digit num text-[22px] leading-[.8]">
+                      {entry.count}
+                    </b>
+                  </span>
+                ) : (
+                  <span className="num shrink-0 text-[15px]">{formatDuration(next.block)}</span>
+                )}
               </div>
+              {/* a next row that comes in over this one says so all along (from the moment this
+                  row starts, so the box never grows mid-song); Manual never brings it in itself */}
+              {entry && entry.leadSec > 0 && (
+                <div
+                  data-testid="console-next-entry"
+                  className="mt-1.5 flex min-w-0 items-baseline gap-1 rounded-[2px] bg-muted px-2 py-1 text-[11.5px] text-muted-foreground"
+                >
+                  <span className="shrink-0">
+                    เข้าซ้อน <b className="num text-[15px] text-foreground">{entry.leadSec}</b> วิ ทับท้ายรายการนี้
+                  </span>
+                  {entry.manual && <span className="truncate font-semibold text-foreground">· MANUAL ไม่เข้าเอง</span>}
+                </div>
+              )}
               {/* against the song on now; a next SONG that is not measured says so, anything
                   else (an MC next, an MC now) has nothing to compare and shows nothing, as STAGE */}
               {nextLoudness != null ? (
@@ -898,11 +926,14 @@ const SetMixer = memo(function SetMixer({
   index,
   playingId,
   liveRef,
+  count = null,
 }: {
   items: readonly ConsoleItem[];
   index: number;
   playingId: string | null;
   liveRef: React.RefObject<HTMLSpanElement | null>;
+  /** AUTO's 5 4 3 2 1 before the next row comes in (lib/live-entry.ts), on that row's strip */
+  count?: number | null;
 }) {
   const target = lufsBar(LOUDNESS_TARGET) * 100;
   return (
@@ -941,6 +972,13 @@ const SetMixer = memo(function SetMixer({
                   />
                 )}
                 <span aria-hidden className="absolute inset-x-0 border-t border-dashed border-warning/75" style={{ bottom: `${target}%` }} />
+                {count != null && i === index + 1 && (
+                  <span data-testid="console-strip-count" className="absolute inset-0 grid place-items-center">
+                    <b key={count} className="entry-digit num rounded-[2px] bg-background/85 px-1 text-[24px] leading-none text-warning-ink">
+                      {count}
+                    </b>
+                  </span>
+                )}
               </div>
               <span className="num text-center text-[12.5px] leading-none">{it.lufs != null ? it.lufs.toFixed(1) : "—"}</span>
               <span
@@ -973,12 +1011,14 @@ function BottomPanel({
   playingId,
   liveRef,
   tap,
+  count,
 }: {
   items: readonly ConsoleItem[];
   index: number;
   playingId: string | null;
   liveRef: React.RefObject<HTMLSpanElement | null>;
   tap: SignalTap | null;
+  count: number | null;
 }) {
   const tabs: PanelTab[] = tap ? ["analyzer", "mixer", "spectrogram"] : ["mixer"];
   const [picked, setPicked] = useState<PanelTab>(() => {
@@ -1040,7 +1080,7 @@ function BottomPanel({
         </span>
       </div>
       {tab === "mixer" || !tap ? (
-        <SetMixer items={items} index={index} playingId={playingId} liveRef={liveRef} />
+        <SetMixer items={items} index={index} playingId={playingId} liveRef={liveRef} count={count} />
       ) : (
         <ConsoleAnalyzer tap={tap} trackKey={playingId} view={tab} />
       )}

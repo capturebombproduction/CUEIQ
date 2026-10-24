@@ -837,3 +837,105 @@ describe("NowCard · Signal", () => {
     expect(within(over.el).queryByText(/LUFS/)).toBeNull();
   });
 });
+
+describe("NowCard · the next row's way in: เข้าใน 5 4 3 2 1 (lib/live-entry.ts)", () => {
+  const COUNT = { title: "Seishin Kakumei", leadSec: 0, count: 3, manual: false };
+  const OVERLAP = { title: "Seishin Kakumei", leadSec: 5, count: null, manual: false };
+
+  it("entryBandPx: the band under the figures, from the box and the font (0 where the figures fill it)", async () => {
+    const { entryBandPx, ENTRY_BAND_MIN } = await import("./now-card");
+    // a 413 px box, figures at the 340 px cap: the 272 px .cd box leaves 70.5 px under it, and
+    // the figures' feet drop 6.8 px into that -> 63 px clear under them
+    expect(entryBandPx(413, 340)).toBe(63);
+    // a 1440 x 900 stage: a 340 px box spares 34 px under the .cd box, 27 under the figures ->
+    // too little: the count rides the caption line (the first cut called this 49 and laid the
+    // count over the figures' feet)
+    expect(entryBandPx(340, 340)).toBe(0);
+    // the phone: the 131 px box is the figures' own -> no band
+    expect(entryBandPx(131, 164)).toBe(0);
+    // exactly the least room, and a pixel short of it
+    const atMin = Math.ceil(272 + 2 * (ENTRY_BAND_MIN + 6.8));
+    expect(entryBandPx(atMin, 340)).toBe(ENTRY_BAND_MIN);
+    expect(entryBandPx(atMin - 2, 340)).toBe(0);
+    expect(entryBandPx(0, 340)).toBe(0);
+    expect(entryBandPx(400, Number.NaN)).toBe(0);
+  });
+
+  it("no layout (a phone's fixed box, jsdom): the count rides the caption line, in place of the zone's words", () => {
+    const { el } = card("urgent", { remaining: 3, entry: COUNT });
+    const line = within(el).getByTestId("now-entry");
+    expect(line.dataset.place).toBe("caption");
+    expect(line.textContent).toBe("Seishin Kakumeiเข้าใน3");
+    expect(within(el).getByTestId("now-entry-count").textContent).toBe("3");
+    expect(el.textContent).not.toContain("เหลือไม่ถึง");
+    // the overlap words when the next one comes in over this one
+    const over = card("urgent", { remaining: 3, entry: { ...COUNT, leadSec: 5 } });
+    expect(within(over.el).getByTestId("now-entry").textContent).toBe("Seishin Kakumeiเข้าซ้อนใน3");
+  });
+
+  it("the overlap line takes the caption only where it would say nothing else; Manual says it never comes in itself", () => {
+    const ok = card("ok", { entry: OVERLAP });
+    expect(within(ok.el).getByTestId("now-entry").textContent).toBe("Seishin Kakumeiเข้าซ้อน 5 วิ");
+    ok.unmount();
+    // WARN keeps its "เหลือไม่ถึง …" until the count
+    const warn = card("warn", { entry: OVERLAP });
+    expect(within(warn.el).queryByTestId("now-entry")).toBeNull();
+    expect(warn.el.textContent).toContain("เหลือไม่ถึง");
+    warn.unmount();
+    // the practice room's sections keep the line under a song
+    const sec = card("ok", { entry: OVERLAP, sections: [{ label: "INTRO", at: 0 }, { label: "VERSE", at: 50 }] });
+    expect(within(sec.el).queryByTestId("now-entry")).toBeNull();
+    sec.unmount();
+    const manual = card("ok", { entry: { ...OVERLAP, manual: true } });
+    expect(within(manual.el).getByTestId("now-entry").textContent).toContain("MANUAL ไม่เข้าเอง");
+    manual.unmount();
+    // the overtime plate says one thing
+    const over = card("over", { entry: { ...OVERLAP, manual: true } });
+    expect(within(over.el).queryByTestId("now-entry")).toBeNull();
+  });
+
+  it("guard: the count adds no row - the same rows in every zone, the countdown in its fixed box", () => {
+    const plain = card("urgent");
+    const want = shape(plain.el);
+    plain.unmount();
+    for (const z of ["ok", "warn", "urgent", "over"] as const) {
+      const { el, unmount } = card(z, { entry: z === "urgent" ? COUNT : OVERLAP });
+      expect(shape(el)).toEqual(z === "urgent" ? want : shape(card(z).el));
+      unmount();
+    }
+  });
+
+  it("a tall stage box: the count sits in the band UNDER the figures, out of the flow, sized to the room", () => {
+    const gcs = window.getComputedStyle;
+    Object.defineProperty(HTMLElement.prototype, "clientHeight", {
+      configurable: true,
+      get(this: HTMLElement) {
+        return this.classList.contains("cd-wrap") ? 413 : 0;
+      },
+    });
+    window.getComputedStyle = ((node: Element) => {
+      const real = gcs(node);
+      return node.classList.contains("cd") ? ({ ...real, fontSize: "340px" } as CSSStyleDeclaration) : real;
+    }) as typeof window.getComputedStyle;
+    try {
+      const { el } = card("urgent", { remaining: 3, entry: COUNT });
+      const line = within(el).getByTestId("now-entry");
+      expect(line.dataset.place).toBe("band");
+      // in the countdown's cell, laid over its foot: the band is 63 px, the digit (63 - 16) / .72
+      const band = line.parentElement as HTMLElement;
+      expect(band.className).toContain("absolute");
+      expect(band.style.height).toBe("63px");
+      expect(band.parentElement!.querySelector(".cd-wrap")).toBeTruthy();
+      expect(within(el).getByTestId("now-entry-count").style.fontSize).toBe("65px");
+      // the caption keeps the zone's own words
+      expect(el.textContent).toContain("เหลือไม่ถึง");
+      // the overtime plate, the same tall box: no line laid over it
+      const over = card("over", { entry: { ...COUNT, count: null, leadSec: 5, manual: true } });
+      expect(within(over.el).queryByTestId("now-entry")).toBeNull();
+    } finally {
+      // the override sits on HTMLElement; jsdom's own getter is Element's, underneath
+      delete (HTMLElement.prototype as { clientHeight?: number }).clientHeight;
+      window.getComputedStyle = gcs;
+    }
+  });
+});
