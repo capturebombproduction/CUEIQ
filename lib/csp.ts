@@ -19,6 +19,7 @@
  * websocket), and R2 over presigned URLs (song audio, feedback screenshots) -
  * `*.r2.cloudflarestorage.com` covers both URL styles without writing the account
  * id into every response. Audio and covers also play from blob: and data: URLs.
+ * The one frame: the event page's Google map (www.google.com, frame-src).
  */
 
 /** Pre-paint: CSP violations that fire before ErrorMonitor mounts (most of them -
@@ -30,6 +31,8 @@ export const CSP_BUFFER_JS = `window.__cspv=[];document.addEventListener('securi
 export const CSP_HEADER = "Content-Security-Policy-Report-Only";
 
 const R2 = "https://*.r2.cloudflarestorage.com";
+// The Google Maps embed and the 301 it answers with (/maps/embed) share this origin.
+const MAPS = "https://www.google.com";
 
 export function newNonce(): string {
   const bytes = new Uint8Array(16);
@@ -54,6 +57,9 @@ export function buildCsp(
     "media-src": ["'self'", "blob:", "data:", R2],
     "font-src": ["'self'", "data:"],
     "connect-src": ["'self'", supa.origin, supaWs, R2, "blob:", "data:", ...(dev ? ["ws:"] : [])],
+    // The event page's map (lib/venues.ts mapsEmbedUrl, a tap away). Without it the
+    // browser falls back to default-src 'self' and the map goes blank on enforce.
+    "frame-src": [MAPS],
     "worker-src": ["'self'"],
     "manifest-src": ["'self'"],
     "object-src": ["'none'"],

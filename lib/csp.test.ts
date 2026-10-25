@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { buildCsp, CSP_HEADER, newNonce } from "@/lib/csp";
+import { mapsEmbedUrl } from "@/lib/venues";
 
 const SUPA = "https://abcdefgh.supabase.co";
 const parse = (csp: string) =>
@@ -32,6 +33,15 @@ describe("buildCsp", () => {
     );
     expect(p["media-src"]).toEqual(expect.arrayContaining(["blob:", "https://*.r2.cloudflarestorage.com"]));
     expect(p["img-src"]).toEqual(expect.arrayContaining(["data:", "blob:"]));
+  });
+
+  // The event page's map is an <iframe> of mapsEmbedUrl (tap "แตะเพื่อโหลดแผนที่").
+  // With no frame-src the browser falls back to default-src 'self', and the day the
+  // header flips to enforcing the map is a blank box. Google answers the embed URL
+  // with a 301 to /maps/embed on the SAME origin, so the origin is enough.
+  it("lets the event page's Google map load in its frame, and nothing else", () => {
+    const p = parse(buildCsp("x", { supabaseUrl: SUPA }));
+    expect(p["frame-src"]).toEqual([new URL(mapsEmbedUrl("Impact Arena")).origin]);
   });
 
   it("is never framed, never plugs in, never re-bases", () => {
