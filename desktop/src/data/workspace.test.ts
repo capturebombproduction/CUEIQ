@@ -481,3 +481,45 @@ describe("loadEventsList — the branches the bound joins", () => {
     expect(JSON.parse(window.localStorage.getItem(EVENTS_RAW_KEY) ?? "null")).toEqual([]);
   });
 });
+
+// 2026-10-25: with no cached list to fall back on, a read that did not happen came
+// back as [] - and the dashboard said "No events yet / Create your first event" over
+// a season of shows. The web's rule (cdd7435, lib/read-guard.ts): a failed read is
+// not a zero count. The loader now fails out loud; the dashboard shows a retry.
+describe("loadEventsList — nothing cached and the read did not happen", () => {
+  beforeEach(() => window.localStorage.removeItem(EVENTS_RAW_KEY));
+
+  it("an errored read is a failure, not an empty list", async () => {
+    supa.setScript({ events: fail("Failed to fetch", 500) });
+    await expect(loadEventsList(TENANT_ID, VIEWABLE)).rejects.toThrow();
+  });
+
+  it("offline is a failure, not an empty list - and still sends nothing", async () => {
+    setOnline(false);
+    await expect(loadEventsList(TENANT_ID, VIEWABLE)).rejects.toThrow();
+    expect(supa.calls).toHaveLength(0);
+  });
+
+  it("a read that never answers is a failure", async () => {
+    supa.defer("events");
+    const caught = loadEventsList(TENANT_ID, VIEWABLE).catch((e: unknown) => e);
+    await settleMicrotasks();
+    await vi.advanceTimersByTimeAsync(EVENTS_LIST_TIMEOUT_MS);
+    expect(await caught).toBeInstanceOf(Error);
+  });
+
+  it("an empty read that cannot be proven ours is a failure, and is not cached", async () => {
+    supa.setScript({ events: ok([]) });
+    supa.auth.hang("getSession");
+    const caught = loadEventsList(TENANT_ID, VIEWABLE).catch((e: unknown) => e);
+    await settleMicrotasks();
+    await vi.advanceTimersByTimeAsync(EVENTS_LIST_SESSION_TIMEOUT_MS);
+    expect(await caught).toBeInstanceOf(Error);
+    expect(window.localStorage.getItem(EVENTS_RAW_KEY)).toBeNull();
+  });
+
+  it("a genuinely empty read is still an empty list", async () => {
+    supa.setScript({ events: ok([]) });
+    await expect(loadEventsList(TENANT_ID, VIEWABLE)).resolves.toEqual([]);
+  });
+});

@@ -3,7 +3,7 @@
 // (search + next-show banner + offline-ready badges all reused verbatim).
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { Music2, Plus } from "lucide-react";
+import { Music2, Plus, RotateCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { EventsList } from "@/components/event/events-list";
@@ -30,6 +30,10 @@ import { PageTitle } from "@/components/page-title";
 export function Dashboard() {
   const { ws } = useWorkspace();
   const [events, setEvents] = useState<EventWithGroup[] | null>(null);
+  // The list could not be read and nothing is cached (loadEventsList throws): a
+  // retry card, never "No events yet" (2026-10-25). `attempt` re-runs the read.
+  const [loadFailed, setLoadFailed] = useState(false);
+  const [attempt, setAttempt] = useState(0);
 
   // Per-band scope: label-wide → all bands; a band-tier user → only their own.
   const viewableGroupIds = ws
@@ -43,9 +47,15 @@ export function Dashboard() {
   useEffect(() => {
     if (!ws?.membership) return;
     let alive = true;
-    loadEventsList(ws.membership.tenant_id, viewableGroupIds).then((data) => {
-      if (alive) setEvents(data);
-    });
+    setLoadFailed(false);
+    loadEventsList(ws.membership.tenant_id, viewableGroupIds).then(
+      (data) => {
+        if (alive) setEvents(data);
+      },
+      () => {
+        if (alive) setLoadFailed(true);
+      }
+    );
     // Warm คลังเพลง's read-cache while there is still a network. That page is the
     // only door to the offline audio-upload queue, and it used to be the only
     // thing that ever filled its own cache — so a fresh install that logged in
@@ -59,7 +69,7 @@ export function Dashboard() {
       alive = false;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ws?.membership?.tenant_id, scopeKey]);
+  }, [ws?.membership?.tenant_id, scopeKey, attempt]);
 
   // Each band's OWN demo-draft template, for "สร้างจากแม่แบบ" — the web dashboard
   // reads them in its server query (app/(app)/dashboard/page.tsx); a dashboard with
@@ -192,7 +202,17 @@ export function Dashboard() {
         </div>
       )}
 
-      {events === null ? (
+      {events === null && loadFailed ? (
+        // Same card as คลังเพลง's failed read (~/pages/library.tsx).
+        <Card>
+          <CardContent className="flex flex-col items-center gap-3 py-16 text-center text-sm text-muted-foreground">
+            <p>โหลดรายการงานไม่สำเร็จ — อาจออฟไลน์อยู่หรือเน็ตมีปัญหา ลองใหม่เมื่อเน็ตกลับมา</p>
+            <Button type="button" variant="outline" onClick={() => setAttempt((n) => n + 1)}>
+              <RotateCw className="h-4 w-4" aria-hidden /> ลองใหม่
+            </Button>
+          </CardContent>
+        </Card>
+      ) : events === null ? (
         <p className="py-16 text-center text-sm text-muted-foreground">กำลังโหลดงาน…</p>
       ) : events.length === 0 ? (
         <>

@@ -69,6 +69,7 @@ vi.mock("~/pages/my-show", () => ({ MyShow: () => <div data-testid="page-my-show
 
 import { App } from "./App";
 import { duringDeliberateSignOut } from "@/lib/sign-out-intent";
+import { setLiveShowActive } from "@/lib/live-guard";
 
 const STORAGE_KEY = "sb-kewyqqxohckurwuepucv-auth-token";
 
@@ -102,6 +103,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  setLiveShowActive(false);
   vi.useRealTimers();
 });
 
@@ -338,5 +340,107 @@ describe("desktop auth gate — signing out on a shared band device", () => {
     const { unmount } = await boot("/");
     unmount();
     expect(unsubscribe).toHaveBeenCalled();
+  });
+});
+
+// 2026-10-25: the refresh token revoked elsewhere mid-set (another device's
+// all-device sign-out, a password change, a captive portal's 4xx). auth-js deletes
+// the stored session and emits SIGNED_OUT, the gate shut, Protected redirected to
+// /login, LivePage unmounted - and the backing track stopped on stage. Nobody
+// pressed anything. The show must play to its end; /login can wait for it.
+describe("desktop auth gate — a session that dies mid-show", () => {
+  async function bootIntoRunningShow() {
+    vi.useFakeTimers();
+    seedStoredSession();
+    await boot("/events/abc/live");
+    expect(screen.getByTestId("page-live")).toBeInTheDocument();
+    // Live Mode arms this while the show is begun on the sound/controlling device.
+    setLiveShowActive(true);
+    // auth-js removes the stored session before it emits SIGNED_OUT
+    window.localStorage.clear();
+  }
+
+  it("keeps Live Mode mounted and the cache in place until the show ends", async () => {
+    await bootIntoRunningShow();
+    await act(async () => {
+      emitAuthEvent("SIGNED_OUT", null);
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(10_000);
+    });
+
+    expect(screen.getByTestId("page-live")).toBeInTheDocument();
+    expect(screen.queryByTestId("page-login")).not.toBeInTheDocument();
+    expect(cacheSpies.clearCache).not.toHaveBeenCalled();
+    expect(cacheSpies.clearMgmtOutbox).not.toHaveBeenCalled();
+
+    // The show ends (Live Mode drops the flag on teardown/stop): NOW it is today's
+    // path - the cache goes, the queue stays, the login screen comes up.
+    setLiveShowActive(false);
+    await act(async () => {
+      vi.advanceTimersByTime(2_000);
+    });
+    expect(cacheSpies.clearCache).toHaveBeenCalledTimes(1);
+    expect(cacheSpies.clearMgmtOutbox).not.toHaveBeenCalled();
+    expect(screen.getByTestId("page-login")).toBeInTheDocument();
+  });
+
+  it("a deliberate sign-out during a show keeps today's behaviour", async () => {
+    // useSignOut already asked "the show will stop" before it got here.
+    await bootIntoRunningShow();
+    await act(async () => {
+      await duringDeliberateSignOut(async () => emitAuthEvent("SIGNED_OUT", null));
+    });
+    expect(cacheSpies.clearCache).toHaveBeenCalledTimes(1);
+    expect(cacheSpies.clearMgmtOutbox).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId("page-login")).toBeInTheDocument();
+  });
+
+  it("a deliberate sign-out after a held one ends the hold at once", async () => {
+    await bootIntoRunningShow();
+    await act(async () => {
+      emitAuthEvent("SIGNED_OUT", null);
+    });
+    expect(screen.getByTestId("page-live")).toBeInTheDocument();
+    await act(async () => {
+      await duringDeliberateSignOut(async () => emitAuthEvent("SIGNED_OUT", null));
+    });
+    expect(cacheSpies.clearCache).toHaveBeenCalledTimes(1);
+    expect(cacheSpies.clearMgmtOutbox).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId("page-login")).toBeInTheDocument();
+    // and the old hold does not fire a second wipe when the flag later drops
+    setLiveShowActive(false);
+    await act(async () => {
+      vi.advanceTimersByTime(5_000);
+    });
+    expect(cacheSpies.clearCache).toHaveBeenCalledTimes(1);
+  });
+
+  it("a session that comes back during the hold just carries on", async () => {
+    await bootIntoRunningShow();
+    await act(async () => {
+      emitAuthEvent("SIGNED_OUT", null);
+    });
+    await act(async () => {
+      emitAuthEvent("SIGNED_IN", { access_token: "again", user: { id: "u1" } });
+    });
+    setLiveShowActive(false);
+    await act(async () => {
+      vi.advanceTimersByTime(5_000);
+    });
+    expect(cacheSpies.clearCache).not.toHaveBeenCalled();
+    expect(screen.getByTestId("page-live")).toBeInTheDocument();
+  });
+
+  it("with no show running, a dying session still goes straight to /login", async () => {
+    vi.useFakeTimers();
+    seedStoredSession();
+    await boot("/events/abc/live");
+    window.localStorage.clear();
+    await act(async () => {
+      emitAuthEvent("SIGNED_OUT", null);
+    });
+    expect(cacheSpies.clearCache).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId("page-login")).toBeInTheDocument();
   });
 });

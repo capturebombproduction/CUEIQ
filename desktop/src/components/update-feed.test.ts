@@ -48,6 +48,12 @@ const feed = require("../../electron/update-feed.cjs") as {
     skipped: string | null;
     busy: string | null;
   }) => boolean;
+  launchPromptOutcome: (d: {
+    response: number;
+    checkboxChecked: boolean;
+    busy: string | null;
+    state: string;
+  }) => "download" | "skip" | "none";
 };
 type FeedFile = { url: string; sha512: string; size: number };
 
@@ -355,5 +361,59 @@ describe("shouldPromptAtLaunch", () => {
     expect(feed.shouldPromptAtLaunch({ ...base, platform: "darwin" })).toBe(false);
     expect(feed.shouldPromptAtLaunch({ ...base, skipped: "0.1.45" })).toBe(false);
     expect(feed.shouldPromptAtLaunch({ ...base, version: "" })).toBe(false);
+  });
+});
+
+// 2026-10-25: shouldPromptAtLaunch only looks when the box OPENS. A box opened seconds
+// before START is still up when the show begins, and it holds the keyboard - the next
+// Space cue pressed its default "อัปเดตเลย" and a ~100 MB download started mid-show.
+// The answer is judged again with the busy state read AFTER the box returns.
+describe("launchPromptOutcome", () => {
+  const base = { response: 0, checkboxChecked: false, busy: null, state: "available" };
+  it("อัปเดตเลย at a quiet moment starts the download", () => {
+    expect(feed.launchPromptOutcome(base)).toBe("download");
+  });
+  it("อัปเดตเลย once a show has started (or an edit is unsaved) does nothing - the chip keeps it", () => {
+    expect(feed.launchPromptOutcome({ ...base, busy: "show" })).toBe("none");
+    expect(feed.launchPromptOutcome({ ...base, busy: "unsaved" })).toBe("none");
+  });
+  it("only ever starts a download: not when the chip already did, nor a restart", () => {
+    for (const state of ["downloading", "ready", "checking", "uptodate", "error"]) {
+      expect(feed.launchPromptOutcome({ ...base, state }), state).toBe("none");
+    }
+  });
+  it("ไม่ต้องถามอีก holds whatever the moment (it took a click on the checkbox)", () => {
+    expect(feed.launchPromptOutcome({ ...base, response: 1, checkboxChecked: true })).toBe("skip");
+    expect(feed.launchPromptOutcome({ ...base, response: 1, checkboxChecked: true, busy: "show" })).toBe("skip");
+    expect(feed.launchPromptOutcome({ ...base, response: 1 })).toBe("none");
+  });
+});
+
+describe("main.cjs re-checks busy after the launch box, and refuses an install mid-show quietly", () => {
+  const main = fs.readFileSync(path.resolve(__dirname, "../../electron/main.cjs"), "utf8");
+  const body = (name: string) => {
+    const at = main.indexOf(name);
+    expect(at, name).toBeGreaterThan(-1);
+    const end = main.slice(at).search(/\r?\n\}\r?\n/);
+    return main.slice(at, at + end);
+  };
+  it("the launch box's answer goes through launchPromptOutcome, with busy read after it returns", () => {
+    const fn = body("async function promptAtLaunch(");
+    const box = fn.indexOf("dialog.showMessageBox(");
+    const judged = fn.indexOf("updateFeed.launchPromptOutcome(");
+    expect(box).toBeGreaterThan(-1);
+    expect(judged).toBeGreaterThan(box);
+    expect(fn.slice(box)).toContain("busy: updateBusyReason()");
+    // the old unguarded path is gone
+    expect(fn).not.toContain('if (updateState.state === "available") await applyUpdate();');
+  });
+  it("installUpdate never opens its own box over a running show", () => {
+    const fn = body("async function installUpdate()");
+    const show = fn.indexOf('busy === "show"');
+    expect(show).toBeGreaterThan(-1);
+    // the show branch hands its words to backgroundNotice, not to a focus-taking box
+    const showBranch = fn.slice(show, fn.indexOf("return;", show));
+    expect(showBranch).toContain("backgroundNotice(");
+    expect(showBranch).not.toContain("dialog.showMessageBox(");
   });
 });

@@ -48,6 +48,7 @@ vi.mock("@/components/whats-new", async (importOriginal) => ({
 }));
 
 import { Dashboard } from "./dashboard";
+import { loadEventsList } from "~/data/events-list";
 import { EVENT_BUNDLE_CACHED_EVENT, warmEventBundle } from "~/data/event-bundle";
 import { whatsNewItems, type Reader } from "@/components/whats-new";
 
@@ -446,5 +447,64 @@ describe("desktop Dashboard — the Next Show ticket's นัด (CQ-65)", () =>
       window.dispatchEvent(new Event("online"));
     });
     expect((await ticket()).getByText("นัด").parentElement!.textContent).toBe("นัด16:00");
+  });
+});
+
+// 2026-10-25: a failed list read with nothing cached used to come back as [] and the
+// page said "No events yet / Create your first event" over a season of shows (the
+// web's cdd7435). loadEventsList now fails out loud; the page must say it could not
+// read, offer ลองใหม่ - and never the empty state that invites a duplicate show.
+describe("desktop Dashboard — a list it could not read is not an empty list", () => {
+  const listFails = () =>
+    vi.mocked(loadEventsList).mockRejectedValueOnce(new Error("โหลดรายการงานไม่สำเร็จ"));
+  beforeEach(() => vi.mocked(loadEventsList).mockClear());
+
+  it("shows the retry card, not 'No events yet'", async () => {
+    listFails();
+    mount();
+    expect(await screen.findByText(/โหลดรายการงานไม่สำเร็จ/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: /ลองใหม่/ })).toBeTruthy();
+    expect(screen.queryByText("No events yet")).toBeNull();
+    expect(screen.queryByText(/Create your first event/)).toBeNull();
+    // still not a count of zero for the packaged app's self-test
+    expect(document.querySelector("[data-cueiq-events]")?.getAttribute("data-cueiq-events")).toBe("-1");
+  });
+
+  it("ลองใหม่ reads the list again and shows it", async () => {
+    listFails();
+    h.events = [
+      {
+        id: "e1",
+        tenant_id: TENANT,
+        group_id: "g1",
+        name: "Welcome to friendverse",
+        event_date: "2026-12-03",
+        venue: null,
+        event_type: "idol",
+        show_start_time: "19:00:00",
+        hard_out_time: null,
+        status: "approved",
+        deadline: null,
+        last_run_seconds: null,
+        is_template: false,
+        is_practice: false,
+        created_at: "2026-01-01T00:00:00.000Z",
+        groups: { name: "Seishin Kakumei", color: null, exempt_from_deadline: false },
+      },
+    ];
+    mount();
+    const retry = await screen.findByRole("button", { name: /ลองใหม่/ });
+    act(() => {
+      retry.click();
+    });
+    expect((await screen.findAllByText("Welcome to friendverse")).length).toBeGreaterThan(0);
+    expect(vi.mocked(loadEventsList)).toHaveBeenCalledTimes(2);
+    expect(screen.queryByText(/โหลดรายการงานไม่สำเร็จ/)).toBeNull();
+  });
+
+  it("a list that really is empty still says so", async () => {
+    mount();
+    expect(await screen.findByText("No events yet")).toBeTruthy();
+    expect(screen.queryByText(/โหลดรายการงานไม่สำเร็จ/)).toBeNull();
   });
 });

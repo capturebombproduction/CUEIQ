@@ -719,16 +719,29 @@ async function offerRestart() {
 async function installUpdate() {
   if (updateState.state !== "ready") return;
   const busy = updateBusyReason();
+  if (busy === "show") {
+    // (2026-10-25) Never a box of our own over a running show: it takes the keyboard (on
+    // the Mac it is app-modal), and this is reached from offerRestart's box too, which a
+    // stray Space cue can answer. backgroundNotice stays silent while the show runs; the
+    // chip keeps "ติดตั้ง", and quitting the app installs it.
+    console.log("AUTOUPDATE_INSTALL_REFUSED show");
+    await backgroundNotice({
+      type: "warning",
+      buttons: ["ตกลง"],
+      title: "ยังติดตั้งไม่ได้",
+      message: "กำลังรันโชว์อยู่",
+      detail: "การติดตั้งจะปิดแอป — จบโชว์ก่อนแล้วค่อยกดติดตั้ง หรือปิดแอปตามปกติ ระบบจะติดตั้งให้ตอนปิด",
+    });
+    return;
+  }
   if (busy) {
+    // An unsaved edit, no show: the operator pressed ติดตั้ง and needs to hear why not.
     await dialog.showMessageBox({
       type: "warning",
       buttons: ["ตกลง"],
       title: "ยังติดตั้งไม่ได้",
-      message: busy === "show" ? "กำลังรันโชว์อยู่" : "ยังบันทึกไม่เสร็จ",
-      detail:
-        busy === "show"
-          ? "การติดตั้งจะปิดแอป — จบโชว์ก่อนแล้วค่อยกดติดตั้ง หรือปิดแอปตามปกติ ระบบจะติดตั้งให้ตอนปิด"
-          : "มีการแก้ไขที่ยังไม่ได้บันทึก — บันทึกก่อนแล้วค่อยกดติดตั้ง",
+      message: "ยังบันทึกไม่เสร็จ",
+      detail: "มีการแก้ไขที่ยังไม่ได้บันทึก — บันทึกก่อนแล้วค่อยกดติดตั้ง",
     });
     return;
   }
@@ -865,13 +878,18 @@ async function promptAtLaunch(version) {
       checkboxLabel: "ไม่ต้องถามเรื่องเวอร์ชันนี้อีก",
       checkboxChecked: false,
     });
-    if (response === 0) {
-      // only ever START a download from here: a box left open while the header chip
-      // already downloaded it must not turn into an unasked restart
-      if (updateState.state === "available") await applyUpdate();
-    } else if (checkboxChecked) {
-      writeSkippedVersion(version);
-    }
+    // (2026-10-25) Judged with busy read NOW, not when the box opened: left open into a
+    // show it takes the next Space cue as "อัปเดตเลย". Busy = refuse quietly (no box over
+    // the show); the chip keeps the update. Never a restart from here either.
+    const next = updateFeed.launchPromptOutcome({
+      response,
+      checkboxChecked,
+      busy: updateBusyReason(),
+      state: updateState.state,
+    });
+    if (next === "download") await applyUpdate();
+    else if (next === "skip") writeSkippedVersion(version);
+    else if (response === 0) console.log("AUTOUPDATE_PROMPT_NOT_NOW " + (updateBusyReason() || updateState.state));
   } catch (e) {
     console.log("AUTOUPDATE_PROMPT_FAIL " + String(e));
   }

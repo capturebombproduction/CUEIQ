@@ -196,6 +196,20 @@ function shouldPromptAtLaunch({ platform, version, skipped, busy }) {
 }
 
 /**
+ * The launch box has been answered: "download", "skip" (never ask about this version
+ * again) or "none". (2026-10-25) `busy` is read AFTER the box returns: the check above only
+ * looks when it opens, and a box opened seconds before START is still up when the show
+ * begins - holding the keyboard, so the next Space cue presses its default "อัปเดตเลย".
+ * A busy app never starts the download from it; the header chip still offers it. Only ever
+ * a download, never a restart: the chip may have downloaded it while the box sat open.
+ * "ไม่ต้องถามอีก" took a click on the checkbox, so it holds at any moment.
+ */
+function launchPromptOutcome({ response, checkboxChecked, busy, state }) {
+  if (response === 0) return !busy && state === "available" ? "download" : "none";
+  return checkboxChecked ? "skip" : "none";
+}
+
+/**
  * Mac: an in-app update of `latest` that already failed this session goes the .dmg route,
  * however often the feed is read again - its swap on the disk (`swapFailed`, { version,
  * dmg, result }) or its staging from the checked .dmg (`stageFailed`, { version, dmg }).
@@ -234,4 +248,5 @@ module.exports = {
   pressUpdate,
   macFailedRoute,
   shouldPromptAtLaunch,
+  launchPromptOutcome,
 };

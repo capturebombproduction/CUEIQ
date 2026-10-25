@@ -103,6 +103,15 @@ async function withPendingOverlay(rows: EventWithGroup[]): Promise<EventWithGrou
   return applyPending(rows, displayOps);
 }
 
+/**
+ * The events this account can see, or a throw.
+ *
+ * (2026-10-25) Every "could not read" path used to fall back to `cache ?? []`, so
+ * with nothing cached a failed read came back as an empty list and the dashboard
+ * said "No events yet / Create your first event" over a season of shows. Same rule
+ * as the web (cdd7435, lib/read-guard.ts): a failed read is not a zero count. With
+ * a cached list it still serves that; with none it throws, and the page offers a retry.
+ */
 export async function loadEventsList(
   tenantId: string,
   viewableGroupIds: string[]
@@ -110,8 +119,13 @@ export async function loadEventsList(
   // Key by tenant + scope so a label-wide user and a band-scoped user on the same
   // device don't clobber each other's cached list.
   const cacheKey = `events:${tenantId}:${[...viewableGroupIds].sort().join(",")}`;
+  const fromCache = () => {
+    const cached = readCache<EventWithGroup[]>(cacheKey);
+    if (!cached) throw new Error("โหลดรายการงานไม่สำเร็จ");
+    return withPendingOverlay(cached);
+  };
 
-  if (isOffline()) return withPendingOverlay(readCache<EventWithGroup[]>(cacheKey) ?? []);
+  if (isOffline()) return fromCache();
 
   const supabase = createClient();
   let res;
@@ -131,10 +145,10 @@ export async function loadEventsList(
       EVENTS_LIST_TIMEOUT_MS
     );
   } catch {
-    return withPendingOverlay(readCache<EventWithGroup[]>(cacheKey) ?? []);
+    return fromCache();
   }
 
-  if (!res || res.error) return withPendingOverlay(readCache<EventWithGroup[]>(cacheKey) ?? []);
+  if (!res || res.error) return fromCache();
 
   const events = (res.data ?? []) as EventWithGroup[];
   // An EMPTY result is the one answer we can't take at face value: a request that
@@ -156,7 +170,7 @@ export async function loadEventsList(
     events.length === 0 &&
     (await withTimeout(hasLiveSession(), EVENTS_LIST_SESSION_TIMEOUT_MS)) !== true
   ) {
-    return withPendingOverlay(readCache<EventWithGroup[]>(cacheKey) ?? []);
+    return fromCache();
   }
   writeCache(cacheKey, events);
   return withPendingOverlay(events);

@@ -3,6 +3,7 @@ import { Routes, Route, Navigate, useLocation } from "react-router-dom";
 import type { Session } from "@supabase/supabase-js";
 import { createClient } from "@/lib/supabase/client";
 import { isDeliberateSignOut } from "@/lib/sign-out-intent";
+import { isLiveShowActive } from "@/lib/live-guard";
 import { RefreshButton } from "@/components/refresh-button";
 import { HeaderBrand } from "@/components/header-brand";
 import { StageLight } from "@/components/stage-light";
@@ -48,6 +49,10 @@ type AuthState = {
  *  routes mounted, not even Quick Show. */
 const BOOT_SESSION_TIMEOUT_MS = 5000;
 
+/** How often a held gate (see holdThroughShow) looks whether the show has ended.
+ *  live-guard is a plain flag with no subscribe, so this polls it. */
+const SHOW_HOLD_POLL_MS = 1000;
+
 /** Watches the Supabase auth session (same backend as the web app) and gates routes. */
 function useAuth(): AuthState {
   const [state, setState] = useState<AuthState>({
@@ -58,8 +63,18 @@ function useAuth(): AuthState {
   useEffect(() => {
     const supabase = createClient();
     let resolved = false;
+    // Set while a session that died on its own is held open for a running show.
+    let showHold: number | null = null;
+    const stopHold = () => {
+      if (showHold != null) window.clearInterval(showHold);
+      showHold = null;
+    };
     const next = (session: Session | null) => {
       resolved = true;
+      if (session) stopHold();
+      // While held, nothing that answers "no session" (a late getSession, another
+      // event) may shut the gate - only the hold itself does, once the show ends.
+      else if (showHold != null) return;
       setState({
         loading: false,
         session,
@@ -78,6 +93,22 @@ function useAuth(): AuthState {
     const bootTimer = window.setTimeout(() => {
       if (!resolved) next(null);
     }, BOOT_SESSION_TIMEOUT_MS);
+    // (2026-10-25) A session that dies on its own mid-set (refresh token revoked
+    // elsewhere, a captive portal's 4xx) used to shut the gate at once: Protected
+    // redirected to /login, LivePage unmounted and the backing track stopped on
+    // stage. While a show runs here the gate stays open as an offline pass and the
+    // cache wipe waits; when the show ends it is today's path (cache goes, /login).
+    // Quick Show needs none of this - its route sits outside the gate.
+    const holdThroughShow = () => {
+      if (showHold != null) return;
+      setState({ loading: false, session: null, offlineAuthed: true });
+      showHold = window.setInterval(() => {
+        if (isLiveShowActive()) return;
+        stopHold();
+        clearCache();
+        next(null);
+      }, SHOW_HOLD_POLL_MS);
+    };
     const { data: sub } = supabase.auth.onAuthStateChange((event, session) => {
       // Shared band device: wipe the offline management cache the moment a user
       // signs out, so the NEXT account on this machine can never boot offline
@@ -93,13 +124,21 @@ function useAuth(): AuthState {
       // carries its owner's id, so it can never flush as the next account, and it
       // goes out when the same account signs back in (the login screen says so).
       if (event === "SIGNED_OUT") {
+        const deliberate = isDeliberateSignOut();
+        // A deliberate sign-out mid-show was already confirmed in useSignOut.
+        if (!deliberate && isLiveShowActive()) {
+          holdThroughShow();
+          return;
+        }
+        stopHold();
         clearCache();
-        if (isDeliberateSignOut()) clearMgmtOutbox().catch(() => {});
+        if (deliberate) clearMgmtOutbox().catch(() => {});
       }
       next(session);
     });
     return () => {
       window.clearTimeout(bootTimer);
+      stopHold();
       sub.subscription.unsubscribe();
     };
   }, []);

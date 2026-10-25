@@ -35,7 +35,7 @@ import {
   audioFlushDecision,
   type AudioUploadOp,
 } from "@/lib/audio-upload-queue";
-import { removeEventAudio, uploadEventAudio } from "@/lib/audio-remote";
+import { removeEventAudio, uploadEventAudio, uploadTimeoutMs } from "@/lib/audio-remote";
 import { privateChannel, songsTopic } from "@/lib/realtime";
 import { clearLocalSource, getLocalSource } from "@/lib/local-source";
 import { cacheSongBlob } from "@/lib/song-cache";
@@ -540,8 +540,36 @@ async function applyChildListOp(
  * 27–88 MB WAV over venue wifi legitimately takes minutes — but finite, because
  * the alternative is a lock nobody ever gets back. Timing out is RETRYABLE: the op
  * stays queued and the next reconnect tries again.
+ *
+ * (2026-10-25) Never shorter than the upload's own deadline. uploadEventAudio hands
+ * desktop main a size-scaled deadline (uploadTimeoutMs, ~15 min for an 88 MB WAV)
+ * and main really aborts there; a flat 10 min here gave up on files above ~58 MiB
+ * while main went on sending — so a slow link could never land them, and the next
+ * flush stacked a second PUT on the first. The grace covers presign (≤ 40 s) and
+ * the renderer's own 30 s backstop past main's abort.
  */
 const AUDIO_UPLOAD_TIMEOUT_MS = 10 * 60_000;
+const AUDIO_UPLOAD_GRACE_MS = 2 * 60_000;
+function audioUploadCapMs(bytes: number): number {
+  return Math.max(AUDIO_UPLOAD_TIMEOUT_MS, uploadTimeoutMs(bytes) + AUDIO_UPLOAD_GRACE_MS);
+}
+
+/**
+ * PUTs of queued masters still running, by object key. The flush may stop waiting
+ * on one (the cap above, or a retry inside uploadEventAudio outlasting it) while
+ * main is still sending; the next flush then picks THAT upload up again instead
+ * of starting a second full PUT of the same file beside it (2026-10-25).
+ */
+const audioPutsInFlight = new Map<string, Promise<void>>();
+function putQueuedAudioOnce(path: string, blob: Blob, contentType: string): Promise<void> {
+  const running = audioPutsInFlight.get(path);
+  if (running) return running;
+  const put = uploadEventAudio(path, blob, contentType).finally(() => {
+    audioPutsInFlight.delete(path);
+  });
+  audioPutsInFlight.set(path, put);
+  return put;
+}
 
 /**
  * Tell any open Live Mode (same band) that a song's audio changed, so it
@@ -647,12 +675,13 @@ async function applyAudioUploadOp(
     }
     try {
       // Bounded so the OUTBOX LOCK is always given back. This runs inside
-      // withOutboxLock, and the PUT has no timeout of its own — under Electron the
-      // bytes go through the main process's net.fetch, which on a black-holed venue
-      // AP never settles. An 88 MB master hanging there would hold the lock for the
+      // withOutboxLock; an 88 MB master hanging there would hold the lock for the
       // rest of the session: every later offline save silently blocks behind it.
+      // The upload has its own deadline now (708ef2b), so this is only the backstop
+      // - set past that deadline, and a PUT still running when it fires is picked
+      // up again by the next flush rather than started twice (2026-10-25).
       await Promise.race([
-        uploadEventAudio(op.path, local.blob, op.contentType || local.blob.type),
+        putQueuedAudioOnce(op.path, local.blob, op.contentType || local.blob.type),
         new Promise<never>((_, reject) =>
           setTimeout(
             // The ASCII "timeout" is not decoration — the classifier below is a
@@ -667,7 +696,7 @@ async function applyAudioUploadOp(
               reject(
                 new Error("timeout — หมดเวลาอัปโหลดไฟล์เสียง (เครือข่ายไม่ตอบสนอง)")
               ),
-            AUDIO_UPLOAD_TIMEOUT_MS
+            audioUploadCapMs(local.blob.size)
           )
         ),
       ]);
