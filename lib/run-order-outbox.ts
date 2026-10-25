@@ -85,7 +85,18 @@ export interface RunSeqOp {
    * lands comes from a queue with no channel open. Optional for older records.
    */
   topic?: string;
+  /**
+   * Every EARLIER version of `patch`, oldest first - set when a press merges in.
+   * Any of them may already be on the server: the first press was queued after its
+   * own attempt failed, and a replay can commit while its answer is lost. When the
+   * row holds one of them, the replay rebases onto it instead of parking the
+   * operator's own presses as a conflict (2026-10-25). Optional for older records.
+   */
+  prior?: RunSeqPatch[];
 }
+
+/** How many earlier versions an op keeps - a row gets a handful of presses offline. */
+const MAX_PRIOR = 20;
 
 /**
  * Drop keys whose value is `undefined`.
@@ -129,6 +140,8 @@ export function mergeOp(prev: RunSeqOp | undefined, next: RunSeqOp): RunSeqOp {
     // every put is a new revision — the flush compares this before deleting
     rev: (prev.rev ?? 0) + 1,
     topic: next.topic ?? prev.topic,
+    // the version this press replaces may already be on the server - see `prior`
+    prior: [...(prev.prior ?? []), prev.patch].slice(-MAX_PRIOR),
   };
 }
 
@@ -213,6 +226,32 @@ export function patchAlreadyHolds(patch: RunSeqPatch, row: Record<string, unknow
     }
     return String(want) === String(have);
   });
+}
+
+/**
+ * The newest EARLIER version of this op's patch that the server row already holds,
+ * or null. That attempt landed and only its answer was lost; a later press then
+ * merged in, so the op's own expect (the state before the FIRST press) can no longer
+ * match and the merged patch is not what the row holds either (2026-10-25).
+ */
+export function earlierPatchHeld(op: RunSeqOp, row: Record<string, unknown>): RunSeqPatch | null {
+  const prior = op.prior ?? [];
+  for (let i = prior.length - 1; i >= 0; i--) {
+    if (patchAlreadyHolds(prior[i], row)) return prior[i];
+  }
+  return null;
+}
+
+/** A precondition moved onto the state `landed` left: each expected column it wrote
+ *  now holds its value; the rest are unchanged. */
+export function expectOnto(expect: RunSeqPatch, landed: RunSeqPatch): RunSeqPatch {
+  const next: RunSeqPatch = { ...expect };
+  for (const k of Object.keys(expect) as (keyof RunSeqPatch)[]) {
+    if (k in landed) {
+      (next as Record<string, unknown>)[k] = (landed as Record<string, unknown>)[k];
+    }
+  }
+  return compactPatch(next);
 }
 
 // ---------------------------------------------------------------------------
@@ -348,15 +387,7 @@ async function rebaseExpect(replayed: RunSeqOp): Promise<void> {
         // Only the record that actually superseded the replayed one, and only
         // while it is still un-parked.
         if (!cur || cur.conflict || (cur.rev ?? 0) === (replayed.rev ?? 0)) return;
-        const next: RunSeqPatch = { ...replayed.expect };
-        for (const k of Object.keys(replayed.expect) as (keyof RunSeqPatch)[]) {
-          if (k in replayed.patch) {
-            (next as Record<string, unknown>)[k] = (
-              replayed.patch as Record<string, unknown>
-            )[k];
-          }
-        }
-        store.put({ ...cur, expect: compactPatch(next) }, cur.rowId);
+        store.put({ ...cur, expect: expectOnto(replayed.expect, replayed.patch) }, cur.rowId);
       };
       tx.oncomplete = () => {
         db.close();
@@ -594,14 +625,19 @@ async function doFlush(): Promise<RunSeqFlushResult> {
       // precondition this write is about to consume.
       const op = (await getRunSeqOp(snapshot.rowId)) ?? snapshot;
       if (op.conflict) continue; // parked while we were working
-      let q = supabase.from("run_sequence").update(op.patch).eq("id", op.rowId);
-      for (const [k, v] of Object.entries(op.expect)) {
-        q = v == null ? q.is(k, null) : q.eq(k, v);
-      }
-      const { data, error } = await q.select("id");
+      const send = (expect: RunSeqPatch) => {
+        let q = supabase.from("run_sequence").update(op.patch).eq("id", op.rowId);
+        for (const [k, v] of Object.entries(expect)) {
+          q = v == null ? q.is(k, null) : q.eq(k, v);
+        }
+        return q.select("id");
+      };
+      // what was actually replayed - its expect moves if the retry below rebases it
+      let replayed = op;
+      const { data, error } = await send(op.expect);
       // A network error is not a conflict — leave it queued and try again later.
       if (error) continue;
-      const matched = data?.length ?? 0;
+      let matched = data?.length ?? 0;
       // Only ask whether the row still exists when nothing matched; on the happy
       // path this would be a second round trip per op for no information.
       let stillExists = false;
@@ -613,7 +649,9 @@ async function doFlush(): Promise<RunSeqFlushResult> {
         if (!(await hasLiveSession())) continue;
         // Read back the patched columns too, so "the row already says this" (an
         // earlier attempt whose answer was lost) is not parked as a conflict.
-        const cols = PATCH_COLUMNS.filter((k) => op.patch[k] !== undefined);
+        const cols = PATCH_COLUMNS.filter(
+          (k) => op.patch[k] !== undefined || (op.prior ?? []).some((p) => p[k] !== undefined)
+        );
         const { data: probe, error: probeErr } = await supabase
           .from("run_sequence")
           .select(["id", ...cols].join(", "))
@@ -623,7 +661,24 @@ async function doFlush(): Promise<RunSeqFlushResult> {
         // choice; parking or dropping on a failed probe is not.
         if (probeErr) continue;
         stillExists = !!probe;
-        alreadyHolds = !!probe && patchAlreadyHolds(op.patch, probe as unknown as Record<string, unknown>);
+        const row = probe as unknown as Record<string, unknown> | null;
+        alreadyHolds = !!row && patchAlreadyHolds(op.patch, row);
+        // The row holds an EARLIER version of this op (that attempt landed, its answer
+        // was lost, then a press merged in): the server has moved exactly as this device
+        // did, so move the precondition onto that state and retry ONCE (2026-10-25). Still
+        // a compare-and-swap - a row someone else moved meanwhile matches nothing and parks.
+        const landed = row && !alreadyHolds ? earlierPatchHeld(op, row) : null;
+        if (landed) {
+          const rebased = expectOnto(op.expect, landed);
+          if (JSON.stringify(rebased) !== JSON.stringify(op.expect)) {
+            replayed = { ...op, expect: rebased };
+            const retry = await send(rebased);
+            if (retry.error) continue; // network - stays queued, judged again next flush
+            matched = retry.data?.length ?? 0;
+            // 0 rows as anon reads like "moved" too - no session, no verdict (header)
+            if (matched === 0 && !(await hasLiveSession())) continue;
+          }
+        }
       }
       const verdict = classifyReplay(matched, stillExists, alreadyHolds);
       if (verdict === "conflict") parked.push(op);
@@ -642,7 +697,7 @@ async function doFlush(): Promise<RunSeqFlushResult> {
         // precondition is the one this write just consumed. Move it forward onto
         // what the server now holds, or its next replay parks as a conflict the
         // operator never caused and their press is dropped from the board.
-        if (verdict === "done") await rebaseExpect(op);
+        if (verdict === "done") await rebaseExpect(replayed);
         announce();
         if (verdict === "done" && op.topic) topics.add(op.topic);
       }

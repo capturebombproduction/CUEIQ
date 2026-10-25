@@ -33,6 +33,9 @@ const EVENT_KINDS = new Set<Kind>(["event_submitted", "event_approved", "event_r
 const SONG_KINDS = new Set<Kind>(["song_pending", "song_resubmitted", "song_rejected", "song_cleared"]);
 const RUN_ORDER_KINDS = new Set<Kind>(["run_order_live"]);
 const FEEDBACK_KINDS = new Set<Kind>(["feedback_replied"]);
+// Who may announce each transition (step 3c): the right that can make it.
+const APPROVER_KINDS = new Set<Kind>(["event_approved", "event_rejected", "song_rejected", "song_cleared"]);
+const EDITOR_KINDS = new Set<Kind>(["event_submitted", "song_pending", "song_resubmitted"]);
 
 // CORS — the WEB app calls this same-origin (these headers are inert there). The
 // DESKTOP app calls it cross-origin with a Bearer token (no cookies), and the
@@ -312,9 +315,22 @@ export async function POST(req: Request) {
   // can_approve, 0033) and the caller only notifies after that write committed
   // (components/event/event-live-caller.tsx), so the honest caller always passes.
   // Asked under the caller's OWN session — the very predicate the policy uses.
-  if (RUN_ORDER_KINDS.has(kind)) {
+  //
+  // The same rule for every other kind (2026-10-25): the anti-spoof proves the state is
+  // TRUE and 3b that the caller can SEE the band, so a plain member could re-send
+  // "📋 งานรออนุมัติ" to every approver (or "✅ อนุมัติงานแล้ว" to the Ar) once per
+  // dedupe window for as long as the state held. Each kind needs the right that makes
+  // its transition: approve / reject / clear = can_approve (guard_event_update,
+  // guard_song_update); submit / new song / back to review = can_edit_group of the band
+  // (events_update, songs_insert, guard_song_update's editor-only columns). Every
+  // client notifies only after its own write of that transition landed.
+  if (RUN_ORDER_KINDS.has(kind) || APPROVER_KINDS.has(kind)) {
     const { data: canApprove } = await supabase.rpc("can_approve", { tid: tenantId });
     if (canApprove !== true) return json(req, { error: "forbidden" }, 403);
+  }
+  if (EDITOR_KINDS.has(kind)) {
+    const { data: canEdit } = await supabase.rpc("can_edit_group", { gid: groupId });
+    if (canEdit !== true) return json(req, { error: "forbidden" }, 403);
   }
 
   // 4) Resolve recipient user ids.
@@ -482,10 +498,20 @@ export async function POST(req: Request) {
   const pushIds = recipientIds.filter((id) => !pushedRecently.has(id));
   let sent = 0;
   if (vapidConfigured() && pushIds.length) {
-    const { data: subs } = await admin
+    const { data: subs, error: subsError } = await admin
       .from("push_subscriptions")
       .select("id, user_id, endpoint, p256dh, auth")
       .in("user_id", pushIds);
+    // A failed read is not "nobody has a device" (2026-10-25): it used to answer ok with
+    // sent: 0. The bell rows above are written; say the push could not go out.
+    if (subsError) {
+      console.error("[notify] push_subscriptions read failed:", subsError.message);
+      return json(
+        req,
+        { error: `push_subscriptions: ${subsError.message}`, recipients: recipientIds.length, sent: 0 },
+        500
+      );
+    }
     // The payload SHAPE is unchanged ({title, body, link}) — phones already hold
     // subscriptions and public/sw.js reads exactly these three fields — but the link
     // AND the body are now resolved per subscription owner, the same pair stored in

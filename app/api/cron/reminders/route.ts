@@ -148,7 +148,13 @@ async function runReminders(): Promise<Response> {
     // reads, so a push without one is a reminder a re-run would send again.
     if (insertError) return failed(`insert ${type} ${eventId}`, insertError);
     inserted += targets.length;
-    pushed += await pushToUsers(admin, targets, { title, body, link });
+    // A failed push_subscriptions read throws (lib/notify-server.ts): report it as this
+    // step's failure - never "nobody has a device", never the rest of the run (2026-10-25).
+    try {
+      pushed += await pushToUsers(admin, targets, { title, body, link });
+    } catch (e) {
+      return failed(`push ${type} ${eventId}`, { message: e instanceof Error ? e.message : String(e) });
+    }
   }
 
   // 1) Upcoming shows today / tomorrow → the whole band (Ar + members).

@@ -105,3 +105,132 @@ describe("PATCH /api/admin/users — replacing a user's band roles", () => {
     ]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// A FAILED SAVE PUTS EVERYTHING BACK, OR SAYS IT COULD NOT.
+//
+// 2026-10-25 review: the restore insert after a failed band-role insert was never
+// checked (a second timeout left the user with no band while the answer only showed
+// the first error), and the tenant role was rewritten BEFORE the band-role replace and
+// never put back - a CEO moved to a band role whose insert failed ended as an inert
+// band-tier member with no band (locked out), from a save that "failed".
+// ---------------------------------------------------------------------------
+describe("PATCH /api/admin/users — a failed save leaves the user as they were", () => {
+  function patch(body: unknown) {
+    return PATCH(new Request("http://x/api/admin/users", { method: "PATCH", body: JSON.stringify(body) }));
+  }
+
+  /** tenant_members + group_roles that remember writes, so a test reads the end state. */
+  function statefulDb(opts: {
+    tenantRole: string;
+    bands: { group_id: string; role: string }[];
+    groupRoles?: (verb: string, values: unknown) => ReturnType<typeof ok> | null;
+    tenantUpsert?: (n: number) => ReturnType<typeof ok> | null;
+  }) {
+    const state = { tenantRole: opts.tenantRole, bands: opts.bands.slice() };
+    let upserts = 0;
+    db = makeSupabaseFake({
+      script: {
+        tenant_members: (c) => {
+          if (c.verb === "upsert") {
+            const forced = opts.tenantUpsert?.(++upserts);
+            if (forced) return forced;
+            state.tenantRole = (c.values as { role: string }).role;
+            return ok(null);
+          }
+          return ok([{ user_id: TARGET, tenant_id: TENANT, role: state.tenantRole }]);
+        },
+        groups: ok([{ id: BAND }, { id: OTHER_BAND }]),
+        group_roles: (c) => {
+          const forced = opts.groupRoles?.(c.verb, c.values);
+          if (forced) return forced;
+          if (c.verb === "select") return ok(state.bands.slice());
+          if (c.verb === "delete") { state.bands = []; return ok(null); }
+          if (c.verb === "insert") {
+            state.bands.push(...(c.values as { group_id: string; role: string }[]).map((r) => ({ group_id: r.group_id, role: r.role })));
+            return ok(null);
+          }
+          return ok(null);
+        },
+      },
+    });
+    h.admin = adminClient(db);
+    return state;
+  }
+
+  it("a restore insert that also fails is said so (500), not hidden behind the first error", async () => {
+    const state = statefulDb({
+      tenantRole: "member",
+      bands: [{ group_id: BAND, role: "artist_manager" }],
+      groupRoles: (verb) => (verb === "insert" ? fail("canceling statement due to statement timeout", 500) : null),
+    });
+
+    const res = await patch({
+      user_id: TARGET,
+      tenantRole: "member",
+      groupRoles: [{ group_id: BAND, role: "artist_manager" }, { group_id: OTHER_BAND, role: "member" }],
+    });
+    const json = await res.json();
+
+    expect(state.bands).toEqual([]);
+    expect(res.status).toBe(500);
+    expect(json.error).not.toBe("canceling statement due to statement timeout");
+    expect(json.error).toMatch(/วงเดิม/);
+  });
+
+  it("a band-role insert that fails puts the tenant role back too", async () => {
+    const state = statefulDb({
+      tenantRole: "ceo",
+      bands: [],
+      groupRoles: (verb) => (verb === "insert" ? fail("insert failed", 500) : null),
+    });
+
+    const res = await patch({ user_id: TARGET, tenantRole: "member", groupRoles: [{ group_id: BAND, role: "artist_manager" }] });
+
+    expect(res.status).toBe(400);
+    expect(state.tenantRole).toBe("ceo");
+  });
+
+  it("a band-role delete that fails puts the tenant role back", async () => {
+    const state = statefulDb({
+      tenantRole: "label_staff",
+      bands: [],
+      groupRoles: (verb) => (verb === "delete" ? fail("delete failed", 500) : null),
+    });
+
+    const res = await patch({ user_id: TARGET, tenantRole: "member", groupRoles: [{ group_id: BAND, role: "member" }] });
+
+    expect(res.status).toBe(400);
+    expect(state.tenantRole).toBe("label_staff");
+  });
+
+  it("a failed read of the old roles answers 503 BEFORE anything is written", async () => {
+    const state = statefulDb({
+      tenantRole: "admin",
+      bands: [],
+      groupRoles: (verb) => (verb === "select" ? fail("timeout", 500) : null),
+    });
+
+    const res = await patch({ user_id: TARGET, tenantRole: "member", groupRoles: [{ group_id: BAND, role: "member" }] });
+
+    expect(res.status).toBe(503);
+    expect(state.tenantRole).toBe("admin");
+    expect(db.calls.filter((c) => c.verb !== "select")).toEqual([]);
+  });
+
+  it("a tenant-role restore that fails is said so (500)", async () => {
+    const state = statefulDb({
+      tenantRole: "ceo",
+      bands: [],
+      groupRoles: (verb) => (verb === "insert" ? fail("insert failed", 500) : null),
+      tenantUpsert: (n) => (n === 2 ? fail("timeout", 500) : null),
+    });
+
+    const res = await patch({ user_id: TARGET, tenantRole: "member", groupRoles: [{ group_id: BAND, role: "artist_manager" }] });
+    const json = await res.json();
+
+    expect(state.tenantRole).toBe("member");
+    expect(res.status).toBe(500);
+    expect(json.error).toMatch(/สิทธิ์เดิม/);
+  });
+});

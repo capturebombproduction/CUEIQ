@@ -386,6 +386,31 @@ export async function PATCH(req: Request) {
     if (!groupIds) return readFailed();
     const groupRoles = sanitizeGroupRoles(body?.groupRoles, groupIds);
 
+    // Read what the user has BEFORE any write, so a failed save can put all of it back
+    // (2026-10-25): the tenant role used to be rewritten first and never restored - a CEO
+    // moved to a band role whose insert failed ended band-less and locked out.
+    const [prevMemberRes, prevRes] = await Promise.all([
+      admin
+        .from("tenant_members")
+        .select("role")
+        .eq("tenant_id", tenantId)
+        .eq("user_id", userId)
+        .maybeSingle(),
+      admin
+        .from("group_roles")
+        .select("group_id, role")
+        .eq("tenant_id", tenantId)
+        .eq("user_id", userId),
+    ]);
+    if (prevMemberRes.error || prevRes.error) return readFailed();
+    const prevRole = (prevMemberRes.data as { role?: string } | null)?.role;
+    if (!prevRole) {
+      return NextResponse.json({ error: "ไม่พบผู้ใช้นี้ในค่ายของคุณ" }, { status: 404 });
+    }
+    const prev = (prevRes.data ?? []) as { group_id: string; role: string }[];
+    const rowsFor = (list: { group_id: string; role: string }[]) =>
+      list.map((g) => ({ tenant_id: tenantId, group_id: g.group_id, user_id: userId, role: g.role }));
+
     const { error: memErr } = await admin
       .from("tenant_members")
       .upsert({ tenant_id: tenantId, user_id: userId, role: tenantRole }, {
@@ -393,31 +418,48 @@ export async function PATCH(req: Request) {
       });
     if (memErr) return NextResponse.json({ error: memErr.message }, { status: 400 });
 
+    /** Put the tenant role back (and the band roles when they were already deleted).
+     *  A restore that ALSO fails is said so - the admin must re-save, not trust a
+     *  "save failed" that left the user with no band (2026-10-25). */
+    const undo = async (firstError: string, bandsDeleted: boolean) => {
+      let lost = false;
+      if (bandsDeleted && prev.length) {
+        const { error } = await admin.from("group_roles").insert(rowsFor(prev));
+        if (error) lost = true;
+      }
+      if (prevRole !== tenantRole) {
+        const { error } = await admin
+          .from("tenant_members")
+          .upsert({ tenant_id: tenantId, user_id: userId, role: prevRole }, {
+            onConflict: "tenant_id,user_id",
+          });
+        if (error) lost = true;
+      }
+      if (lost) {
+        return NextResponse.json(
+          {
+            error:
+              `บันทึกไม่สำเร็จ และคืนสิทธิ์เดิมกับวงเดิมของผู้ใช้นี้ไม่สำเร็จ — ตอนนี้อาจไม่มีวงเลย ` +
+              `กดบันทึกอีกครั้ง (${firstError})`,
+          },
+          { status: 500 }
+        );
+      }
+      return NextResponse.json({ error: firstError }, { status: 400 });
+    };
+
     // replace the user's band roles wholesale - delete, then insert, so keep what they had:
     // an insert that failed after the delete left the user with no band at all
-    const prevRes = await admin
-      .from("group_roles")
-      .select("group_id, role")
-      .eq("tenant_id", tenantId)
-      .eq("user_id", userId);
-    if (prevRes.error) return readFailed();
-    const rowsFor = (list: { group_id: string; role: string }[]) =>
-      list.map((g) => ({ tenant_id: tenantId, group_id: g.group_id, user_id: userId, role: g.role }));
-
     const { error: delErr } = await admin
       .from("group_roles")
       .delete()
       .eq("tenant_id", tenantId)
       .eq("user_id", userId);
-    if (delErr) return NextResponse.json({ error: delErr.message }, { status: 400 });
+    if (delErr) return undo(delErr.message, false);
 
     if (groupRoles.length) {
       const { error: grErr } = await admin.from("group_roles").insert(rowsFor(groupRoles));
-      if (grErr) {
-        const prev = (prevRes.data ?? []) as { group_id: string; role: string }[];
-        if (prev.length) await admin.from("group_roles").insert(rowsFor(prev));
-        return NextResponse.json({ error: grErr.message }, { status: 400 });
-      }
+      if (grErr) return undo(grErr.message, true);
     }
   }
 

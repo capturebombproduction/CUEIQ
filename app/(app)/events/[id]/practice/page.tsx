@@ -3,6 +3,7 @@ import Link from "next/link";
 import { ChevronLeft } from "lucide-react";
 import { createClient } from "@/lib/supabase/server";
 import { getEventBundle, getWorkspace } from "@/lib/queries";
+import { assertReadsSucceeded } from "@/lib/read-guard";
 import { canEditGroup, canViewGroup } from "@/lib/permissions";
 import { PracticeMode } from "@/components/practice/practice-mode";
 import type { SongMarker, PracticeSong } from "@/lib/types";
@@ -32,7 +33,7 @@ export default async function PracticePlayPage({
   const supabase = await createClient();
   // Section markers for the whole band library, grouped by song (reusable per song),
   // and this room's practice list (member-curated).
-  const [{ data: markerRows }, { data: practiceRows }] = await Promise.all([
+  const [markersRes, practiceRes] = await Promise.all([
     supabase
       .from("song_markers")
       .select("*")
@@ -44,11 +45,14 @@ export default async function PracticePlayPage({
       .eq("event_id", bundle.event.id)
       .order("sort_order", { ascending: true }),
   ]);
+  // a failed read is not "ยังไม่มีท่อน" / an empty practice list - the room then invites
+  // adding them again, duplicates once the read works (lib/read-guard.ts; 2026-10-25)
+  assertReadsSucceeded("PracticePlayPage", { "ท่อนเพลง": markersRes, "ลิสต์ซ้อม": practiceRes });
   const markersBySong: Record<string, SongMarker[]> = {};
-  for (const m of (markerRows ?? []) as SongMarker[]) {
+  for (const m of (markersRes.data ?? []) as SongMarker[]) {
     (markersBySong[m.song_id] ??= []).push(m);
   }
-  const practiceList = (practiceRows ?? []) as PracticeSong[];
+  const practiceList = (practiceRes.data ?? []) as PracticeSong[];
 
   return (
     <div className="space-y-3">

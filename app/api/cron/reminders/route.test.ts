@@ -26,6 +26,8 @@ const h = vi.hoisted(() => ({
   insertError: null as { message: string } | null,
   inserted: [] as Record<string, unknown>[],
   pushedTo: [] as string[][],
+  /** pushToUsers throws this for a recipient list containing `pushFailsFor` */
+  pushFailsFor: null as string | null,
   reports: [] as unknown[][],
 }));
 
@@ -35,6 +37,9 @@ vi.mock("@/lib/supabase/admin", () => ({
 }));
 vi.mock("@/lib/notify-server", () => ({
   pushToUsers: async (_admin: unknown, ids: string[]) => {
+    if (h.pushFailsFor && ids.includes(h.pushFailsFor)) {
+      throw new Error("push_subscriptions: canceling statement due to statement timeout");
+    }
     h.pushedTo.push(ids);
     return ids.length;
   },
@@ -118,6 +123,7 @@ beforeEach(() => {
   h.insertError = null;
   h.inserted = [];
   h.pushedTo = [];
+  h.pushFailsFor = null;
   h.reports = [];
   world();
 });
@@ -183,6 +189,19 @@ describe("reminder cron: a failure is reported, never read as nothing to do", ()
     expect(h.pushedTo).toEqual([]);
     expect(res.status).toBe(500);
     expect(h.reports).toHaveLength(1);
+  });
+
+  // 2026-10-25: pushToUsers now throws on a failed push_subscriptions read (it used to
+  // answer 0 = "nobody has a device"); one band's failed push read must cost only that
+  // band and be reported like every other failed step.
+  it("a failed push_subscriptions read is reported, and the other band is still reminded", async () => {
+    h.pushFailsFor = "a-ar";
+    const res = await run();
+    expect(h.pushedTo).toEqual([["b-ar"]]);
+    expect(res.status).toBe(500);
+    expect(h.reports).toHaveLength(1);
+    expect(h.reports[0][0]).toBe("reminders");
+    expect(String(h.reports[0][1])).toContain("push_subscriptions");
   });
 
   it("a failed approvers read is reported (the waiting submission is not silently dropped)", async () => {

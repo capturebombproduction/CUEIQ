@@ -36,12 +36,19 @@ const h = vi.hoisted(() => ({
   /** can_approve under the CALLER's session, and the tenant it was asked about */
   canApprove: true as boolean,
   approveAsked: [] as unknown[],
+  /** can_edit_group under the CALLER's session, and the band it was asked about */
+  canEdit: true as boolean,
+  editAsked: [] as unknown[],
   /** how many run_sequence rows are live (run_order_live's anti-spoof) */
   liveCount: 1,
   /** the festival's events (run_order_live's per-recipient links); eq filters apply */
   festEvents: [] as Row[],
   /** group_roles rows (run_order_live's per-recipient links) */
   groupRoles: [] as Row[],
+  /** VAPID configured (Web Push on) */
+  vapid: false,
+  /** the push_subscriptions read fails */
+  pushReadFails: false,
 }));
 
 vi.mock("@/lib/supabase/server", () => ({
@@ -49,8 +56,16 @@ vi.mock("@/lib/supabase/server", () => ({
     auth: { getUser: async () => ({ data: { user: { id: "caller" } } }) },
     rpc: async (fn: string, args: Record<string, unknown>) => {
       if (fn === "can_approve") h.approveAsked.push(args);
+      if (fn === "can_edit_group") h.editAsked.push(args);
       return {
-        data: fn === "can_view_group" ? h.canView : fn === "can_approve" ? h.canApprove : null,
+        data:
+          fn === "can_view_group"
+            ? h.canView
+            : fn === "can_approve"
+              ? h.canApprove
+              : fn === "can_edit_group"
+                ? h.canEdit
+                : null,
         error: null,
       };
     },
@@ -60,7 +75,7 @@ vi.mock("@/lib/supabase/admin", () => ({
   hasServiceRole: () => true,
   createAdminClient: () => ({ from: (t: string) => table(t) }),
 }));
-vi.mock("@/lib/push", () => ({ vapidConfigured: () => false, sendPush: vi.fn() }));
+vi.mock("@/lib/push", () => ({ vapidConfigured: () => h.vapid, sendPush: vi.fn(async () => "ok") }));
 
 /** A chainable, awaitable stand-in for one PostgREST query. */
 function table(name: string) {
@@ -122,7 +137,9 @@ function table(name: string) {
     Promise.resolve(
       name === "run_sequence"
         ? { data: null, count: h.liveCount, error: null } // select(…, { count, head })
-        : { data: many(), error: null }
+        : name === "push_subscriptions" && h.pushReadFails
+          ? { data: null, error: { message: "canceling statement due to statement timeout" } }
+          : { data: many(), error: null }
     ).then(ok, bad);
   return q;
 }
@@ -159,9 +176,13 @@ beforeEach(() => {
   h.canView = true;
   h.canApprove = true;
   h.approveAsked = [];
+  h.canEdit = true;
+  h.editAsked = [];
   h.liveCount = 1;
   h.festEvents = [];
   h.groupRoles = [];
+  h.vapid = false;
+  h.pushReadFails = false;
 });
 
 describe("song_pending goes to the admins, who can open the Library", () => {
@@ -306,5 +327,106 @@ describe("run_order_live comes only from someone who could start the show", () =
     h.liveCount = 0;
     await send({ kind: "run_order_live", eventId: "ev-1" });
     expect(h.inserted).toEqual([]);
+  });
+});
+
+// 2026-10-25 review: the push_subscriptions read coalesced a failure to [] and answered
+// ok with sent: 0 - "nobody has a device" - so a broken read never showed anywhere.
+describe("a failed push_subscriptions read is an error, never 'nobody has a device'", () => {
+  it("answers 500 naming the read; the bell rows are still written", async () => {
+    h.vapid = true;
+    h.pushReadFails = true;
+    const res = await POST(
+      new Request("http://localhost/api/notify", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ kind: "event_submitted", eventId: "ev-1" }),
+      })
+    );
+    expect(res.status).toBe(500);
+    expect(String((await res.json()).error)).toContain("push_subscriptions");
+    expect(h.inserted.map((r) => r.user_id).sort()).toEqual(["admin-1", "admin-2", "staff-a", "staff-b"]);
+  });
+
+  it("a read that worked still answers ok", async () => {
+    h.vapid = true;
+    const { res } = await send({ kind: "event_submitted", eventId: "ev-1" });
+    expect(await res.json()).toMatchObject({ ok: true, recipients: 4 });
+  });
+});
+
+// 2026-10-25 review: 651546d gated only run_order_live. Every other kind has the same
+// shape - the anti-spoof proves the state is TRUE and 3b proves the caller can SEE the
+// band - so a plain member could re-send "📋 งานรออนุมัติ" to every approver (or
+// "✅ อนุมัติงานแล้ว" to the band's Ar) once per dedupe window for as long as the state
+// held. Each kind now comes only from someone who could have made that transition:
+// submit / new song / resubmit = an editor of the band (can_edit_group: events_update,
+// songs_insert and guard_song_update's editor-only columns); approve / reject / clear /
+// reject a song = an approver (can_approve: guard_event_update, guard_song_update).
+describe("each kind comes only from someone who could have made that transition", () => {
+  const post = (body: Record<string, unknown>) =>
+    POST(
+      new Request("http://localhost/api/notify", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      })
+    );
+
+  const editorKinds = [
+    { kind: "event_submitted", body: { eventId: "ev-1" }, eventStatus: "pending_review", songStatus: "pending" },
+    { kind: "song_pending", body: { songId: "song-1" }, eventStatus: "pending_review", songStatus: "pending" },
+    { kind: "song_resubmitted", body: { songId: "song-1" }, eventStatus: "pending_review", songStatus: "pending" },
+  ];
+  const approverKinds = [
+    { kind: "event_approved", body: { eventId: "ev-1" }, eventStatus: "approved", songStatus: "pending" },
+    { kind: "event_rejected", body: { eventId: "ev-1" }, eventStatus: "rejected", songStatus: "pending" },
+    { kind: "song_cleared", body: { songId: "song-1" }, eventStatus: "approved", songStatus: "cleared" },
+    { kind: "song_rejected", body: { songId: "song-1" }, eventStatus: "approved", songStatus: "rejected" },
+  ];
+  /** recipients exist for every audience: approvers, admins and the band's Ar */
+  const everyone = () => {
+    h.members = [ADMIN, STAFF_A];
+    h.groupRoles = [{ user_id: "ar-1", group_id: "band-1" }];
+  };
+
+  it.each(editorKinds)("$kind from someone who cannot edit the band is refused, nothing written", async (c) => {
+    everyone();
+    h.eventStatus = c.eventStatus;
+    h.songStatus = c.songStatus;
+    h.canEdit = false;
+    const res = await post({ kind: c.kind, ...c.body });
+    expect(res.status).toBe(403);
+    expect(h.inserted).toEqual([]);
+    expect(h.editAsked).toEqual([{ gid: "band-1" }]); // the subject's band, not one from the body
+  });
+
+  it.each(editorKinds)("$kind from an editor of the band still goes out", async (c) => {
+    everyone();
+    h.eventStatus = c.eventStatus;
+    h.songStatus = c.songStatus;
+    h.canApprove = false; // an Ar: edits the band, approves nothing
+    await send({ kind: c.kind, ...c.body });
+    expect(h.inserted.length).toBeGreaterThan(0);
+  });
+
+  it.each(approverKinds)("$kind from someone who cannot approve is refused, nothing written", async (c) => {
+    everyone();
+    h.eventStatus = c.eventStatus;
+    h.songStatus = c.songStatus;
+    h.canApprove = false;
+    const res = await post({ kind: c.kind, ...c.body });
+    expect(res.status).toBe(403);
+    expect(h.inserted).toEqual([]);
+    expect(h.approveAsked).toEqual([{ tid: "tenant-1" }]);
+  });
+
+  it.each(approverKinds)("$kind from an approver still reaches the band's Ar", async (c) => {
+    everyone();
+    h.eventStatus = c.eventStatus;
+    h.songStatus = c.songStatus;
+    h.canEdit = false; // label_staff: approves, edits no band
+    await send({ kind: c.kind, ...c.body });
+    expect(h.inserted.map((r) => r.user_id)).toEqual(["ar-1"]);
   });
 });

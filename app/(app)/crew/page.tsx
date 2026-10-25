@@ -1,5 +1,6 @@
 import { redirect } from "next/navigation";
 import { getWorkspace } from "@/lib/queries";
+import { assertReadsSucceeded } from "@/lib/read-guard";
 import { canApprove } from "@/lib/permissions";
 import { createClient } from "@/lib/supabase/server";
 import { StaffContactsManager } from "@/components/admin/staff-contacts";
@@ -19,13 +20,15 @@ export default async function CrewPage() {
   if (!canApprove(ws.perms)) redirect("/dashboard");
 
   const supabase = await createClient();
-  const staffContacts = ((
-    await supabase
-      .from("staff_contacts")
-      .select("*")
-      .eq("tenant_id", ws.membership.tenant_id)
-      .order("sort_order", { ascending: true })
-  ).data ?? []) as StaffContact[];
+  const crewRes = await supabase
+    .from("staff_contacts")
+    .select("*")
+    .eq("tenant_id", ws.membership.tenant_id)
+    .order("sort_order", { ascending: true });
+  // a failed read is not "ยังไม่มีทีมงาน" - that empty state asks staff to type the crew
+  // in again (lib/read-guard.ts; 2026-10-25). The error boundary retries.
+  assertReadsSucceeded("CrewPage", { "ทีมงาน": crewRes });
+  const staffContacts = (crewRes.data ?? []) as StaffContact[];
 
   return (
     <div className="space-y-4">
