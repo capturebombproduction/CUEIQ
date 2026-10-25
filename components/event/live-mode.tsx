@@ -387,6 +387,11 @@ export function LiveMode({
   // always-current state for use inside stable callbacks (subscribe, visibilitychange)
   const stateRef = useRef(state);
   stateRef.current = state;
+  // What apply() last set, until the render that shows it: stateRef still holds the state
+  // before it. A pad change told in the same move as a Next or a RUN goes out on THIS one -
+  // sent on the one before, it would take every viewer back a row (bcastPads).
+  const appliedRef = useRef<LiveState | null>(null);
+  appliedRef.current = null;
   const isControllerRef = useRef(isController);
   isControllerRef.current = isController;
   // When this device became the ACTIVE controller (began the show).
@@ -2147,6 +2152,7 @@ export function LiveMode({
     } else if (!next.begun) {
       committedRef.current = { id: null, anchor: null };
     }
+    appliedRef.current = next;
     setState(next);
     // only the controlling device broadcasts — viewers never push state
     if (broadcast && isControllerRef.current) {
@@ -3006,6 +3012,7 @@ export function LiveMode({
           if (crossfade && !audio.paused && playingId && playingId !== cur.id) {
             crossfadeSwap(cur.id, url, offset);
           } else {
+            rowTakesPrimary(cur.id);
             audio.src = url;
             audio.currentTime = filePos(cur.id, offset);
             levelOnto(audio, cur.id);
@@ -3311,6 +3318,7 @@ export function LiveMode({
         setAudioPlaying(true);
         return;
       }
+      rowTakesPrimary(itemId);
       audio.pause();
       audio.src = url;
       audio.currentTime = 0;
@@ -3431,6 +3439,7 @@ export function LiveMode({
     const incoming = audioRef2.current;
     const outgoing = audioRef.current;
     if (!incoming || !outgoing) return;
+    rowTakesPrimary(itemId);
     ++outFadeTokenRef.current; // a crossfade still fading this element out bows out
     endedItemRef.current = null;
     const outgoingLoops = !!itemsRef.current.find((x) => x.id === playingIdRef.current)?.loop_audio;
@@ -3450,6 +3459,7 @@ export function LiveMode({
   function crossfadeSwap(itemId: string, url: string, fromOffset = 0) {
     const incoming = audioRef2.current;
     if (!incoming || !audioRef.current) return;
+    rowTakesPrimary(itemId);
     endedItemRef.current = null;
     incoming.pause();
     incoming.src = url;
@@ -3527,8 +3537,10 @@ export function LiveMode({
     }
   }
   function bcastPads() {
-    if (!isControllerRef.current || !stateRef.current.begun) return;
-    channelRef.current?.send({ type: "broadcast", event: "state", payload: statePayload(stateRef.current) });
+    // the state just applied, when this move applied one (its render has not come yet)
+    const s = appliedRef.current ?? stateRef.current;
+    if (!isControllerRef.current || !s.begun) return;
+    channelRef.current?.send({ type: "broadcast", event: "state", payload: statePayload(s) });
   }
   /** The pads' part of a state message: only the device running the show speaks for them. */
   function padsPayload(s: LiveState) {
@@ -3652,6 +3664,9 @@ export function LiveMode({
     const url = audioUrlsRef.current[it.id];
     withLayers(() => {
       adoptTail();
+      // the row's own last seconds, left on the spare by Auto's overlap: it starts again from the
+      // top, so they stop - one row never plays in two places of its song (as rowTakesPrimary)
+      for (const l of [...liveLayers.list()]) if (l.itemId === it.id) liveLayers.stop(l);
       // what sounds goes under the new row and plays on to its own end
       if (nowSounding && nowId) underLayer(primary, nowId, fired.id === nowId ? fired.at : 0);
       if (url) {
@@ -3726,6 +3741,20 @@ export function LiveMode({
     setVolumeFor(itemId, v);
     withLayers(() => liveLayers.setLevel(itemId, v), false);
   }
+  /** A row starts on the row-on-now's element by a road other than its pad - RUN in MANUAL,
+   *  Auto, Auto's overlap, a crossfade, a switch to AUTO, the tap that brings the sound back.
+   *  A copy of it the pads left sounding underneath stops at once: one row never plays in two
+   *  places of its song. And a loop bed under it fades out, as under a pad's new song: it never
+   *  goes round under the next song for good (AUTO locks the pads that would stop it). */
+  function rowTakesPrimary(itemId: string) {
+    if (liveLayers.list().length === 0) return;
+    withLayers(() => {
+      for (const l of [...liveLayers.list()]) {
+        if (l.itemId === itemId) liveLayers.stop(l);
+        else if (loopRow(l.itemId)) liveLayers.fadeOut(l);
+      }
+    });
+  }
 
   // ── SET MIXER's pads (components/live/set-mixer.tsx): what sounds, as this device can know it.
   // The device running the show reads its own players; a viewer, the master's word (cleanPads) -
@@ -3779,6 +3808,7 @@ export function LiveMode({
     // not a file replaced while paused (a sounding element is never swapped here)
     const held = playingId === sid && (!audio.paused || holdsFile(audio, url));
     if (!held) {
+      rowTakesPrimary(sid);
       audio.src = url;
       levelOnto(audio, sid);
     }
@@ -3945,6 +3975,7 @@ export function LiveMode({
         if (playingId !== cur.id || (!haveLocalAudio && !holdsFile(audio, url))) {
           // a different track is loaded (or this row's file was replaced while it
           // sat paused) — switch to the anchor track and seek
+          rowTakesPrimary(cur.id);
           audio.src = url;
           audio.currentTime = filePos(cur.id, offset);
           levelOnto(audio, cur.id);

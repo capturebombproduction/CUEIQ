@@ -5444,4 +5444,121 @@ describe("LiveMode · SET MIXER pads", () => {
     for (const p of pads()) expect(p).toBeDisabled();
     expect(screen.getByTestId("console-go-locked").textContent).toContain("เริ่มโชว์ก่อน");
   });
+
+  // A row the pads left sounding UNDER NOW can come round again by the other roads - cued and
+  // RUN in MANUAL, or Auto reaching it. It starts from its top on the row-on-now's element; the
+  // copy still sounding underneath must not play on beside it (one row, two places in the song).
+  it("a row cued and RUN while it still sounds under NOW plays once - from its top", async () => {
+    const media = await startPads();
+    await tick(1_000);
+    await press(3);
+    await tick(1_000);
+    await press(5); // Track 3 goes under
+    expect(playing(media, "item-3")).toHaveLength(1);
+    // back to Track 3 in MANUAL: ← ← cues it, RUN commits it
+    pressKey(window, { key: "ArrowLeft", code: "ArrowLeft" });
+    pressKey(window, { key: "ArrowLeft", code: "ArrowLeft" });
+    expect(last()).toMatchObject({ currentIndex: 2, running: false });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("run-toggle"));
+    });
+    const now = playing(media, "item-3");
+    expect(now).toHaveLength(1);
+    expect(media.state(now[0]).currentTime).toBe(0);
+    expect(pad(3)).toHaveAttribute("data-state", "on");
+    // the pads' word goes out on the state RUN made - on the one before, viewers would go back to the cue
+    expect(last()).toMatchObject({ currentIndex: 2, running: true });
+    expect(last().pads.layers.map((l: { id: string }) => l.id)).not.toContain("item-3");
+  });
+
+  it("a pad pressed over its own row's last seconds (Auto's overlap) plays it once - from its top", async () => {
+    const set = [
+      makeItem(1, { duration_seconds: 10 }),
+      makeItem(2, { duration_seconds: 60, buffer_before_seconds: -5 }),
+      makeItem(3, { duration_seconds: 60 }),
+    ];
+    const media = await startPads(set);
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /^Auto$/ }));
+    });
+    await tick(5_250); // Track 2 comes in over Track 1's last 5 s
+    expect(last().currentIndex).toBe(1);
+    expect(playing(media, "item-1")).toHaveLength(1); // the tail, on the spare
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /^Manual$/ }));
+    });
+    await press(1); // the encore - while its tail still sounds
+    const one = playing(media, "item-1");
+    expect(one).toHaveLength(1);
+    expect(media.state(one[0]).currentTime).toBe(0);
+    expect(last()).toMatchObject({ currentIndex: 0, running: true });
+  });
+
+  it("Auto reaching a row that still sounds under NOW plays it once", async () => {
+    const set = [
+      makeItem(1, { duration_seconds: 200 }),
+      makeItem(2, { duration_seconds: 10 }),
+      makeItem(3, { duration_seconds: 200 }),
+    ];
+    const media = await startPads(set);
+    await tick(1_000);
+    await press(3);
+    await tick(1_000);
+    await press(2); // Track 3 goes under; NOW = Track 2, 10 s
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /^Auto$/ }));
+    });
+    await tick(10_500);
+    expect(last().currentIndex).toBe(2);
+    const now = playing(media, "item-3");
+    expect(now).toHaveLength(1);
+    expect(media.state(now[0]).currentTime).toBe(0);
+  });
+
+  it("a loop bed left under a silent row fades out when the next song starts - AUTO too", async () => {
+    const set = [
+      makeItem(1, { duration_seconds: 200 }),
+      makeItem(2, { kind: "mc", title: "MC BGM", loop_audio: true, duration_seconds: 120 }),
+      makeItem(3, { kind: "mc", title: "MC talk", duration_seconds: 10 }),
+      makeItem(4, { duration_seconds: 200 }),
+    ];
+    const media = instrumentMediaElements();
+    supa.setScript({ setlist_items: ok(set), songs: ok([]), show_authority: ok([]) });
+    // the talk has no file of its own
+    h.saved = set
+      .filter((it) => it.id !== "item-3")
+      .map((it) => ({ itemId: it.id, blob: Object.assign(new Blob([it.id]), { row: it.id }), name: `${it.id}.wav`, path: null }));
+    await mountLive({ items: set });
+    await startShowFromUi();
+    await tick(1_000);
+    await press(2); // the BGM
+    const [bed] = playing(media, "item-2");
+    await tick(1_000);
+    await press(3); // the talk: silent, the BGM plays on under it (a file-less pad fades no bed)
+    expect(pad(2)).toHaveAttribute("data-state", "on");
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /^Auto$/ }));
+    });
+    await tick(10_500); // the talk's 10 s: Auto starts Track 4
+    expect(last().currentIndex).toBe(3);
+    expect(playing(media, "item-4")).toHaveLength(1);
+    expect(pad(2)).toHaveAttribute("data-state", "fade");
+    await tick(3_250);
+    expect(media.state(bed).paused).toBe(true);
+  });
+
+  it("Enter on a button of the จบการแสดงเลยไหม question is that button - never GO", async () => {
+    await startPads();
+    await tick(1_000);
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Mute" }));
+    });
+    const ask = screen.getByTestId("ask-end-show");
+    const keep = within(ask).getByRole("button", { name: "ยังไม่จบ" });
+    const sent = stateSends().length;
+    const { prevented } = pressKey(keep, { key: "Enter", code: "Enter" });
+    expect(prevented).toBe(0); // the browser goes on to press the focused button
+    expect(stateSends().length).toBe(sent);
+    expect(last().currentIndex).toBe(0);
+  });
 });

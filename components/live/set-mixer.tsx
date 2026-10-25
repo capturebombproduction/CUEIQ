@@ -118,6 +118,9 @@ export const SetMixer = memo(function SetMixer({
       const t = e.target as HTMLElement | null;
       const tag = t?.tagName;
       if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || t?.isContentEditable) return;
+      // a question on screen (จบการแสดงเลยไหม after Auto Mute): Enter on its button is that
+      // button - GO there would start the next song as the show ends
+      if (t?.closest?.('[role="dialog"]')) return;
       e.preventDefault();
       if (e.repeat) return;
       fire();
