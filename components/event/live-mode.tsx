@@ -105,6 +105,9 @@ import { entryCue } from "@/lib/live-entry";
 import { restoreShow, SNAPSHOT_ALIVE_MS, STALE_RESTORE_MS } from "@/lib/live-restore";
 import { hardOutGap, hardOutReading } from "@/lib/live-hard-out";
 import { fadeLevel, nextFadeFrame } from "@/lib/fade";
+import { crowdedOut, LiveLayers, PAD_FADE_MS, PAD_MAX_SOUNDING, PAD_SETTLE_MS, type Layer } from "@/lib/live-layers";
+import { fileElapsed, type PadMode, type PadSound } from "@/lib/pad-view";
+import type { PadsView } from "@/components/live/set-mixer";
 import { unplayableAudio } from "@/lib/audio";
 
 type ShowMode = "manual" | "auto";
@@ -146,6 +149,51 @@ function cleanVolumes(raw: unknown): Record<string, number> | null {
     if (typeof v === "number" && Number.isFinite(v)) out[id] = Math.min(100, Math.max(0, v));
   }
   return out;
+}
+
+/** A layer as the pads draw it (lib/live-layers.ts), and as the state broadcast carries it. */
+interface PadLayerView {
+  id: string;
+  /** wall-clock ms at which its file stood at 0:00 */
+  anchor: number;
+  /** its file's length, seconds (0 = unknown) */
+  total: number;
+  level: number;
+  /** when its fade-out began, ms; null while it sounds */
+  fadeAt: number | null;
+}
+
+/** What the device running the show says its pads light (an older build sends none). */
+interface RemotePads {
+  /** the row whose sound is over though the show stands on it (its file ended, or NOW's own pad
+   *  faded it out) - its pad is not lit */
+  ended: string | null;
+  layers: PadLayerView[];
+  played: string[];
+}
+
+/** The pads' part of another device's state message, on this device's clock. */
+function cleanPads(raw: unknown, skew: number): RemotePads | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const r = raw as { ended?: unknown; layers?: unknown; played?: unknown };
+  const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : null);
+  const layers: PadLayerView[] = [];
+  if (Array.isArray(r.layers)) {
+    for (const l of r.layers.slice(0, 16) as (Record<string, unknown> | null)[]) {
+      const anchor = num(l?.anchor);
+      if (!l || typeof l.id !== "string" || anchor == null) continue;
+      const fadeAt = num(l.fadeAt);
+      layers.push({
+        id: l.id,
+        anchor: anchor + skew,
+        total: Math.max(0, num(l.total) ?? 0),
+        level: Math.min(100, Math.max(0, num(l.level) ?? 100)),
+        fadeAt: fadeAt == null ? null : fadeAt + skew,
+      });
+    }
+  }
+  const played = Array.isArray(r.played) ? r.played.filter((x): x is string => typeof x === "string") : [];
+  return { ended: typeof r.ended === "string" ? r.ended : null, layers, played };
 }
 
 function blockSeconds(it: SetlistItem) {
@@ -371,6 +419,22 @@ export function LiveMode({
   // out on the secondary). audioRef = primary (drives the UI scrubber).
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const audioRef2 = useRef<HTMLAudioElement | null>(null);
+  // Every audio element this page made: those two, and the ones SET MIXER's pads add for the
+  // rows sounding UNDER the row on now (lib/live-layers.ts). Sound off, the output route, the
+  // Signal tap and the unmount cover every one of them. audioRef2 - the spare Auto's overlap and
+  // the crossfade start the next row on - is never one of the layers.
+  const playersRef = useRef<HTMLAudioElement[]>([]);
+  const layersChangedRef = useRef<() => void>(() => {});
+  const volumeIsDeadRef = useRef(false);
+  const layersRef = useRef<LiveLayers | null>(null);
+  if (!layersRef.current) {
+    layersRef.current = new LiveLayers({
+      onChange: () => layersChangedRef.current(),
+      // iPhone / iPad: the volume cannot be set, so a fade would be a lie - a layer stops instead
+      canFade: () => !volumeIsDeadRef.current,
+    });
+  }
+  const liveLayers = layersRef.current;
   const fileInputRef = useRef<HTMLInputElement>(null);
   const loadTargetRef = useRef<string | null>(null);
   const [audioUrls, setAudioUrls] = useState<Record<string, string>>({}); // itemId → objectURL
@@ -412,6 +476,8 @@ export function LiveMode({
   // actually makes sound (e.g. plugged into the PA)? A remote/control device sets
   // this OFF so it stays silent without muting the PA device. Default ON.
   const [soundOutput, setSoundOutput] = useState(true);
+  const soundOutputRef = useRef(soundOutput); // for an element the pads add later
+  soundOutputRef.current = soundOutput;
   // Set just before an ARBITRATION mute so the persist effect below can tell a
   // verdict apart from the operator flipping the switch. Cleared as it is read.
   const mutedByStepDownRef = useRef(false);
@@ -423,6 +489,8 @@ export function LiveMode({
   // device via setSinkId ("" = system default = today's behavior), so a Bluetooth
   // headset / HDMI screen connecting mid-show can't silently steal the PA feed.
   const [sinkId, setSinkId] = useState("");
+  const sinkIdRef = useRef(sinkId); // for an element the pads add later
+  sinkIdRef.current = sinkId;
   const sinkLoadedRef = useRef(false); // don't persist before the saved value loads
   // Crossfade (opt-in, per device, default OFF = the old hard cut): on a track
   // change the outgoing song fades out (~2s) while the new one starts.
@@ -873,87 +941,104 @@ export function LiveMode({
     }
   }, [playingId]);
 
-  // two audio elements — create once. UI-updating listeners only act for whichever
-  // element is currently the primary (audioRef.current).
+  // The audio elements. UI-updating listeners only act for whichever element is currently the
+  // primary (audioRef.current); a layer that ends or fails only goes off the pads.
+  function makePlayer(): HTMLAudioElement {
+    const a = new Audio();
+    a.addEventListener("ended", () => {
+      if (a === audioRef.current) {
+        // remember which item finished so the viewer sync won't loop-restart it
+        endedItemRef.current = playingIdRef.current;
+        setPlayingId(null);
+        setAudioPlaying(false);
+      } else {
+        // a layer played out to its own end (SET MIXER's pads)
+        layersRef.current?.release(a);
+      }
+    });
+    a.addEventListener("error", () => {
+      if (a !== audioRef.current) {
+        // a layer that fails is simply gone from the pads
+        layersRef.current?.release(a);
+        return;
+      }
+      // The loaded file can't be played at all (dangling blob, undecodable bytes,
+      // missing codec). Only the element that's meant to be SOUNDING counts — an
+      // idle one being reloaded or cleared (src="" on unmount) isn't a fault.
+      if (!playingIdRef.current) return;
+      reportAudioFaultRef.current(playingIdRef.current);
+    });
+    a.addEventListener("timeupdate", () => {
+      if (a !== audioRef.current) return;
+      setAudioCurrent(a.currentTime);
+      // SINGLE AUDIO SOURCE: the sounding device OWNS its playback position. We
+      // never nudge playbackRate or seek to chase a remote clock — that continuous
+      // convergence was the source of audible mid-show jumps. Always natural 1x.
+      if (a.playbackRate !== 1) a.playbackRate = 1;
+    });
+    a.addEventListener("loadedmetadata", () => {
+      if (a === audioRef.current) setAudioDuration(a.duration);
+    });
+    // Sound is a fact about the element, not about what we asked it to do. These
+    // two make audioPlaying follow reality, so the "แตะเพื่อเล่นเสียงต่อ" rescue
+    // can appear for anything that stops the audio without going through us.
+    a.addEventListener("playing", () => {
+      if (a === audioRef.current) setAudioPlaying(true);
+    });
+    a.addEventListener("pause", () => {
+      // Every app-initiated stop passes through here too — playItemAudio pauses
+      // before swapping src, and the viewer path pauses on a controller pause —
+      // so judging immediately would flash the banner on every track change.
+      // Re-check on the next macrotask instead: by then a real track change has
+      // already started playing again (a.paused === false) and self-suppresses,
+      // while an outside interruption (a call, the lock screen, a headphone
+      // button, Control Centre) is still paused and is exactly what we want to
+      // surface. Deliberate stops set the flag themselves, so agreeing is a no-op.
+      setTimeout(() => {
+        if (a !== audioRef.current || !a.paused || a.ended) return;
+        if (!playingIdRef.current || endedItemRef.current === playingIdRef.current) return;
+        setAudioPlaying(false);
+      }, 400);
+    });
+    return a;
+  }
+  // two of them from the start - created once
   useEffect(() => {
-    const make = () => {
-      const a = new Audio();
-      a.addEventListener("ended", () => {
-        if (a === audioRef.current) {
-          // remember which item finished so the viewer sync won't loop-restart it
-          endedItemRef.current = playingIdRef.current;
-          setPlayingId(null);
-          setAudioPlaying(false);
-        }
-      });
-      a.addEventListener("error", () => {
-        // The loaded file can't be played at all (dangling blob, undecodable bytes,
-        // missing codec). Only the element that's meant to be SOUNDING counts — an
-        // idle one being reloaded or cleared (src="" on unmount) isn't a fault.
-        if (a !== audioRef.current || !playingIdRef.current) return;
-        reportAudioFaultRef.current(playingIdRef.current);
-      });
-      a.addEventListener("timeupdate", () => {
-        if (a !== audioRef.current) return;
-        setAudioCurrent(a.currentTime);
-        // SINGLE AUDIO SOURCE: the sounding device OWNS its playback position. We
-        // never nudge playbackRate or seek to chase a remote clock — that continuous
-        // convergence was the source of audible mid-show jumps. Always natural 1x.
-        if (a.playbackRate !== 1) a.playbackRate = 1;
-      });
-      a.addEventListener("loadedmetadata", () => {
-        if (a === audioRef.current) setAudioDuration(a.duration);
-      });
-      // Sound is a fact about the element, not about what we asked it to do. These
-      // two make audioPlaying follow reality, so the "แตะเพื่อเล่นเสียงต่อ" rescue
-      // can appear for anything that stops the audio without going through us.
-      a.addEventListener("playing", () => {
-        if (a === audioRef.current) setAudioPlaying(true);
-      });
-      a.addEventListener("pause", () => {
-        // Every app-initiated stop passes through here too — playItemAudio pauses
-        // before swapping src, and the viewer path pauses on a controller pause —
-        // so judging immediately would flash the banner on every track change.
-        // Re-check on the next macrotask instead: by then a real track change has
-        // already started playing again (a.paused === false) and self-suppresses,
-        // while an outside interruption (a call, the lock screen, a headphone
-        // button, Control Centre) is still paused and is exactly what we want to
-        // surface. Deliberate stops set the flag themselves, so agreeing is a no-op.
-        setTimeout(() => {
-          if (a !== audioRef.current || !a.paused || a.ended) return;
-          if (!playingIdRef.current || endedItemRef.current === playingIdRef.current) return;
-          setAudioPlaying(false);
-        }, 400);
-      });
-      return a;
-    };
-    const a = make();
-    const b = make();
+    const a = makePlayer();
+    const b = makePlayer();
     audioRef.current = a;
     audioRef2.current = b;
+    playersRef.current = [a, b];
+    const layers = layersRef.current;
     return () => {
-      a.pause();
-      a.src = "";
-      b.pause();
-      b.src = "";
+      layers?.dispose();
+      for (const el of playersRef.current) {
+        el.pause();
+        el.src = "";
+      }
+      playersRef.current = [];
       audioRef.current = null;
       audioRef2.current = null;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- makePlayer reads refs and setters only
   }, []);
 
   // Live Signal (desktop app): meters + the NO SIGNAL watch, from a tap on a COPY of both
   // players' output (lib/live-signal.ts - never in the audio path). After the players exist:
   // effects run in order, so both elements are there to tap. Absent on the web build.
   const [signalTap, setSignalTap] = useState<SignalTap | null>(null);
+  const signalTapRef = useRef<SignalTap | null>(null); // a pad's new element is tapped too
   const [signalVerdict, setSignalVerdict] = useState<SilenceVerdict>(null);
   const signalGlowRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!signalTapSupported()) return;
-    const t = new SignalTap(() => [audioRef.current, audioRef2.current]);
+    const t = new SignalTap(() => playersRef.current);
     t.attach();
+    signalTapRef.current = t;
     setSignalTap(t);
     return () => {
       t.close();
+      signalTapRef.current = null;
       setSignalTap(null);
     };
   }, []);
@@ -991,16 +1076,14 @@ export function LiveMode({
       if (!el?.setSinkId) return;
       el.setSinkId(sinkId).catch(() => el.setSinkId!("").catch(() => {}));
     };
-    route(audioRef.current);
-    route(audioRef2.current);
+    for (const el of playersRef.current) route(el);
   }, [sinkId]);
 
   // Apply sound-output to BOTH elements (muted is a persistent element property, so
   // this covers every src change / play / overlap) + persist the choice. When OFF
   // the device still runs the whole show + countdown, just silently.
   useEffect(() => {
-    if (audioRef.current) audioRef.current.muted = !soundOutput;
-    if (audioRef2.current) audioRef2.current.muted = !soundOutput;
+    for (const el of playersRef.current) el.muted = !soundOutput;
     // Persist the OPERATOR'S choice only. Stepping down to a viewer also mutes
     // this device (เครื่องเสียงคุมคนเดียว) — but that is an arbitration verdict
     // about one moment, not a preference, and writing it here made it outlive the
@@ -1584,6 +1667,7 @@ export function LiveMode({
     const audio = audioRef.current;
     if (audio && !audio.paused) audio.pause();
     audioRef2.current?.pause();
+    layersRef.current?.quiet();
     if (audioPlaying) setAudioPlaying(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [remoteAudio, isController]);
@@ -1810,6 +1894,7 @@ export function LiveMode({
       // natural-end guard so the next play isn't blocked.
       endedItemRef.current = null;
       setRemoteAudio({ id: audioId, playing: audioPlaying, anchor });
+      setRemotePads(cleanPads(payload.pads, skew));
       if (audioPlaying && audioId) {
         committedRef.current = { id: audioId, anchor };
       }
@@ -2034,6 +2119,8 @@ export function LiveMode({
       // or one ended longer ago than the encore hold: either way it takes no page not
       // already watching it
       held: isControllerRef.current && (restoreHeldRef.current || endedLongRef.current) ? true : undefined,
+      // SET MIXER's pads: what sounds under NOW, what has played (a viewer lights the same pads)
+      pads: padsPayload(s),
       ...audioFields(s),
     };
   }
@@ -2499,6 +2586,7 @@ export function LiveMode({
     // played on out of the PA, with nothing left on screen that would stop it.
     audioRef.current?.pause();
     audioRef2.current?.pause();
+    withLayers(() => liveLayers.quiet(), false); // and every pad still sounding under NOW
     setAudioPlaying(false);
     // Telling the OTHER devices needs no new message: every state broadcast
     // already carries this device's audio intent (audioFields), and that intent is
@@ -2873,6 +2961,9 @@ export function LiveMode({
     const cur = items[state.currentIndex];
     if (state.running) {
       // PAUSE — freeze the item countdown (accumulated keeps running via startedAt)
+      // Every pad still sounding under NOW goes quiet too, before the state goes out; RUN
+      // brings back NOW alone (SET MIXER's pads).
+      withLayers(() => liveLayers.quiet(), false);
       const pausedAt = Date.now();
       const frozenItem = state.itemStartedAt
         ? (pausedAt - state.itemStartedAt) / 1000
@@ -3258,6 +3349,7 @@ export function LiveMode({
    * so nothing about the audio path depends on the answer.
    */
   const [volumeIsDead, setVolumeIsDead] = useState(false);
+  volumeIsDeadRef.current = volumeIsDead;
   useEffect(() => {
     try {
       const probe = new Audio();
@@ -3347,6 +3439,8 @@ export function LiveMode({
     incoming.currentTime = 0;
     incoming.volume = Math.min(1, Math.max(0, levelOf(itemId) / 100));
     incoming.play().catch((err) => onPlayRejected(itemId, err));
+    // whose last seconds the spare plays (a pad pressed over them names them: adoptTail)
+    tailRef.current = { el: outgoing, itemId: playingIdRef.current };
     swapAudio(); // incoming → primary (scrubber/volume follow it); outgoing → secondary
     setPlayingId(itemId);
     setAudioPlaying(true);
@@ -3362,12 +3456,16 @@ export function LiveMode({
     incoming.currentTime = filePos(itemId, fromOffset);
     incoming.volume = Math.min(1, Math.max(0, levelOf(itemId) / 100));
     incoming.play().catch((err) => onPlayRejected(itemId, err));
+    const outgoingId = playingIdRef.current;
     swapAudio(); // incoming → primary (scrubber/volume follow it); outgoing → secondary
     setPlayingId(itemId);
     setAudioPlaying(true);
     const el = audioRef2.current; // the outgoing element
     if (!el || el.paused) return;
     const token = ++outFadeTokenRef.current;
+    // whose tail it is, and that this fade takes it down (adoptTail hands a pad's fade over)
+    tailRef.current = { el, itemId: outgoingId };
+    xfadeRef.current = { el, token };
     const srcAtStart = el.src;
     const startVol = el.volume;
     const t0 = performance.now();
@@ -3385,6 +3483,290 @@ export function LiveMode({
     nextFadeFrame(step);
   }
 
+  // ── SET MIXER's pads (พี่ 2026-10-24; lib/live-layers.ts, components/live/set-mixer.tsx) ──
+  // In MANUAL, on this device (it runs the show), a pad plays its row from its top at once and
+  // makes it NOW; what was sounding goes UNDER it and plays on to its own end. At most four sound
+  // (a fifth press fades the oldest out), a loop bed never goes round under a new song, a green
+  // pad fades out in Auto Mute's 3 s. Pause quiets every layer (RUN = NOW alone), Auto Mute fades
+  // them all, จบโชว์ / a reset / becoming a viewer stop them; AUTO lets them play out and anchors
+  // to NOW as it always did (the sounding primary). A reload brings back NOW, not the layers.
+  const MAX_PLAYERS = PAD_MAX_SOUNDING + 4; // the four, the spare, and room for fades on their way out
+  // the last pad pressed: the double-click guard, and GO's (GO GO is one row, not two)
+  const padFiredRef = useRef<{ id: string | null; at: number }>({ id: null, at: 0 });
+  // what Auto's overlap or a crossfade left sounding on the spare, and whose (adoptTail)
+  const tailRef = useRef<{ el: HTMLAudioElement; itemId: string | null } | null>(null);
+  const xfadeRef = useRef<{ el: HTMLAudioElement; token: number } | null>(null);
+  // the rows that have sounded in this run: their pads are grey
+  const playedRef = useRef<Set<string>>(new Set());
+  const [played, setPlayed] = useState<ReadonlySet<string>>(() => new Set());
+  // what the pads draw of the layers (renewed on every change), and a viewer's copy of the master's
+  const [padLayers, setPadLayers] = useState<readonly PadLayerView[]>([]);
+  const [remotePads, setRemotePads] = useState<RemotePads | null>(null);
+  // a change made inside a move that sends the state itself (a pad, a pause) goes out with it, once
+  const layerHoldRef = useRef(0);
+  const layerDirtyRef = useRef(false);
+  layersChangedRef.current = () => {
+    setPadLayers(
+      liveLayers.list().map((l) => ({ id: l.itemId, anchor: l.anchor, total: l.total, level: l.level, fadeAt: l.fadeAt }))
+    );
+    if (layerHoldRef.current > 0) layerDirtyRef.current = true;
+    else bcastPads();
+  };
+  /** Run a layer move; what it changes is told once at the end - or not at all (`send` false)
+   *  where the move sends the state itself. */
+  function withLayers(fn: () => void, send = true) {
+    layerHoldRef.current++;
+    try {
+      fn();
+    } finally {
+      layerHoldRef.current--;
+      if (layerHoldRef.current === 0 && layerDirtyRef.current) {
+        layerDirtyRef.current = false;
+        if (send) bcastPads();
+      }
+    }
+  }
+  function bcastPads() {
+    if (!isControllerRef.current || !stateRef.current.begun) return;
+    channelRef.current?.send({ type: "broadcast", event: "state", payload: statePayload(stateRef.current) });
+  }
+  /** The pads' part of a state message: only the device running the show speaks for them. */
+  function padsPayload(s: LiveState) {
+    if (!isControllerRef.current || !s.begun) return undefined;
+    return {
+      ended: endedItemRef.current,
+      layers: (layersRef.current?.list() ?? []).map((l) => ({
+        id: l.itemId,
+        anchor: l.anchor,
+        total: l.total,
+        level: Math.round(l.level),
+        fadeAt: l.fadeAt,
+      })),
+      played: [...playedRef.current],
+    };
+  }
+  function markPlayed(id: string) {
+    if (playedRef.current.has(id)) return;
+    playedRef.current = new Set(playedRef.current).add(id);
+    setPlayed(playedRef.current);
+  }
+  // a row this device sounds has played (START, RUN, Auto, a pad); a reset forgets them all
+  useEffect(() => {
+    if (!state.begun) {
+      if (playedRef.current.size > 0) {
+        playedRef.current = new Set();
+        setPlayed(playedRef.current);
+      }
+      return;
+    }
+    if (isController && playingId && audioPlaying) markPlayed(playingId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- markPlayed writes a ref and a setter
+  }, [state.begun, isController, playingId, audioPlaying]);
+  /** A row's file length, seconds: the song's measured one, else the row's. */
+  function lenOfItem(id: string): number {
+    const it = itemsRef.current.find((x) => x.id === id);
+    const sig = it?.song_id ? songSignal?.[it.song_id] : undefined;
+    return sig?.duration ?? (it?.duration_seconds || 0);
+  }
+  const loopRow = (id: string) => !!itemsRef.current.find((x) => x.id === id)?.loop_audio;
+  /** Nothing of the show sounds on it (a priming silence is nothing). */
+  function idleEl(el: HTMLMediaElement): boolean {
+    return el.paused || el.ended || !el.src || el.src === SILENT_WAV;
+  }
+  /** One more element for the pads, set up as the first two are: sound on/off, the route, the tap. */
+  function addPlayer(): HTMLAudioElement {
+    const el = makePlayer();
+    el.muted = !soundOutputRef.current;
+    const routed = el as HTMLAudioElement & { setSinkId?: (id: string) => Promise<void> };
+    if (routed.setSinkId && sinkIdRef.current) {
+      routed.setSinkId(sinkIdRef.current).catch(() => routed.setSinkId!("").catch(() => {}));
+    }
+    playersRef.current.push(el);
+    signalTapRef.current?.attach();
+    return el;
+  }
+  /** An element free to take a row - not the primary, not a layer, not sounding: the spare first. */
+  function freePlayer(not: readonly HTMLAudioElement[] = []): HTMLAudioElement {
+    const taken = (el: HTMLAudioElement) => not.includes(el) || el === audioRef.current || liveLayers.holds(el);
+    const spare = audioRef2.current;
+    if (spare && !taken(spare) && idleEl(spare)) return spare;
+    const free = playersRef.current.find((el) => el !== spare && !taken(el) && idleEl(el));
+    if (free) return free;
+    if (playersRef.current.length < MAX_PLAYERS) return addPlayer();
+    // every element sounds: the oldest layer gives its element up now - one on its way out first
+    const ls = liveLayers.list().filter((l) => !not.includes(l.el as HTMLAudioElement));
+    const victim = ls.find((l) => l.fadeAt != null) ?? [...ls].sort((a, b) => a.anchor - b.anchor)[0];
+    if (!victim) return addPlayer();
+    liveLayers.stop(victim);
+    return victim.el as HTMLAudioElement;
+  }
+  /** An element goes under the new row: a layer, at the level it sounds at. */
+  function underLayer(el: HTMLAudioElement, itemId: string, firedAt: number): Layer {
+    const total = Number.isFinite(el.duration) && el.duration > 0 ? el.duration : lenOfItem(itemId);
+    return liveLayers.add({ el, itemId, anchor: Date.now() - el.currentTime * 1000, total, firedAt, level: el.volume * 100 });
+  }
+  /** The spare left sounding by Auto's overlap or a crossfade goes under too, by its name - never
+   *  a layer AND the spare at once: Auto would start its next row over it. */
+  function adoptTail() {
+    const spare = audioRef2.current;
+    const tail = tailRef.current;
+    if (!spare || spare === audioRef.current || idleEl(spare) || liveLayers.holds(spare)) return;
+    if (tail?.el !== spare || !tail.itemId) return;
+    tailRef.current = null;
+    const l = underLayer(spare, tail.itemId, 0);
+    // a crossfade still taking it down hands its fade over: its own frames bow out once the spare
+    // moves, and the tail would stop part-way down
+    const xf = xfadeRef.current;
+    xfadeRef.current = null;
+    if (xf?.el === spare && outFadeTokenRef.current === xf.token) {
+      ++outFadeTokenRef.current;
+      liveLayers.fadeOut(l);
+    }
+    audioRef2.current = freePlayer([spare]);
+  }
+  /** A pad: its row from the top, NOW from this moment - or, sounding, a fade out. */
+  function firePad(index: number) {
+    if (!isControllerRef.current) return;
+    const s = stateRef.current;
+    if (!s.begun || s.mode !== "manual") return;
+    const it = itemsRef.current[index];
+    const primary = audioRef.current;
+    if (!it || !primary) return;
+    const t = Date.now();
+    // a real tap: a device that joined mid-set unlocks its spare here, as START does
+    primeSecondaryAudio();
+    const nowId = playingIdRef.current;
+    const nowSounding = !!nowId && !primary.paused && !primary.ended;
+    const fired = padFiredRef.current;
+    // green: it fades out - never in its first half second (the second click of a double-click)
+    if (nowSounding && nowId === it.id) {
+      if (fired.id === it.id && t - fired.at < PAD_SETTLE_MS) return;
+      stopNowPad();
+      return;
+    }
+    const layer = liveLayers.of(it.id);
+    if (layer) {
+      if (layer.fadeAt == null && t - layer.firedAt >= PAD_SETTLE_MS) withLayers(() => liveLayers.fadeOut(layer));
+      return;
+    }
+    const url = audioUrlsRef.current[it.id];
+    withLayers(() => {
+      adoptTail();
+      // what sounds goes under the new row and plays on to its own end
+      if (nowSounding && nowId) underLayer(primary, nowId, fired.id === nowId ? fired.at : 0);
+      if (url) {
+        // a loop bed never goes round under the next song: it fades out (as Auto's end-fade takes it)
+        for (const l of [...liveLayers.list()]) if (loopRow(l.itemId)) liveLayers.fadeOut(l);
+        // four at once, the new row one of them: past that the oldest fades out
+        for (const l of crowdedOut(liveLayers.list(), PAD_MAX_SOUNDING - 1)) liveLayers.fadeOut(l);
+      } else {
+        for (const l of crowdedOut(liveLayers.list(), PAD_MAX_SOUNDING)) liveLayers.fadeOut(l);
+      }
+      // the primary went under: the row takes a free element (a row with no file leaves it idle)
+      const incoming = nowSounding ? freePlayer([primary]) : primary;
+      if (url) {
+        endedItemRef.current = null;
+        incoming.pause();
+        incoming.src = url;
+        incoming.currentTime = 0;
+        incoming.loop = !!it.loop_audio;
+        levelOnto(incoming, it.id);
+        incoming.play().catch((err) => onPlayRejected(it.id, err));
+      } else if (!incoming.paused) {
+        incoming.pause();
+      }
+      audioRef.current = incoming;
+      // the spare stays free for Auto's overlap and the crossfade: never the primary, never a layer
+      if (!audioRef2.current || audioRef2.current === incoming || liveLayers.holds(audioRef2.current)) {
+        audioRef2.current = freePlayer([incoming]);
+      }
+      primeElement(audioRef2.current);
+      playingIdRef.current = url ? it.id : null;
+      setPlayingId(url ? it.id : null);
+      setAudioPlaying(!!url);
+      setAudioCurrent(0);
+      setAudioDuration(0);
+      padFiredRef.current = { id: it.id, at: t };
+      if (url) markPlayed(it.id);
+      // …and it is NOW: its countdown runs its own block from this moment
+      apply({ ...s, currentIndex: index, running: true, itemStartedAt: t, itemElapsedAtPause: null, startedAt: s.startedAt ?? t });
+    }, false);
+  }
+  /** NOW's own green pad: its sound fades out (a layer on its way out); the row stays on, its clock runs. */
+  function stopNowPad() {
+    const primary = audioRef.current;
+    const id = playingIdRef.current;
+    if (!primary || !id) return;
+    const fired = padFiredRef.current;
+    withLayers(() => {
+      const l = underLayer(primary, id, fired.id === id ? fired.at : 0);
+      const stand = freePlayer([primary]);
+      audioRef.current = stand;
+      if (audioRef2.current === stand) audioRef2.current = freePlayer([stand]);
+      primeElement(audioRef2.current);
+      liveLayers.fadeOut(l);
+      // its sound is over, not lost: no "แตะเพื่อเล่นเสียงต่อ" over it, and its viewers see it go grey
+      endedItemRef.current = id;
+      playingIdRef.current = null;
+      setPlayingId(null);
+      setAudioPlaying(false);
+      setAudioCurrent(0);
+      setAudioDuration(0);
+    });
+  }
+  /** GO (and Enter): the row after NOW, as its pad. Twice in a breath is one row, not two. */
+  function goPad() {
+    const next = stateRef.current.currentIndex + 1;
+    if (next >= itemsRef.current.length) return;
+    if (Date.now() - padFiredRef.current.at < PAD_SETTLE_MS) return;
+    firePad(next);
+  }
+  /** A tile's fader: the row's level (kept, sent, NOW's element when it is NOW) and its layer's. */
+  function setPadLevel(itemId: string, v: number) {
+    setVolumeFor(itemId, v);
+    withLayers(() => liveLayers.setLevel(itemId, v), false);
+  }
+
+  // ── SET MIXER's pads (components/live/set-mixer.tsx): what sounds, as this device can know it.
+  // The device running the show reads its own players; a viewer, the master's word (cleanPads) -
+  // an older master sends none, and then only the row it says is sounding lights up.
+  const padLayerList: readonly PadLayerView[] = isController ? padLayers : (remotePads?.layers ?? []);
+  let padPrimary: { id: string; elapsed: number; total: number } | null = null;
+  if (isController) {
+    if (playingId && audioPlaying) {
+      padPrimary = { id: playingId, elapsed: audioCurrent, total: audioDuration > 0 ? audioDuration : lenOfItem(playingId) };
+    }
+  } else if (remoteAudio?.playing && remoteAudio.id && remotePads?.ended !== remoteAudio.id) {
+    const total = lenOfItem(remoteAudio.id);
+    const since = remoteAudio.anchor != null ? (now - remoteAudio.anchor) / 1000 : elapsedItem;
+    padPrimary = { id: remoteAudio.id, elapsed: fileElapsed(since, total, loopRow(remoteAudio.id)), total };
+  }
+  const padSounding: Record<string, PadSound> = {};
+  if (padPrimary) padSounding[padPrimary.id] = { elapsed: padPrimary.elapsed, total: padPrimary.total, fadeAt: null, level: null };
+  for (const l of padLayerList) {
+    if (padSounding[l.id]) continue;
+    const total = l.total > 0 ? l.total : lenOfItem(l.id);
+    padSounding[l.id] = { elapsed: fileElapsed((now - l.anchor) / 1000, total, loopRow(l.id)), total, fadeAt: l.fadeAt, level: l.level };
+  }
+  const padMode: PadMode = !state.begun ? "idle" : !isController ? "viewer" : state.mode === "auto" ? "auto" : "manual";
+  // STAGE (every device): a row still sounding UNDER the one on now - the one that sounds longest
+  let underNow: { index: number; title: string; left: number | null; more: number } | null = null;
+  {
+    let best: { id: string; left: number | null } | null = null;
+    let n = 0;
+    for (const l of padLayerList) {
+      // (a row deleted from the setlist while it sounds plays out unnamed)
+      if (l.fadeAt != null || l.id === padPrimary?.id || !items.some((x) => x.id === l.id)) continue;
+      n++;
+      const s = padSounding[l.id];
+      const left = s && s.total > 0 ? Math.max(0, s.total - s.elapsed) : null;
+      if (!best || (left ?? 0) > (best.left ?? 0)) best = { id: l.id, left };
+    }
+    if (best) {
+      const at = items.findIndex((x) => x.id === best.id);
+      underNow = { index: at, title: items[at]?.title || "—", left: best.left, more: n - 1 };
+    }
+  }
   // Resume audio after a reload / autoplay-block: load the sounding track and seek to
   // the current position. The user's tap supplies the gesture browsers require to play.
   function resumeAudio() {
@@ -3547,6 +3929,8 @@ export function LiveMode({
               ? (Date.now() - state.itemStartedAt) / 1000
               : 0
             : (state.itemElapsedAtPause ?? 0);
+      // it sounds again (NOW's own pad may have faded it): no longer "ended" - its viewers light its pad
+      if (cur && audio && audioUrls[cur.id]) endedItemRef.current = null;
       apply({
         ...state,
         mode,
@@ -3665,6 +4049,8 @@ export function LiveMode({
     }
     audioRef.current?.pause();
     audioRef2.current?.pause();
+    withLayers(() => liveLayers.quiet(), false);
+    padFiredRef.current = { id: null, at: 0 };
     autoAdvanceForRef.current = null;
     endedItemRef.current = null;
     setPlayingId(null);
@@ -4121,6 +4507,8 @@ export function LiveMode({
   // show); it closes itself when the show ends, resets, or moves to another row (askEnd,
   // declared beside showEnded: no hook may sit below the early returns).
   function autoMute() {
+    // every pad sounding under NOW fades with it (Auto Mute is how a show ends)
+    withLayers(() => liveLayers.fadeAll(PAD_FADE_MS));
     fadeKey(0, 3000);
     if (stateRef.current.begun && isControllerRef.current && canEdit && !showEndedRef.current) setAskEnd(true);
   }
@@ -4531,6 +4919,29 @@ export function LiveMode({
             className={consoleOn ? "hidden" : "hidden stage:flex"}
           />
         )}
+        {/* SET MIXER's pads: a row still sounding UNDER the one on now, and how long it has left.
+            Every device, on STAGE (CONSOLE lights its pad instead). A stage-size screen has it here;
+            a phone's row has no room for it (the readiness count must never be cut) - it gets a
+            line of its own under this row instead (underNowLine). */}
+        {underNow && !consoleOn && (
+          <span
+            data-testid="under-now"
+            title={`ยังมีเสียงซ้อนอยู่ใต้รายการปัจจุบัน: ${pad2(underNow.index + 1)} ${underNow.title}`}
+            className="chip chip-lg chip-success hidden min-w-0 shrink gap-[5px] overflow-hidden px-[11px] text-[13.5px] stage:inline-flex"
+          >
+            <span aria-hidden className="size-2 shrink-0 rounded-full bg-success" />
+            <span className="shrink-0">ซ้อนอยู่</span>
+            <span className="num shrink-0 text-[16px] text-foreground">{pad2(underNow.index + 1)}</span>
+            <span className="min-w-0 truncate py-[.25em] -my-[.25em] text-foreground">{underNow.title}</span>
+            {underNow.left != null && (
+              <>
+                <span className="shrink-0">เหลือ</span>
+                <span className="num shrink-0 text-[16px] text-foreground">{formatDuration(Math.ceil(underNow.left))}</span>
+              </>
+            )}
+            {underNow.more > 0 && <span className="num shrink-0 text-[14px]">+{underNow.more}</span>}
+          </span>
+        )}
         {isController ? (
           <>
             {/* Pre-flight readiness — does THIS device hold every track's file, so the
@@ -4640,6 +5051,26 @@ export function LiveMode({
         )}
       </div>
 
+      {/* SET MIXER's pads on a phone: what still sounds under NOW, on a line of its own (the
+          status row above has no room for it), only while something does. */}
+      {underNow && (
+        <div
+          data-testid="under-now-line"
+          className="flex h-9 min-w-0 shrink-0 items-center gap-1.5 rounded-[2px] bg-success/[.12] px-3 text-[13px] text-success-ink shadow-[inset_0_0_0_1px_hsl(var(--success)/.4)] [@media(orientation:landscape)_and_(max-height:599.98px)_and_(pointer:coarse)]:order-1 [@media(orientation:landscape)_and_(max-height:599.98px)_and_(pointer:coarse)]:basis-full stage:hidden"
+        >
+          <span aria-hidden className="size-2 shrink-0 rounded-full bg-success" />
+          <span className="shrink-0">ซ้อนอยู่</span>
+          <span className="num shrink-0 text-[16px] text-foreground">{pad2(underNow.index + 1)}</span>
+          <span className="min-w-0 truncate py-[.25em] -my-[.25em] text-foreground">{underNow.title}</span>
+          {underNow.left != null && (
+            <span className="ml-auto flex shrink-0 items-baseline gap-1">
+              เหลือ <span className="num text-[16px] text-foreground">{formatDuration(Math.ceil(underNow.left))}</span>
+            </span>
+          )}
+          {underNow.more > 0 && <span className="num shrink-0 text-[14px]">+{underNow.more}</span>}
+        </div>
+      )}
+
       {/* ── SHOW STRIP ── phone portrait only (stage carries it in the top bar). */}
       <div className="grid shrink-0 grid-cols-3 gap-[2px] [@media(orientation:landscape)_and_(max-height:599.98px)_and_(pointer:coarse)]:hidden stage:hidden">
         <div className="slab min-w-0 px-3 py-1">
@@ -4712,6 +5143,18 @@ export function LiveMode({
           nextLoudness={nextLoudness}
           entry={entry}
           alarm={signalAlarm}
+          pads={
+            {
+              mode: padMode,
+              sounding: padSounding,
+              played: isController ? played : new Set(remotePads?.played ?? []),
+              levels: Object.fromEntries(items.map((it) => [it.id, levelOf(it.id, volumes)])),
+              now,
+              onPad: padMode === "manual" ? firePad : null,
+              onGo: padMode === "manual" ? goPad : null,
+              onLevel: padMode === "manual" ? setPadLevel : null,
+            } satisfies PadsView
+          }
         />
       ) : (
       <div className="flex flex-col gap-2 [@media(orientation:landscape)_and_(max-height:599.98px)_and_(pointer:coarse)]:contents stage:grid stage:min-h-0 stage:flex-1 stage:grid-cols-[minmax(0,1fr)_300px_clamp(290px,calc(40vw_-_150px),320px)] stage:grid-rows-[minmax(0,1fr)] stage:gap-4 stage:px-5 stage:pb-3 stage:pt-2">

@@ -164,6 +164,9 @@ const SMOKE_LIVE_EVENT = (SMOKE && process.env.CUEIQ_SMOKE_LIVE_EVENT) || "";
 // code, and the probe measures the waveform leaving the element.
 const SMOKE_AUDIO_FILE = (SMOKE && process.env.CUEIQ_SMOKE_AUDIO_FILE) || "";
 const SMOKE_LIVE_ITEM = (SMOKE && process.env.CUEIQ_SMOKE_LIVE_ITEM) || "";
+// …and a second row with the same tone, whose SET MIXER pad the scenario presses while the
+// first one sounds (drivePads): two of the app's own players sounding at once.
+const SMOKE_LIVE_ITEM_2 = (SMOKE && process.env.CUEIQ_SMOKE_LIVE_ITEM_2) || "";
 // Time-box the whole self-test. The caller owns this number because it also owns the
 // deadline it waits on, and the inner one must always fire first (run-smoke.mjs).
 const SMOKE_WATCHDOG_MS = Number(process.env.CUEIQ_SMOKE_WATCHDOG_MS) || 90_000;
@@ -1479,6 +1482,83 @@ async function measureTheSound(win) {
   );
 }
 
+/**
+ * SET MIXER's pads (2026-10-25): in MANUAL a pad plays its row from the top at once and the row
+ * that was sounding plays on UNDER it, on a player of its own (lib/live-layers.ts). On real
+ * Chromium players: pad 3 (the second planted tone) pressed while row 1 sounds - both advance,
+ * neither is muted, the PLAYBACK meters hear the show; the sound key mutes BOTH (a pad's player is
+ * the show's too); Auto Mute stops the one underneath and takes NOW to 0. run-smoke.mjs judges it.
+ */
+async function drivePads(win) {
+  const out = { step: null };
+  const zoomBefore = win.webContents.getZoomFactor();
+  // as the CONSOLE step: room for the bottom panel on a small CI screen (layout only)
+  win.webContents.setZoomFactor(0.6);
+  try {
+    out.step = await win.webContents.executeJavaScript(`(async () => {
+      const q = (s) => document.querySelector(s);
+      const wait = async (ok, ms) => {
+        for (const end = Date.now() + ms; Date.now() < end; await new Promise((r) => setTimeout(r, 100))) if (ok()) return true;
+        return false;
+      };
+      q('[data-testid=live-view-console]')?.click();
+      if (!(await wait(() => !!q('[data-testid=console]'), 5000))) return 'CONSOLE never showed';
+      const tab = Array.from(document.querySelectorAll('[role=tab]')).find((t) => t.textContent.trim().toLowerCase() === 'set mixer');
+      if (tab) tab.click();
+      if (!(await wait(() => document.querySelectorAll('[data-testid=console-pad]').length >= 3, 5000))) return 'no pads';
+      return 'ready';
+    })()`);
+    if (out.step !== "ready") return out;
+    // userGesture: true - a person's tap, inside which a new player may start (the autoplay policy)
+    out.press = await win.webContents.executeJavaScript(
+      `(() => { const p = document.querySelectorAll('[data-testid=console-pad]')[2];
+        if (!p) return 'no pad 3'; if (p.disabled) return 'pad 3 disabled'; p.click(); return 'clicked'; })()`,
+      true
+    );
+    if (out.press !== "clicked") return out;
+    const read = `JSON.stringify((() => {
+      const els = Array.from(window.__cueiqSmokeAudio || []);
+      const playing = els.filter((a) => !a.paused && a.currentSrc && !a.currentSrc.startsWith('data:'));
+      const c = document.querySelector('[data-testid=console-channel]');
+      return {
+        playing: playing.map((a) => ({ t: Number(a.currentTime.toFixed(2)), muted: a.muted, volume: Number(a.volume.toFixed(3)) })),
+        pads: Array.from(document.querySelectorAll('[data-testid=console-pad]')).map((p) => p.dataset.state),
+        db: c ? c.dataset.db || null : null,
+        index: Number(document.querySelector('[data-cueiq-live]')?.getAttribute('data-cueiq-live-index')),
+      };
+    })())`;
+    await new Promise((r) => setTimeout(r, 1500));
+    out.first = JSON.parse(await win.webContents.executeJavaScript(read));
+    await new Promise((r) => setTimeout(r, 1000));
+    out.second = JSON.parse(await win.webContents.executeJavaScript(read));
+    // the sound key: every player of the show goes quiet, the pads' own too - then back on
+    const toggle = `(() => { const b = document.querySelector('[data-testid=sound-output-toggle]');
+      if (!b || b.disabled) return 'no sound key'; b.click(); return 'clicked'; })()`;
+    out.mute = await win.webContents.executeJavaScript(toggle, true);
+    await new Promise((r) => setTimeout(r, 300));
+    out.muted = JSON.parse(
+      await win.webContents.executeJavaScript(
+        `JSON.stringify(Array.from(window.__cueiqSmokeAudio || []).filter((a) => a.currentSrc && !a.currentSrc.startsWith('data:')).map((a) => a.muted))`
+      )
+    );
+    await win.webContents.executeJavaScript(toggle, true);
+    await new Promise((r) => setTimeout(r, 300));
+    // Auto Mute (CONSOLE's MUTE): the row underneath fades out and stops, NOW fades to 0
+    out.autoMute = await win.webContents.executeJavaScript(
+      `(() => { const b = Array.from(document.querySelectorAll('button')).find((x) => x.textContent.trim() === 'Mute');
+        if (!b || b.disabled) return 'no Mute key'; b.click(); return 'clicked'; })()`,
+      true
+    );
+    await new Promise((r) => setTimeout(r, 3800));
+    out.after = JSON.parse(await win.webContents.executeJavaScript(read));
+  } catch (e) {
+    out.error = String(e);
+  } finally {
+    win.webContents.setZoomFactor(zoomBefore);
+  }
+  return out;
+}
+
 /** What Live Mode says this device currently is — read off the attributes
  *  components/event/live-mode.tsx puts on its root. `null` until the page mounts.
  *  Structural, never textual: every label on that screen is Thai, and a wording
@@ -1788,7 +1868,10 @@ async function driveLiveScenario(win) {
       if (Date.now() >= deadline) break;
       await new Promise((r) => setTimeout(r, 500));
     }
-    return { role: "audible", after: started, audio: heard, signal, console: consoleReading, rerun, mountedSync: mounted.sync };
+    // SET MIXER's pads, last: they leave the show with two players sounding and Auto Mute pressed
+    smokeAt("live:audible:pads");
+    const pads = SMOKE_LIVE_ITEM_2 ? await drivePads(win) : null;
+    return { role: "audible", after: started, audio: heard, signal, console: consoleReading, rerun, pads, mountedSync: mounted.sync };
   }
 
   if (SMOKE_LIVE === "main" || SMOKE_LIVE === "main-conflict") {
@@ -2545,6 +2628,7 @@ async function createWindow() {
           if (!SMOKE_LIVE_ITEM) throw new Error("CUEIQ_SMOKE_AUDIO_FILE needs CUEIQ_SMOKE_LIVE_ITEM");
           smokeAt("live:audible:planting-the-file");
           await seedAudioForSmoke(win, SMOKE_LIVE_EVENT, SMOKE_LIVE_ITEM);
+          if (SMOKE_LIVE_ITEM_2) await seedAudioForSmoke(win, SMOKE_LIVE_EVENT, SMOKE_LIVE_ITEM_2);
         }
         liveResult = await driveLiveScenario(win);
       } else if (SMOKE_SEED_FILE) {

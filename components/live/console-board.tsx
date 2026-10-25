@@ -17,6 +17,7 @@ import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from "reac
 import { Lightbulb, Volume1, Volume2, VolumeX } from "lucide-react";
 import { KindChip } from "@/components/event/kind";
 import { ConsoleAnalyzer } from "@/components/live/console-analyzer";
+import { SetMixer, type PadsView } from "@/components/live/set-mixer";
 import { cn } from "@/lib/utils";
 import { formatCountdown, formatDuration, formatOvertime } from "@/lib/time";
 import { thresholds, type LiveZone } from "@/lib/live-zone";
@@ -30,17 +31,16 @@ import {
   barLines,
   blockStarts,
   inWindow,
-  lufsBar,
   LOUDNESS_TARGET,
   mmss,
   resample,
   rulerMarks,
   sectionRegions,
-  trimFor,
   volumeToDb,
   waveBars,
 } from "@/lib/console-view";
-import { SETLIST_KIND_SHORT, type SetlistKind } from "@/lib/types";
+import { PAD_HEAD } from "@/lib/pad-view";
+import type { SetlistKind } from "@/lib/types";
 
 export interface ConsoleItem {
   id: string;
@@ -99,6 +99,7 @@ export function ConsoleBoard({
   nextLoudness,
   entry = null,
   alarm = null,
+  pads = null,
 }: {
   items: readonly ConsoleItem[];
   /** the cued item (Live's currentIndex) */
@@ -141,6 +142,8 @@ export function ConsoleBoard({
   entry?: EntryCue | null;
   /** NO SIGNAL / STALLED / DEVICE LOST: the same band STAGE lays over its NOW card */
   alarm?: ReactNode;
+  /** SET MIXER's pads (components/live/set-mixer.tsx): what sounds, and who may press */
+  pads?: PadsView | null;
 }) {
   const current = items[index] ?? null;
   const next = items[index + 1] ?? null;
@@ -305,7 +308,7 @@ export function ConsoleBoard({
 
         <ClipEditor item={current} elapsed={elapsed} running={running} sections={curMarkers} section={section} />
 
-        <BottomPanel items={items} index={index} playingId={playingId} liveRef={stripLive} tap={tap} count={entry?.count ?? null} />
+        <BottomPanel items={items} index={index} playingId={playingId} liveRef={stripLive} tap={tap} count={entry?.count ?? null} pads={pads} />
       </div>
 
       <aside aria-label="Playback" className="flex min-h-0 flex-col gap-2 [container-type:size]">
@@ -918,84 +921,7 @@ const ClipEditor = memo(function ClipEditor({
 });
 
 // ── THE SET MIXER ─────────────────────────────────────────────────────────────────────────
-// One strip per item: its integrated loudness (0045) against the −14 LUFS line, how far its
-// fader would come down to meet it (only ever down: a player's volume tops out at 100 %), and,
-// on the strip that is sounding, the live level. Read-only in this phase.
-const SetMixer = memo(function SetMixer({
-  items,
-  index,
-  playingId,
-  liveRef,
-  count = null,
-}: {
-  items: readonly ConsoleItem[];
-  index: number;
-  playingId: string | null;
-  liveRef: React.RefObject<HTMLSpanElement | null>;
-  /** AUTO's 5 4 3 2 1 before the next row comes in (lib/live-entry.ts), on that row's strip */
-  count?: number | null;
-}) {
-  const target = lufsBar(LOUDNESS_TARGET) * 100;
-  return (
-      <div className="flex min-h-0 flex-1 gap-[3px] overflow-x-auto p-2">
-        {items.map((it, i) => {
-          const trim = it.kind === "song" ? trimFor(it.lufs) : null;
-          const playing = it.id === playingId;
-          return (
-            <div
-              key={it.id}
-              data-testid="console-strip"
-              title={it.title}
-              className={cn(
-                "flex min-w-[34px] flex-1 flex-col gap-[3px] rounded-[2px] px-[3px] py-1",
-                i === index ? "bg-primary/[.12] shadow-[inset_0_0_0_1px_hsl(var(--primary))]" : "bg-foreground/[.03]",
-                i < index && "opacity-55"
-              )}
-            >
-              <div className="flex items-baseline justify-between gap-0.5">
-                <span className="num text-[12.5px] leading-none">{i + 1}</span>
-                <span className="num truncate text-[9px] leading-none text-muted-foreground">
-                  {it.kind ? SETLIST_KIND_SHORT[it.kind] ?? "" : ""}
-                </span>
-              </div>
-              <div className="relative min-h-0 flex-1 bg-background/60 shadow-[inset_0_0_0_1px_hsl(var(--border))]">
-                <span
-                  className={cn("absolute bottom-0 left-[3px] right-[9px]", it.kind === "song" ? "bg-primary/70" : "bg-foreground/30")}
-                  style={{ height: `${lufsBar(it.lufs) * 100}%` }}
-                />
-                {playing && (
-                  <span
-                    ref={liveRef}
-                    aria-hidden
-                    className="led-live absolute bottom-0 right-[2px] top-0 w-[5px] origin-bottom"
-                    style={{ transform: "scaleY(0)" }}
-                  />
-                )}
-                <span aria-hidden className="absolute inset-x-0 border-t border-dashed border-warning/75" style={{ bottom: `${target}%` }} />
-                {count != null && i === index + 1 && (
-                  <span data-testid="console-strip-count" className="absolute inset-0 grid place-items-center">
-                    <b key={count} className="entry-digit num rounded-[2px] bg-background/85 px-1 text-[24px] leading-none text-warning-ink">
-                      {count}
-                    </b>
-                  </span>
-                )}
-              </div>
-              <span className="num text-center text-[12.5px] leading-none">{it.lufs != null ? it.lufs.toFixed(1) : "—"}</span>
-              <span
-                className={cn(
-                  "num text-center text-[10.5px] leading-none",
-                  trim != null && trim <= -1 ? "text-warning-ink" : "text-muted-foreground"
-                )}
-              >
-                {trim != null && trim < 0 ? signedDb(trim) : "\u00a0"}
-              </span>
-              <span className="truncate text-center text-[9.5px] leading-tight text-muted-foreground">{it.title}</span>
-            </div>
-          );
-        })}
-      </div>
-  );
-});
+// A pad player since 2026-10-25: components/live/set-mixer.tsx.
 
 // ── THE BOTTOM PANEL ──────────────────────────────────────────────────────────────────────
 // ANALYZER | SET MIXER | SPECTROGRAM. The two that read the live sound need the tap (the desktop
@@ -1012,6 +938,7 @@ function BottomPanel({
   liveRef,
   tap,
   count,
+  pads,
 }: {
   items: readonly ConsoleItem[];
   index: number;
@@ -1019,6 +946,7 @@ function BottomPanel({
   liveRef: React.RefObject<HTMLSpanElement | null>;
   tap: SignalTap | null;
   count: number | null;
+  pads: PadsView | null;
 }) {
   const tabs: PanelTab[] = tap ? ["analyzer", "mixer", "spectrogram"] : ["mixer"];
   const [picked, setPicked] = useState<PanelTab>(() => {
@@ -1068,10 +996,28 @@ function BottomPanel({
         </div>
         <span className="ml-auto min-w-0 self-center truncate pl-2 text-[11.5px] text-muted-foreground">
           {tab === "mixer" ? (
-            <>
-              ความดังเฉลี่ยของแต่ละรายการ เทียบเป้า <b className="num text-[13px] text-warning-ink">−14 LUFS</b>
-              {measured < songs.length ? ` · วัดแล้ว ${measured}/${songs.length} เพลง` : ""}
-            </>
+            <span className="flex min-w-0 items-center justify-end gap-3">
+              <span
+                data-testid="console-pads-head"
+                title={`ตัวเลขในแต่ละช่อง = ความดังเฉลี่ย (LUFS) · ตัวเลขสีเหลือง/ขีดเหลืองบนเฟดเดอร์ = จุดที่อยู่ที่ ${LOUDNESS_TARGET} LUFS (บอกเฉย ๆ ไม่ปรับให้เอง)`}
+                className={cn("min-w-0 truncate", pads?.mode === "manual" && "text-foreground")}
+              >
+                {PAD_HEAD[pads?.mode ?? "idle"]}
+                {measured < songs.length ? ` · วัดแล้ว ${measured}/${songs.length} เพลง` : ""}
+              </span>
+              {(
+                [
+                  ["bg-warning", "พร้อม"],
+                  ["bg-success", "กำลังเล่น"],
+                  ["bg-foreground/25", "เล่นแล้ว"],
+                ] as const
+              ).map(([tone, word]) => (
+                <span key={word} className="hidden shrink-0 items-center gap-1 xl:flex">
+                  <span aria-hidden className={cn("size-[9px] rounded-[1px]", tone)} />
+                  {word}
+                </span>
+              ))}
+            </span>
           ) : tab === "analyzer" ? (
             "เสียงที่เครื่องนี้ส่งออก หลังเฟดเดอร์ · LUFS ตามมาตรฐาน BS.1770"
           ) : (
@@ -1080,7 +1026,7 @@ function BottomPanel({
         </span>
       </div>
       {tab === "mixer" || !tap ? (
-        <SetMixer items={items} index={index} playingId={playingId} liveRef={liveRef} count={count} />
+        <SetMixer items={items} index={index} playingId={playingId} liveRef={liveRef} count={count} pads={pads} />
       ) : (
         <ConsoleAnalyzer tap={tap} trackKey={playingId} view={tab} />
       )}

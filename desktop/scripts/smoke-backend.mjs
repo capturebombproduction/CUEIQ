@@ -260,6 +260,9 @@ export const SMOKE_WORLD = deepFreeze({
      *  is the one assertion in this repo that needs a specific row rather than any
      *  row. */
     firstSetlistItem: `${SETLIST_ID_PREFIX}1`,
+    /** The THIRD row (a song): the audible smoke plants the same tone here too and presses its
+     *  SET MIXER pad while the first row sounds, so two real players sound at once. */
+    padSetlistItem: `${SETLIST_ID_PREFIX}3`,
   },
 
   tables: {

@@ -869,6 +869,8 @@ async function runAudibleScenario(s) {
       // The FIRST row of the setlist — the one Live Mode puts on air the instant
       // the show starts. Any other row would be planted and never played.
       CUEIQ_SMOKE_LIVE_ITEM: SMOKE_WORLD.ids.firstSetlistItem,
+      // the same tone on the third row: its SET MIXER pad is pressed while the first one sounds
+      CUEIQ_SMOKE_LIVE_ITEM_2: SMOKE_WORLD.ids.padSetlistItem,
       CUEIQ_SMOKE_AUDIO_FILE: wavPath,
       CUEIQ_SMOKE_PROBE_URL: backend.url,
     });
@@ -945,6 +947,36 @@ async function runAudibleScenario(s) {
     if (sig?.ready !== "1" || sig.db == null || !(Number(sig.db) > -30)) {
       problems.push(`on the second run the Signal strip read ${sig?.db} dB (ready=${sig?.ready}) while a -6 dBFS tone played`);
     }
+  }
+  // SET MIXER's pads (main.cjs drivePads): pad 3 pressed while row 1 sounds. Two of the app's
+  // own players have to sound at once - the one underneath is not cut - and everything that
+  // silences the show (the sound key, Auto Mute) has to reach both.
+  const pads = result?.liveReport?.pads;
+  console.log(`   SET MIXER pads: ${JSON.stringify(pads ?? null)}`);
+  if (!pads) problems.push("the pads step never ran");
+  else if (pads.error) problems.push(`the pads step threw: ${pads.error}`);
+  else if (pads.step !== "ready" || pads.press !== "clicked") problems.push(`the pads step could not press pad 3 (${pads.step} / ${pads.press})`);
+  else {
+    const a = pads.first?.playing ?? [];
+    const b = pads.second?.playing ?? [];
+    if (b.length < 2) problems.push(`after pad 3 ${b.length} player(s) sounded - row 1 should play on under it`);
+    else {
+      // each one moved on its own clock (the register keeps its order between the two reads)
+      const moved = b.filter((x, i) => a[i] && x.t > a[i].t + 0.5).length;
+      if (moved < 2) problems.push(`only ${moved} of the two pads' players advanced in a second (${JSON.stringify(a)} → ${JSON.stringify(b)})`);
+      if (b.some((x) => x.muted || !(x.volume > 0))) problems.push(`a pad's player was inaudible by its own settings: ${JSON.stringify(b)}`);
+    }
+    if (pads.second?.index !== 2) problems.push(`pad 3 did not become NOW (index ${pads.second?.index})`);
+    if (pads.second?.pads?.[0] !== "on" || pads.second?.pads?.[2] !== "on") problems.push(`the pads did not light: ${JSON.stringify(pads.second?.pads)}`);
+    if (pads.second?.db == null || !(Number(pads.second.db) > -30)) problems.push(`CONSOLE's meters read ${pads.second?.db} dB with two tones sounding`);
+    if (pads.mute !== "clicked" || !(pads.muted?.length >= 2) || pads.muted.some((m) => !m)) {
+      problems.push(`the sound key left a player of the show unmuted: ${JSON.stringify(pads.muted)}`);
+    }
+    const after = pads.after?.playing ?? [];
+    if (pads.autoMute !== "clicked" || after.length !== 1 || after[0].volume !== 0) {
+      problems.push(`after Auto Mute ${JSON.stringify(after)} played (the one underneath should stop, NOW sit at 0)`);
+    }
+    if (pads.after?.pads?.[0] !== "played") problems.push(`row 1's pad after Auto Mute: ${pads.after?.pads?.[0]} (should be played)`);
   }
   if (problems.length === 0) {
     console.log(

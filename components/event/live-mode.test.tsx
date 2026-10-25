@@ -5064,3 +5064,384 @@ describe("LiveMode · เล่นซ้อน: a row ends when the next one com
     expect(screen.getByTestId("hard-out-gap").textContent).toBe("ก่อน 3:58");
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SET MIXER's PADS (พี่ 2026-10-24, MiX16 PRO; mockup round 1 OK'd 2026-10-25)
+//
+// In MANUAL, on the device running the show, a pad on CONSOLE plays its row from the top
+// at once and makes it NOW; what was sounding plays on UNDER it to its own end. These
+// read the elements themselves: which one plays what, which one is left alone, which
+// one fades - the things no pure function can say about a 5,000-line component.
+// ─────────────────────────────────────────────────────────────────────────────
+describe("LiveMode · SET MIXER pads", () => {
+  const STAGE_QUERY = "(orientation: landscape) and (min-width: 900px) and (min-height: 600px)";
+  const SET = [
+    makeItem(1, { duration_seconds: 200 }),
+    makeItem(2, { duration_seconds: 200 }),
+    makeItem(3, { duration_seconds: 200 }),
+    makeItem(4, { kind: "mc", title: "MC BGM", loop_audio: true, duration_seconds: 120 }),
+    makeItem(5, { duration_seconds: 200 }),
+    makeItem(6, { duration_seconds: 200 }),
+  ];
+  beforeEach(() => {
+    localStorage.setItem("cueiq:liveView", "console");
+    vi.spyOn(window, "matchMedia").mockImplementation(
+      (q: string) =>
+        ({
+          matches: q === STAGE_QUERY,
+          media: q,
+          onchange: null,
+          addListener() {},
+          removeListener() {},
+          addEventListener() {},
+          removeEventListener() {},
+          dispatchEvent: () => false,
+        }) as unknown as MediaQueryList
+    );
+    // a hidden page's fades (no frames; the fallback timer) on the fake clock, as the fade tests above
+    vi.stubGlobal("requestAnimationFrame", () => 1);
+    vi.stubGlobal("cancelAnimationFrame", () => {});
+    vi.spyOn(performance, "now").mockImplementation(() => Date.now());
+    // each row's file gets a URL that says whose it is, so an element can be asked what it plays
+    vi.spyOn(URL, "createObjectURL").mockImplementation((b: Blob | MediaSource) => `blob:${(b as Blob & { row?: string }).row ?? "?"}`);
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    localStorage.removeItem("cueiq:liveView");
+  });
+
+  async function startPads(set = SET) {
+    const media = instrumentMediaElements();
+    supa.setScript({ setlist_items: ok(set), songs: ok([]), show_authority: ok([]) });
+    h.saved = set.map((it) => ({
+      itemId: it.id,
+      blob: Object.assign(new Blob([it.id]), { row: it.id }),
+      name: `${it.id}.wav`,
+      path: null,
+    }));
+    await mountLive({ items: set });
+    await startShowFromUi();
+    return media;
+  }
+  const pads = () => screen.getAllByTestId("console-pad");
+  const pad = (n: number) => pads()[n - 1];
+  const press = async (n: number) => {
+    await act(async () => {
+      fireEvent.click(pad(n));
+    });
+  };
+  const tick = async (ms: number) => {
+    for (let t = 0; t < ms; t += 250) {
+      await act(async () => {
+        vi.advanceTimersByTime(250);
+      });
+    }
+  };
+  /** The elements playing a row's file right now. */
+  const playing = (media: MediaInstrumentation, id: string) =>
+    media.elements.filter((el) => media.state(el).src === `blob:${id}` && !media.state(el).paused);
+  const last = () => stateSends().at(-1)!.payload;
+
+  it("a yellow pad plays its row from the top at once and makes it NOW - the row sounding plays on under it", async () => {
+    const media = await startPads();
+    const first = media.first()!;
+    expect(playing(media, "item-1")).toEqual([first]);
+    await tick(10_000);
+    const before = media.callsFor(first).length;
+    const t = Date.now();
+    await press(3);
+    // NOW is row 3, running from this moment
+    expect(last()).toMatchObject({ currentIndex: 2, running: true, itemStartedAt: t });
+    const [three] = playing(media, "item-3");
+    expect(three).toBeTruthy();
+    expect(three).not.toBe(first);
+    expect(media.state(three).currentTime).toBe(0);
+    // the song that was on is not touched: no pause, no new file, no seek
+    expect(media.callsFor(first).slice(before)).toEqual([]);
+    expect(playing(media, "item-1")).toEqual([first]);
+    expect(pad(1)).toHaveAttribute("data-state", "on");
+    expect(pad(3)).toHaveAttribute("data-state", "on");
+    expect(pad(2)).toHaveAttribute("data-state", "ready");
+    expect(within(screen.getAllByTestId("console-strip")[2]).getByTestId("console-pad-now")).toBeTruthy();
+    expect(screen.getByTestId("console-pads-sounding").textContent).toContain("2");
+    // the wire says what sounds under NOW
+    expect(last().pads.layers.map((l: { id: string }) => l.id)).toEqual(["item-1"]);
+    expect(last().pads.played).toEqual(expect.arrayContaining(["item-1", "item-3"]));
+  });
+
+  it("a green pad fades out in Auto Mute's 3 s and stops; a second tap in its first half second is ignored", async () => {
+    const media = await startPads();
+    const first = media.first()!;
+    await tick(5_000);
+    await press(3);
+    const [three] = playing(media, "item-3");
+    await press(3); // the double-click's second half
+    expect(pad(3)).toHaveAttribute("data-state", "on");
+    expect(media.state(three).paused).toBe(false);
+    // the layer under NOW: tap it, it fades
+    await press(1);
+    expect(pad(1)).toHaveAttribute("data-state", "fade");
+    expect(pad(1).textContent).toContain("เฟด 3 วิ");
+    await tick(1_500);
+    expect(media.state(first).volume).toBeLessThan(0.3);
+    expect(media.state(first).paused).toBe(false);
+    await tick(1_750);
+    expect(media.state(first).paused).toBe(true);
+    expect(pad(1)).toHaveAttribute("data-state", "played");
+    expect(pad(1).textContent).toContain("เล่นแล้ว");
+    // NOW's own pad, past its first half second: it fades too, and the row stays on with its clock
+    await press(3);
+    expect(pad(3)).toHaveAttribute("data-state", "fade");
+    await tick(3_250);
+    expect(media.state(three).paused).toBe(true);
+    expect(last()).toMatchObject({ currentIndex: 2, running: true });
+    expect(last().pads.ended).toBe("item-3");
+    // its sound is over, not lost: nothing asks to tap it back
+    expect(screen.queryByText(/แตะเพื่อเล่นเสียงต่อ/)).toBeNull();
+  });
+
+  it("four sound at once: a fifth pad fades the oldest out", async () => {
+    const media = await startPads();
+    for (const n of [2, 3, 5]) {
+      await tick(1_000);
+      await press(n);
+    }
+    expect(screen.getByTestId("console-pads-sounding").textContent).toContain("4");
+    await tick(1_000);
+    await press(6);
+    expect(pad(1)).toHaveAttribute("data-state", "fade"); // the first to start
+    for (const n of [2, 3, 5, 6]) expect(pad(n)).toHaveAttribute("data-state", "on");
+    expect(screen.getByTestId("console-pads-sounding").textContent).toContain("4");
+    await tick(3_250);
+    expect(playing(media, "item-1")).toEqual([]);
+    for (const id of ["item-2", "item-3", "item-5", "item-6"]) expect(playing(media, id)).toHaveLength(1);
+  });
+
+  it("a loop bed under a new song fades out - it never goes round under it", async () => {
+    const media = await startPads();
+    await tick(1_000);
+    await press(4); // the MC's BGM
+    const [bed] = playing(media, "item-4");
+    expect(bed.loop).toBe(true);
+    await tick(1_000);
+    await press(5);
+    expect(pad(4)).toHaveAttribute("data-state", "fade");
+    expect(pad(1)).toHaveAttribute("data-state", "on"); // a song plays on to its own end
+    await tick(3_250);
+    expect(media.state(bed).paused).toBe(true);
+  });
+
+  it("GO plays the row after NOW; Enter is GO; a held Enter, or GO GO, is one row", async () => {
+    await startPads();
+    await tick(1_000);
+    const go = () => screen.getByTestId("console-go");
+    expect(go().textContent).toContain("Track 2");
+    await act(async () => {
+      fireEvent.click(go());
+    });
+    expect(last().currentIndex).toBe(1);
+    await act(async () => {
+      fireEvent.click(go()); // the second click of a double-click
+    });
+    expect(last().currentIndex).toBe(1);
+    await tick(1_000);
+    const prevented = holdKey(window, { key: "Enter", code: "Enter" }, 6);
+    expect(prevented).toBe(6);
+    expect(last().currentIndex).toBe(2);
+    // Enter pressed on a focused dock key is GO too - never that key (RUN would pause the show)
+    await tick(1_000);
+    const runKey = screen.getByTestId("run-toggle");
+    const sent = stateSends().length;
+    pressKey(runKey, { key: "Enter", code: "Enter" });
+    expect(stateSends().length).toBe(sent + 1);
+    expect(last()).toMatchObject({ currentIndex: 3, running: true });
+  });
+
+  it("pause quiets every pad; RUN brings back NOW alone", async () => {
+    const media = await startPads();
+    const first = media.first()!;
+    await tick(2_000);
+    await press(3);
+    const [three] = playing(media, "item-3");
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("run-toggle"));
+    });
+    expect(media.state(first).paused).toBe(true);
+    expect(media.state(three).paused).toBe(true);
+    expect(last()).toMatchObject({ running: false });
+    expect(last().pads.layers).toEqual([]);
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("run-toggle"));
+    });
+    expect(playing(media, "item-3")).toEqual([three]);
+    expect(media.state(first).paused).toBe(true);
+  });
+
+  it("Auto Mute fades every pad sounding, NOW with them", async () => {
+    const media = await startPads();
+    const first = media.first()!;
+    await tick(2_000);
+    await press(3);
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Mute" }));
+    });
+    expect(pad(1)).toHaveAttribute("data-state", "fade");
+    const volumes = live().sent.filter((x) => x.event === "volume").map((x) => x.payload);
+    expect(volumes.at(-1)).toMatchObject({ itemId: "item-3", target: 0, ms: 3000 });
+    await tick(3_250);
+    expect(media.state(first).paused).toBe(true);
+  });
+
+  it("AUTO: the pads lock, the layers play out, and Auto goes on from NOW", async () => {
+    const media = await startPads();
+    await tick(2_000);
+    await press(3);
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /^Auto$/ }));
+    });
+    expect(last()).toMatchObject({ mode: "auto", currentIndex: 2, running: true });
+    for (const p of pads()) expect(p).toBeDisabled();
+    expect(screen.queryByTestId("console-go")).toBeNull();
+    expect(screen.getByTestId("console-go-locked").textContent).toContain("AUTO");
+    expect(playing(media, "item-1")).toHaveLength(1);
+    expect(playing(media, "item-3")).toHaveLength(1);
+  });
+
+  it("Auto's overlap after the pads starts the next row on a free element - never over a layer", async () => {
+    const set = [
+      makeItem(1, { duration_seconds: 60 }),
+      makeItem(2, { duration_seconds: 10 }),
+      makeItem(3, { duration_seconds: 60, buffer_before_seconds: -5 }),
+    ];
+    const media = await startPads(set);
+    const first = media.first()!;
+    await tick(2_000);
+    await press(2); // Track 1 goes under
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /^Auto$/ }));
+    });
+    await tick(5_250); // 10 s less the next row's 5 s lead
+    expect(last().currentIndex).toBe(2);
+    const [three] = playing(media, "item-3");
+    expect(three).toBeTruthy();
+    expect(three).not.toBe(first);
+    expect(playing(media, "item-1")).toEqual([first]);
+    expect(playing(media, "item-2")).toHaveLength(1); // its last seconds, under Track 3
+  });
+
+  it("sound off on this device silences every element - the pads' own too", async () => {
+    const media = await startPads();
+    await tick(1_000);
+    await press(3);
+    await tick(1_000);
+    await press(5);
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("sound-output-toggle"));
+    });
+    // every element the show plays on (the volume probe is not one)
+    const players = media.elements.filter((el) => media.callsFor(el).some((c) => c.type === "src"));
+    expect(players.length).toBeGreaterThan(2);
+    for (const el of players) expect(media.state(el).muted).toBe(true);
+  });
+
+  it("a layer keeps the level it went under at; its tile's fader moves it", async () => {
+    const media = await startPads();
+    const first = media.first()!;
+    await tick(1_000);
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "MC" })); // Track 1 ducks to 30
+    });
+    await tick(2_250);
+    expect(media.state(first).volume).toBeCloseTo(0.3, 2);
+    await press(3);
+    await tick(1_000);
+    // Track 1 is no longer the primary: its own level comes back for its next turn - not onto
+    // the layer, which plays on at the 30 it went under at
+    expect(media.state(first).volume).toBeCloseTo(0.3, 2);
+    const fader = screen.getAllByTestId("console-tile-fader")[0];
+    expect(fader).toHaveAttribute("aria-valuenow", "30");
+    fireEvent.keyDown(fader, { key: "ArrowUp" });
+    await tick(250);
+    expect(media.state(first).volume).toBeCloseTo(0.31, 2);
+  });
+
+  it("STAGE says a row still sounds under NOW, and how long it has left", async () => {
+    const media = await startPads();
+    await tick(10_000);
+    media.set(media.first()!, { currentTime: 10 }); // the fake's playhead does not move by itself
+    await press(3);
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("live-view-stage"));
+    });
+    const chip = screen.getByTestId("under-now");
+    expect(chip.textContent).toContain("ซ้อนอยู่");
+    expect(chip.textContent).toContain("Track 1");
+    expect(chip.textContent).toMatch(/3:1\d/); // 200 s less the 10 it has played
+    // a phone's status row has no room: the same words on a line of its own (CSS shows one of the two)
+    const line = screen.getByTestId("under-now-line");
+    expect(line.textContent).toContain("Track 1");
+    expect(line.textContent).toMatch(/3:1\d/);
+  });
+
+  it("an iPhone / iPad (volume read-only): a pad's fade is a stop, at once", async () => {
+    const media = instrumentMediaElements();
+    const proto = HTMLMediaElement.prototype;
+    Object.defineProperty(proto, "volume", { configurable: true, get: () => 1, set: () => {} });
+    supa.setScript({ setlist_items: ok(SET), songs: ok([]), show_authority: ok([]) });
+    h.saved = SET.map((it) => ({ itemId: it.id, blob: Object.assign(new Blob([it.id]), { row: it.id }), name: "x.wav", path: null }));
+    await mountLive({ items: SET });
+    await startShowFromUi();
+    await tick(1_000);
+    await press(3);
+    await press(1);
+    expect(playing(media, "item-1")).toEqual([]);
+    expect(pad(1)).toHaveAttribute("data-state", "played");
+  });
+
+  it("a viewer lights the master's pads, plays nothing and presses nothing", async () => {
+    const media = instrumentMediaElements();
+    supa.setScript({ setlist_items: ok(SET), songs: ok([]), show_authority: ok([]) });
+    await mountLive({ items: SET });
+    const t = Date.now();
+    await act(async () => {
+      live().emit("state", {
+        sender: "pa-device",
+        sentAt: t,
+        fromController: true,
+        begun: true,
+        running: true,
+        startedAt: t - 60_000,
+        itemStartedAt: t - 5_000,
+        itemElapsedAtPause: null,
+        currentIndex: 2,
+        currentItemId: "item-3",
+        mode: "manual",
+        controllerSince: t - 60_000,
+        ended: false,
+        audioItemId: "item-3",
+        audioPlaying: true,
+        audioAnchor: t - 5_000,
+        pads: {
+          ended: null,
+          layers: [{ id: "item-1", anchor: t - 40_000, total: 200, level: 80, fadeAt: null }],
+          played: ["item-1", "item-2", "item-3"],
+        },
+      });
+    });
+    expect(pad(1)).toHaveAttribute("data-state", "on");
+    expect(pad(3)).toHaveAttribute("data-state", "on");
+    expect(pad(2)).toHaveAttribute("data-state", "played");
+    expect(pad(5)).toHaveAttribute("data-state", "ready");
+    for (const p of pads()) expect(p).toBeDisabled();
+    expect(screen.getByTestId("console-go-locked").textContent).toContain("ดูอย่างเดียว");
+    expect(pad(1).textContent).toContain("−2:40"); // 200 s less the 40 it has played
+    expect(media.play).not.toHaveBeenCalled();
+  });
+
+  it("before START the pads only show", async () => {
+    await mountLive({ items: SET });
+    for (const p of pads()) expect(p).toBeDisabled();
+    expect(screen.getByTestId("console-go-locked").textContent).toContain("เริ่มโชว์ก่อน");
+  });
+});
