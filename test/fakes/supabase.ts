@@ -1101,6 +1101,9 @@ export interface MediaState {
   volume: number;
   playbackRate: number;
   ended: boolean;
+  /** MediaError after a failed load (a real element keeps paused=false then, and fires no
+   *  pause or ended); null otherwise. A new src clears it, as the load algorithm does. */
+  error: { code: number } | null;
 }
 
 export type MediaCallType = "play" | "pause" | "load" | keyof MediaState;
@@ -1161,6 +1164,7 @@ const MEDIA_PROPS: Array<keyof MediaState> = [
   "volume",
   "playbackRate",
   "ended",
+  "error",
 ];
 
 export function instrumentMediaElements(
@@ -1184,6 +1188,7 @@ export function instrumentMediaElements(
     volume: 1,
     playbackRate: 1,
     ended: false,
+    error: null,
     ...options.defaults,
   });
 
@@ -1220,6 +1225,7 @@ export function instrumentMediaElements(
       set(this: HTMLMediaElement, value: unknown) {
         const s = register(this) as unknown as Record<string, unknown>;
         s[prop] = prop === "src" ? String(value) : value;
+        if (prop === "src") s.error = null;
         record(this, prop, s[prop]);
       },
     });

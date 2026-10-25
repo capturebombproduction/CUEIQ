@@ -67,6 +67,19 @@ export function shortClock(input: string | null | undefined): string {
 }
 
 /**
+ * The whole seconds Live's countdown shows for `remaining`: rounded UP, so it reads 0:01 until
+ * the moment itself and 0:00 only then, and past zero it counts whole seconds over. AUTO's
+ * 5 4 3 2 1 (lib/live-entry.ts) reads the same number, so each digit lands on its whole second
+ * and the next row comes in on the beat after "1". Rounded to the nearest, every digit came half
+ * a second early and a press along with it landed early (2026-10-25 hunt). The 1e-9 keeps a
+ * float a hair over a whole second (5.000000001) on that second.
+ */
+export function clockSeconds(remaining: number): number {
+  const s = Math.ceil(remaining - 1e-9);
+  return s === 0 ? 0 : s; // never -0
+}
+
+/**
  * Format a countdown value (seconds, may be negative) as "m:ss" / "h:mm:ss",
  * prefixed with "-" once it goes past zero (over time).
  */

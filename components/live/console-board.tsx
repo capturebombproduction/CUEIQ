@@ -19,7 +19,7 @@ import { KindChip } from "@/components/event/kind";
 import { ConsoleAnalyzer } from "@/components/live/console-analyzer";
 import { SetMixer, type PadsView } from "@/components/live/set-mixer";
 import { cn } from "@/lib/utils";
-import { formatCountdown, formatDuration, formatOvertime } from "@/lib/time";
+import { clockSeconds, formatCountdown, formatDuration, formatOvertime } from "@/lib/time";
 import { thresholds, type LiveZone } from "@/lib/live-zone";
 import { entryWords, type EntryCue } from "@/lib/live-entry";
 import { CLIP_LEVEL, METER_FLOOR_DB, meterPos, toDb, type OutputKind, type SignalTap } from "@/lib/live-signal";
@@ -231,7 +231,8 @@ export function ConsoleBoard({
     [current?.songId, current?.audioStart, markers]
   );
   const section = curMarkers.length > 0 ? sectionAt(curMarkers, elapsed) : null;
-  const remainText = Math.round(remaining) < 0 ? formatOvertime(Math.round(remaining)) : formatCountdown(Math.round(remaining));
+  const shown = clockSeconds(remaining); // as STAGE's NOW (lib/time.ts)
+  const remainText = shown < 0 ? formatOvertime(shown) : formatCountdown(shown);
 
   return (
     <div
@@ -969,10 +970,12 @@ function BottomPanel({
   const songs = items.filter((it) => it.songId);
   const measured = songs.filter((it) => it.lufs != null).length;
   return (
+    // Steps aside under a 450 px column: below that SET MIXER's pads (32 px, the one part of a tile
+    // that never gives way) were cut - measured in Chromium, 1280×720 keeps them whole (2026-10-25)
     <section
       aria-label={TAB_LABEL[tab]}
       data-testid="console-panel"
-      className="slab flex min-h-0 flex-[1.15] flex-col overflow-hidden [@container_(max-height:430px)]:hidden"
+      className="slab flex min-h-0 flex-[1.15] flex-col overflow-hidden [@container_(max-height:450px)]:hidden"
     >
       <div className="flex h-7 shrink-0 items-stretch gap-0.5 bg-foreground/[.04] pl-1 pr-2.5 shadow-[inset_0_-1px_0_hsl(var(--border))]">
         <div role="tablist" aria-label="แผงล่าง" className="flex items-stretch gap-0.5">

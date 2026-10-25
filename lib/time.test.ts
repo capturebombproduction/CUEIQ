@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  clockSeconds,
   computeSetlistTimes,
   foldWaitsIntoNext,
   timingMeaning,
@@ -44,6 +45,33 @@ describe("formatCountdown", () => {
     expect(formatCountdown(65)).toBe("1:05");
     expect(formatCountdown(-65)).toBe("-1:05");
     expect(formatCountdown(0)).toBe("0:00");
+  });
+});
+
+// Live's countdown rounds UP (2026-10-25 hunt): 0:01 until the moment itself, so AUTO's
+// 5 4 3 2 1, which reads the same number, lands each digit on its whole second.
+describe("clockSeconds", () => {
+  it("rounds a countdown up: a second is shown until it is over", () => {
+    expect(clockSeconds(240)).toBe(240);
+    expect(clockSeconds(239.999)).toBe(240);
+    expect(clockSeconds(239.001)).toBe(240);
+    expect(clockSeconds(239)).toBe(239);
+    expect(clockSeconds(1)).toBe(1);
+    expect(clockSeconds(0.3)).toBe(1);
+    expect(clockSeconds(0)).toBe(0);
+  });
+
+  it("keeps a float a hair over a whole second on that second, and never says -0", () => {
+    expect(clockSeconds(5.0000000001)).toBe(5);
+    expect(clockSeconds(5 + 1e-6)).toBe(6);
+    expect(Object.is(clockSeconds(-0.4), 0)).toBe(true);
+  });
+
+  it("past zero counts whole seconds over", () => {
+    expect(clockSeconds(-0.99)).toBe(0);
+    expect(clockSeconds(-1)).toBe(-1);
+    expect(clockSeconds(-24.6)).toBe(-24);
+    expect(formatOvertime(clockSeconds(-61.5))).toBe("+1:01");
   });
 });
 

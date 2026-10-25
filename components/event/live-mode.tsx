@@ -101,7 +101,7 @@ import {
 } from "@/lib/types";
 import { formatDuration, nowClock, pad2, runSecondsOf } from "@/lib/time";
 import { liveZone } from "@/lib/live-zone";
-import { entryCue } from "@/lib/live-entry";
+import { ENTRY_COUNT_SEC, entryCue } from "@/lib/live-entry";
 import { restoreShow, SNAPSHOT_ALIVE_MS, STALE_RESTORE_MS } from "@/lib/live-restore";
 import { hardOutGap, hardOutReading } from "@/lib/live-hard-out";
 import { fadeLevel, nextFadeFrame } from "@/lib/fade";
@@ -109,6 +109,10 @@ import { crowdedOut, LiveLayers, PAD_FADE_MS, PAD_MAX_SOUNDING, PAD_SETTLE_MS, t
 import { fileElapsed, type PadMode, type PadSound } from "@/lib/pad-view";
 import type { PadsView } from "@/components/live/set-mixer";
 import { unplayableAudio } from "@/lib/audio";
+
+// How long a viewer (and the frame before Auto's own advance) holds 0:00 for the next row
+// before the card calls it overtime (handingOver).
+const AUTO_HANDOVER_SEC = 2;
 
 type ShowMode = "manual" | "auto";
 
@@ -722,6 +726,9 @@ export function LiveMode({
           committedRef.current = stale
             ? { id: null, anchor: null }
             : (snap.committed ?? { id: null, anchor: null });
+          if (typeof snap.endedId === "string" && snap.endedId === committedRef.current.id) {
+            endedItemRef.current = snap.endedId;
+          }
           setState(restored);
           // The claim comes back with the show: it is the run's identity, so the first
           // device is the same run again after a reload.
@@ -787,6 +794,9 @@ export function LiveMode({
           JSON.stringify({
             state: s,
             committed: committedRef.current,
+            // the committed row whose sound is over (NOW's own pad faded it): a reload offered
+            // "แตะเพื่อเล่นเสียงต่อ" and the tap brought it back mid-song (2026-10-25 hunt)
+            endedId: endedItemRef.current ?? undefined,
             // Not part of LiveState (it is per-device, never applied), but it has
             // to survive a reload or the restored device tells everyone else the
             // show is back on — see the restore above.
@@ -956,6 +966,9 @@ export function LiveMode({
         endedItemRef.current = playingIdRef.current;
         setPlayingId(null);
         setAudioPlaying(false);
+        // ...and tell the viewers: their pad for it stayed green at −0:00 until the next
+        // message (2026-10-25 hunt). Only the device running the show speaks (bcastPads).
+        bcastPadsRef.current();
       } else {
         // a layer played out to its own end (SET MIXER's pads)
         layersRef.current?.release(a);
@@ -963,8 +976,11 @@ export function LiveMode({
     });
     a.addEventListener("error", () => {
       if (a !== audioRef.current) {
-        // a layer that fails is simply gone from the pads
+        // a layer that fails is simply gone from the pads - and paused: a failed element keeps
+        // paused=false (no pause, no ended), so it never read as idle again and its pool slot
+        // was lost for the rest of the show (2026-10-25 hunt)
         layersRef.current?.release(a);
+        if (!a.paused) a.pause();
         return;
       }
       // The loaded file can't be played at all (dangling blob, undecodable bytes,
@@ -988,7 +1004,9 @@ export function LiveMode({
     // two make audioPlaying follow reality, so the "แตะเพื่อเล่นเสียงต่อ" rescue
     // can appear for anything that stops the audio without going through us.
     a.addEventListener("playing", () => {
-      if (a === audioRef.current) setAudioPlaying(true);
+      // (the unlocking silence is no sound: a player NOW's own pad stood up was primed in that
+      // tap and its silence said "playing" over a row whose sound had just ended)
+      if (a === audioRef.current && a.src !== SILENT_WAV) setAudioPlaying(true);
     });
     a.addEventListener("pause", () => {
       // Every app-initiated stop passes through here too — playItemAudio pauses
@@ -1000,7 +1018,14 @@ export function LiveMode({
       // button, Control Centre) is still paused and is exactly what we want to
       // surface. Deliberate stops set the flag themselves, so agreeing is a no-op.
       setTimeout(() => {
-        if (a !== audioRef.current || !a.paused || a.ended) return;
+        if (a !== audioRef.current) {
+          // a layer stopped from outside (a media key, a headset button, the OS) is no layer
+          // any more: its pad stayed green, counted in the four and sent to every viewer, and
+          // the tap that brings the sound back resumes NOW only (2026-10-25 hunt)
+          if (a.paused && !a.ended && layersRef.current?.holds(a)) layersRef.current.release(a);
+          return;
+        }
+        if (!a.paused || a.ended) return;
         if (!playingIdRef.current || endedItemRef.current === playingIdRef.current) return;
         setAudioPlaying(false);
       }, 400);
@@ -1359,7 +1384,7 @@ export function LiveMode({
           audioUrlsRef.current[it.id] &&
           heldFileIsAnotherSongs(cachedPathRef.current[it.id], it.song_id, songAudioRef.current)
         ) {
-          if (it.id === playingIdRef.current) {
+          if (onAirRow(it.id)) {
             deferredOnAirRef.current.add(it.id);
             continue;
           }
@@ -1372,7 +1397,7 @@ export function LiveMode({
         // file, so without this the row is skipped for the rest of the session and a
         // repeat/encore of that song plays the REPLACED master with every indicator
         // green. The effect below re-runs this loop once the track leaves the air.
-        if (it.id === playingIdRef.current && audioUrlsRef.current[it.id]) {
+        if (onAirRow(it.id) && audioUrlsRef.current[it.id]) {
           // Only a row that actually wants DIFFERENT bytes is deferred. Recording
           // every sounding row here made the signature's other triggers — a
           // reorder, an unrelated upload — leave a member behind, so the next
@@ -1483,16 +1508,6 @@ export function LiveMode({
     // refetch that changed no audio must not restart an in-flight download).
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [audioSig, eventId, localsRead, onAirRetry]);
-
-  // A row whose new file the on-air lock deferred is stuck: its signature already
-  // changed, so nothing re-triggers the download. Once that row stops being the
-  // sounding one, ask for the loop again — this is the only path that picks up a
-  // master replaced while its own song was playing.
-  useEffect(() => {
-    if (deferredOnAirRef.current.size === 0) return;
-    if (playingId && deferredOnAirRef.current.has(playingId)) return; // still on air
-    setOnAirRetry((n) => n + 1);
-  }, [playingId]);
 
   // Wake Lock — keep the screen on for as long as the operator is IN the show.
   // Keyed on `begun`, not `running`: the run clock stops between every Manual cue
@@ -2867,6 +2882,17 @@ export function LiveMode({
   // Fade ONE track's volume to `target` over `ms` (ms<=0 = set instantly). Shared by
   // the local buttons/slider and by the viewer mirroring a remote volume command.
   function fadeVolumeFor(itemId: string, target: number, ms: number) {
+    // A level SET at once on another row (a SET MIXER tile fader, the NEXT preset slider) leaves
+    // the key fade riding NOW alone: one slot holds that fade, and cancelling it froze Auto Mute
+    // or MC part way - the song played on at a third under "จบการแสดงเลยไหม" (2026-10-25 hunt).
+    const riding = fadeNowRef.current?.itemId;
+    if (ms <= 0 && riding != null && riding !== itemId) {
+      if (playingIdRef.current === itemId && audioRef.current) {
+        audioRef.current.volume = Math.min(1, Math.max(0, target / 100));
+      }
+      setVolumes((prev) => ({ ...prev, [itemId]: target }));
+      return;
+    }
     fadeRef.current?.();
     fadeRef.current = null;
     fadeTargetRef.current = null;
@@ -3204,7 +3230,20 @@ export function LiveMode({
 
   // Warning ladder (lib/live-zone): warn/urgent scale to the item's own block.
   const zoneBlock = current ? runBlock(items, state.currentIndex) : 0;
-  const zone = liveZone({ running: state.running, remaining, blockSec: zoneBlock });
+  // AUTO takes the next row the moment this one runs out - in an effect after this render on the
+  // device running the show, a message later on a viewer. Until it lands the card holds 0:00: it
+  // flashed OVERTIME (the alarm plate, "Overtime · เกินเวลา" read out) at every song change in
+  // AUTO, and on a viewer for as long as the Wi-Fi took (2026-10-25 hunt). A show still on the
+  // row past the grace is overtime, as before. Display only: Auto's advance reads `remaining`.
+  const handingOver =
+    state.mode === "auto" &&
+    state.running &&
+    state.currentIndex < items.length - 1 &&
+    zoneBlock > 0 &&
+    remaining <= 0 &&
+    remaining > -AUTO_HANDOVER_SEC;
+  const shownRemaining = handingOver ? 0 : remaining;
+  const zone = liveZone({ running: state.running, remaining: handingOver ? 1e-6 : remaining, blockSec: zoneBlock });
   // "เข้าใน 5 4 3 2 1" (lib/live-entry.ts): how the next row comes in - AUTO counts the last five
   // seconds of `remaining` (it ends on the moment Auto takes the next row), a row the next one
   // comes in over says so all along. The NOW card and CONSOLE's NEXT box; display only, and a
@@ -3514,6 +3553,26 @@ export function LiveMode({
   const [played, setPlayed] = useState<ReadonlySet<string>>(() => new Set());
   // what the pads draw of the layers (renewed on every change), and a viewer's copy of the master's
   const [padLayers, setPadLayers] = useState<readonly PadLayerView[]>([]);
+  /** A row whose file sounds: NOW's, a layer's under it (SET MIXER's pads), or the tail Auto's
+   *  overlap left on the spare. The on-air lock covers every one: a mid-show swap or a library
+   *  re-upload revoked a LAYER's URL while it played, and a pad - moving playingId - was the very
+   *  thing that let a deferred re-download through (2026-10-25 hunt). */
+  function onAirRow(id: string): boolean {
+    if (id === playingIdRef.current) return true;
+    if (liveLayers.of(id)) return true;
+    const tail = tailRef.current;
+    return !!tail && tail.itemId === id && !idleEl(tail.el);
+  }
+  // A row whose new file the on-air lock deferred is stuck: its signature already
+  // changed, so nothing re-triggers the download. Once that row stops sounding (NOW
+  // moved on, its layer ended), ask for the loop again — this is the only path that
+  // picks up a master replaced while its own song was playing.
+  useEffect(() => {
+    if (deferredOnAirRef.current.size === 0) return;
+    if ([...deferredOnAirRef.current].every((id) => onAirRow(id))) return; // all still on air
+    setOnAirRetry((n) => n + 1);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [playingId, padLayers]);
   const [remotePads, setRemotePads] = useState<RemotePads | null>(null);
   // a change made inside a move that sends the state itself (a pad, a pause) goes out with it, once
   const layerHoldRef = useRef(0);
@@ -3545,6 +3604,12 @@ export function LiveMode({
     if (!isControllerRef.current || !s.begun) return;
     channelRef.current?.send({ type: "broadcast", event: "state", payload: statePayload(s) });
   }
+  const bcastPadsRef = useRef(bcastPads);
+  bcastPadsRef.current = bcastPads;
+  const padLevelSendRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => {
+    if (padLevelSendRef.current) clearTimeout(padLevelSendRef.current);
+  }, []);
   /** The pads' part of a state message: only the device running the show speaks for them. */
   function padsPayload(s: LiveState) {
     if (!isControllerRef.current || !s.begun) return undefined;
@@ -3586,7 +3651,8 @@ export function LiveMode({
   const loopRow = (id: string) => !!itemsRef.current.find((x) => x.id === id)?.loop_audio;
   /** Nothing of the show sounds on it (a priming silence is nothing). */
   function idleEl(el: HTMLMediaElement): boolean {
-    return el.paused || el.ended || !el.src || el.src === SILENT_WAV;
+    // a failed element is idle too: Chromium leaves it paused=false after a media error
+    return el.paused || el.ended || !el.src || el.src === SILENT_WAV || !!el.error;
   }
   /** One more element for the pads, set up as the first two are: sound on/off, the route, the tap. */
   function addPlayer(): HTMLAudioElement {
@@ -3598,6 +3664,10 @@ export function LiveMode({
     }
     playersRef.current.push(el);
     signalTapRef.current?.attach();
+    // Unlocked here, inside the tap that wants it (every caller is a pad, NOW's pad or Auto Mute):
+    // WebKit grants play() per element, and one made by Auto Mute's adoptTail became Auto's spare -
+    // the next overlap's play() from a timer was refused, a silent row on an iPad (2026-10-25).
+    primeElement(el);
     return el;
   }
   /** An element free to take a row - not the primary, not a layer, not sounding: the spare first. */
@@ -3666,7 +3736,8 @@ export function LiveMode({
     // a real tap: a device that joined mid-set unlocks its spare here, as START does
     primeSecondaryAudio();
     const nowId = playingIdRef.current;
-    const nowSounding = !!nowId && !primary.paused && !primary.ended;
+    // (a NOW whose file failed sounds nothing: it never goes under as a green layer that never ends)
+    const nowSounding = !!nowId && !primary.paused && !primary.ended && !primary.error;
     const fired = padFiredRef.current;
     // green: it fades out - never in its first half second (the second click of a double-click)
     if (nowSounding && nowId === it.id) {
@@ -3704,9 +3775,20 @@ export function LiveMode({
         incoming.currentTime = 0;
         incoming.loop = !!it.loop_audio;
         levelOnto(incoming, it.id);
+        // A pad plays its row from the top: a replay, at the row's own level - never the
+        // Auto Mute / MC duck it stopped at (an encore after Auto Mute → จบโชว์ played the
+        // whole song at 0, 2026-10-25). The pad's own road to 7660130's give-back.
+        const ducked = duckRef.current[it.id];
+        if (ducked !== undefined) {
+          setVolumeFor(it.id, ducked);
+          incoming.volume = Math.min(1, Math.max(0, ducked / 100));
+        }
         incoming.play().catch((err) => onPlayRejected(it.id, err));
-      } else if (!incoming.paused) {
-        incoming.pause();
+      } else {
+        if (!incoming.paused) incoming.pause();
+        // a row with no file sounds nothing: its viewers do not light it either - the state says
+        // it runs, and they lit it green while this screen showed it ready (2026-10-25 hunt)
+        endedItemRef.current = it.id;
       }
       audioRef.current = incoming;
       // the spare stays free for Auto's overlap and the crossfade: never the primary, never a layer
@@ -3740,6 +3822,12 @@ export function LiveMode({
       if (l) liveLayers.fadeOut(l);
       // its sound is over, not lost: no "แตะเพื่อเล่นเสียงต่อ" over it, and its viewers see it go grey
       endedItemRef.current = id;
+      // A row cued past it (→) is what the show stands on now: the faded row is no longer the
+      // committed sound, or → AUTO anchored to it and brought it back at full level a row behind
+      // (2026-10-25 hunt) - and viewers were told it still played under the cue.
+      const cur = itemsRef.current[stateRef.current.currentIndex];
+      if (cur && cur.id !== id && committedRef.current.id === id) committedRef.current = { id: null, anchor: null };
+      writeLiveSnapshotRef.current(); // a reload now comes back with its sound over, too
       playingIdRef.current = null;
       setPlayingId(null);
       setAudioPlaying(false);
@@ -3747,10 +3835,10 @@ export function LiveMode({
       setAudioDuration(0);
     });
   }
-  /** GO (and Enter): the row after NOW, as its pad. Twice in a breath is one row, not two. */
+  /** GO (and Enter): the row the GO bar names (goIndex), as its pad. Twice in a breath is one row, not two. */
   function goPad() {
-    const next = stateRef.current.currentIndex + 1;
-    if (next >= itemsRef.current.length) return;
+    const next = goIndexRef.current;
+    if (next < 0 || next >= itemsRef.current.length) return;
     if (Date.now() - padFiredRef.current.at < PAD_SETTLE_MS) return;
     // START by Enter on its focused button and a second Enter: one intention, as Space and N
     if (justStarted()) return;
@@ -3759,7 +3847,16 @@ export function LiveMode({
   /** A tile's fader: the row's level (kept, sent, NOW's element when it is NOW) and its layer's. */
   function setPadLevel(itemId: string, v: number) {
     setVolumeFor(itemId, v);
+    const layer = !!liveLayers.of(itemId);
     withLayers(() => liveLayers.setLevel(itemId, v), false);
+    // a layer's level reaches the viewers' tiles once a drag has moved it - one message per
+    // quarter second, not one a frame (it was never sent at all, 2026-10-25 hunt)
+    if (layer && !padLevelSendRef.current) {
+      padLevelSendRef.current = setTimeout(() => {
+        padLevelSendRef.current = null;
+        bcastPadsRef.current();
+      }, 250);
+    }
   }
   /** A row starts on the row-on-now's element by a road other than its pad - RUN in MANUAL,
    *  Auto, Auto's overlap, a crossfade, a switch to AUTO, the tap that brings the sound back.
@@ -3798,6 +3895,19 @@ export function LiveMode({
     padSounding[l.id] = { elapsed: fileElapsed((now - l.anchor) / 1000, total, loopRow(l.id)), total, fadeAt: l.fadeAt, level: l.level };
   }
   const padMode: PadMode = !state.begun ? "idle" : !isController ? "viewer" : state.mode === "auto" ? "auto" : "manual";
+  // GO's row (Enter's too): a row cued and not started - →, N, a tap on the running order - goes
+  // next, never skipped (GO fired the row after it, 2026-10-25 hunt; MiX16's GO is the cue the
+  // operator picked); otherwise the row after NOW. A row paused on is not "cued": GO goes on.
+  const cuedRow =
+    state.begun &&
+    !state.running &&
+    !!current &&
+    current.id !== playingId &&
+    current.id !== committedRef.current.id &&
+    !padSounding[current.id];
+  const goIndex = cuedRow ? state.currentIndex : state.currentIndex + 1 < items.length ? state.currentIndex + 1 : -1;
+  const goIndexRef = useRef(goIndex);
+  goIndexRef.current = goIndex;
   // STAGE (every device): a row still sounding UNDER the one on now - the one that sounds longest
   let underNow: { index: number; title: string; left: number | null; more: number } | null = null;
   {
@@ -3966,10 +4076,14 @@ export function LiveMode({
       const haveLocalAudio = !!playingId && !!audio && !audio.paused;
       const idx = soundIdx >= 0 ? soundIdx : state.currentIndex;
       const cur = items[idx];
+      // A Loop's file goes round inside its slot: where the FILE is says nothing of how long the
+      // row has run (a 60 s bed 1:30 into a 3:00 slot reads 0:30, and AUTO came in a minute
+      // late) - its own committed clock does (2026-10-25 hunt)
+      const loopByClock = !!cur?.loop_audio && committed.id === cur.id && committed.anchor != null;
       // how far into the sounding item we are
       const offset =
         soundIdx >= 0
-          ? haveLocalAudio
+          ? haveLocalAudio && !loopByClock
             ? audio!.currentTime // resume from the live audio position
             : committed.anchor != null
               ? ((committed.pausedAt ?? Date.now()) - committed.anchor) / 1000 // sounding position (frozen by a pause)
@@ -4029,7 +4143,9 @@ export function LiveMode({
     if (state.begun && it && isSounding) {
       const audio = audioRef.current;
       const haveLocalAudio = it.id === playingId && !!audio;
-      const pos = haveLocalAudio
+      // a Loop's own clock, never its file's (it goes round) - as setMode
+      const loopByClock = !!it.loop_audio && committed.id === it.id && committed.anchor != null;
+      const pos = haveLocalAudio && !loopByClock
         ? audio!.currentTime
         : committed.anchor != null
           ? ((committed.pausedAt ?? Date.now()) - committed.anchor) / 1000
@@ -4133,6 +4249,21 @@ export function LiveMode({
     if (!(remMs > 0)) return;
     // +5 ms: the render then reads the moment as reached, never a hair before it
     const id = setTimeout(() => setNow(Date.now()), remMs + 5);
+    return () => clearTimeout(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.mode, state.running, state.itemStartedAt, state.currentIndex, items, now]);
+
+  // "เข้าใน 5 4 3 2 1" on the beat: each digit at its whole second before the next row comes in
+  // (lib/time.ts clockSeconds), not on whichever 500 ms tick came after it - a digit came up to
+  // half a second late, and two devices on different tick phases read different digits
+  // (2026-10-25 hunt). Every device that shows the count, viewers too; ~6 extra renders a row.
+  useEffect(() => {
+    if (state.mode !== "auto" || !state.running || !state.itemStartedAt) return;
+    if (state.currentIndex >= items.length - 1) return;
+    const rem = runBlock(items, state.currentIndex) - (Date.now() - state.itemStartedAt) / 1000;
+    if (!(rem > 0) || rem > ENTRY_COUNT_SEC + 1) return;
+    const toBeat = rem - Math.floor(rem) || 1; // to the next whole second of `remaining`
+    const id = setTimeout(() => setNow(Date.now()), toBeat * 1000 + 5);
     return () => clearTimeout(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state.mode, state.running, state.itemStartedAt, state.currentIndex, items, now]);
@@ -4271,7 +4402,8 @@ export function LiveMode({
       if (e.repeat) return;
       if (!s.begun) void start();
       else if (!justStarted()) toggleShowRun();
-    } else if (e.key === "ArrowRight" || e.key === "n" || e.key === "N") {
+    } else if (e.key === "ArrowRight" || e.key === "n" || e.key === "N" || e.code === "KeyN") {
+      // N by its place on the keyboard too: with the Thai layout on it gives "ื" (2026-10-25)
       if (s.begun && s.mode === "manual" && s.currentIndex < n - 1) {
         e.preventDefault();
         if (e.repeat || justStarted()) return;
@@ -5173,7 +5305,7 @@ export function LiveMode({
           items={consoleItems}
           index={state.currentIndex}
           elapsed={elapsedItem}
-          remaining={remaining}
+          remaining={shownRemaining}
           zone={zone}
           running={state.running}
           endClock={itemEndClock}
@@ -5208,6 +5340,7 @@ export function LiveMode({
               onPad: padMode === "manual" ? firePad : null,
               onGo: padMode === "manual" ? goPad : null,
               onLevel: padMode === "manual" ? setPadLevel : null,
+              go: goIndex,
             } satisfies PadsView
           }
         />
@@ -5216,7 +5349,7 @@ export function LiveMode({
         <NowCard
           zone={zone}
           blockSec={zoneBlock}
-          remaining={remaining}
+          remaining={shownRemaining}
           elapsed={elapsedItem}
           index={state.currentIndex + 1}
           total={items.length}

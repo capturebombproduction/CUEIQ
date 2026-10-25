@@ -5,7 +5,7 @@ import { Hourglass, Lightbulb, OctagonAlert, SkipForward, Timer } from "lucide-r
 import { cn } from "@/lib/utils";
 import { thresholds, zoneCaption, type LiveZone } from "@/lib/live-zone";
 import { sectionAt } from "@/lib/song-signal";
-import { formatDuration, isSettled } from "@/lib/time";
+import { clockSeconds, formatDuration, isSettled } from "@/lib/time";
 import { Countdown } from "@/components/live/countdown";
 import { KindChip } from "@/components/event/kind";
 import { entryWords, type EntryCue } from "@/lib/live-entry";
@@ -277,11 +277,11 @@ export function NowCard({
   // Never on the overtime plate: it says one thing ("กด NEXT เมื่อพร้อม"), and the count cannot run
   // past zero anyway (Auto has moved on by then).
   const entryInBand = entry !== null && band > 0 && !over;
-  // Where the band does not exist, the caption line carries it: the count always (the zone's
-  // own "เหลือไม่ถึง …" says less than 5 4 3 2 1), the overlap line where the line would only
-  // say "เวลาคงเหลือของรายการ".
-  const entryInCaption =
-    entry !== null && !entryInBand && (entry.count !== null || (zone === "ok" && !section && blockSec > 0));
+  // Where the band does not exist, the caption line carries it, ahead of the zone's own
+  // "เหลือไม่ถึง …" (the colour and the clock say that) and of the section: the count always, the
+  // overlap line all along - it vanished in the last minute, the very time MANUAL's "ไม่เข้าเอง"
+  // is needed, and never showed on a song with sections (2026-10-25 hunt). Not on the plate.
+  const entryInCaption = entry !== null && !entryInBand && !over && (entry.count !== null || blockSec > 0);
   return (
     <section
       data-zone={zone}
@@ -477,7 +477,7 @@ export function NowCard({
           box held far more: at 1440 x 900 the numerals are ~48 mm tall now, ~33 before). Below it
           the width and height fit decide, as they always did. */}
       <div ref={cdCellRef} className="relative mt-2 [@media(orientation:landscape)_and_(max-height:599.98px)_and_(pointer:coarse)]:mt-1 stage:mt-1 stage:grid stage:min-h-0 stage:flex-1 stage:[&_.cd-wrap]:!h-auto stage:[&_.cd-wrap]:[container-type:size] stage:[&_.cd]:![--cd-max:340px] stage:supports-[width:1cqi]:[&_.cd]:![font-size:min(var(--cd-max),calc(100cqi/var(--cd-em,1.84)),calc(100cqb/0.8))] [--cd-col:min(80vw,100vw_-_72px,600px)] [@media(orientation:landscape)_and_(max-height:599.98px)_and_(pointer:coarse)]:[--cd-col:calc(50vw_-_68px)] stage:[--cd-col:calc(100vw_-_760px)] stage:[--cd-h:max(48px,calc(100vh_-_600px))] [@media(orientation:landscape)_and_(max-height:599.98px)_and_(pointer:coarse)]:[&_.cd-wrap]:!h-[96px] [@media(orientation:landscape)_and_(max-height:599.98px)_and_(pointer:coarse)]:[&_.cd]:![--cd-max:120px]">
-        <Countdown seconds={Math.round(remaining)} max={164} />
+        <Countdown seconds={clockSeconds(remaining)} max={164} />
         {/* The entry count in the band under the figures (out of the flow: the figures keep
             every px they had). */}
         {entryInBand && entry && (

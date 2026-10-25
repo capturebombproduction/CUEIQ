@@ -6,16 +6,23 @@ const OVER = { title: "Seishin Kakumei", leadSec: 5 };
 const base = { auto: true, running: true, blockSec: 87, next: NEXT };
 
 describe("entryCue · AUTO counts 5 4 3 2 1 into EVERY next row (พี่ 2026-10-24)", () => {
-  it("counts the last five seconds of the run, on the big countdown's own rounding", () => {
+  // Each digit on its whole second (lib/time.ts clockSeconds, rounded up, the big clock's own
+  // number): "1" is the last second, and the next row comes in on the beat after it. Rounded to
+  // the nearest, "5" came at 5.5 s and "1" at 1.5 s - a press along landed half a second early
+  // (2026-10-25 hunt).
+  it("counts the last five seconds of the run, each digit on its whole second", () => {
     const at = (remaining: number) => entryCue({ ...base, remaining })?.count ?? null;
     expect(at(30)).toBeNull();
-    expect(at(5.6)).toBeNull(); // the clock reads 0:06
-    expect(at(5.4)).toBe(5); // the clock reads 0:05
-    expect(at(4.4)).toBe(4);
+    expect(at(5.4)).toBeNull(); // the clock reads 0:06
+    expect(at(5.0000000001)).toBe(5); // a float a hair over is that second
+    expect(at(5)).toBe(5); // the clock reads 0:05
+    expect(at(4.4)).toBe(5);
+    expect(at(4)).toBe(4);
     expect(at(3)).toBe(3);
-    expect(at(2.2)).toBe(2);
-    expect(at(1.2)).toBe(1);
-    // the last half second: the clock reads 0:00, the next row has not come in yet
+    expect(at(2.2)).toBe(3);
+    expect(at(1.2)).toBe(2);
+    expect(at(1)).toBe(1);
+    // the last second: the clock reads 0:01 until the next row comes in
     expect(at(0.3)).toBe(1);
     // Auto takes the next row at 0 - nothing past it
     expect(at(0)).toBeNull();

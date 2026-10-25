@@ -47,6 +47,9 @@ export interface PadsView {
   onPad: ((index: number) => void) | null;
   onGo: (() => void) | null;
   onLevel: ((itemId: string, level: number) => void) | null;
+  /** the row GO fires, Live's choice: a row cued and not started yet, else the row after NOW;
+   *  -1 none. Absent: the row after NOW. */
+  go?: number;
 }
 
 const IDLE: PadsView = {
@@ -97,7 +100,8 @@ export const SetMixer = memo(function SetMixer({
 }) {
   const p = pads ?? IDLE;
   const live = p.mode === "manual" && !!p.onPad;
-  const goIndex = index + 1 < items.length ? index + 1 : -1;
+  const goAt = p.go ?? index + 1;
+  const goIndex = goAt >= 0 && goAt < items.length ? goAt : -1;
   const go = goIndex >= 0 ? items[goIndex] : null;
   const sounding = soundingCount(p.sounding);
 
@@ -106,15 +110,21 @@ export const SetMixer = memo(function SetMixer({
   // show instead. Not while typing, not with a modifier, and only while GO is on screen (the
   // SET MIXER tab open, the panel not stepped aside on a short stage). A held key is one GO:
   // the browser's default goes on every repeat, the press happens once.
+  // On the device running the show the key is taken even when GO cannot fire (NOW is the last
+  // row, AUTO, a held key's repeats): left to the browser, Enter clicked whatever had the focus -
+  // the final song's own pad faded it out, the dock's RUN paused the show (2026-10-25 hunt).
+  const rootRef = useRef<HTMLDivElement>(null);
   const goRef = useRef<HTMLButtonElement>(null);
   const onGoRef = useRef<(() => void) | null>(null);
   onGoRef.current = live ? p.onGo : null;
+  const modeRef = useRef<PadMode>(p.mode);
+  modeRef.current = p.mode;
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Enter" || e.ctrlKey || e.metaKey || e.altKey) return;
-      const fire = onGoRef.current;
-      const btn = goRef.current;
-      if (!fire || !btn || btn.disabled || !shown(btn)) return;
+      if (modeRef.current !== "manual" && modeRef.current !== "auto") return;
+      const root = rootRef.current;
+      if (!root || !shown(root)) return;
       const t = e.target as HTMLElement | null;
       const tag = t?.tagName;
       if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || t?.isContentEditable) return;
@@ -123,29 +133,37 @@ export const SetMixer = memo(function SetMixer({
       if (t?.closest?.('[role="dialog"]')) return;
       e.preventDefault();
       if (e.repeat) return;
+      const fire = onGoRef.current;
+      const btn = goRef.current;
+      if (!fire || !btn || btn.disabled) return;
       fire();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
-  // NOW stays in view when the setlist is wider than the panel
+  // NOW stays in view when the setlist is wider than the panel - and the row after it, which
+  // carries AUTO's 5 4 3 2 1 and GO's tag: scrolled flush to NOW's right edge it sat off screen
+  // (2026-10-25 hunt). Never at NOW's cost on a panel narrower than the two.
   const rowRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const row = rowRef.current;
     const tile = row?.children[index] as HTMLElement | undefined;
     if (!row || !tile) return;
+    const after = (row.children[index + 1] as HTMLElement | undefined) ?? tile;
     const left = tile.offsetLeft;
-    const right = left + tile.offsetWidth;
+    const right = after.offsetLeft + after.offsetWidth;
     if (left < row.scrollLeft) row.scrollLeft = Math.max(0, left - 4);
-    else if (right > row.scrollLeft + row.clientWidth) row.scrollLeft = right - row.clientWidth + 4;
+    else if (right > row.scrollLeft + row.clientWidth) row.scrollLeft = Math.min(left - 4, right - row.clientWidth + 4);
   }, [index, items.length]);
 
   return (
     // a size container: on a short stage the tiles give up their time line first (the pad shows
     // what is left), then their title (the tile's tooltip still has it) - never the pad
-    <div className="flex min-h-0 flex-1 flex-col gap-1.5 px-2 pb-1.5 pt-1.5 [container-type:size]">
-      <div ref={rowRef} className="relative flex min-h-0 flex-1 gap-[3px] overflow-x-auto">
+    <div ref={rootRef} className="flex min-h-0 flex-1 flex-col gap-1.5 px-2 pb-1.5 pt-1.5 [container-type:size]">
+      {/* short of room the fader gives way, never the pad: the row does not scroll up and down,
+          and a thin bar is all a long setlist's sideways scroll takes (2026-10-25 hunt) */}
+      <div ref={rowRef} className="relative flex min-h-0 flex-1 gap-[3px] overflow-x-auto overflow-y-hidden [scrollbar-width:thin]">
         {items.map((it, i) => {
           const sound = p.sounding[it.id];
           const state = padState(sound, p.played.has(it.id));
@@ -181,7 +199,7 @@ export const SetMixer = memo(function SetMixer({
                   </span>
                 ) : null}
               </div>
-              <div className="flex min-h-[18px] flex-1 gap-1">
+              <div className="flex min-h-0 flex-1 gap-1">
                 <TileFader
                   value={Math.round(level)}
                   tick={trimTick(trim)}
@@ -299,11 +317,19 @@ function TileFader({
 }) {
   const railRef = useRef<HTMLDivElement>(null);
   const CAP = 8;
-  const fromY = (clientY: number) => {
+  // A press never moves the level, a drag does - from where it was, by how far the finger went.
+  // Pressed where it landed, the cap jumped: 3 px under its middle took NOW from 100 to 73 at
+  // once, and a slightly high tap on a pad set its row to ~0 (2026-10-25 hunt).
+  const dragRef = useRef<{ y: number; from: number; moved: boolean } | null>(null);
+  const DEAD_PX = 3;
+  const dragTo = (clientY: number): number | null => {
+    const d = dragRef.current;
     const r = railRef.current?.getBoundingClientRect();
-    if (!r || r.height <= CAP) return value;
-    const pos = 1 - (clientY - r.top - CAP / 2) / (r.height - CAP);
-    return Math.round(Math.min(1, Math.max(0, pos)) * 100);
+    if (!d || !r || r.height <= CAP) return null;
+    const dy = clientY - d.y;
+    if (!d.moved && Math.abs(dy) < DEAD_PX) return null;
+    d.moved = true;
+    return Math.round(Math.min(100, Math.max(0, d.from - (dy / (r.height - CAP)) * 100)));
   };
   return (
     <div
@@ -322,13 +348,18 @@ function TileFader({
       onPointerDown={(e) => {
         if (!onChange) return;
         e.currentTarget.setPointerCapture?.(e.pointerId);
-        const v = fromY(e.clientY);
-        if (v !== value) onChange(v);
+        dragRef.current = { y: e.clientY, from: value, moved: false };
       }}
       onPointerMove={(e) => {
         if (!onChange || !e.currentTarget.hasPointerCapture?.(e.pointerId)) return;
-        const v = fromY(e.clientY);
-        if (v !== value) onChange(v);
+        const v = dragTo(e.clientY);
+        if (v != null && v !== value) onChange(v);
+      }}
+      onPointerUp={() => {
+        dragRef.current = null;
+      }}
+      onPointerCancel={() => {
+        dragRef.current = null;
       }}
       onKeyDown={(e) => {
         if (!onChange) return;
@@ -341,8 +372,9 @@ function TileFader({
         if (v !== value) onChange(v);
       }}
       className={cn(
-        "relative w-[18px] shrink-0 touch-none outline-none focus-visible:ring-1 focus-visible:ring-ring",
-        onChange ? "cursor-ns-resize" : "cursor-default"
+        "relative w-[18px] shrink-0 outline-none focus-visible:ring-1 focus-visible:ring-ring",
+        // only a fader that moves takes the touch: a read-only one lets a swipe scroll the tiles
+        onChange ? "cursor-ns-resize touch-none" : "cursor-default"
       )}
     >
       <span aria-hidden className="absolute bottom-1 left-[7px] top-1 w-1 rounded-[2px] bg-foreground/20" />

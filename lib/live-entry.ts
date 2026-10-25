@@ -9,6 +9,8 @@
 // static line all along - "<next> เข้าซ้อน 5 วิ" - and in MANUAL that line says Manual never
 // brings it in by itself. Display only: nothing here touches the clock or the audio.
 
+import { clockSeconds } from "@/lib/time";
+
 /** How many seconds the count runs before the next row comes in. */
 export const ENTRY_COUNT_SEC = 5;
 
@@ -25,9 +27,9 @@ export interface EntryCue {
 
 /**
  * What the NOW card says about the next row, or null for nothing.
- * The count follows the big countdown's own rounding (it shows Math.round(remaining)), so the
- * amber digit and the clock's seconds read the same; "1" holds through the last half second,
- * when the clock already reads 0:00, until the next row comes in.
+ * The count is the big countdown's own number (lib/time.ts clockSeconds, rounded up), so the
+ * amber digit and the clock's seconds read the same, each digit lands on its whole second, and
+ * the next row comes in on the beat after "1" (Live wakes its clock on those seconds).
  */
 export function entryCue({
   auto,
@@ -55,8 +57,8 @@ export function entryCue({
     blockSec > 0 &&
     Number.isFinite(remaining) &&
     remaining > 0 &&
-    Math.round(remaining) <= ENTRY_COUNT_SEC;
-  const count = counting ? Math.max(1, Math.round(remaining)) : null;
+    clockSeconds(remaining) <= ENTRY_COUNT_SEC;
+  const count = counting ? Math.max(1, clockSeconds(remaining)) : null;
   // the static line is for a row the next one comes in over; any other row says nothing
   // until its count
   if (count === null && leadSec === 0) return null;

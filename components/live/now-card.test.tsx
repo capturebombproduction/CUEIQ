@@ -873,19 +873,28 @@ describe("NowCard · the next row's way in: เข้าใน 5 4 3 2 1 (lib/li
     expect(within(over.el).getByTestId("now-entry").textContent).toBe("Seishin Kakumeiเข้าซ้อนใน3");
   });
 
-  it("the overlap line takes the caption only where it would say nothing else; Manual says it never comes in itself", () => {
+  // The spec says "all along" (พี่ 2026-10-24): the line used to give way to WARN's "เหลือไม่ถึง …"
+  // and to the practice room's sections - in the last minute, the very time MANUAL's "ไม่เข้าเอง"
+  // is needed, and never at all on a song with sections (2026-10-25 hunt).
+  it("the overlap line takes the caption all along, ahead of the zone's words and the sections; Manual says it never comes in itself", () => {
     const ok = card("ok", { entry: OVERLAP });
     expect(within(ok.el).getByTestId("now-entry").textContent).toBe("Seishin Kakumeiเข้าซ้อน 5 วิ");
     ok.unmount();
-    // WARN keeps its "เหลือไม่ถึง …" until the count
-    const warn = card("warn", { entry: OVERLAP });
-    expect(within(warn.el).queryByTestId("now-entry")).toBeNull();
-    expect(warn.el.textContent).toContain("เหลือไม่ถึง");
-    warn.unmount();
-    // the practice room's sections keep the line under a song
+    for (const z of ["warn", "urgent"] as const) {
+      const c = card(z, { entry: { ...OVERLAP, manual: true } });
+      expect(within(c.el).getByTestId("now-entry").textContent).toContain("MANUAL ไม่เข้าเอง");
+      c.unmount();
+    }
     const sec = card("ok", { entry: OVERLAP, sections: [{ label: "INTRO", at: 0 }, { label: "VERSE", at: 50 }] });
-    expect(within(sec.el).queryByTestId("now-entry")).toBeNull();
+    expect(within(sec.el).getByTestId("now-entry").textContent).toContain("เข้าซ้อน");
     sec.unmount();
+    // a row with no overlap keeps its sections and its zone words
+    const plainSec = card("ok", { sections: [{ label: "INTRO", at: 0 }, { label: "VERSE", at: 50 }] });
+    expect(within(plainSec.el).getByTestId("now-section")).toBeTruthy();
+    plainSec.unmount();
+    const plainWarn = card("warn");
+    expect(plainWarn.el.textContent).toContain("เหลือไม่ถึง");
+    plainWarn.unmount();
     const manual = card("ok", { entry: { ...OVERLAP, manual: true } });
     expect(within(manual.el).getByTestId("now-entry").textContent).toContain("MANUAL ไม่เข้าเอง");
     manual.unmount();
