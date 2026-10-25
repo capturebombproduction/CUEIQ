@@ -2987,6 +2987,9 @@ export function LiveMode({
     } else {
       // RUN — go live with the current item: play its audio + run its countdown
       const offset = state.itemElapsedAtPause ?? 0;
+      // it sounds again (NOW's own pad may have faded it): no longer "ended", before the state
+      // goes out - its viewers light its pad (as the switch to AUTO does)
+      if (cur && audio && audioUrls[cur.id]) endedItemRef.current = null;
       apply({
         ...state,
         running: true,
@@ -3617,6 +3620,21 @@ export function LiveMode({
     const total = Number.isFinite(el.duration) && el.duration > 0 ? el.duration : lenOfItem(itemId);
     return liveLayers.add({ el, itemId, anchor: Date.now() - el.currentTime * 1000, total, firedAt, level: el.volume * 100 });
   }
+  /** NOW's element goes under a pad's new row. A key's fade rides the primary only (fadeVolumeFor),
+   *  so Auto Mute half way down would stop there and the song play on at that level under the
+   *  next one: it goes on down as a layer, in Auto Mute's own 3 s. Muted all the way (Auto Mute
+   *  ran it to 0 and it runs on, silent) it is nothing to hear: it stops, and takes no pad and no
+   *  room. MC / LOUD half way: the layer keeps where it got to, as any level it went under at. */
+  function goUnder(el: HTMLAudioElement, itemId: string, firedAt: number): Layer | null {
+    if (!volumeIsDeadRef.current && el.volume <= 0.001) {
+      if (!el.paused) el.pause();
+      return null;
+    }
+    const l = underLayer(el, itemId, firedAt);
+    const key = fadeTargetRef.current;
+    if (key?.itemId === itemId && key.target <= 0) liveLayers.fadeOut(l);
+    return l;
+  }
   /** The spare left sounding by Auto's overlap or a crossfade goes under too, by its name - never
    *  a layer AND the spare at once: Auto would start its next row over it. */
   function adoptTail() {
@@ -3668,7 +3686,7 @@ export function LiveMode({
       // top, so they stop - one row never plays in two places of its song (as rowTakesPrimary)
       for (const l of [...liveLayers.list()]) if (l.itemId === it.id) liveLayers.stop(l);
       // what sounds goes under the new row and plays on to its own end
-      if (nowSounding && nowId) underLayer(primary, nowId, fired.id === nowId ? fired.at : 0);
+      if (nowSounding && nowId) goUnder(primary, nowId, fired.id === nowId ? fired.at : 0);
       if (url) {
         // a loop bed never goes round under the next song: it fades out (as Auto's end-fade takes it)
         for (const l of [...liveLayers.list()]) if (loopRow(l.itemId)) liveLayers.fadeOut(l);
@@ -3714,12 +3732,12 @@ export function LiveMode({
     if (!primary || !id) return;
     const fired = padFiredRef.current;
     withLayers(() => {
-      const l = underLayer(primary, id, fired.id === id ? fired.at : 0);
+      const l = goUnder(primary, id, fired.id === id ? fired.at : 0);
       const stand = freePlayer([primary]);
       audioRef.current = stand;
       if (audioRef2.current === stand) audioRef2.current = freePlayer([stand]);
       primeElement(audioRef2.current);
-      liveLayers.fadeOut(l);
+      if (l) liveLayers.fadeOut(l);
       // its sound is over, not lost: no "แตะเพื่อเล่นเสียงต่อ" over it, and its viewers see it go grey
       endedItemRef.current = id;
       playingIdRef.current = null;
@@ -3734,6 +3752,8 @@ export function LiveMode({
     const next = stateRef.current.currentIndex + 1;
     if (next >= itemsRef.current.length) return;
     if (Date.now() - padFiredRef.current.at < PAD_SETTLE_MS) return;
+    // START by Enter on its focused button and a second Enter: one intention, as Space and N
+    if (justStarted()) return;
     firePad(next);
   }
   /** A tile's fader: the row's level (kept, sent, NOW's element when it is NOW) and its layer's. */
@@ -4538,8 +4558,12 @@ export function LiveMode({
   // show); it closes itself when the show ends, resets, or moves to another row (askEnd,
   // declared beside showEnded: no hook may sit below the early returns).
   function autoMute() {
-    // every pad sounding under NOW fades with it (Auto Mute is how a show ends)
-    withLayers(() => liveLayers.fadeAll(PAD_FADE_MS));
+    // every pad sounding under NOW fades with it (Auto Mute is how a show ends) - and the last
+    // seconds Auto's overlap or a crossfade left on the spare, which no key reached before
+    withLayers(() => {
+      adoptTail();
+      liveLayers.fadeAll(PAD_FADE_MS);
+    });
     fadeKey(0, 3000);
     if (stateRef.current.begun && isControllerRef.current && canEdit && !showEndedRef.current) setAskEnd(true);
   }

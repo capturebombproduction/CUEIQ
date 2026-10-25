@@ -5547,6 +5547,87 @@ describe("LiveMode · SET MIXER pads", () => {
     expect(media.state(bed).paused).toBe(true);
   });
 
+  // Argon's review (2026-10-25), each one checked against the code before it was believed:
+  it("a pad pressed while Auto Mute takes NOW down: that song goes on down under the new one, it never plays on half way", async () => {
+    const media = await startPads();
+    const first = media.first()!;
+    await tick(2_000);
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Mute" }));
+    });
+    await tick(1_000); // a third of the way down
+    expect(media.state(first).volume).toBeGreaterThan(0.01);
+    await press(3);
+    expect(pad(1)).toHaveAttribute("data-state", "fade");
+    await tick(3_250);
+    expect(media.state(first).paused).toBe(true);
+    expect(playing(media, "item-3")).toHaveLength(1);
+  });
+
+  it("a pad pressed after Auto Mute ran NOW all the way down: the silent song stops - it takes no pad and no room", async () => {
+    const media = await startPads();
+    const first = media.first()!;
+    await tick(2_000);
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Mute" }));
+    });
+    await tick(3_250);
+    expect(media.state(first).volume).toBeCloseTo(0);
+    expect(media.state(first).paused).toBe(false); // muted, still running - as before the pads
+    await press(3);
+    expect(media.state(first).paused).toBe(true);
+    expect(pad(1)).toHaveAttribute("data-state", "played");
+    expect(screen.getByTestId("console-pads-sounding").textContent).toContain("1");
+    expect(last().pads.layers).toEqual([]);
+  });
+
+  it("Auto Mute takes down Auto's overlap tail too - every sound the show makes", async () => {
+    const set = [
+      makeItem(1, { duration_seconds: 10 }),
+      makeItem(2, { duration_seconds: 60, buffer_before_seconds: -5 }),
+      makeItem(3, { duration_seconds: 60 }),
+    ];
+    const media = await startPads(set);
+    const first = media.first()!;
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /^Auto$/ }));
+    });
+    await tick(5_250); // Track 2 comes in over Track 1's last 5 s
+    expect(playing(media, "item-1")).toEqual([first]);
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Mute" }));
+    });
+    await tick(3_250);
+    expect(media.state(first).paused).toBe(true);
+  });
+
+  it("NOW's own pad faded it, then Pause → RUN brings it back: viewers are told it sounds again", async () => {
+    await startPads();
+    await tick(1_000);
+    await press(3);
+    await tick(1_000);
+    await press(3); // NOW's own green pad: it fades, the row's clock runs on
+    await tick(3_250);
+    expect(last().pads.ended).toBe("item-3");
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("run-toggle")); // Pause
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("run-toggle")); // RUN
+    });
+    expect(last()).toMatchObject({ currentIndex: 2, running: true });
+    expect(last().pads.ended).toBeNull();
+  });
+
+  it("Enter in the breath after START is not GO (as Space and N are not)", async () => {
+    await startPads();
+    pressKey(window, { key: "Enter", code: "Enter" });
+    expect(last().currentIndex).toBe(0);
+    await tick(1_000);
+    pressKey(window, { key: "Enter", code: "Enter" });
+    expect(last().currentIndex).toBe(1);
+  });
+
   it("Enter on a button of the จบการแสดงเลยไหม question is that button - never GO", async () => {
     await startPads();
     await tick(1_000);
