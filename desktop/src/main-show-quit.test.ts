@@ -76,3 +76,25 @@ describe("main.cjs — the 'unresponsive' box never freezes a show", () => {
     expect(h).not.toMatch(/dialog\s*\.showMessageBox\(/);
   });
 });
+
+// ตาที่ 3 (2026-10-26): the show's reason and power blocker die WITH a crashed, wedged or
+// reloading renderer, so a quit made then (the window closed on a hung page, or during the
+// reload after a crash) still installed. `showUnended` remembers the show until the
+// renderer itself lets go of it, and the last window's close holds the install for it.
+describe("main.cjs — a show that never ended holds the installer on the last window's close", () => {
+  it("is set when a show runs and cleared only by the renderer letting go", () => {
+    expect(main).toContain("if (running) showUnended = true;");
+    expect(main).toContain('if (reason === "show") showUnended = true;');
+    expect(main).toContain("else if (reason === null) showUnended = false;");
+  });
+
+  it("window-all-closed holds the install BEFORE the quit it triggers", () => {
+    const at = main.indexOf('app.on("window-all-closed"');
+    expect(at).toBeGreaterThan(-1);
+    const body = main.slice(at, at + 400);
+    const hold = body.indexOf('if (showUnended || updateBusyReason() === "show") holdInstallForShowQuit();');
+    expect(hold).toBeGreaterThan(-1);
+    expect(hold).toBeLessThan(body.indexOf("app.quit()"));
+    expect(hold).toBeLessThan(body.indexOf("stopShowPowerSaveBlocker()"));
+  });
+});

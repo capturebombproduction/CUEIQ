@@ -13,6 +13,7 @@ import { toast } from "sonner";
 import { createClient } from "@/lib/supabase/client";
 import {
   CHILD_TABLES,
+  fingerprintChildRows,
   CHILD_WRITE_COLUMNS,
   childFlushDecision,
   eventPatchApplied,
@@ -265,8 +266,15 @@ export async function enqueueMgmtOp(op: NewMgmtOp): Promise<void> {
  * holds the rev that was applied. A coalescing put that landed since (another
  * window/instance sharing this IndexedDB) bumps `rev` — that merged, never-applied
  * edit must stay queued, not be silently destroyed.
+ *
+ * …and when that merged edit is a child-list snapshot, its base moves onto what this
+ * flush just wrote (`applied`). The planner keeps an op's ORIGINAL base on a merge, so
+ * an edit made while its own earlier snapshot was being written kept the pre-flush base,
+ * and the next flush - finding this device's own rows on the server - parked it as
+ * "เวอร์ชันออนไลน์ถูกแก้ไขใหม่กว่า" (2026-10-26, ตาที่ 3; the 30 s re-arm and the
+ * queue-behind path both made that window common).
  */
-function deleteOpIfRevMatches(key: number, rev: number): Promise<void> {
+function deleteOpIfRevMatches(key: number, rev: number, applied?: NewMgmtOp | null): Promise<void> {
   return openDB().then(
     (db) =>
       new Promise((resolve) => {
@@ -275,7 +283,23 @@ function deleteOpIfRevMatches(key: number, rev: number): Promise<void> {
         const get = store.get(key);
         get.onsuccess = () => {
           const rec = get.result as OpRec | undefined;
-          if (rec && (rec.rev ?? 0) === rev) store.delete(key);
+          if (!rec) return;
+          if ((rec.rev ?? 0) === rev) {
+            store.delete(key);
+            return;
+          }
+          if (
+            applied &&
+            isChildListOp(applied) &&
+            isChildListOp(rec.op) &&
+            rec.op.kind === applied.kind &&
+            rec.op.id === applied.id
+          ) {
+            store.put(
+              { ...rec, op: { ...rec.op, base: fingerprintChildRows(applied.kind, applied.rows) } },
+              key
+            );
+          }
         };
         tx.oncomplete = () => {
           db.close();
@@ -1013,7 +1037,7 @@ async function doFlush(): Promise<FlushResult> {
     } else {
       flushed++;
     }
-    await deleteOpIfRevMatches(key, rec.rev ?? 0);
+    await deleteOpIfRevMatches(key, rec.rev ?? 0, outcome === "applied" ? rec.op : null);
   }
   if (flushed || parked) notify();
   return { flushed, parked, remaining: mine.length - flushed - parked };

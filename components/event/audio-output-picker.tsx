@@ -21,6 +21,14 @@ export function loadAudioSink(): string {
   }
 }
 
+function loadWantedSink(): string {
+  try {
+    return localStorage.getItem(WANTED_SINK_KEY) ?? "";
+  } catch {
+    return "";
+  }
+}
+
 function saveWantedSink(id: string) {
   try {
     if (id) localStorage.setItem(WANTED_SINK_KEY, id);
@@ -91,7 +99,10 @@ export function AudioOutputPicker({
   // here, so the show goes BACK to the interface when it is plugged in again - it
   // used to be forgotten: a re-seated USB cable left the rest of the show (and the
   // next one) on the laptop speaker, under a DEVICE LOST alarm re-plugging never cleared.
-  const wantedRef = useRef(value);
+  // Seeded from storage too: a picker mounted while the show is already on the fallback
+  // (the tools panel reopened with the cable still out) knew nothing to go back to
+  // (2026-10-26, ตาที่ 3).
+  const wantedRef = useRef(value || loadWantedSink());
   useEffect(() => {
     if (value) wantedRef.current = value;
   }, [value]);

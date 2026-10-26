@@ -341,10 +341,15 @@ function registerIpc() {
   // Renderer tells us when a show starts/ends running; see the SPA's live paths.
   ipcMain.handle("cueiq:set-show-running", (e, running) => {
     setShowThrottling(e.sender, running);
+    if (running) showUnended = true; // see holdInstallForShowQuit
     return running ? startShowPowerSaveBlocker() : stopShowPowerSaveBlocker();
   });
   ipcMain.handle("cueiq:set-unload-reason", (_e, reason) => {
     unloadReason = reason === "show" || reason === "unsaved" ? reason : null;
+    // A show the renderer itself let go of (Live / Quick Show unmounted, จบโชว์): over.
+    // A crash, a hang or a reload never sends this - that is the point of showUnended.
+    if (reason === "show") showUnended = true;
+    else if (reason === null) showUnended = false;
   });
   // the header update chip (desktop/src/components/update-chip.tsx); see checkForUpdates
   ipcMain.handle("cueiq:update-get", () => updateState);
@@ -474,6 +479,13 @@ function updateBusyReason() {
  * flipping it right before the quit is enough. Windows only (winUpdater is null elsewhere).
  */
 let installHeldForShowQuit = false;
+/** A show started and nothing has said it ended - only the renderer's own "not a show any
+ *  more" (set-unload-reason null) clears it. updateBusyReason() alone forgets a show the
+ *  moment its renderer crashes, hangs or reloads (the reason and the power blocker go with
+ *  the document), so a quit made then - the window closed on a wedged page, or during the
+ *  reload after a crash - still ran the installer (2026-10-26, ตาที่ 3). Read by
+ *  window-all-closed. */
+let showUnended = false;
 function holdInstallForShowQuit() {
   if (!winUpdater) return;
   winUpdater.autoInstallOnAppQuit = false;
@@ -2842,6 +2854,8 @@ app.whenReady().then(() => {
 });
 
 app.on("window-all-closed", () => {
+  // the last window of a show that never ended: this quit is the operator's way back in
+  if (showUnended || updateBusyReason() === "show") holdInstallForShowQuit();
   stopShowPowerSaveBlocker(); // no window left to run a show from
   if (process.platform !== "darwin") app.quit();
 });

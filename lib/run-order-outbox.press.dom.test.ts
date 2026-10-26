@@ -210,3 +210,54 @@ describe("groupRunSeqPresses", () => {
     expect(units[0].map((o) => o.rowId)).toEqual(["A", "B"]);
   });
 });
+
+// ตาที่ 3 (2026-10-26). Two ways a press could still land half.
+describe("the run-order queue: presses that grew while the queue was being read", () => {
+  const op = (rowId: string, presses: string[], over: Partial<RunSeqOp> = {}): RunSeqOp => ({
+    rowId,
+    festival: "F",
+    patch: {},
+    expect: {},
+    label: rowId,
+    queuedAt: 1,
+    presses,
+    ...over,
+  });
+
+  it("every ended row goes first, even when the started row's record is older", () => {
+    // B was drained by an older ดึง buffer (queuedAt 1) and then started by "จบ + ต่อไป"
+    // (p2), which also ended A (queuedAt 2). B used to replay first: two acts live.
+    const units = groupRunSeqPresses([
+      op("B", ["p1", "p2"], { queuedAt: 1, patch: { status: "live", buffer_seconds: 0 } }),
+      op("A", ["p2"], { queuedAt: 2, patch: { status: "done" } }),
+    ]);
+    expect(units[0].map((o) => o.rowId)).toEqual(["A", "B"]);
+  });
+
+  it("a press made during the flush that extends a unit waits for the next flush - never half", async () => {
+    useServer([{ ...pending("A", 1), status: "live", actual_start: T0, offset_min: 0 }, pending("B", 2)]);
+    // A's drift (p1) is all the queue holds when the flush reads it…
+    await enqueueRunSeq({ ...base, queuedAt: 1, presses: ["p1"], rowId: "A", label: "A", patch: { offset_min: 5 }, expect: { status: "live" } });
+    const supa = h.supa as ReturnType<typeof makeSupabaseFake>;
+    // …and "จบ + ต่อไป" (p2: A done, B live) is pressed while the flush checks the session
+    const getSession = supa.auth.getSession.getMockImplementation()!;
+    let pressed = false;
+    supa.auth.getSession.mockImplementation(async () => {
+      if (!pressed) {
+        pressed = true;
+        await enqueueRunSeq({ ...base, queuedAt: 2, presses: ["p2"], rowId: "A", label: "A", patch: { status: "done", actual_end: TX }, expect: { status: "live" } });
+        await enqueueRunSeq({ ...base, queuedAt: 2, presses: ["p2"], rowId: "B", label: "B", patch: { status: "live", actual_start: TX }, expect: { status: "pending" } });
+      }
+      return getSession();
+    });
+
+    await flushRunSeqOutbox();
+    // A alone used to land here (done) with B still pending: half of p2
+    expect(supa.callsTo("run_sequence", "update")).toHaveLength(0);
+    expect(live()).toEqual(["A"]);
+
+    await flushRunSeqOutbox(); // the next flush groups p1+p2 whole
+    expect(live()).toEqual(["B"]);
+    expect(server.find((r) => r.id === "A")!.status).toBe("done");
+  });
+});

@@ -195,9 +195,13 @@ export function mergeOp(prev: RunSeqOp | undefined, next: RunSeqOp): RunSeqOp {
  * start was built on B's, which was built on A's end. An op with no press ids (an
  * older record) is a unit of its own.
  *
- * Inside a unit: oldest press first, and a row being ENDED before a row being
- * started - a unit cut short by the network then leaves the board with no act live
- * for a moment rather than two.
+ * Inside a unit: every row being ENDED first, then the rest, oldest press first - a
+ * unit cut short by the network then leaves the board with no act live for a moment
+ * rather than two. Ending first, not oldest first: a merged op keeps its FIRST press's
+ * queuedAt, so a row drained by an older ดึง buffer and started by a later "จบ + ต่อไป"
+ * sorted before the act that press ended - and went live while it was still live
+ * (2026-10-26, ตาที่ 3). Each row is its own compare-and-swap, so the order between
+ * rows never changes what lands, only what a cut leaves behind.
  */
 export function groupRunSeqPresses(ops: RunSeqOp[]): RunSeqOp[][] {
   const parent = ops.map((_, i) => i);
@@ -228,7 +232,7 @@ export function groupRunSeqPresses(ops: RunSeqOp[]): RunSeqOp[][] {
     idx
       .sort(
         (a, b) =>
-          ops[a].queuedAt - ops[b].queuedAt || ending(ops[a]) - ending(ops[b]) || a - b
+          ending(ops[a]) - ending(ops[b]) || ops[a].queuedAt - ops[b].queuedAt || a - b
       )
       .map((i) => ops[i])
   );
@@ -923,6 +927,13 @@ async function doFlush(): Promise<RunSeqFlushResult> {
   for (const unit of groupRunSeqPresses(queue)) {
     const members = unit.filter((o) => !o.conflict);
     if (members.length === 0) continue;
+    // The units were cut from the queue as it stood when this flush began. A press made
+    // since may have merged into one of these rows AND written rows outside the unit
+    // ("จบ + ต่อไป" on a row that only held a drift): replaying this unit now would land
+    // that press's first half alone. Leave it for the next flush, which groups it whole.
+    const known = new Set(unit.flatMap((o) => o.presses ?? []));
+    const fresh = await Promise.all(members.map((m) => getRunSeqOp(m.rowId)));
+    if (fresh.some((o) => (o?.presses ?? []).some((p) => !known.has(p)))) continue;
     // A press these were built on has already parked: replaying them now is exactly
     // the half-a-press this grouping exists to stop.
     if (members.length < unit.length) {

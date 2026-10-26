@@ -283,9 +283,10 @@ export function EventLiveCaller({
   // moves looks identical to one that is in sync — and at a festival that is the
   // difference between "we are fine" and "nobody downstream knows we ran late".
   const [queued, setQueued] = useState<RunSeqOp[]>([]);
-  // The queue's length as last read here (refetch() re-reads it too) - a read that
-  // finds it SHORTER means presses landed or parked since.
+  // How many presses were still WAITING (un-parked) at the last read here (refetch()
+  // re-reads it too) - a read that finds fewer means presses landed or parked since.
   const queueCountRef = useRef(-1);
+  const waitingCount = (ops: RunSeqOp[]) => ops.filter((o) => !o.conflict).length;
   useEffect(() => {
     let alive = true;
     const refresh = () => {
@@ -299,8 +300,12 @@ export function EventLiveCaller({
         // before deciding. Safe now that the overlay re-applies anything still
         // queued — before it, this refetch is exactly what would have wiped the
         // operator's own presses off the screen.
-        const shrank = queueCountRef.current >= 0 && ops.length < queueCountRef.current;
-        queueCountRef.current = ops.length;
+        // un-parked presses only: a press that PARKS stays in the store (conflict: true), so
+        // counting every record never saw it leave the overlay - the board kept showing
+        // it as if it had landed (2026-10-26, ตาที่ 3)
+        const n = waitingCount(ops);
+        const shrank = queueCountRef.current >= 0 && n < queueCountRef.current;
+        queueCountRef.current = n;
         if (shrank) refetchRef.current();
       });
     };
@@ -470,6 +475,14 @@ export function EventLiveCaller({
     }
     const seq = ++refetchSeqRef.current;
     missedRefetchRef.current = false;
+    // The queue is read BEFORE the rows (see the note at setQueued below for why it is
+    // read at all). Read after them, a flush landing between the two reads left rows
+    // from BEFORE it with a queue from AFTER it: the landed press was neither on the
+    // rows nor laid over them, the board showed the act it had already ended as NOW,
+    // and the shrink the flush announced was swallowed (queueCountRef already said 0) -
+    // no re-read came (2026-10-26, ตาที่ 3). Queue first: a press still queued is laid
+    // over rows that may already hold it (same values), never missing from both.
+    const ops = await listRunSeqOps();
     let q = supabase
       .from("run_sequence")
       .select("*")
@@ -500,13 +513,8 @@ export function EventLiveCaller({
     // back on stage once the show moved on, and the next press built on that board
     // put a second act live (2026-10-26). A refetch is when the board takes the
     // server's word, so the queue's word is taken in the same breath.
-    const ops = await listRunSeqOps();
-    if (seq !== refetchSeqRef.current) {
-      missedRefetchRef.current = true;
-      return "deferred";
-    }
     setQueued(ops);
-    queueCountRef.current = ops.length;
+    queueCountRef.current = waitingCount(ops);
     setRows(data as RunSeqLive[]);
     serverHolds(data as RunSeqLive[]);
     return "applied";
