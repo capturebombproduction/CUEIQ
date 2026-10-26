@@ -685,8 +685,10 @@ export function SongLibrary({
       if (
         // โน้ต is in the haystack because it's now shown on the row: an Ar who
         // typed "คีย์ต่ำลง 2" there must be able to find that song by it.
+        // Both file names: the row prints the one it plays now (shownFileName), and
+        // the name it was created with still finds it.
         needle &&
-        ![s.title, s.category, s.file_name, s.notes]
+        ![s.title, s.category, s.audio_name, s.file_name, s.notes]
           .filter(Boolean)
           .some((x) => (x as string).toLowerCase().includes(needle))
       )
@@ -785,7 +787,9 @@ export function SongLibrary({
     // The file's R2 key names the band it was uploaded under (<tenant>/<band>/songs/…)
     // and presign lets only that band's viewers read it: moved to another band, the
     // song went silent for the new band's accounts (403) while an admin still heard it.
-    if (current && form.group_id !== current.group_id && current.audio_path) {
+    // A file still queued on this desktop is a file too: its key was minted under the
+    // band it was picked in, and the flush would land it there after the move.
+    if (current && form.group_id !== current.group_id && (current.audio_path || pendingUploads.has(current.id))) {
       toast.error("ย้ายวงไม่ได้ ขณะเพลงนี้มีไฟล์เสียง", {
         description: "ไฟล์ถูกเก็บไว้ใต้วงเดิม สมาชิกวงใหม่จะเปิดไม่ได้ — ลบไฟล์เสียงก่อน ย้ายวง แล้วอัปไฟล์ใหม่",
       });
@@ -804,9 +808,14 @@ export function SongLibrary({
       !form.id || (approver && form.copyright_status !== current?.copyright_status)
         ? { copyright_status: form.copyright_status }
         : {};
+    // Every field left as the dialog opened stays out of the save (2026-10-27): a library
+    // open since the morning wrote its old note / language / category back over the one
+    // another device saved since, with no warning. A NEW song sends everything.
+    const openedForm = form.id ? openedFormRef.current : null;
+    const touched = (k: keyof FormState) => !openedForm || form[k] !== openedForm[k];
     // Same rule for the length and the file name (see openedFormRef): untouched → not
     // sent - unless a file was picked in this dialog, whose length is then the user's.
-    const opened = form.id && !pickedFile ? openedFormRef.current : null;
+    const opened = form.id && !pickedFile ? openedForm : null;
     const filePatch: { file_name?: string | null; duration_seconds?: number } = {
       ...(!opened || form.file_name !== opened.file_name
         ? { file_name: form.file_name.trim() || null }
@@ -815,15 +824,19 @@ export function SongLibrary({
         ? { duration_seconds: durationSeconds }
         : {}),
     };
+    // ...and on an EDIT that picked a file, the new take's length and name go out in the
+    // write that points the song at it (uploadSongAudio). Written first, an upload that
+    // then failed left the OLD take playing under the new take's length (2026-10-27).
+    const holdForUpload = !!(form.id && pickedFile);
     const payload = {
       tenant_id: tenantId,
-      group_id: form.group_id,
-      title: form.title.trim(),
-      ...filePatch,
-      language: form.language === NONE ? null : form.language,
-      category: form.category.trim() || null,
+      ...(touched("group_id") ? { group_id: form.group_id } : {}),
+      ...(touched("title") ? { title: form.title.trim() } : {}),
+      ...(holdForUpload ? {} : filePatch),
+      ...(touched("language") ? { language: form.language === NONE ? null : form.language } : {}),
+      ...(touched("category") ? { category: form.category.trim() || null } : {}),
       ...copyrightPatch,
-      notes: form.notes.trim() || null,
+      ...(touched("notes") ? { notes: form.notes.trim() || null } : {}),
     };
 
     let saved: Song | null = null;
@@ -862,7 +875,7 @@ export function SongLibrary({
     // (one-step add+upload). uploadSongAudio sets audio_path + shows its own toast. The
     // length this dialog showed (and the user may have changed) is the one saved above.
     if (pickedFile) {
-      await uploadSongAudio(saved, pickedFile, true);
+      await uploadSongAudio(saved, pickedFile, true, holdForUpload ? filePatch : undefined);
     } else {
       toast.success(form.id ? "บันทึกเพลงแล้ว" : "เพิ่มเพลงแล้ว");
     }
@@ -1028,7 +1041,15 @@ export function SongLibrary({
     });
   }
 
-  async function uploadSongAudio(song: Song, file: File, keepLength = false): Promise<string | null> {
+  // `landPatch`: the edit dialog's length / file name for this file, written only by the
+  // update that points the song at it - never ahead of an upload that may fail. A queued
+  // (offline) upload drops it: the flush measures the file's own length when it lands.
+  async function uploadSongAudio(
+    song: Song,
+    file: File,
+    keepLength = false,
+    landPatch: Partial<Pick<Song, "file_name" | "duration_seconds">> = {}
+  ): Promise<string | null> {
     // every way a file reaches the library comes through here (lib/audio.ts)
     const why = unplayableAudio(file);
     if (why) {
@@ -1045,7 +1066,7 @@ export function SongLibrary({
       // the old file's loudness/waveform/beat go with it (lib/song-file-facts.ts)
       const { data, error } = await supabase
         .from("songs")
-        .update({ audio_path: path, audio_name: file.name, audio_expires_at: null, ...STALE_FILE_FACTS })
+        .update({ audio_path: path, audio_name: file.name, audio_expires_at: null, ...STALE_FILE_FACTS, ...landPatch })
         .eq("id", song.id)
         .select("id, copyright_status");
       if (error) throw error;
@@ -1061,7 +1082,7 @@ export function SongLibrary({
       setSongs((prev) =>
         prev.map((s) =>
           s.id === song.id
-            ? { ...s, audio_path: path, audio_name: file.name, audio_expires_at: null, ...STALE_FILE_FACTS, copyright_status: status }
+            ? { ...s, audio_path: path, audio_name: file.name, audio_expires_at: null, ...STALE_FILE_FACTS, ...landPatch, copyright_status: status }
             : s
         )
       );

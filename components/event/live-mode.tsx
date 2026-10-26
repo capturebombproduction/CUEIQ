@@ -49,7 +49,7 @@ import { saveAudio, loadAudioForEvent, deleteAudio } from "@/lib/audio-store";
 import { heldFileIsAnotherSongs } from "@/lib/audio-targets";
 import { getCachedSongBlob, cacheSongBlob } from "@/lib/song-cache";
 import { getLocalSource, listLocalSourceIds } from "@/lib/local-source";
-import { MGMT_OUTBOX_EVENT } from "@/lib/mgmt-outbox";
+import { MGMT_CHILD_LANDED_EVENT, MGMT_OUTBOX_EVENT } from "@/lib/mgmt-outbox";
 import { persistLastRun } from "@/lib/show-run-outbox";
 import { setLiveShowActive } from "@/lib/live-guard";
 import { getDeviceId, deviceLabel } from "@/lib/device-id";
@@ -650,7 +650,8 @@ export function LiveMode({
     const ft = fadeTargetRef.current;
     let vols = volumesRef.current;
     if (ft) vols = { ...vols, [ft.itemId]: ft.target };
-    if (lf) vols = { ...vols, [lf.id]: lf.prevVol };
+    // a bed a fade key took over is at that key's level, not its end-fade's (loopFadeRef)
+    if (lf && !lf.handedOver) vols = { ...vols, [lf.id]: lf.prevVol };
     return forSave ? { ...vols, ...duckRef.current } : vols;
   }
   const writeVolumePresetRef = useRef(writeVolumePreset);
@@ -1226,12 +1227,23 @@ export function LiveMode({
   // set by that cleanup: a download still in flight must not mint an object URL
   // AFTER the revoke-all pass, or its (up to ~80MB) blob is pinned for good.
   const unmountedRef = useRef(false);
+  // Object URLs a sounding element may still hold (a row's file replaced while it plays).
+  // Revoked under it, a Loop bed died at its next wrap (MEDIA_ERR_NETWORK) and any seek
+  // froze the playhead - measured in Electron 45, 2026-10-27. They go when the page does.
+  const retiredUrlsRef = useRef<string[]>([]);
+  function retireUrl(id: string, url: string) {
+    if (onAirRow(id)) retiredUrlsRef.current.push(url);
+    else URL.revokeObjectURL(url);
+  }
   useEffect(() => {
     return () => {
       unmountedRef.current = true;
       Object.values(audioUrlsRef.current).forEach((u) =>
         URL.revokeObjectURL(u)
       );
+      // the list as it is at unmount, on purpose: every URL retired during the show
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+      retiredUrlsRef.current.forEach((u) => URL.revokeObjectURL(u));
     };
   }, []);
 
@@ -1466,7 +1478,6 @@ export function LiveMode({
           const wanted = itemsRef.current.find((x) => x.id === it.id)?.audio_path;
           if (cancelled && wanted !== path) return;
           const name = it.audio_name ?? local?.name ?? "เพลง";
-          cachedPathRef.current[it.id] = version;
           // path stays NULL for a local-only row — that is how audio-store marks
           // "the only copy that exists", and audio-prefetch's orphan sweep skips
           // exactly those records rather than deleting bytes it can't re-fetch.
@@ -1490,6 +1501,17 @@ export function LiveMode({
           // for next time, but an object URL minted now would outlive the unmount
           // revoke-all above and never be freed.
           if (unmountedRef.current) return;
+          // The on-air lock above was read BEFORE the awaits: START, a NEXT or a Loop bed
+          // can put this row on air while its new master is on the way (a newer upload
+          // than the copy restored at open lands mid-song). Swapping now revoked the URL
+          // the PA was playing - a Loop bed then died at its wrap and a seek froze
+          // (2026-10-27). Defer like the lock does; the bytes are cached above, so the
+          // retry once the row leaves the air is a local read, not a second download.
+          if (onAirRow(it.id) && audioUrlsRef.current[it.id]) {
+            deferredOnAirRef.current.add(it.id);
+            continue;
+          }
+          cachedPathRef.current[it.id] = version;
           const url = URL.createObjectURL(blob);
           if (audioUrlsRef.current[it.id]) URL.revokeObjectURL(audioUrlsRef.current[it.id]);
           setAudioUrls((prev) => ({ ...prev, [it.id]: url }));
@@ -2334,6 +2356,17 @@ export function LiveMode({
   // ref so the realtime subscription (registered once) always calls the latest
   const refetchRef = useRef(refetchItems);
   refetchRef.current = refetchItems;
+  // The desktop queue landed this show's setlist: re-read. Its "setlist-changed" broadcast
+  // never reaches a Live Mode on the same desktop (no echo of a client's own broadcast),
+  // and that is the PA laptop whose queued edits these were (lib/mgmt-outbox.ts).
+  useEffect(() => {
+    const onLanded = (e: Event) => {
+      const d = (e as CustomEvent<{ eventId?: string; kind?: string }>).detail;
+      if (d?.eventId === eventId && d.kind === "setlist.upsert") refetchRef.current();
+    };
+    window.addEventListener(MGMT_CHILD_LANDED_EVENT, onLanded);
+    return () => window.removeEventListener(MGMT_CHILD_LANDED_EVENT, onLanded);
+  }, [eventId]);
 
   // The row a viewer follows, by ID (the state handler): it resolved that id against the
   // rows it could see, and a re-read can land new rows in the very tick a state message
@@ -2773,8 +2806,8 @@ export function LiveMode({
       return;
     }
 
-    // instant local playback
-    if (audioUrls[itemId]) URL.revokeObjectURL(audioUrls[itemId]);
+    // instant local playback - the old URL may still be sounding (see retireUrl)
+    if (audioUrls[itemId]) retireUrl(itemId, audioUrls[itemId]);
     const url = URL.createObjectURL(file);
     setAudioUrls((prev) => ({ ...prev, [itemId]: url }));
     setAudioNames((prev) => ({ ...prev, [itemId]: file.name }));
@@ -3005,6 +3038,10 @@ export function LiveMode({
     if (sounding && !(id in duckRef.current)) {
       duckRef.current[id] = levelOf(id, intendedVolumes());
     }
+    // A key on a Loop bed mid end-fade takes the bed over (see loopFadeRef) - after the
+    // duck above read the bed's real level through intendedVolumes.
+    const lf = loopFadeRef.current;
+    if (sounding && lf && lf.id === id && !lf.handedOver) loopFadeRef.current = { ...lf, handedOver: true };
     fadeVolumeFor(id, target, ms);
     broadcastVolume(id, target, ms);
     // now, not at the next state change or 30 s alive write: a crash in between came
@@ -4410,7 +4447,11 @@ export function LiveMode({
   // Only where the show moves on by itself - Auto, with a row after this one. In Manual,
   // and on the last row, a bed loops on past its slot until Auto Mute (or the next song):
   // an MC that talks over time keeps its music (พี่ 2026-10-17, "loop จนกว่าจะกด auto mute").
-  const loopFadeRef = useRef<{ id: string; prevVol: number } | null>(null);
+  // `handedOver`: a fade key (Auto Mute / MC / Auto Loudness) was pressed on the bed during
+  // its end-fade - the level is the operator's now. MANUAL or the last row must not give
+  // the bed back its old level over that key (2026-10-27: Auto Mute in the last 3 s, then
+  // MANUAL, brought a 30 % bed back under the closing talk); moving off it still does.
+  const loopFadeRef = useRef<{ id: string; prevVol: number; handedOver?: boolean } | null>(null);
   useEffect(() => {
     const cur = items[state.currentIndex];
     const sounding = !!cur && cur.id === playingId; // current item is the one playing
@@ -4442,13 +4483,15 @@ export function LiveMode({
         state.mode !== "auto" ||
         state.currentIndex >= items.length - 1)
     ) {
-      const { id, prevVol } = loopFadeRef.current;
+      const { id, prevVol, handedOver } = loopFadeRef.current;
       loopFadeRef.current = null;
-      // not setVolumeFor: that drops a duck entry (fadeKey), and the track would keep
-      // the MC's 30 as its level; the duck effect below gives the pre-duck level back
-      fadeVolumeFor(id, prevVol, 0);
-      // not on a reset: it just freed the viewers, who are their own devices again
-      if (state.begun) broadcastVolume(id, prevVol, 0);
+      if (!handedOver || id !== playingId || !state.running) {
+        // not setVolumeFor: that drops a duck entry (fadeKey), and the track would keep
+        // the MC's 30 as its level; the duck effect below gives the pre-duck level back
+        fadeVolumeFor(id, prevVol, 0);
+        // not on a reset: it just freed the viewers, who are their own devices again
+        if (state.begun) broadcastVolume(id, prevVol, 0);
+      }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [now, remaining, playingId, state.running, state.mode, audioPlaying]);

@@ -25,6 +25,7 @@ import { TimingInput } from "@/components/event/timing-input";
 import { RunMeter } from "@/components/event/run-meter";
 import { createClient } from "@/lib/supabase/client";
 import { newLocalRowId } from "@/lib/mgmt-outbox";
+import { hasRunOrderTie } from "@/lib/run-order-sort";
 import {
   OFFLINE_QUEUED_MESSAGE,
   QUEUED_BEHIND_PENDING_MESSAGE,
@@ -559,7 +560,10 @@ export function SetlistBuilder({
     // a running Live Mode broadcasts its state; lock the on-air row (only while begun)
     ch.on("broadcast", { event: "state" }, ({ payload }) => {
       if (!payload) return;
-      const onAir = payload.begun ? (payload.currentItemId ?? null) : null;
+      // จบโชว์ keeps `begun` true on purpose (live-mode.tsx statePayload) and says so in
+      // `ended`: an ended show holds no row on air, so restores and the row it stopped
+      // on were refused until someone pressed reset in Live (2026-10-27).
+      const onAir = payload.begun && !payload.ended ? (payload.currentItemId ?? null) : null;
       liveItemIdRef.current = onAir;
       setLiveItemId(onAir);
     });
@@ -605,7 +609,18 @@ export function SetlistBuilder({
     // song_id survives the snapshot (it's what makes the row playable), but a
     // song deleted SINCE the save would violate the FK on insert (on-delete-
     // set-null only nulls live rows) — restore those as unlinked instead.
+    // `songs` is the library as this page loaded it: a song another device added since
+    // read as "deleted" and came back unlinked - a row that plays nothing in Live
+    // (2026-10-27). So the ids this page does not know are asked of the SERVER (only
+    // those: every other restore stays one round trip). No answer (offline) → unlinked.
     const libraryIds = new Set(songs.map((s) => s.id));
+    const unknown = Array.from(
+      new Set(snapshot.map((s) => s.song_id).filter((id): id is string => !!id && !libraryIds.has(id)))
+    );
+    if (unknown.length) {
+      const { data: found, error: foundErr } = await supabase.from("songs").select("id").in("id", unknown);
+      if (!foundErr && found) for (const s of found as { id: string }[]) libraryIds.add(s.id);
+    }
     // a version saved with the old "เผื่อเวลาหลัง" comes back as the one ตั้งเวลา field
     const rows = foldWaitsIntoNext(snapshot).map(({ song_id, ...s }) => ({
       tenant_id: tenantId,
@@ -1359,10 +1374,12 @@ export function SetlistBuilder({
     if (target < 0 || target >= items.length) return;
     const a = items[index];
     const b = items[target];
-    if (a.sort_order === b.sort_order) {
-      // Duplicate sort_order (e.g. rows added concurrently from two devices):
-      // swapping equal values is a DB no-op that silently reverts on reload —
-      // renumber the whole list with the two rows exchanged instead.
+    if (hasRunOrderTie(items)) {
+      // Duplicate sort_order ANYWHERE (e.g. rows added concurrently from two devices):
+      // swapping equal values is a DB no-op that silently reverts on reload, and a
+      // swap beside a tie leaves rows Live orders by uuid, not as shown here
+      // (2026-10-27; the run-order builder's rule) — renumber the whole list with
+      // the two rows exchanged instead.
       const next = [...items];
       next[index] = b;
       next[target] = a;

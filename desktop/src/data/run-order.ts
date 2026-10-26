@@ -25,13 +25,31 @@
 // was built on rows the server left behind long ago (2026-10-26). The caller now
 // hands its server rows back on every refetch it applies and every press that
 // commits (EventLiveCaller's onRows), and the page writes them here.
+//
+// ⚠️ …AND IT MUST FOLLOW THE FESTIVAL, NOT THE DOOR (2026-10-27). The copy is kept per
+// event the board was opened from (runlive:<id>), but the board is festival-wide and
+// has many doors: Overview's "คุมคิว (Live)", and every band's own event page
+// ("ดูบอร์ดเต็ม" - which is where Live Mode's back link lands). Written only under the
+// door in use, the copy behind another door kept whatever it last saw: opened through
+// it during an outage, a running show offered "เริ่มงาน" again. So every write goes to
+// every copy this machine holds of the same festival (writeLiveCopies), and a queued
+// press that lands while no board is on screen is laid onto them too
+// (RUNSEQ_LANDED_EVENT, below) - the shell's flusher deletes it from the queue, so
+// nothing would ever re-lay it.
 import { createClient } from "@/lib/supabase/client";
 import { hasLiveSession } from "@/lib/auth-session";
+import { RUNSEQ_LANDED_EVENT, type RunSeqLanded } from "@/lib/run-order-outbox";
 import type { RunSeqLive } from "@/components/event/event-live-caller";
 import type { RunBandEvent, RunSequence } from "@/components/event/run-order-builder";
-import { isOffline, readCache, writeCache } from "~/data/cache";
+import { isOffline, readCache, readCacheKeys, writeCache } from "~/data/cache";
 
-export type RunOrderLive = { name: string; date: string | null; seqs: RunSeqLive[] };
+export type RunOrderLive = {
+  name: string;
+  date: string | null;
+  seqs: RunSeqLive[];
+  /** The board's tenant. Optional: copies written before 2026-10-27 lack it. */
+  tenantId?: string;
+};
 export type RunOrderBuild = {
   name: string;
   date: string | null;
@@ -48,8 +66,46 @@ export type RunOrderResult<T> =
   | { status: "gone" }
   | { status: "error" };
 
-const liveKey = (eventId: string) => `runlive:${eventId}`;
+const LIVE_PREFIX = "runlive:";
+const liveKey = (eventId: string) => `${LIVE_PREFIX}${eventId}`;
 const buildKey = (eventId: string) => `runbuild:${eventId}`;
+
+/** One board: same tenant (when both copies know it), same festival name, same date. */
+function sameFestival(a: RunOrderLive, b: RunOrderLive): boolean {
+  if (a.tenantId && b.tenantId && a.tenantId !== b.tenantId) return false;
+  return a.name === b.name && (a.date ?? null) === (b.date ?? null);
+}
+
+/** This door's copy, and every other copy this machine holds of the same festival. */
+function writeLiveCopies(eventId: string, data: RunOrderLive): void {
+  const own = liveKey(eventId);
+  writeCache(own, data);
+  for (const key of readCacheKeys(LIVE_PREFIX)) {
+    if (key === own) continue;
+    const other = readCache<RunOrderLive>(key);
+    if (other && sameFestival(other, data)) {
+      writeCache(key, { ...data, tenantId: data.tenantId ?? other.tenantId });
+    }
+  }
+}
+
+/** A queued press landed while no board was on screen: every copy holding that row
+ *  takes the row as the server now has it. */
+function layLandedPress(e: Event): void {
+  const landed = (e as CustomEvent<RunSeqLanded>).detail;
+  if (!landed?.rowId || !landed.patch) return;
+  for (const key of readCacheKeys(LIVE_PREFIX)) {
+    const copy = readCache<RunOrderLive>(key);
+    if (!copy?.seqs?.some((r) => r.id === landed.rowId)) continue;
+    writeCache(key, {
+      ...copy,
+      seqs: copy.seqs.map((r) => (r.id === landed.rowId ? { ...r, ...landed.patch } : r)),
+    });
+  }
+}
+// Installed on import. App.tsx imports both run-order pages statically, and they import
+// this module, so the listener is live from boot - on whatever page the flusher runs.
+if (typeof window !== "undefined") window.addEventListener(RUNSEQ_LANDED_EVENT, layLandedPress);
 
 /** How long ONE read here may wait on Supabase before the cached board is served.
  *
@@ -161,8 +217,8 @@ export async function loadRunOrderLive(
     if (!seqRes || seqRes.error) return served(cached());
     const seqs = (seqRes.data ?? []) as RunSeqLive[];
     if (await emptyIsSuspect(seqs, cached())) return served(cached());
-    const out: RunOrderLive = { name: ev.name, date: ev.date, seqs };
-    writeCache(liveKey(eventId), out);
+    const out: RunOrderLive = { name: ev.name, date: ev.date, seqs, tenantId };
+    writeLiveCopies(eventId, out);
     return { status: "ok", data: out, fromCache: false };
   } catch {
     return served(cached());
@@ -172,10 +228,11 @@ export async function loadRunOrderLive(
 /**
  * Keep the offline copy where the board is: the rows the SERVER holds as the caller
  * last learned them (never its queued overlay - the caller re-lays the queue itself,
- * and a copy with a press baked in would keep it on screen after it parked).
+ * and a copy with a press baked in would keep it on screen after it parked). Behind
+ * every door of the festival, not only the one in use (see the header).
  */
 export function saveRunOrderLive(eventId: string, data: RunOrderLive): void {
-  writeCache(liveKey(eventId), data);
+  writeLiveCopies(eventId, data);
 }
 
 export async function loadRunOrderBuild(

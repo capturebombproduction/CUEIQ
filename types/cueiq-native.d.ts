@@ -17,6 +17,10 @@ interface CueiqNative {
    *  neither. Electron swaps the browser's leave-confirm for a native dialog whose
    *  wording lives in main.cjs, so it has to be told which one it is describing. */
   setUnloadReason: (reason: "show" | "unsaved" | null) => Promise<void>;
+  /** A render crash was caught by the app's error boundary (desktop/src/main.tsx), so a
+   *  show it unmounted ended by crashing, not by the operator (main.cjs showCrashed).
+   *  Optional, so the bridge's stand-ins in tests need not carry it. */
+  showCrashed?: () => Promise<void>;
   /** The app's update state (desktop/electron/main.cjs). Optional: an older preload
    *  without it leaves the update chip simply absent. */
   updates?: CueiqUpdates;

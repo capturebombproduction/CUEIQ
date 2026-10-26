@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { HardDrive, Trash2, Loader2, ShieldAlert } from "lucide-react";
+import { useConfirm } from "@/components/ui/confirm-dialog";
 import {
   getCacheSummary,
   clearEventAudio,
@@ -57,6 +58,10 @@ export function DeviceStorage({
   const [summary, setSummary] = useState<CacheSummary | null>(null);
   const [songCache, setSongCache] = useState<SongCacheSummary | null>(null);
   const [busy, setBusy] = useState(false);
+  // Every clear asks first (the confirm-every-delete rule): "ล้างทั้งหมด" is a small footer
+  // link and deleted the coming show's prepared masters - and any file that exists only
+  // on this device - on one stray tap (2026-10-27).
+  const confirm = useConfirm();
   // null = unknown/unsupported; false = browser may evict the cache mid-show
   const [persisted, setPersisted] = useState<boolean | null>(null);
 
@@ -120,6 +125,12 @@ export function DeviceStorage({
   const pastBytes = pastEntries.reduce((n, [, v]) => n + v.bytes, 0);
 
   const clearPast = async () => {
+    const ok = await confirm({
+      title: "ล้างไฟล์เพลงของงานที่ผ่านแล้ว?",
+      description: "ลบไฟล์ที่โหลดไว้ในเครื่องนี้ของงานที่จัดไปแล้ว — งานที่กำลังจะถึงไม่ถูกลบ",
+      confirmText: "ล้าง",
+    });
+    if (!ok) return;
     setBusy(true);
     for (const [id] of pastEntries) {
       await clearEventAudio(id).catch(() => {});
@@ -130,6 +141,12 @@ export function DeviceStorage({
   };
 
   const clearLibrary = async () => {
+    const ok = await confirm({
+      title: "ล้างคลังพรีโหลด?",
+      description: "ลบเพลงจากคลังที่โหลดไว้ในเครื่องนี้ — ซ้อม/ไลฟ์จะโหลดใหม่จากเน็ตเมื่อเล่น",
+      confirmText: "ล้าง",
+    });
+    if (!ok) return;
     setBusy(true);
     await clearSongCache().catch(() => {});
     setBusy(false);
@@ -138,6 +155,13 @@ export function DeviceStorage({
   };
 
   const clearAll = async () => {
+    const ok = await confirm({
+      title: "ล้างเพลงทั้งหมดในเครื่องนี้?",
+      description:
+        "รวมไฟล์ของงานที่กำลังจะถึง (ต้องโหลดใหม่ก่อนโชว์ ที่หน้างานอาจไม่มีเน็ต) และไฟล์ที่มีอยู่ในเครื่องนี้เครื่องเดียว ซึ่งจะหายไปถาวร",
+      confirmText: "ล้างทั้งหมด",
+    });
+    if (!ok) return;
     setBusy(true);
     // Full wipe = the audio caches, plus the legacy snapshot database older
     // installs still carry — a "ล้างทั้งหมด" should leave nothing behind.

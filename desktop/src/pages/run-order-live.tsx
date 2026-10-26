@@ -89,7 +89,14 @@ export function RunOrderLivePage() {
       // there, leaving this page during an outage and coming back rewound the show
       // to the moment it was first opened - under a notice promising
       // "คุมคิวต่อได้ตามปกติ" (2026-10-26). Server rows only; the caller re-lays the queue.
-      onRows={(seqs) => saveRunOrderLive(id!, { name: data.name, date: data.date, seqs })}
+      onRows={(seqs) =>
+        saveRunOrderLive(id!, {
+          name: data.name,
+          date: data.date,
+          seqs,
+          tenantId: ws.membership!.tenant_id,
+        })
+      }
       notice={
         offlineCopy ? (
           // Say it plainly: this is what the board looked like the last time this

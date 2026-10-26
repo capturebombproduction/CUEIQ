@@ -132,8 +132,22 @@ class AppErrorBoundary extends React.Component<
   }
 }
 
+/**
+ * Every render crash an error boundary catches - this file's and the shell's around the
+ * pages (components/error-monitor.tsx) - is told to main. The boundary unmounts Live /
+ * Quick Show, and their cleanups send main the same "show over" a deliberate exit does,
+ * so closing the app from the error screen ran the Windows installer mid-show: under the
+ * operator's relaunch, on a half-removed install (2026-10-27; main.cjs showCrashed).
+ * Main decides whether a show was involved. Passing onCaughtError replaces React's own
+ * console report, so it is kept here.
+ */
+function onCaughtError(error: unknown, info: { componentStack?: string }): void {
+  window.cueiqNative?.showCrashed?.().catch(() => {});
+  console.error(error, info.componentStack ?? "");
+}
+
 // HashRouter: works under file:// (Electron) and in the browser dev server alike.
-ReactDOM.createRoot(document.getElementById("root")!).render(
+ReactDOM.createRoot(document.getElementById("root")!, { onCaughtError }).render(
   <React.StrictMode>
     <AppErrorBoundary>
       <HashRouter>

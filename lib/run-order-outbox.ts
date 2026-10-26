@@ -53,6 +53,40 @@ import { notify } from "@/lib/notify-client";
 /** Fired after any queue change so chips/panels can re-read (mirrors MGMT_OUTBOX_EVENT). */
 export const RUNSEQ_OUTBOX_EVENT = "cueiq:runseq-outbox-change";
 
+/**
+ * Fired on this window each time the flush LANDS a queued press, as a CustomEvent whose
+ * detail is a RunSeqLanded: the row now holds `patch` on the server. For a copy of the
+ * board kept while no board is on screen - the desktop's offline copy
+ * (desktop/src/data/run-order.ts). The shell's flusher replays the queue on any page and
+ * deletes what landed, so a press made in an outage and landed while คุมคิว Live was
+ * closed reached nothing that copy is written from: reopened offline, the board showed
+ * the act that press had already ended as still live (2026-10-27). Nobody listens on the web.
+ */
+export const RUNSEQ_LANDED_EVENT = "cueiq:runseq-landed";
+
+export interface RunSeqLanded {
+  rowId: string;
+  /** What the row now holds for the columns the press wrote. */
+  patch: RunSeqPatch;
+  festival: string;
+  topic?: string;
+}
+
+function announceLanded(op: RunSeqOp): void {
+  if (typeof window === "undefined" || typeof CustomEvent === "undefined") return;
+  try {
+    const detail: RunSeqLanded = {
+      rowId: op.rowId,
+      patch: op.patch,
+      festival: op.festival,
+      topic: op.topic,
+    };
+    window.dispatchEvent(new CustomEvent(RUNSEQ_LANDED_EVENT, { detail }));
+  } catch {
+    /* best-effort: a listener's failure must not fail the replay that landed */
+  }
+}
+
 /** Toast copy for a caller press that was kept locally instead of lost. */
 export const RUNSEQ_QUEUED_MESSAGE =
   "ออฟไลน์อยู่ — คิวบนเครื่องนี้เดินต่อแล้ว จะซิงค์ให้เมื่อเน็ตกลับ";
@@ -911,6 +945,7 @@ async function doFlush(): Promise<RunSeqFlushResult> {
       // what the server now holds, or its next replay parks as a conflict the
       // operator never caused and their press is dropped from the board.
       if (verdict === "done") await rebaseExpect(replayed);
+      if (verdict === "done") announceLanded(op);
       announce();
       if (verdict === "done" && op.topic) topics.add(op.topic);
       const word = op.announceLive;

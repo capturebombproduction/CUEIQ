@@ -342,15 +342,24 @@ function registerIpc() {
   ipcMain.handle("cueiq:set-show-running", (e, running) => {
     setShowThrottling(e.sender, running);
     if (running) showUnended = true; // see holdInstallForShowQuit
+    if (running) showCrashed = false; // a show runs again: showUnended carries it from here
+    // A page that never armed the "show" reason - a Live Mode VIEWER, whose unload guard
+    // is gated on sound or control - never sends the null below either, and its own
+    // "not running" is the only word that its show is over (2026-10-27).
+    else if (!showReasonArmed) letGoOfShow();
     return running ? startShowPowerSaveBlocker() : stopShowPowerSaveBlocker();
   });
   ipcMain.handle("cueiq:set-unload-reason", (_e, reason) => {
     unloadReason = reason === "show" || reason === "unsaved" ? reason : null;
     // A show the renderer itself let go of (Live / Quick Show unmounted, จบโชว์): over.
     // A crash, a hang or a reload never sends this - that is the point of showUnended.
-    if (reason === "show") showUnended = true;
-    else if (reason === null) showUnended = false;
+    if (reason === "show") {
+      showUnended = true;
+      showReasonArmed = true;
+    } else if (reason === null) letGoOfShow();
   });
+  // The renderer's error boundary caught a render crash (desktop/src/main.tsx). See showCrashed.
+  ipcMain.handle("cueiq:show-crashed", () => noteShowCrashed());
   // the header update chip (desktop/src/components/update-chip.tsx); see checkForUpdates
   ipcMain.handle("cueiq:update-get", () => updateState);
   ipcMain.handle("cueiq:update-check", () => checkForUpdates());
@@ -480,12 +489,36 @@ function updateBusyReason() {
  */
 let installHeldForShowQuit = false;
 /** A show started and nothing has said it ended - only the renderer's own "not a show any
- *  more" (set-unload-reason null) clears it. updateBusyReason() alone forgets a show the
+ *  more" (set-unload-reason null; or set-show-running false from a page that never armed
+ *  the "show" reason, see showReasonArmed) clears it. updateBusyReason() alone forgets a show the
  *  moment its renderer crashes, hangs or reloads (the reason and the power blocker go with
  *  the document), so a quit made then - the window closed on a wedged page, or during the
  *  reload after a crash - still ran the installer (2026-10-26, ตาที่ 3). Read by
  *  window-all-closed. */
 let showUnended = false;
+/** The renderer armed the "show" unload reason for the show it is running: then only its
+ *  null ends the show (a controller's จบโชว์ stops the power blocker long before it leaves
+ *  Live). A page that never armed it - a Live Mode viewer - ends it with "not running",
+ *  or showUnended outlived its show and held every later ordinary quit (2026-10-27). */
+let showReasonArmed = false;
+/** When the renderer last let go of a show (showUnended true → false). */
+let showLetGoAt = -Infinity;
+/** A render crash caught by the app's error boundary while a show ran, or within
+ *  SHOW_CRASH_WINDOW_MS of the renderer letting go of one. The boundary unmounts Live /
+ *  Quick Show, whose cleanups send the very "show over" that clears showUnended - so the
+ *  close from the error screen, the operator's way back into the show, ran the installer
+ *  (2026-10-27). The crash word and those cleanups come in either order, hence the window.
+ *  Sticky: cleared only when a show runs again (set-show-running true). */
+let showCrashed = false;
+const SHOW_CRASH_WINDOW_MS = 5000;
+function letGoOfShow() {
+  if (showUnended) showLetGoAt = Date.now();
+  showUnended = false;
+  showReasonArmed = false;
+}
+function noteShowCrashed() {
+  if (showUnended || Date.now() - showLetGoAt < SHOW_CRASH_WINDOW_MS) showCrashed = true;
+}
 function holdInstallForShowQuit() {
   if (!winUpdater) return;
   winUpdater.autoInstallOnAppQuit = false;
@@ -735,12 +768,16 @@ async function macDownload(plan) {
 /** A download just finished: offer the restart — unless this is a bad moment, in which case
  *  the chip ("ติดตั้ง") waits and quitting the app installs it too. The operator pressed
  *  "อัปเดต" moments (or minutes) ago, so this one is expected; it is still never shown
- *  while a show runs (backgroundNotice). */
+ *  while a show runs (backgroundNotice).
+ *  (2026-10-27) The DEFAULT is "ไว้ทีหลัง". The box has no parent and takes the focus on
+ *  Windows, and Live / Quick Show open but not yet started is not "busy" - the operator's
+ *  START key is Space, which presses the default button: "เปิดใหม่เลย" as the default
+ *  closed the app into the installer minutes before stage. Restarting takes a click. */
 async function offerRestart() {
   const { response } = await backgroundNotice({
     type: "question",
     buttons: ["เปิดใหม่เลย", "ไว้ทีหลัง"],
-    defaultId: 0,
+    defaultId: 1,
     cancelId: 1,
     title: "อัปเดต CueIQ",
     message: `CueIQ ${updateState.latest} พร้อมแล้ว`,
@@ -2854,8 +2891,9 @@ app.whenReady().then(() => {
 });
 
 app.on("window-all-closed", () => {
-  // the last window of a show that never ended: this quit is the operator's way back in
-  if (showUnended || updateBusyReason() === "show") holdInstallForShowQuit();
+  // the last window of a show that never ended (or that a render crash took down): this
+  // quit is the operator's way back in
+  if (showUnended || showCrashed || updateBusyReason() === "show") holdInstallForShowQuit();
   stopShowPowerSaveBlocker(); // no window left to run a show from
   if (process.platform !== "darwin") app.quit();
 });

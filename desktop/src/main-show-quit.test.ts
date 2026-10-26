@@ -82,17 +82,22 @@ describe("main.cjs — the 'unresponsive' box never freezes a show", () => {
 // reload after a crash) still installed. `showUnended` remembers the show until the
 // renderer itself lets go of it, and the last window's close holds the install for it.
 describe("main.cjs — a show that never ended holds the installer on the last window's close", () => {
+  // (2026-10-27) …and a page that never armed the "show" reason (a Live viewer) lets go
+  // with set-show-running(false); behaviour pinned in main-show-install-hold.test.ts.
   it("is set when a show runs and cleared only by the renderer letting go", () => {
     expect(main).toContain("if (running) showUnended = true;");
-    expect(main).toContain('if (reason === "show") showUnended = true;');
-    expect(main).toContain("else if (reason === null) showUnended = false;");
+    expect(main).toMatch(/if \(reason === "show"\) \{\s*showUnended = true;/);
+    expect(main).toContain("} else if (reason === null) letGoOfShow();");
+    expect(main).toContain("else if (!showReasonArmed) letGoOfShow();");
   });
 
   it("window-all-closed holds the install BEFORE the quit it triggers", () => {
     const at = main.indexOf('app.on("window-all-closed"');
     expect(at).toBeGreaterThan(-1);
     const body = main.slice(at, at + 400);
-    const hold = body.indexOf('if (showUnended || updateBusyReason() === "show") holdInstallForShowQuit();');
+    const hold = body.indexOf(
+      'if (showUnended || showCrashed || updateBusyReason() === "show") holdInstallForShowQuit();'
+    );
     expect(hold).toBeGreaterThan(-1);
     expect(hold).toBeLessThan(body.indexOf("app.quit()"));
     expect(hold).toBeLessThan(body.indexOf("stopShowPowerSaveBlocker()"));

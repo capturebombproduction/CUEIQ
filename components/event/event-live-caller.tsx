@@ -448,6 +448,11 @@ export function EventLiveCaller({
   const refetchSeqRef = useRef(0);
   const writesInFlightRef = useRef(0);
   const missedRefetchRef = useRef(false);
+  // Bumped around every press this board queues itself (queueOffline). ดึง buffer queues
+  // its drains AFTER apply() has returned, with no refetchSeq bump: a refetch already in
+  // flight had read the queue without them and laid that older queue over the fresh one,
+  // so the spent buffers showed again (2026-10-27). Such a read starts over instead.
+  const queueEpochRef = useRef(0);
 
   /**
    * Pull the board back to what the server says.
@@ -475,6 +480,7 @@ export function EventLiveCaller({
       return "deferred";
     }
     const seq = ++refetchSeqRef.current;
+    const epoch = queueEpochRef.current;
     missedRefetchRef.current = false;
     // The queue is read BEFORE the rows (see the note at setQueued below for why it is
     // read at all). Read after them, a flush landing between the two reads left rows
@@ -507,6 +513,9 @@ export function EventLiveCaller({
     // whole festival is called from is not a risk worth an unverified read.
     // An unverifiable empty answer is a read we could not trust — that IS a failure.
     if (data.length === 0 && rows.length > 0 && !(await hasLiveSession())) return "failed";
+    // This board queued a press while the read was out: `ops` predates it. Read again
+    // (queue first, as above) rather than lay a queue without it over the board.
+    if (epoch !== queueEpochRef.current) return refetch();
     // Re-read the queue WITH the rows: the overlay lays every queued press over them,
     // and a press that is no longer queued must not be. Another tab of this browser
     // drains the same IndexedDB, and this board heard only its OWN window's word - so
@@ -652,35 +661,41 @@ export function EventLiveCaller({
     // once, and the one after was never called (lib/run-order-outbox.ts, 2026-10-26).
     const pressId = press ?? newRunSeqPressId();
     lastQueuedPressRef.current = pressId;
-    for (const u of updates) {
-      await enqueueRunSeq({
-        rowId: u.id,
-        presses: [pressId],
-        festival,
-        // Only the caller's own columns ride the queue — never the plan, which
-        // belongs to the builder and must not be replayed over.
-        patch: {
-          status: u.partial.status,
-          actual_start: u.partial.actual_start,
-          actual_end: u.partial.actual_end,
-          offset_min: u.partial.offset_min,
-          buffer_seconds: u.partial.buffer_seconds,
-        },
-        // Carry EVERY precondition the online write used, not just the two the
-        // status buttons set. ดึง buffer's drains are conditional on the
-        // buffer_seconds they read (see takeBuffer) — replaying them guarded only
-        // by status='pending' would write a stale absolute value straight over a
-        // buffer another controller had already spent.
-        expect: {
-          status: u.expect?.status,
-          offset_min: u.expect?.offset_min,
-          buffer_seconds: u.expect?.buffer_seconds,
-        },
-        label: u.label ?? rows.find((r) => r.id === u.id)?.title ?? "ลำดับในคิว",
-        queuedAt: at,
-        ...(u.announceLive ? { announceLive: { eventId: u.announceLive, at } } : {}),
-        topic: runOrderTopic(tenantId, eventDate, eventName),
-      });
+    // before AND after the enqueues: a read that starts between two of them saw half
+    queueEpochRef.current++;
+    try {
+      for (const u of updates) {
+        await enqueueRunSeq({
+          rowId: u.id,
+          presses: [pressId],
+          festival,
+          // Only the caller's own columns ride the queue — never the plan, which
+          // belongs to the builder and must not be replayed over.
+          patch: {
+            status: u.partial.status,
+            actual_start: u.partial.actual_start,
+            actual_end: u.partial.actual_end,
+            offset_min: u.partial.offset_min,
+            buffer_seconds: u.partial.buffer_seconds,
+          },
+          // Carry EVERY precondition the online write used, not just the two the
+          // status buttons set. ดึง buffer's drains are conditional on the
+          // buffer_seconds they read (see takeBuffer) — replaying them guarded only
+          // by status='pending' would write a stale absolute value straight over a
+          // buffer another controller had already spent.
+          expect: {
+            status: u.expect?.status,
+            offset_min: u.expect?.offset_min,
+            buffer_seconds: u.expect?.buffer_seconds,
+          },
+          label: u.label ?? rows.find((r) => r.id === u.id)?.title ?? "ลำดับในคิว",
+          queuedAt: at,
+          ...(u.announceLive ? { announceLive: { eventId: u.announceLive, at } } : {}),
+          topic: runOrderTopic(tenantId, eventDate, eventName),
+        });
+      }
+    } finally {
+      queueEpochRef.current++;
     }
     return true;
   }

@@ -112,10 +112,21 @@ export function MicMapEditor({
   // is why that first add seeds the map from these (seedFromStanding below).
   const standing = groups.length === 0 ? standingMics(members, lineup) : [];
 
+  // The mics as the SERVER last acknowledged them - the offline guard's base. Not
+  // `mics`: a holder's name types into `mics` on every key and saves on blur, so by the
+  // time a failed save queued its snapshot the "pre-edit" base already held the name,
+  // and the flush parked it as a FALSE conflict ("เวอร์ชันออนไลน์ถูกแก้ไขใหม่กว่า") - and
+  // planEnqueue keeps that first base, so every later offline mic edit parked too
+  // (2026-10-26; the schedule editor's and the setlist builder's twin).
+  const ackedRef = useRef<MicAssignment[]>(initialMics);
+  const ack = (update: (rows: MicAssignment[]) => MicAssignment[]) => {
+    ackedRef.current = update(ackedRef.current);
+  };
+
   // ⭐#1 step 5: a write that failed on a DEAD NETWORK queues the whole post-edit
   // mic map as one offline snapshot and returns true — keep the optimistic state.
-  // Web (no sink) / real rejections return false → original handling. `mics` in
-  // this render's closure is the pre-edit list = the online-wins guard's base.
+  // Web (no sink) / real rejections return false → original handling. The guard's
+  // base is ackedRef (what the server holds), never `mics` - see there.
   async function queueOffline(
     next: MicAssignment[],
     errorMessage: string | null | undefined
@@ -126,10 +137,15 @@ export function MicMapEditor({
       tenantId,
       eventName,
       rows: next,
-      baseRows: mics,
+      baseRows: ackedRef.current,
       errorMessage: errorMessage ?? null,
     });
-    if (queued) toast.success(OFFLINE_QUEUED_MESSAGE, { id: "mgmt-offline-queued" });
+    if (queued) {
+      // what the server holds once this snapshot flushes (a later edit coalesces
+      // into it, and the planner keeps this op's original base anyway)
+      ackedRef.current = next;
+      toast.success(OFFLINE_QUEUED_MESSAGE, { id: "mgmt-offline-queued" });
+    }
     return queued;
   }
 
@@ -163,6 +179,7 @@ export function MicMapEditor({
         toast.error("ยังไม่ได้บันทึก", { description: await noRowsMessage() });
         return;
       }
+      ack((rows) => rows.map((m) => (m.id === id ? { ...m, ...partial } : m)));
       save.end(true);
     } catch (e) {
       // supabase-js reports most failures in `error`, but a fetch that throws
@@ -230,6 +247,7 @@ export function MicMapEditor({
       toast.error("ยังไม่ได้บันทึก", { description: await noRowsMessage() });
       return;
     }
+    ack((rows) => [...rows, ...(data as MicAssignment[])]);
     setMics((prev) => [...prev, ...(data as MicAssignment[])]);
   }
 
@@ -268,6 +286,7 @@ export function MicMapEditor({
         toast.error("เพิ่มไมค์ไม่สำเร็จ", { description: error?.message });
         return;
       }
+      ack((rows) => [...rows, data as MicAssignment]);
       setMics((prev) => [...prev, data as MicAssignment]);
     } finally {
       insertingRef.current = false;
@@ -309,6 +328,7 @@ export function MicMapEditor({
         toast.error("เพิ่มคนไม่สำเร็จ", { description: error?.message });
         return;
       }
+      ack((rows) => [...rows, data as MicAssignment]);
       setMics((prev) => [...prev, data as MicAssignment]);
     } finally {
       insertingRef.current = false;
@@ -344,7 +364,9 @@ export function MicMapEditor({
     if (wroteNothing(data)) {
       toast.error("ยังไม่ได้ลบ", { description: await noRowsMessage() });
       setMics(snapshot);
+      return;
     }
+    ack((rows) => rows.filter((m) => m.id !== id));
   }
 
   async function removeMic(micNumber: number) {
@@ -371,7 +393,9 @@ export function MicMapEditor({
     if (wroteNothing(data)) {
       toast.error("ยังไม่ได้ลบ", { description: await noRowsMessage() });
       setMics(snapshot);
+      return;
     }
+    ack((rows) => rows.filter((m) => m.mic_number !== micNumber));
   }
 
   /** Returns true if applied, false if rejected (caller should revert the input). */
@@ -421,7 +445,9 @@ export function MicMapEditor({
               movedIds.has(m.id) ? { ...m, mic_number: oldNum } : m
             )
           );
+          return;
         }
+        ack((rows) => rows.map((m) => (movedIds.has(m.id) ? { ...m, mic_number: newNum } : m)));
       });
     return true;
   }
@@ -462,7 +488,10 @@ export function MicMapEditor({
       if (results.some((r) => wroteNothing(r.data))) {
         toast.error("ยังไม่ได้บันทึก", { description: await noRowsMessage() });
         setMics(mics);
+        return;
       }
+      const order = new Map(renumbered.map((h) => [h.id, h.order_index]));
+      ack((rows) => rows.map((m) => (order.has(m.id) ? { ...m, order_index: order.get(m.id)! } : m)));
       return;
     }
     const next = mics.map((m) => {
@@ -495,7 +524,13 @@ export function MicMapEditor({
     if (results.some((r) => wroteNothing(r.data))) {
       toast.error("ยังไม่ได้บันทึก", { description: await noRowsMessage() });
       setMics(mics);
+      return;
     }
+    ack((rows) =>
+      rows.map((m) =>
+        m.id === a.id ? { ...m, order_index: b.order_index } : m.id === b.id ? { ...m, order_index: a.order_index } : m
+      )
+    );
   }
 
   const songsWithMics = setlist.filter((s) => (s.mic_slots?.length ?? 0) > 0);

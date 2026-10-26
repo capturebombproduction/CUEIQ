@@ -22,6 +22,7 @@ import {
   isChildListOp,
   isQueueableWriteError,
   isUniqueViolation,
+  MGMT_CHILD_LANDED_EVENT,
   MGMT_OUTBOX_EVENT,
   nextOpRev,
   planEnqueue,
@@ -37,7 +38,7 @@ import {
   type AudioUploadOp,
 } from "@/lib/audio-upload-queue";
 import { removeEventAudio, uploadEventAudio, uploadTimeoutMs } from "@/lib/audio-remote";
-import { privateChannel, songsTopic } from "@/lib/realtime";
+import { liveTopic, privateChannel, songsTopic } from "@/lib/realtime";
 import { clearLocalSource, getLocalSource } from "@/lib/local-source";
 import { cacheSongBlob } from "@/lib/song-cache";
 import { STALE_FILE_FACTS, writeSongFileFacts } from "@/lib/song-file-facts";
@@ -448,13 +449,39 @@ function failOrThrow(
 }
 
 /**
+ * Land one child-list snapshot, then tell a running Live Mode when it was a setlist.
+ *
+ * The setlist builder's ONLINE write sends "setlist-changed" on the show channel, and
+ * Live Mode on the PA re-reads the set on it (AUTO cuts on the lengths it holds). An
+ * edit that joined a queued snapshot (queue-behind, c4388cf) returns before that
+ * notifyLive(), and this replay sent nothing either - so Live kept the old length / the
+ * old song until something else made it re-read (2026-10-27). Both the flush and
+ * "ใช้ของฉัน" land through here.
+ */
+async function applyChildListOp(
+  op: ChildListOp,
+  onLine: boolean,
+  force: boolean
+): Promise<"applied" | { conflict: string }> {
+  const res = await landChildListOp(op, onLine, force);
+  if (res === "applied" && op.kind === "setlist.upsert") {
+    broadcastOnTopic(liveTopic(op.id), "setlist-changed", { at: Date.now() });
+    // ...and to a Live Mode open on THIS desktop, which never hears its own broadcast
+    window.dispatchEvent(
+      new CustomEvent(MGMT_CHILD_LANDED_EVENT, { detail: { eventId: op.id, kind: op.kind } })
+    );
+  }
+  return res;
+}
+
+/**
  * Land one child-list snapshot (⭐#1 step 5): a guarded REPLACE-SET on the event's
  * rows in that table. Upsert the snapshot rows FIRST, then delete the rows the
  * snapshot no longer contains — crash-safe (no window where the data is gone) and
  * idempotent (a re-run upserts no-ops and re-deletes nothing). `force` skips the
  * online-wins guard (the user chose "ใช้ของฉัน" on a parked conflict).
  */
-async function applyChildListOp(
+async function landChildListOp(
   op: ChildListOp,
   onLine: boolean,
   force: boolean
@@ -670,21 +697,25 @@ function putQueuedAudioOnce(path: string, blob: Blob, contentType: string): Prom
  * rest of the session.
  */
 function broadcastAudioChanged(groupId: string): void {
+  broadcastOnTopic(songsTopic(groupId), "changed", {});
+}
+
+/** One broadcast on `topic`, reusing a channel someone already holds open (see above). */
+function broadcastOnTopic(topic: string, event: string, payload: Record<string, unknown>): void {
   const supabase = createClient();
-  const topic = songsTopic(groupId);
   // RealtimeClient stores channels under a "realtime:" prefixed topic — see
   // RealtimeClient.channel() in @supabase/realtime-js.
   const existing = supabase.getChannels().find((c) => c.topic === `realtime:${topic}`);
   if (existing) {
-    // Someone else (Live Mode) owns this channel's lifecycle — send on it as-is
-    // and never remove a channel we didn't create.
-    existing.send({ type: "broadcast", event: "changed", payload: {} });
+    // Someone else (Live Mode, the setlist builder) owns this channel's lifecycle —
+    // send on it as-is and never remove a channel we didn't create.
+    existing.send({ type: "broadcast", event, payload });
     return;
   }
   const ch = privateChannel(supabase, topic);
   ch.subscribe((status) => {
     if (status === "SUBSCRIBED") {
-      ch.send({ type: "broadcast", event: "changed", payload: {} });
+      ch.send({ type: "broadcast", event, payload });
       setTimeout(() => supabase.removeChannel(ch), 600);
     } else if (
       status === "CHANNEL_ERROR" ||
@@ -1011,7 +1042,20 @@ async function doFlush(): Promise<FlushResult> {
   }
   let flushed = 0;
   let parked = 0;
-  for (const { key, rec } of mine) {
+  // Every queued AUDIO upload goes last (seq order kept inside each group). A master's
+  // PUT holds this lock for minutes on venue wifi (audioUploadCapMs), and a setlist
+  // snapshot queued behind it held every online edit of that set with it: the builder
+  // joins a queued snapshot instead of writing online (queue-behind), and that enqueue
+  // waits on this same lock - add buttons dead, "กำลังบันทึก…" stuck, with the network
+  // fine (2026-10-27). Landing the rest first lets the snapshot go in seconds, so the
+  // builder finds nothing queued and writes online again. Nothing here depends on an
+  // upload: an audio op touches only its song row (songs are never created through this
+  // queue), and the event / child-list ops never read a song's audio.
+  const ordered = [
+    ...mine.filter((r) => !isAudioUploadOp(r.rec.op)),
+    ...mine.filter((r) => isAudioUploadOp(r.rec.op)),
+  ];
+  for (const { key, rec } of ordered) {
     if (gen !== outboxGeneration) break; // signed out mid-replay — the wipe wins
     let outcome: "applied" | { conflict: string };
     try {
@@ -1209,24 +1253,42 @@ export async function clearMgmtOutbox(): Promise<void> {
   // conflicts into the store we're about to empty.
   outboxGeneration++;
   await withOutboxLock(async () => {
+    // A queued audio upload is two things: the op, and the take's bytes kept as the
+    // song's LOCAL SOURCE (lib/mgmt-write.ts tryQueueAudioUpload), which Live Mode and
+    // practice read FIRST. Wiping only the op left this machine - the one wired to the
+    // PA - playing the discarded take at every later show, for every account, while
+    // every other device played the master (2026-10-27). Same rule as
+    // dropPendingAudioUploadOp and "ใช้ของออนไลน์": discarding the upload drops the
+    // override. Read before the wipe below, dropped only once the wipe committed (an op
+    // left queued keeps the bytes it will push); an override picked with
+    // "ใช้ไฟล์ในเครื่องนี้" has no op and stays.
+    const audioSongIds = new Set<string>();
+    for (const store of [OPS, CONFLICTS]) {
+      const recs = await listStore<OpRec>(store).catch(() => [] as { key: number; rec: OpRec }[]);
+      for (const { rec } of recs) if (isAudioUploadOp(rec.op)) audioSongIds.add(rec.op.id);
+    }
+    let wiped = false;
     try {
       const db = await openDB();
-      await new Promise<void>((resolve) => {
+      wiped = await new Promise<boolean>((resolve) => {
         const tx = db.transaction([OPS, CONFLICTS], "readwrite");
         tx.objectStore(OPS).clear();
         tx.objectStore(CONFLICTS).clear();
         tx.oncomplete = () => {
           db.close();
-          resolve();
+          resolve(true);
         };
         tx.onerror = () => {
           db.close();
-          resolve();
+          resolve(false);
         };
         settleOnAbort(tx);
       });
     } catch {
       /* best-effort */
+    }
+    if (wiped) {
+      for (const songId of audioSongIds) await clearLocalSource(songId).catch(() => {});
     }
   });
   notify();

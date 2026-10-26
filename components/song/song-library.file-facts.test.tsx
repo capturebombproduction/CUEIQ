@@ -147,9 +147,10 @@ describe("SongLibrary — a new file brings its own facts", () => {
     fireEvent.click(within(dialog).getByRole("button", { name: "บันทึก" }));
 
     await waitFor(() => expect(h.writes.some((w) => "peaks" in w.values && w.values.peaks === MEASURED.peaks)).toBe(true));
-    expect(h.writes[0].values).toMatchObject({ duration_seconds: 150 });
-    // nothing after the save writes a length over the user's
-    expect(h.writes.slice(1).some((w) => "duration_seconds" in w.values)).toBe(false);
+    // the user's 2:30 lands WITH the file (2026-10-27: never ahead of an upload that may fail)
+    const lengths = h.writes.filter((w) => "duration_seconds" in w.values);
+    expect(lengths).toHaveLength(1); // nothing after it writes a length over the user's
+    expect(lengths[0].values).toMatchObject({ duration_seconds: 150, audio_name: "take-2.wav" });
   });
 });
 

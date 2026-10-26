@@ -22,6 +22,11 @@ contextBridge.exposeInMainWorld("cueiqNative", {
   // dialog whose words are written in main.cjs, so main has to be told which
   // situation it is describing or it will say a show is running during an edit.
   setUnloadReason: (reason) => ipcRenderer.invoke("cueiq:set-unload-reason", reason),
+  // The app's error boundary caught a render crash (desktop/src/main.tsx). The boundary
+  // unmounts a running show, whose cleanups then tell main the show is over; this tells
+  // main it ended by crashing, so closing the app from the error screen does not run the
+  // installer under the operator's relaunch (main.cjs showCrashed).
+  showCrashed: () => ipcRenderer.invoke("cueiq:show-crashed"),
   // The update state main keeps (desktop/electron/main.cjs, checkForUpdates): read it, ask
   // the feed again, press the header chip (download / install / open the .dmg), and hear
   // every change. onChange returns its own unsubscribe.

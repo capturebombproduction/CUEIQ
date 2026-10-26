@@ -78,10 +78,12 @@ beforeEach(async () => {
     h.server = NEWER;
   };
   h.puts = 0;
-  h.cleared = [];
   h.removed = [];
   h.cached = [];
   await clearMgmtOutbox();
+  // after the wipe: since 2026-10-27 it drops the override of the upload the previous
+  // test left parked (a sign-out discards that take), which is not this test's doing
+  h.cleared = [];
   // A tiny server: songs.audio_path is one cell. An update honours an audio_path
   // filter if the client sends one (compare-and-swap); without one it simply lands.
   supa.setScript({

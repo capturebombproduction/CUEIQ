@@ -60,6 +60,15 @@ export type ChildListOp = {
  */
 export const MGMT_OUTBOX_EVENT = "cueiq:mgmt-outbox-change";
 
+/**
+ * Fired on `window` (detail `{ eventId, kind }`) when the desktop queue LANDED a child-list
+ * snapshot on the server. The flush also broadcasts "setlist-changed" on the show channel,
+ * but a client never hears its own broadcast (lib/realtime.ts `self: false`), so Live Mode
+ * open on the very desktop that queued the edit - the PA laptop - kept the old set
+ * (2026-10-27). Nothing dispatches it on the web.
+ */
+export const MGMT_CHILD_LANDED_EVENT = "cueiq:mgmt-child-landed";
+
 export type NewMgmtOp =
   | { kind: "event.create"; id: string; values: Partial<EventRow> }
   | { kind: "event.update"; id: string; patch: Partial<EventRow>; base: number | null }
