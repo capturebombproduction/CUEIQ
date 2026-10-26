@@ -5,7 +5,12 @@ import { toast } from "sonner";
 import { Plus, Trash2, ChevronUp, ChevronDown, Mic2 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { newLocalRowId } from "@/lib/mgmt-outbox";
-import { OFFLINE_QUEUED_MESSAGE, tryQueueChildList } from "@/lib/mgmt-write";
+import {
+  OFFLINE_QUEUED_MESSAGE,
+  QUEUED_BEHIND_PENDING_MESSAGE,
+  tryQueueBehindPendingChildList,
+  tryQueueChildList,
+} from "@/lib/mgmt-write";
 import { noRowsMessage, wroteNothing } from "@/lib/write-guard";
 import { SaveStatus, useSaveSignal } from "@/components/event/save-status";
 import { Button } from "@/components/ui/button";
@@ -123,13 +128,16 @@ export function MicMapEditor({
     ackedRef.current = update(ackedRef.current);
   };
 
-  // ⭐#1 step 5: a write that failed on a DEAD NETWORK queues the whole post-edit
-  // mic map as one offline snapshot and returns true — keep the optimistic state.
-  // Web (no sink) / real rejections return false → original handling. The guard's
-  // base is ackedRef (what the server holds), never `mics` - see there.
+  // ⭐#1 step 5: a write that failed on a DEAD NETWORK (or a 5xx/429 from a server
+  // that is up - pass the response's `status`: the 503 page is HTML in error.message
+  // and matches no network word) queues the whole post-edit mic map as one offline
+  // snapshot and returns true — keep the optimistic state. Web (no sink) / real
+  // rejections return false → original handling. The guard's base is ackedRef (what
+  // the server holds), never `mics` - see there.
   async function queueOffline(
     next: MicAssignment[],
-    errorMessage: string | null | undefined
+    errorMessage: string | null | undefined,
+    status?: number | null
   ): Promise<boolean> {
     const queued = await tryQueueChildList({
       kind: "mic.upsert",
@@ -139,6 +147,7 @@ export function MicMapEditor({
       rows: next,
       baseRows: ackedRef.current,
       errorMessage: errorMessage ?? null,
+      status: status ?? null,
     });
     if (queued) {
       // what the server holds once this snapshot flushes (a later edit coalesces
@@ -149,6 +158,35 @@ export function MicMapEditor({
     return queued;
   }
 
+  // Desktop: while a snapshot of this mic map still waits in the offline queue, an
+  // edit made after the net came back must JOIN it, not write online - the queued
+  // snapshot is based on the server's map from before it, so this person's own online
+  // write would make the flush park her queued venue edit as "เวอร์ชันออนไลน์ถูกแก้ไข
+  // ใหม่กว่าของเครื่องนี้", and resolving that loses one of the two edits
+  // (lib/mgmt-write.ts tryQueueBehindPendingChildList; the setlist builder's twin).
+  // Called BEFORE each online write; true = queued, the caller stops there and keeps
+  // its optimistic state. The web never queues, so there it is always false.
+  async function queueBehindPending(next: MicAssignment[]): Promise<boolean> {
+    const queued = await tryQueueBehindPendingChildList({
+      kind: "mic.upsert",
+      eventId,
+      tenantId,
+      eventName,
+      rows: next,
+      baseRows: ackedRef.current,
+    });
+    if (queued) {
+      ackedRef.current = next;
+      toast.success(QUEUED_BEHIND_PENDING_MESSAGE, { id: "mgmt-offline-queued" });
+    }
+    return queued;
+  }
+
+  /** A write in a batch that came back with its row: it is on the server, whatever
+   *  its siblings did (see moveHolder). */
+  const landed = (r: { error: unknown; data: unknown[] | null }) =>
+    !r.error && Array.isArray(r.data) && r.data.length > 0;
+
   // Reports into the same signal the setlist and schedule editors use — so the
   // ผังไมค์ tab gets the บันทึกแล้ว receipt it never had, and so the leave-the-page
   // warning (lib/dirty-guard.ts) can see a mic name that failed to save. Before
@@ -156,15 +194,20 @@ export function MicMapEditor({
   async function persist(id: string, partial: Partial<MicAssignment>) {
     save.begin();
     try {
-      const { data, error } = await supabase
+      const next = mics.map((m) => (m.id === id ? { ...m, ...partial } : m));
+      // Joined the snapshot still queued: that IS saved (on disk, it will flush).
+      if (await queueBehindPending(next)) {
+        save.end(true);
+        return;
+      }
+      const { data, error, status } = await supabase
         .from("mic_assignments")
         .update(partial)
         .eq("id", id)
         .select("id");
       if (error) {
-        const next = mics.map((m) => (m.id === id ? { ...m, ...partial } : m));
         // Queued offline IS saved — it is on disk and it will flush.
-        if (await queueOffline(next, error.message)) {
+        if (await queueOffline(next, error.message, status)) {
           save.end(true);
           return;
         }
@@ -230,13 +273,18 @@ export function MicMapEditor({
       ),
       { mic_number: nextNum, holder_name: "", order_index: 1 },
     ];
-    const { data, error } = await supabase
+    // Offline (or joining a snapshot still queued): minted locally, stable client uuids.
+    const locals = wanted.map((r) => mintLocalMic(r.mic_number, r.holder_name, r.order_index));
+    if (await queueBehindPending([...mics, ...locals])) {
+      setMics((prev) => [...prev, ...locals]);
+      return;
+    }
+    const { data, error, status } = await supabase
       .from("mic_assignments")
       .insert(wanted.map((r) => ({ tenant_id: tenantId, event_id: eventId, ...r })))
       .select("*");
     if (error || !data) {
-      const locals = wanted.map((r) => mintLocalMic(r.mic_number, r.holder_name, r.order_index));
-      if (await queueOffline([...mics, ...locals], error?.message)) {
+      if (await queueOffline([...mics, ...locals], error?.message, status)) {
         setMics((prev) => [...prev, ...locals]);
         return;
       }
@@ -266,7 +314,12 @@ export function MicMapEditor({
         return;
       }
       const nextNum = groups.length ? Math.max(...groups.map((g) => g.num)) + 1 : 1;
-      const { data, error } = await supabase
+      const local = mintLocalMic(nextNum, "", 1);
+      if (await queueBehindPending([...mics, local])) {
+        setMics((prev) => [...prev, local]);
+        return;
+      }
+      const { data, error, status } = await supabase
         .from("mic_assignments")
         .insert({
           tenant_id: tenantId,
@@ -278,8 +331,7 @@ export function MicMapEditor({
         .select("*")
         .single();
       if (error || !data) {
-        const local = mintLocalMic(nextNum, "", 1);
-        if (await queueOffline([...mics, local], error?.message)) {
+        if (await queueOffline([...mics, local], error?.message, status)) {
           setMics((prev) => [...prev, local]);
           return;
         }
@@ -308,7 +360,12 @@ export function MicMapEditor({
       const order = inGroup.length
         ? Math.max(...inGroup.map((m) => m.order_index)) + 1
         : 1;
-      const { data, error } = await supabase
+      const local = mintLocalMic(micNumber, name, order);
+      if (await queueBehindPending([...mics, local])) {
+        setMics((prev) => [...prev, local]);
+        return;
+      }
+      const { data, error, status } = await supabase
         .from("mic_assignments")
         .insert({
           tenant_id: tenantId,
@@ -320,8 +377,7 @@ export function MicMapEditor({
         .select("*")
         .single();
       if (error || !data) {
-        const local = mintLocalMic(micNumber, name, order);
-        if (await queueOffline([...mics, local], error?.message)) {
+        if (await queueOffline([...mics, local], error?.message, status)) {
           setMics((prev) => [...prev, local]);
           return;
         }
@@ -346,14 +402,16 @@ export function MicMapEditor({
     });
     if (!ok) return;
     const snapshot = mics;
+    const next = snapshot.filter((m) => m.id !== id);
     setMics((prev) => prev.filter((m) => m.id !== id));
-    const { data, error } = await supabase
+    if (await queueBehindPending(next)) return;
+    const { data, error, status } = await supabase
       .from("mic_assignments")
       .delete()
       .eq("id", id)
       .select("id");
     if (error) {
-      if (await queueOffline(snapshot.filter((m) => m.id !== id), error.message)) return;
+      if (await queueOffline(next, error.message, status)) return;
       toast.error("ลบไม่สำเร็จ", { description: error.message });
       setMics(snapshot);
       return;
@@ -376,16 +434,17 @@ export function MicMapEditor({
     });
     if (!ok) return;
     const snapshot = mics;
+    const next = snapshot.filter((m) => m.mic_number !== micNumber);
     setMics((prev) => prev.filter((m) => m.mic_number !== micNumber));
-    const { data, error } = await supabase
+    if (await queueBehindPending(next)) return;
+    const { data, error, status } = await supabase
       .from("mic_assignments")
       .delete()
       .eq("event_id", eventId)
       .eq("mic_number", micNumber)
       .select("id");
     if (error) {
-      if (await queueOffline(snapshot.filter((m) => m.mic_number !== micNumber), error.message))
-        return;
+      if (await queueOffline(next, error.message, status)) return;
       toast.error("ลบไม่สำเร็จ", { description: error.message });
       setMics(snapshot);
       return;
@@ -418,37 +477,39 @@ export function MicMapEditor({
       m.mic_number === oldNum ? { ...m, mic_number: newNum } : m
     );
     setMics(next);
-    supabase
-      .from("mic_assignments")
-      .update({ mic_number: newNum })
-      .eq("event_id", eventId)
-      .eq("mic_number", oldNum)
-      .select("id")
-      .then(async ({ data, error }) => {
-        if (error) {
-          if (await queueOffline(next, error.message)) return;
-          toast.error("เปลี่ยนเบอร์ไมค์ไม่สำเร็จ", { description: error.message });
-          // real rejection — put only these rows back on oldNum (re-keys the input)
-          setMics((prev) =>
-            prev.map((m) =>
-              movedIds.has(m.id) ? { ...m, mic_number: oldNum } : m
-            )
-          );
-          return;
-        }
-        // No error but zero rows = sent anon after a failed token refresh — the
-        // mic-number change never reached the DB. See lib/write-guard.ts.
-        if (wroteNothing(data)) {
-          toast.error("ยังไม่ได้บันทึก", { description: await noRowsMessage() });
-          setMics((prev) =>
-            prev.map((m) =>
-              movedIds.has(m.id) ? { ...m, mic_number: oldNum } : m
-            )
-          );
-          return;
-        }
-        ack((rows) => rows.map((m) => (movedIds.has(m.id) ? { ...m, mic_number: newNum } : m)));
-      });
+    // The input needs its yes/no now; the write settles on its own.
+    void (async () => {
+      if (await queueBehindPending(next)) return;
+      const { data, error, status } = await supabase
+        .from("mic_assignments")
+        .update({ mic_number: newNum })
+        .eq("event_id", eventId)
+        .eq("mic_number", oldNum)
+        .select("id");
+      if (error) {
+        if (await queueOffline(next, error.message, status)) return;
+        toast.error("เปลี่ยนเบอร์ไมค์ไม่สำเร็จ", { description: error.message });
+        // real rejection — put only these rows back on oldNum (re-keys the input)
+        setMics((prev) =>
+          prev.map((m) =>
+            movedIds.has(m.id) ? { ...m, mic_number: oldNum } : m
+          )
+        );
+        return;
+      }
+      // No error but zero rows = sent anon after a failed token refresh — the
+      // mic-number change never reached the DB. See lib/write-guard.ts.
+      if (wroteNothing(data)) {
+        toast.error("ยังไม่ได้บันทึก", { description: await noRowsMessage() });
+        setMics((prev) =>
+          prev.map((m) =>
+            movedIds.has(m.id) ? { ...m, mic_number: oldNum } : m
+          )
+        );
+        return;
+      }
+      ack((rows) => rows.map((m) => (movedIds.has(m.id) ? { ...m, mic_number: newNum } : m)));
+    })();
     return true;
   }
 
@@ -469,6 +530,7 @@ export function MicMapEditor({
       const renumbered = reordered.map((h, i) => ({ ...h, order_index: i + 1 }));
       const next = mics.map((m) => renumbered.find((h) => h.id === m.id) ?? m);
       setMics(next);
+      if (await queueBehindPending(next)) return;
       const results = await Promise.all(
         renumbered.map((h) =>
           supabase
@@ -480,7 +542,16 @@ export function MicMapEditor({
       );
       const failed = results.find((r) => r.error);
       if (failed?.error) {
-        if (await queueOffline(next, failed.error.message)) return;
+        // Independent UPDATEs: one that came back with its row is on the server even
+        // though a sibling failed (a 503 on venue wifi) - the snapshot queued below
+        // must be based on that, or its flush parks it as a false conflict.
+        results.forEach((r, i) => {
+          if (landed(r)) {
+            const h = renumbered[i];
+            ack((rows) => rows.map((m) => (m.id === h.id ? { ...m, order_index: h.order_index } : m)));
+          }
+        });
+        if (await queueOffline(next, failed.error.message, failed.status)) return;
         toast.error("สลับลำดับไม่สำเร็จ", { description: failed.error.message });
         setMics(mics);
         return;
@@ -500,6 +571,7 @@ export function MicMapEditor({
       return m;
     });
     setMics(next);
+    if (await queueBehindPending(next)) return;
     const results = await Promise.all([
       supabase
         .from("mic_assignments")
@@ -514,7 +586,18 @@ export function MicMapEditor({
     ]);
     const failed = results.find((r) => r.error);
     if (failed?.error) {
-      if (await queueOffline(next, failed.error.message)) return;
+      // The half of the swap that landed is on the server (see the branch above).
+      const swapped = [
+        { id: a.id, order_index: b.order_index },
+        { id: b.id, order_index: a.order_index },
+      ];
+      results.forEach((r, i) => {
+        if (landed(r)) {
+          const s = swapped[i];
+          ack((rows) => rows.map((m) => (m.id === s.id ? { ...m, order_index: s.order_index } : m)));
+        }
+      });
+      if (await queueOffline(next, failed.error.message, failed.status)) return;
       toast.error("สลับลำดับไม่สำเร็จ", { description: failed.error.message });
       setMics(mics);
       return;

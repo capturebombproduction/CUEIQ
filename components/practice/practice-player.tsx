@@ -55,7 +55,7 @@ import {
 import { BreakTimer } from "@/components/practice/break-timer";
 import { Metronome } from "@/components/practice/metronome";
 import { SetlistRunCard } from "@/components/practice/setlist-run-card";
-import { timingParts, type QueueEntry } from "@/lib/practice-setlist";
+import { roomQueue, timingParts, type QueueEntry } from "@/lib/practice-setlist";
 import { cn } from "@/lib/utils";
 import { hasThai } from "@/lib/thai";
 import { useSongCovers } from "@/lib/song-covers";
@@ -90,6 +90,34 @@ async function writeFailureNote(
     error?.message ?? "-"
   );
   return writeFailureMessage(error?.code, error?.message, live);
+}
+
+/** A set being played through: which one, its queue, and where in it we are. */
+type RunState = { showId: string; queue: QueueEntry[]; pos: number };
+
+/**
+ * Where a run is, by the ROW being played rather than its index - the name a wait or
+ * an overlap is armed under, and checked against when it comes due. The room's own set
+ * can be reordered while it plays (its queue is rebuilt then and the row found again,
+ * at another index): a wait armed under "room:0" found "room:1" when it came due, and
+ * the set stopped there in silence, still claiming to be playing.
+ */
+function runKey(r: RunState): string {
+  return `${r.showId}:${r.queue[r.pos]?.itemId ?? r.pos}`;
+}
+
+/** The same rows, in the same order, with the same timing - nothing to rebuild. */
+function sameQueue(a: QueueEntry[], b: QueueEntry[]): boolean {
+  return (
+    a.length === b.length &&
+    a.every(
+      (q, i) =>
+        q.itemId === b[i].itemId &&
+        q.song.id === b[i].song.id &&
+        q.timing === b[i].timing &&
+        q.adjacent === b[i].adjacent
+    )
+  );
 }
 
 function mmss(sec: number) {
@@ -234,20 +262,18 @@ export function PracticePlayer({
 
   // "ซ้อมตามเซ็ตลิสต์": the queue being played through, and where in it we are.
   // While set, a song reaching its end starts the next one (see onEndedRef).
-  const [run, setRun] = useState<{ showId: string; queue: QueueEntry[]; pos: number } | null>(
-    null
-  );
+  const [run, setRun] = useState<RunState | null>(null);
   const onEndedRef = useRef<() => void>(() => {});
   // "เล่นซ้อน" — the run's next song coming in N seconds before this one ends
   // (see overlapTickRef). The timer is armed for the exact second once it is
-  // close; overlapDoneRef is the "show:pos" whose next song has been started.
+  // close; overlapDoneRef is the runKey whose next song has been started.
   const overlapTickRef = useRef<() => void>(() => {});
   const startOverlapRef = useRef<(key: string) => void>(() => {});
   const overlapTimerRef = useRef<number | null>(null);
   const overlapDoneRef = useRef<string | null>(null);
   // "เข้าหลังเพลงก่อนหน้า" as a WAIT (พี่ 2026-10-19: "ในเทรนนิ่งยังกดเป็นค่าบวกไม่ได้"): the
   // song ended and the next one starts after that many seconds of silence. gapKey is
-  // the "show:pos" whose wait is running (the card says so); anything the user does to
+  // the runKey whose wait is running (the card says so); anything the user does to
   // the set in the meantime - another song, ▶, stop, the set again - calls it off.
   const gapTimerRef = useRef<number | null>(null);
   const startGapRef = useRef<(key: string) => void>(() => {});
@@ -319,15 +345,21 @@ export function PracticePlayer({
    * so the song a session ended on was never logged, however long it played. keepSong
    * leaves the song in place: ▶ on it again (or a page restored from the back/forward
    * cache) counts on as a new run of it, and seconds too few to log are kept, not lost.
+   *
+   * `carryOn` (the page only went out of sight - visibilitychange → hidden): what has
+   * played so far is logged now, and a song still playing counts on from this moment,
+   * so what it plays in the background is logged later (its end, the next song, the
+   * page going away) - once, never on top of what was logged here.
    */
-  function flushRun(keepSong = false) {
+  function flushRun(keepSong = false, carryOn = false) {
     const r = runRef.current;
     if (r.startedAt != null) {
-      r.accum += (Date.now() - r.startedAt) / 1000;
+      const now = Date.now();
+      r.accum += (now - r.startedAt) / 1000;
       // Closed here even on pagehide: after it the page is gone or frozen in the
       // back/forward cache, and a frozen hour must never be logged as practice. A
       // restored page counts again from its next 'play'.
-      r.startedAt = null;
+      r.startedAt = carryOn ? now : null;
     }
     const song = r.song;
     const secs = Math.round(r.accum);
@@ -373,8 +405,19 @@ export function PracticePlayer({
   flushRunRef.current = flushRun;
   useEffect(() => {
     const onHide = () => flushRunRef.current(true);
+    // pagehide alone almost never got the run to the server (2026-10-27): its insert
+    // starts only after supabase-js has read the session, and a closing tab / window
+    // cancels it by then; and iOS killing a backgrounded tab fires no pagehide at all,
+    // only this. Hidden, the page is still alive, so the insert has time to land.
+    const onVisibility = () => {
+      if (document.visibilityState === "hidden") flushRunRef.current(true, true);
+    };
     window.addEventListener("pagehide", onHide);
-    return () => window.removeEventListener("pagehide", onHide);
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      window.removeEventListener("pagehide", onHide);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
   }, []);
 
   // one SoundTouch engine for the whole session (created once; talks to Web Audio)
@@ -605,6 +648,39 @@ export function PracticePlayer({
     );
   }
 
+  // The room's own set edited WHILE it plays (↑ ↓ ✕, a song added): the run follows the
+  // set as the card now shows it (2026-10-27). It kept the queue copied at ▶ - after a
+  // ↓ the song that came next was still the old next one, and the lit row (the card
+  // finds it by index in the set as it is NOW) sat on another song than the one
+  // sounding; a song taken out still played. So the queue is rebuilt from the room's
+  // rows and the song being played found again by its row (runKey keeps a wait or an
+  // overlap armed for it). A show's set is not edited here - only its timings, which
+  // setRunOverlap above carries.
+  //
+  // The song being played taken OUT of the set ends the run, and that song plays on to
+  // its end: cutting the music the band is playing along to is the harshest answer, and
+  // going on "after" a row that is gone needs a place in the set the card cannot light.
+  // The card goes back to "เล่นทั้งเซ็ต", and a toast says why the set stopped following.
+  useEffect(() => {
+    if (!run || run.showId !== eventId) return;
+    const queue = roomQueue(practiceSongs);
+    const here = run.queue[run.pos];
+    const pos = here ? queue.findIndex((q) => q.itemId === here.itemId) : -1;
+    if (pos < 0) {
+      setRun(null);
+      clearGap();
+      toast.info("หยุดเล่นต่อตามเซ็ตแล้ว", {
+        description: engineRef.current?.playing
+          ? "เพลงที่กำลังเล่นถูกเอาออกจากเซ็ต — เล่นเพลงนี้ต่อจนจบแล้วหยุด"
+          : "เพลงที่เพิ่งเล่นถูกเอาออกจากเซ็ต",
+      });
+      return;
+    }
+    if (pos === run.pos && sameQueue(queue, run.queue)) return;
+    setRun({ ...run, queue, pos });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- clearGap only clears a timer and sets state
+  }, [run, practiceSongs, eventId]);
+
   // The run's next song, read ahead while this one plays (see nextFileRef). A read
   // that fails is not kept: the song's own turn reads again and says why it can't.
   const runSongId = run?.queue[run.pos]?.song.id ?? null;
@@ -647,7 +723,7 @@ export function PracticePlayer({
     if (speed < 1 && wait < 30 && ahead?.songId === next.song.id) {
       void ahead.blob.then((b) => b && engineRef.current?.preload(b), () => {});
     }
-    const key = `${run.showId}:${run.pos}`;
+    const key = runKey(run);
     if (next.overlap <= 0 || overlapDoneRef.current === key || wait > 1.5) return;
     overlapTimerRef.current = window.setTimeout(() => {
       overlapTimerRef.current = null;
@@ -656,7 +732,7 @@ export function PracticePlayer({
   };
   startOverlapRef.current = (key) => {
     const engine = engineRef.current;
-    if (!run || `${run.showId}:${run.pos}` !== key || !engine?.playing || loadingId) return;
+    if (!run || runKey(run) !== key || !engine?.playing || loadingId) return;
     const next = run.queue[run.pos + 1];
     if (!next || loopRef.current.on) return;
     if (!engine.canHandOff) return; // nowhere to play it yet — it follows the end instead
@@ -682,7 +758,7 @@ export function PracticePlayer({
     if (entry.wait > 0) {
       // On the song clock, like an overlap: slowed to 0.5× the set keeps its shape and
       // the pause runs twice as long.
-      const key = `${run.showId}:${run.pos}`;
+      const key = runKey(run);
       clearGap();
       setGapKey(key);
       gapTimerRef.current = window.setTimeout(() => {
@@ -698,7 +774,7 @@ export function PracticePlayer({
   startGapRef.current = (key) => {
     setGapKey(null);
     // …and never over the song sounding again - whatever took it up again in the wait
-    if (!run || `${run.showId}:${run.pos}` !== key || loadingId || engineRef.current?.playing) return;
+    if (!run || runKey(run) !== key || loadingId || engineRef.current?.playing) return;
     const entry = run.queue[run.pos + 1];
     if (!entry) return;
     setRun({ ...run, pos: run.pos + 1 });
@@ -1470,8 +1546,15 @@ export function PracticePlayer({
         <Metronome
           song={current}
           canManage={canManage}
-          playing={playing}
+          // Not while the first slow-down decodes (the spinner): the engine keeps
+          // `playing` through it - a ⏸ there must still count as a pause - but the song
+          // is silent, and a synced count went on over the silence and stayed early by
+          // the whole decode once the song came back at the point it left (no jump for
+          // it to re-anchor on). It stops here and anchors again at the real restart.
+          playing={playing && !preparing}
           position={cur}
+          // the playhead now, not the last ~4 Hz timeupdate `cur` is (see songPos there)
+          getPosition={() => engineRef.current?.position ?? cur}
           speed={speed}
           onBpmSaved={(songId, bpm) => setSavedBpm((m) => ({ ...m, [songId]: bpm }))}
           onDetectBeats={async () => {
@@ -1507,7 +1590,7 @@ export function PracticePlayer({
                 index: run.pos,
                 total: run.queue.length,
                 nextTiming: run.queue[run.pos + 1]?.timing ?? 0,
-                waiting: gapKey === `${run.showId}:${run.pos}`,
+                waiting: gapKey === runKey(run),
               }
             : null
         }

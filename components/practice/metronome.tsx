@@ -97,6 +97,7 @@ export function Metronome({
   speed = 1,
   onBpmSaved,
   onDetectBeats,
+  getPosition,
 }: {
   song: Song | null;
   canManage: boolean;
@@ -105,6 +106,8 @@ export function Metronome({
   speed?: number;
   onBpmSaved?: (songId: string, bpm: number) => void;
   onDetectBeats?: () => Promise<{ bpm: number; beats: number[] } | null>;
+  /** Where the song is right now, read off the player's engine — see songPos(). */
+  getPosition?: () => number;
 }) {
   const canSync = !!song?.audio_path;
 
@@ -138,6 +141,8 @@ export function Metronome({
   const runningRef = useRef(false);
   const transportRef = useRef({ playing, position, speed });
   transportRef.current = { playing, position, speed };
+  const getPositionRef = useRef(getPosition);
+  getPositionRef.current = getPosition;
 
   const ctxRef = useRef<AudioContext | null>(null);
   const nextNoteRef = useRef(0); // ctx time of the next beat to schedule (free-run)
@@ -493,18 +498,30 @@ export function Metronome({
    * the beat that had just sounded was scheduled again. The running anchor already
    * maps the audio clock to the song (the same map the clicks are scheduled from;
    * both clocks run off the audio hardware), so read the song's position off that.
-   * Play-start and seeks still anchor on the prop: there it is the fresh value (the
-   * point paused at, the point jumped to), and no anchor is running yet / any more.
+   * Play-start and seeks anchor on songPos(): no anchor is running yet / any more.
    */
   function livePos(): number {
     const ctx = ctxRef.current;
-    if (!ctx || !anchorLiveRef.current) return transportRef.current.position;
+    if (!ctx || !anchorLiveRef.current) return songPos();
     return anchorPosRef.current + (ctx.currentTime - anchorCtxRef.current) * anchorSpeedRef.current;
   }
 
-  // Phase-lock the metronome to the song's position `pos` (default: the last one
-  // the player reported — see livePos for when that is too old).
-  function anchorSync(pos: number = transportRef.current.position) {
+  /**
+   * The song's position now, with no anchor to read it off: the player's engine's own
+   * (`getPosition`), else the `position` prop. The prop is fresh at a play-start or a
+   * seek (the point paused at, the point jumped to) - but not when the panel is opened
+   * with the song already playing (2026-10-27): then it is the last timeupdate, up to
+   * 250 ms old, and the count anchored on it ran that much early for the whole song
+   * (the live re-anchors read the running anchor, so they inherited it).
+   */
+  function songPos(): number {
+    const live = getPositionRef.current?.();
+    return typeof live === "number" && Number.isFinite(live) ? live : transportRef.current.position;
+  }
+
+  // Phase-lock the metronome to the song's position `pos` (default: where the song
+  // is now - see songPos, and livePos for a re-anchor mid-play).
+  function anchorSync(pos: number = songPos()) {
     const ctx = ctxRef.current;
     if (!ctx) return;
     const spd = transportRef.current.speed;
@@ -545,7 +562,7 @@ export function Metronome({
     barLatchedRef.current = false;
     if (timerRef.current) clearInterval(timerRef.current);
     if (anchored) {
-      anchorSync(); // play-start: the prop is where the song starts from
+      anchorSync(); // play-start (or opened mid-song): where the song is now
     } else {
       anchorLiveRef.current = false; // a manual run follows no song
       beatAbsRef.current = 0;

@@ -73,12 +73,20 @@ export function aroundTheClock(fromSec: number, toSec: number): number {
   return ((((toSec - fromSec) % 86400) + 86400 + 43200) % 86400) - 43200;
 }
 
+/** Before this hour a row is "after midnight"; from LATE_SHOW_SEC a show is an evening one. */
+const SMALL_HOURS_END_SEC = 6 * 3600;
+const LATE_SHOW_SEC = 15 * 3600;
+
 /**
- * Where a row falls in its show's day, for sorting: the row's distance from the
- * stage anchor (stageAnchorSeconds), the short way round. A plain "HH:MM:SS" sort
- * put a late show's after-midnight booth at the TOP of the day, above the call —
- * and a copy moved past midnight (shiftClock wraps) lands exactly there. With no
- * anchor it is the plain clock; a row with no time sorts after every timed one.
+ * Where a row falls in its show's day, for sorting. A plain "HH:MM:SS" sort put a late
+ * show's after-midnight booth at the TOP of the day, above the call — and a copy moved
+ * past midnight (shiftClock wraps) lands exactly there. So the small hours (before
+ * 06:00) after an EVENING show (anchor from 15:00, stageAnchorSeconds) count as the next
+ * day, and an evening row before a small-hours show as the day before; everything else
+ * is the plain clock. (Until 2026-10-27 this was the ±12 h window around the anchor, which
+ * also moved a 06:00 call for an 18:30 show, or a 22:30 second stage after a 10:00 one,
+ * to the wrong end of the day.) With no anchor it is the plain clock; a row with no time
+ * sorts after every timed one.
  */
 export function dayOrderSeconds(
   start: string | null | undefined,
@@ -86,7 +94,10 @@ export function dayOrderSeconds(
 ): number {
   const sec = parseClockToSeconds(start ?? null);
   if (sec == null) return Number.POSITIVE_INFINITY;
-  return anchorSec == null ? sec : aroundTheClock(anchorSec, sec);
+  if (anchorSec == null) return sec;
+  if (anchorSec >= LATE_SHOW_SEC && sec < SMALL_HOURS_END_SEC) return sec + 86400;
+  if (anchorSec < SMALL_HOURS_END_SEC && sec >= LATE_SHOW_SEC) return sec - 86400;
+  return sec;
 }
 
 /** A time-of-day moved by `deltaSec`, wrapped to the day ("HH:MM:SS"). A value

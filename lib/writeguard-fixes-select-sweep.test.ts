@@ -36,6 +36,10 @@ const ROOT = path.resolve(HERE, "..");
 const GUARDED_FILES = [
   "components/event/setlist-builder.tsx",
   "desktop/src/data/mgmt-outbox.ts",
+  // 2026-10-27: the Lineup tab's member deletes (toggle off, ล้าง) asked for no rows
+  // back, so an anon delete in the reconnect minute removed nobody and the tab said
+  // บันทึกแล้ว (lineup-editor.anon-delete.test.tsx).
+  "components/event/lineup-editor.tsx",
 ];
 
 /** Opt-out marker: put it in a comment within 8 lines above the write. */
@@ -188,7 +192,7 @@ function findOffenders(file: string): Offender[] {
 describe("every supabase write in the write-guard files asks for its rows back", () => {
   it("parses the guarded files without swallowing their chains", () => {
     // Guards the sweep itself: a scanner that silently matched nothing would
-    // report a clean sweep for ever. Both files must still contain writes.
+    // report a clean sweep for ever. Every guarded file must still contain writes.
     for (const file of GUARDED_FILES) {
       const code = blankNonCode(fs.readFileSync(path.join(ROOT, file), "utf8"), file);
       expect(/\.(delete|update)\s*\(/.test(code), `${file} has no writes at all`).toBe(true);

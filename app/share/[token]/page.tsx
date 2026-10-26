@@ -111,7 +111,9 @@ export default async function SharePage({ params }: { params: Promise<{ token: s
   // the sheet, and making a new link (ปิดลิงก์ → สร้างลิงก์แชร์) kills the one already
   // sent everywhere else. Say what happened and offer the same link again — a plain
   // anchor, because this public page works without any client JS.
-  if (error) {
+  // …except 22P02: the token is not a uuid at all (a link pasted with a trailing ")" or
+  // cut short) - no retry can work, so it is the invalid-link answer below (2026-10-27).
+  if (error && error.code !== "22P02") {
     return (
       <main className="grid min-h-screen place-items-center bg-background p-6 text-center">
         <div className="space-y-2">

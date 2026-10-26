@@ -20,7 +20,13 @@ const h = vi.hoisted(() => ({
 }));
 vi.mock("@/lib/supabase/client", () => ({ createClient: () => h.supa }));
 vi.mock("@/lib/auth-session", () => ({ hasLiveSession: async () => true }));
-vi.mock("@/lib/mgmt-write", () => ({ OFFLINE_QUEUED_MESSAGE: "queued", tryQueueChildList: vi.fn(async () => false) }));
+vi.mock("@/lib/mgmt-write", () => ({
+  OFFLINE_QUEUED_MESSAGE: "queued",
+  tryQueueChildList: vi.fn(async () => false),
+  // nothing waits in an offline queue here (the web): every edit writes online
+  QUEUED_BEHIND_PENDING_MESSAGE: "queued behind",
+  tryQueueBehindPendingChildList: vi.fn(async () => false),
+}));
 vi.mock("sonner", () => ({ toast: { success: h.toastSuccess, error: h.toastError, info: vi.fn() } }));
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ refresh: h.refresh, push: vi.fn(), replace: vi.fn() }),

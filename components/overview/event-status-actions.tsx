@@ -99,11 +99,22 @@ export function EventStatusActions({
         .eq("id", eventId)
         .maybeSingle();
       const nowStatus = (row as { status?: GroupStatus } | null)?.status;
-      if (nowStatus && nowStatus !== prev) {
+      if (nowStatus === next) {
+        // Already what was asked: the try a timeout cut off DID land (the retry then found
+        // nothing to change, and the band was never told), or another approver got there.
+        // It is done - say so, tell the band (the route's dedupe stops a double) and the
+        // board's counts (2026-10-27).
+        toast.success(next === "approved" ? "อนุมัติแล้ว" : "ปฏิเสธแล้ว");
+        notify(next === "approved" ? "event_approved" : "event_rejected", { eventId });
+        onChanged?.(next);
+        setOpen(false);
+      } else if (nowStatus && nowStatus !== prev) {
         toast.error("สถานะงานนี้เปลี่ยนไปแล้ว", {
           description: `ตอนนี้เป็น “${STATUS_META[knownStatus(nowStatus)].label}” — ดูให้แน่ใจก่อนแล้วค่อยเปลี่ยนอีกครั้ง`,
         });
         setStatus(nowStatus);
+        // the board counts and filters by what it was told - tell it what the row holds
+        onChanged?.(nowStatus);
       } else {
         toast.error(await noRowsMessage());
         setStatus(prev);

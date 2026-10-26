@@ -15,7 +15,13 @@ import type { ScheduleItem } from "@/lib/types";
 
 const h = vi.hoisted(() => ({ supa: null as unknown, toastError: vi.fn() }));
 vi.mock("@/lib/supabase/client", () => ({ createClient: () => h.supa }));
-vi.mock("@/lib/mgmt-write", () => ({ OFFLINE_QUEUED_MESSAGE: "queued", tryQueueChildList: vi.fn(async () => false) }));
+vi.mock("@/lib/mgmt-write", () => ({
+  OFFLINE_QUEUED_MESSAGE: "queued",
+  tryQueueChildList: vi.fn(async () => false),
+  // nothing waits in an offline queue here (the web): every edit writes online
+  QUEUED_BEHIND_PENDING_MESSAGE: "queued behind",
+  tryQueueBehindPendingChildList: vi.fn(async () => false),
+}));
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: h.toastError, info: vi.fn() } }));
 vi.mock("@/components/ui/select", () => ({
   Select: ({ children }: { children: React.ReactNode }) => <>{children}</>,

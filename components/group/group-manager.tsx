@@ -31,6 +31,16 @@ export function GroupManager({
   const confirm = useConfirm();
   const [groups, setGroups] = useState<Group[]>(initialGroups);
   const [members, setMembers] = useState<Member[]>(initialMembers);
+  // A refreshed roster from the page (the "บันทึก / อัปเดต" bar's router.refresh())
+  // replaces the one on screen. It was read once at mount, so the bar promised the
+  // latest data - a member another Ar added never appeared, and new sort orders were
+  // worked out from the stale list (2026-10-27; the Library's twin, c4388cf).
+  const [seenInitial, setSeenInitial] = useState({ initialGroups, initialMembers });
+  if (initialGroups !== seenInitial.initialGroups || initialMembers !== seenInitial.initialMembers) {
+    setSeenInitial({ initialGroups, initialMembers });
+    setGroups(initialGroups);
+    setMembers(initialMembers);
+  }
   const [newGroup, setNewGroup] = useState("");
   const [busy, setBusy] = useState(false);
   // Band name as the field had it when editing STARTED, per band. The input is

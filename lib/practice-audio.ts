@@ -496,7 +496,7 @@ export class PracticeAudioEngine {
     // destroy() is terminal: a song whose download lands after the player left must
     // not be armed (let alone played) on an element nobody can reach any more
     if (this._destroyed) return;
-    this.loadGen++; // invalidate any decode still in flight for the previous song
+    const gen = ++this.loadGen; // invalidate any decode still in flight for the previous song
     const wasPlaying = this._playing;
     this.teardownShifter();
     this.buffer = null; // force a fresh decode for the new song
@@ -522,7 +522,11 @@ export class PracticeAudioEngine {
       this.active = "stretch";
       // a song we can't decode still loads — it just plays at 1× (see the fallback)
       await this.prepareStretchOrFallback(0);
-      if (this._destroyed) return;
+      // A newer song loaded during this decode (B tapped, then C, C decoding faster
+      // and already playing) owns the transport now: saying "stopped" here put the key
+      // back to ▶ over C, stopped the synced metronome and let go of the wake lock
+      // while C kept sounding (2026-10-27).
+      if (gen !== this.loadGen || this._destroyed) return;
       this.onPlayingChange(false);
     } else {
       this.active = "native";

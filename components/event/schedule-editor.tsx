@@ -23,7 +23,12 @@ import {
 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { newLocalRowId } from "@/lib/mgmt-outbox";
-import { OFFLINE_QUEUED_MESSAGE, tryQueueChildList } from "@/lib/mgmt-write";
+import {
+  OFFLINE_QUEUED_MESSAGE,
+  QUEUED_BEHIND_PENDING_MESSAGE,
+  tryQueueBehindPendingChildList,
+  tryQueueChildList,
+} from "@/lib/mgmt-write";
 import { noRowsMessage, wroteNothing } from "@/lib/write-guard";
 import { shortClock } from "@/lib/time";
 import { cn } from "@/lib/utils";
@@ -187,14 +192,17 @@ export function ScheduleEditor({
     );
   }
 
-  // ⭐#1 step 5: a write that failed on a DEAD NETWORK queues the whole post-edit
-  // list as one offline snapshot and returns true — the caller keeps its
-  // optimistic state instead of rolling back. Web (no sink) / real rejections
-  // (RLS, 23505) return false and the original error handling runs unchanged.
+  // ⭐#1 step 5: a write that failed on a DEAD NETWORK (or a 5xx/429 from a server
+  // that is up - pass the response's `status`: the 503 page is HTML in
+  // error.message and matches no network word) queues the whole post-edit list as
+  // one offline snapshot and returns true — the caller keeps its optimistic state
+  // instead of rolling back. Web (no sink) / real rejections (RLS, 23505) return
+  // false and the original error handling runs unchanged.
   // The guard's base is ackedRef (what the server holds), never `items` - see there.
   async function queueOffline(
     next: ScheduleItem[],
-    errorMessage: string | null | undefined
+    errorMessage: string | null | undefined,
+    status?: number | null
   ): Promise<boolean> {
     const queued = await tryQueueChildList({
       kind: "schedule.upsert",
@@ -204,12 +212,37 @@ export function ScheduleEditor({
       rows: next,
       baseRows: ackedRef.current,
       errorMessage: errorMessage ?? null,
+      status: status ?? null,
     });
     if (queued) {
       // what the server holds once this snapshot flushes (a later edit coalesces
       // into it, and the planner keeps this op's original base anyway)
       ackedRef.current = next;
       toast.success(OFFLINE_QUEUED_MESSAGE, { id: "mgmt-offline-queued" });
+    }
+    return queued;
+  }
+
+  // Desktop: while a snapshot of this call sheet still waits in the offline queue,
+  // an edit made after the net came back must JOIN it, not write online - the queued
+  // snapshot is based on the server list from before it, so this person's own
+  // online write would make the flush park her queued venue edit as "เวอร์ชันออนไลน์
+  // ถูกแก้ไขใหม่กว่าของเครื่องนี้", and resolving that loses one of the two edits
+  // (lib/mgmt-write.ts tryQueueBehindPendingChildList; the setlist builder's twin).
+  // Called BEFORE each online write; true = queued, the caller stops there and keeps
+  // its optimistic state. The web never queues, so there it is always false.
+  async function queueBehindPending(next: ScheduleItem[]): Promise<boolean> {
+    const queued = await tryQueueBehindPendingChildList({
+      kind: "schedule.upsert",
+      eventId,
+      tenantId,
+      eventName,
+      rows: next,
+      baseRows: ackedRef.current,
+    });
+    if (queued) {
+      ackedRef.current = next;
+      toast.success(QUEUED_BEHIND_PENDING_MESSAGE, { id: "mgmt-offline-queued" });
     }
     return queued;
   }
@@ -241,7 +274,13 @@ export function ScheduleEditor({
   }
 
   async function persistInner(id: string, partial: Partial<ScheduleItem>) {
-    const { data, error } = await supabase
+    const next = items.map((it) => (it.id === id ? { ...it, ...partial } : it));
+    // Joined the snapshot still queued: that IS saved (on disk, it will flush).
+    if (await queueBehindPending(next)) {
+      save.end(true);
+      return;
+    }
+    const { data, error, status } = await supabase
       .from("schedule_items")
       .update(partial)
       .eq("id", id)
@@ -249,8 +288,7 @@ export function ScheduleEditor({
     if (error) {
       // An offline queue is a SAVE, not a failure — the row is on disk and will
       // flush. Reported as such below, once queueOffline has had its say.
-      const next = items.map((it) => (it.id === id ? { ...it, ...partial } : it));
-      if (await queueOffline(next, error.message)) {
+      if (await queueOffline(next, error.message, status)) {
         save.end(true);
         return;
       }
@@ -285,7 +323,26 @@ export function ScheduleEditor({
     // rename to whatever the day actually is ("ชุด 2", "ก่อนขึ้นเวที").
     const photoRounds = items.filter((i) => i.kind === "photo").length;
     const label = kind === "photo" && photoRounds > 0 ? `รอบ ${photoRounds + 1}` : null;
-    const { data, error } = await supabase
+    // Offline (or joining a snapshot still queued): the row is minted locally
+    // (stable client uuid — no remap on sync).
+    const local: ScheduleItem = {
+      id: newLocalRowId(),
+      tenant_id: tenantId,
+      event_id: eventId,
+      kind,
+      label,
+      location: null,
+      start_time: null,
+      end_time: null,
+      notes: null,
+      sort_order: sort,
+    };
+    if (await queueBehindPending([...items, local])) {
+      setBusy(false);
+      setItems((prev) => [...prev, local]);
+      return;
+    }
+    const { data, error, status } = await supabase
       .from("schedule_items")
       .insert({
         tenant_id: tenantId,
@@ -298,20 +355,7 @@ export function ScheduleEditor({
       .single();
     setBusy(false);
     if (error || !data) {
-      // Offline: mint the row locally (stable client uuid — no remap on sync).
-      const local: ScheduleItem = {
-        id: newLocalRowId(),
-        tenant_id: tenantId,
-        event_id: eventId,
-        kind,
-        label,
-        location: null,
-        start_time: null,
-        end_time: null,
-        notes: null,
-        sort_order: sort,
-      };
-      if (await queueOffline([...items, local], error?.message)) {
+      if (await queueOffline([...items, local], error?.message, status)) {
         setItems((prev) => [...prev, local]);
         return;
       }
@@ -333,14 +377,16 @@ export function ScheduleEditor({
     });
     if (!ok) return;
     const snapshot = items;
+    const next = snapshot.filter((it) => it.id !== id);
     setItems((prev) => prev.filter((it) => it.id !== id));
-    const { data, error } = await supabase
+    if (await queueBehindPending(next)) return;
+    const { data, error, status } = await supabase
       .from("schedule_items")
       .delete()
       .eq("id", id)
       .select("id");
     if (error) {
-      if (await queueOffline(snapshot.filter((it) => it.id !== id), error.message)) return;
+      if (await queueOffline(next, error.message, status)) return;
       toast.error("Delete failed", { description: error.message });
       setItems(snapshot);
       return;
@@ -373,6 +419,7 @@ export function ScheduleEditor({
     // the next ▲ a no-op forever. One at a time; the buttons gate on this.
     setBusy(true);
     try {
+      if (await queueBehindPending(renumbered)) return;
       const results = await Promise.all(
         changed.map((it) =>
           supabase
@@ -384,7 +431,15 @@ export function ScheduleEditor({
       );
       const failed = results.find((r) => r.error);
       if (failed?.error) {
-        if (await queueOffline(renumbered, failed.error.message)) return;
+        // N independent UPDATEs: a row whose write came back with its row IS on the
+        // server even though a sibling failed (a 503 on venue wifi), so the snapshot
+        // queued below must be based on that - or its flush sees "the server moved"
+        // and parks the reorder as a false conflict (setlist builder persistOrder).
+        results.forEach((r, i) => {
+          if (!r.error && Array.isArray(r.data) && r.data.length > 0)
+            ackRow(changed[i].id, { sort_order: changed[i].sort_order });
+        });
+        if (await queueOffline(renumbered, failed.error.message, failed.status)) return;
         toast.error("Reorder failed", { description: failed.error.message });
         setItems(before);
         return;

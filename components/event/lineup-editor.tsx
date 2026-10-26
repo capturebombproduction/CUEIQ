@@ -4,7 +4,14 @@ import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Users, CheckCheck, X } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
-import { OFFLINE_QUEUED_MESSAGE, tryQueueChildList } from "@/lib/mgmt-write";
+import {
+  OFFLINE_QUEUED_MESSAGE,
+  QUEUED_BEHIND_PENDING_MESSAGE,
+  tryQueueBehindPendingChildList,
+  tryQueueChildList,
+} from "@/lib/mgmt-write";
+import { noRowsMessage, wroteNothing } from "@/lib/write-guard";
+import { hasLiveSession } from "@/lib/auth-session";
 import { Button } from "@/components/ui/button";
 import { useConfirm } from "@/components/ui/confirm-dialog";
 import { cn } from "@/lib/utils";
@@ -45,27 +52,65 @@ export function LineupEditor({
   // to be invisible to that - the refresh could read the half-saved list and re-seed the
   // Lineup panel and the Mics tab from it.
   const save = useSaveSignal();
-  /** One lineup write, reported begin -> end. A dead network queues the post-edit set
+
+  // The member set as the SERVER last acknowledged it - the offline guard's base (the
+  // schedule / mic / setlist editors' ackedRef). Moved by each confirmed write's own
+  // change (`landed` below), not by `next`: `next` is the whole screen, which can hold
+  // another toggle still on the wire. Set to `next` when a snapshot is queued - what the
+  // server will hold once it flushes.
+  const ackedRef = useRef<Set<string>>(new Set(initialLineup));
+
+  /** One lineup write, reported begin -> end. While a snapshot of this lineup still
+   *  waits in the desktop queue the edit joins it and nothing goes online (see
+   *  queueBehindPending). A dead network / a sick server queues the post-edit set
    *  offline (queued IS saved: it is on disk and will flush); anything else that failed
-   *  rolls back to `rollback`. A fetch that throws is a failure too, never a stuck "saving". */
+   *  rolls back to `rollback`. A fetch that throws is a failure too, never a stuck
+   *  "saving". `landed` applies this write's change to the acknowledged set. */
   async function write(
-    run: () => PromiseLike<{ error: { message: string } | null }>,
+    run: () => PromiseLike<{
+      data: unknown[] | null;
+      error: { message: string } | null;
+      status?: number | null;
+    }>,
     next: Set<string>,
     rollback: Set<string>,
-    failTitle: string
+    failTitle: string,
+    landed: (acked: Set<string>) => Set<string>
   ) {
     save.begin();
+    if (await queueBehindPending(next)) {
+      save.end(true);
+      return;
+    }
+    let data: unknown[] | null = null;
     let error: { message: string } | null;
+    let status: number | null = null;
     try {
-      ({ error } = await run());
+      const res = await run();
+      ({ data, error } = res);
+      status = res.status ?? null;
     } catch (e) {
       error = { message: e instanceof Error ? e.message : String(e) };
     }
     if (!error) {
+      // No error and no row. With a live session that is the server agreeing: she was
+      // already off (another device took her off first), or เลือกทั้งหมด's upsert
+      // ignored members already in. WITHOUT one it is the reconnect minute (an expired
+      // token whose refresh failed - supabase-js sent the ANON key, RLS matched nothing,
+      // and the write came back with no row and no error; lib/write-guard.ts): nothing
+      // changed, and บันทึกแล้ว here would leave the member on stage on the run sheet,
+      // the JPG, the Excel sheet and the Mic Map seed while this tab shows her gone.
+      if (wroteNothing(data) && !(await hasLiveSession())) {
+        save.end(false);
+        toast.error("ยังไม่ได้บันทึก", { description: await noRowsMessage() });
+        commit(new Set(rollback));
+        return;
+      }
+      ackedRef.current = landed(ackedRef.current);
       save.end(true);
       return;
     }
-    if (await queueOffline(next, rollback, error.message)) {
+    if (await queueOffline(next, error.message, status)) {
       save.end(true);
       return;
     }
@@ -92,13 +137,16 @@ export function LineupEditor({
     if (alive.current) onChange?.([...next]);
   }
 
-  // ⭐#1 step 5: a write that failed on a DEAD NETWORK queues the whole post-edit
-  // member set as one offline snapshot and returns true — keep the optimistic
-  // state. Web (no sink) / real rejections return false → original handling.
+  // ⭐#1 step 5: a write that failed on a DEAD NETWORK (or a 5xx/429 from a server
+  // that is up - pass the response's `status`: the 503 page is HTML in error.message
+  // and matches no network word) queues the whole post-edit member set as one offline
+  // snapshot and returns true — keep the optimistic state. Web (no sink) / real
+  // rejections return false → original handling. The guard's base is ackedRef (what
+  // the server holds), never the screen's set.
   async function queueOffline(
     next: Set<string>,
-    base: Set<string>,
-    errorMessage: string | null | undefined
+    errorMessage: string | null | undefined,
+    status?: number | null
   ): Promise<boolean> {
     const queued = await tryQueueChildList({
       kind: "lineup.upsert",
@@ -106,10 +154,37 @@ export function LineupEditor({
       tenantId,
       eventName,
       rows: Array.from(next),
-      baseRows: Array.from(base),
+      baseRows: Array.from(ackedRef.current),
       errorMessage: errorMessage ?? null,
+      status: status ?? null,
     });
-    if (queued) toast.success(OFFLINE_QUEUED_MESSAGE, { id: "mgmt-offline-queued" });
+    if (queued) {
+      ackedRef.current = new Set(next);
+      toast.success(OFFLINE_QUEUED_MESSAGE, { id: "mgmt-offline-queued" });
+    }
+    return queued;
+  }
+
+  // Desktop: while a snapshot of this lineup still waits in the offline queue, an edit
+  // made after the net came back must JOIN it, not write online - the queued snapshot is
+  // based on the server's set from before it, so this person's own online write would
+  // make the flush park her queued venue edit as "เวอร์ชันออนไลน์ถูกแก้ไขใหม่กว่าของ
+  // เครื่องนี้", and resolving that loses one of the two edits (lib/mgmt-write.ts
+  // tryQueueBehindPendingChildList; the setlist builder's twin). Called BEFORE each
+  // online write (write() above); true = queued, keep the optimistic state.
+  async function queueBehindPending(next: Set<string>): Promise<boolean> {
+    const queued = await tryQueueBehindPendingChildList({
+      kind: "lineup.upsert",
+      eventId,
+      tenantId,
+      eventName,
+      rows: Array.from(next),
+      baseRows: Array.from(ackedRef.current),
+    });
+    if (queued) {
+      ackedRef.current = new Set(next);
+      toast.success(QUEUED_BEHIND_PENDING_MESSAGE, { id: "mgmt-offline-queued" });
+    }
     return queued;
   }
 
@@ -120,14 +195,30 @@ export function LineupEditor({
     if (wasIn) next.delete(memberId);
     else next.add(memberId);
     commit(next);
+    // Both writes ask for their rows back: a 0-row answer is how an anon write shows
+    // itself (see write()).
     await write(
       () =>
         wasIn
-          ? supabase.from("event_members").delete().eq("event_id", eventId).eq("member_id", memberId)
-          : supabase.from("event_members").insert({ tenant_id: tenantId, event_id: eventId, member_id: memberId }),
+          ? supabase
+              .from("event_members")
+              .delete()
+              .eq("event_id", eventId)
+              .eq("member_id", memberId)
+              .select("member_id")
+          : supabase
+              .from("event_members")
+              .insert({ tenant_id: tenantId, event_id: eventId, member_id: memberId })
+              .select("member_id"),
       next,
       lineup,
-      "บันทึกไม่สำเร็จ"
+      "บันทึกไม่สำเร็จ",
+      (acked) => {
+        const s = new Set(acked);
+        if (wasIn) s.delete(memberId);
+        else s.add(memberId);
+        return s;
+      }
     );
   }
 
@@ -140,10 +231,15 @@ export function LineupEditor({
       .map((m) => ({ tenant_id: tenantId, event_id: eventId, member_id: m.id }));
     if (rows.length === 0) return;
     await write(
-      () => supabase.from("event_members").upsert(rows, { onConflict: "event_id,member_id", ignoreDuplicates: true }),
+      () =>
+        supabase
+          .from("event_members")
+          .upsert(rows, { onConflict: "event_id,member_id", ignoreDuplicates: true })
+          .select("member_id"),
       new Set(members.map((m) => m.id)),
       prev,
-      "เลือกทั้งหมดไม่สำเร็จ"
+      "เลือกทั้งหมดไม่สำเร็จ",
+      (acked) => new Set([...acked, ...rows.map((r) => r.member_id)])
     );
   }
 
@@ -158,7 +254,13 @@ export function LineupEditor({
     if (!ok) return;
     const prev = new Set(lineup);
     commit(new Set());
-    await write(() => supabase.from("event_members").delete().eq("event_id", eventId), new Set(), prev, "ล้างไม่สำเร็จ");
+    await write(
+      () => supabase.from("event_members").delete().eq("event_id", eventId).select("member_id"),
+      new Set(),
+      prev,
+      "ล้างไม่สำเร็จ",
+      () => new Set()
+    );
   }
 
   if (members.length === 0) {

@@ -51,11 +51,17 @@ let reporter: { userId: string; tenantId: string | null } | null = null;
  */
 export function reportCaughtRenderError(error: Error & { digest?: string }) {
   if (!reporter) return;
+  // The digest goes IN the message (2026-10-27): it is the only link from a server crash
+  // to its Vercel log line, and in a production browser the message is the same "Minified
+  // React error #441…" for every one of them - and the stack is never empty, so a digest
+  // kept for an empty stack was never kept at all. client-log dedupes on the message, so
+  // with the digest in it a second, different server crash in the tab is still recorded.
+  const msg = error?.message || "render crash";
   void logClientError({
     ...reporter,
     kind: "react",
-    message: error?.message || "render crash",
-    stack: error?.stack ?? (error?.digest ? `digest ${error.digest}` : null),
+    message: error?.digest ? `${msg} [digest ${error.digest}]` : msg,
+    stack: error?.stack ?? null,
   });
 }
 

@@ -137,9 +137,12 @@ export function StaffContactsManager({
     if (!ok) return;
     const snap = rows;
     setRows((prev) => prev.filter((r) => r.id !== id));
-    const { error } = await supabase.from("staff_contacts").delete().eq("id", id);
-    if (error) {
-      toast.error("ลบไม่สำเร็จ", { description: error.message });
+    // asks for its row back like every other write here (lib/write-guard.ts): sent as anon
+    // after a failed token refresh, it deleted nothing and the card came back on reload -
+    // and kept printing in the Overview's "บันทึกเป็นรูป" contacts (2026-10-27)
+    const { data, error } = await supabase.from("staff_contacts").delete().eq("id", id).select("id");
+    if (error || wroteNothing(data)) {
+      toast.error("ลบไม่สำเร็จ", { description: error?.message ?? (await noRowsMessage()) });
       setRows(snap);
     }
   }

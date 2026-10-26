@@ -272,18 +272,25 @@ export function DevInbox({
   }
   async function clearNoise() {
     if (!(await confirm({ title: "ล้าง noise ทั้งหมด?", description: "ลบ error ที่เป็น hydration / localhost ออก — ลบถาวร" }))) return;
-    const noiseIds = errs.filter(isNoise).map((r) => r.id);
-    if (!noiseIds.length) return;
-    setErrs((p) => p.filter((r) => !noiseIds.includes(r.id)));
-    await createClient().from("client_errors").delete().in("id", noiseIds);
+    // delGroup's checked delete (2026-10-27: this one told the admin in green that the
+    // noise was gone while a failed delete left every row in the table)
+    await delGroup(errs.filter(isNoise).map((r) => r.id));
   }
   async function clearAll() {
     if (!(await confirm({ title: "ล้าง error ทั้งหมด?", description: "ลบทุก row ในตาราง client_errors — ลบถาวร" }))) return;
+    const snapshot = errs;
     setErrs([]);
-    // delete via RLS (admin only), bulk by tenant
+    // delete via RLS (admin only), bulk by tenant - and checked, like delGroup: a failed
+    // read or delete showed "ไม่มี error ที่ถูกบันทึก — ดีงาม" over a full table (2026-10-27)
     const supabase = createClient();
-    const { data: tenant } = await supabase.from("tenants").select("id").single();
-    if (tenant) await supabase.from("client_errors").delete().eq("tenant_id", tenant.id);
+    const { data: tenant, error: tenantErr } = await supabase.from("tenants").select("id").single();
+    const { data, error } = tenant
+      ? await supabase.from("client_errors").delete().eq("tenant_id", tenant.id).select("id")
+      : { data: null, error: tenantErr ?? { message: "อ่านข้อมูลค่ายไม่สำเร็จ" } };
+    if (error || (snapshot.length > 0 && wroteNothing(data))) {
+      setErrs(snapshot);
+      toast.error("ลบไม่สำเร็จ", { description: error?.message ?? (await noRowsMessage()) });
+    }
   }
 
   const openCount = fb.filter((r) => r.status !== "done").length;

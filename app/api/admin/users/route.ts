@@ -109,6 +109,17 @@ async function targetEmail(
   return { ok: true, email: data.user?.email ?? null };
 }
 
+/** The auth account no longer exists or is already (soft-)deleted. A lookup that fails
+ *  for any other reason is "not known to be gone" - the caller keeps the error. */
+async function authAccountGone(
+  admin: ReturnType<typeof createAdminClient>,
+  userId: string
+): Promise<boolean> {
+  const { data, error } = await admin.auth.admin.getUserById(userId);
+  if (error) return error.status === 404;
+  return !!(data.user as { deleted_at?: string | null } | null)?.deleted_at;
+}
+
 /** A read this answer depends on failed. Never answer it as "nothing there": a list of
  *  band-less users, saved back from the console, takes every user's bands away. */
 function readFailed() {
@@ -511,10 +522,31 @@ export async function DELETE(req: Request) {
   // auth.uid() null, and the events/feedback guard triggers raise on it - so the
   // whole delete rolled back with "Database error deleting user" on every retry.
   const { error } = await admin.auth.admin.deleteUser(userId, true);
-  if (error) return NextResponse.json({ error: error.message }, { status: 400 });
+  // A retry after a cleanup below failed meets an account that is already deleted: how
+  // GoTrue answers a second soft delete is not ours to rely on, so ask whether it is gone.
+  if (error && !(await authAccountGone(admin, userId))) {
+    return NextResponse.json({ error: error.message }, { status: 400 });
+  }
 
-  await admin.from("group_roles").delete().eq("tenant_id", tenantId).eq("user_id", userId);
-  await admin.from("tenant_members").delete().eq("tenant_id", tenantId).eq("user_id", userId);
+  // A soft delete is an UPDATE of auth.users: nothing cascades any more (the hard delete's
+  // FKs used to take these rows with it, atomically), so these deletes are now the ONLY
+  // thing taking the person out of every audience - reminders and band notices read
+  // group_roles / tenant_members, and the phone's push_subscriptions row kept receiving
+  // them. Each one is checked: a failure is said, and the delete can be pressed again
+  // (2026-10-27).
+  const cleanup = await Promise.all([
+    admin.from("group_roles").delete().eq("tenant_id", tenantId).eq("user_id", userId),
+    admin.from("push_subscriptions").delete().eq("user_id", userId),
+    admin.from("tenant_members").delete().eq("tenant_id", tenantId).eq("user_id", userId),
+  ]);
+  const failed = cleanup.find((r) => r.error);
+  if (failed?.error) {
+    console.error("[admin/users] delete cleanup failed:", failed.error.message);
+    return NextResponse.json(
+      { error: "ปิดบัญชีแล้ว (เข้าใช้ไม่ได้อีก) แต่ยังเอาออกจากวง/ค่ายไม่ครบ — กดลบอีกครั้ง" },
+      { status: 500 }
+    );
+  }
 
   return NextResponse.json({ ok: true });
 }

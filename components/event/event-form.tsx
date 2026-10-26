@@ -100,6 +100,14 @@ export function EventForm({
   const [deadlineNote, setDeadlineNote] = useState(event?.deadline_note ?? "");
   const [notes, setNotes] = useState(event?.notes ?? "");
   const [loading, setLoading] = useState(false);
+  // The form as it opened. An EDIT sends only the fields that differ from it (2026-10-27):
+  // a form left open on the laptop wrote every field back - the show start the phone had
+  // just moved 17:00 → 18:00 went back to 17:00 with a venue fix, and the call sheet, the
+  // setlist clock and Live with it. The songs dialog's rule (19ea761).
+  const [opened] = useState(() => ({
+    name, groupId, eventType, eventDate, showStart, hardOut, venue, mapUrl,
+    costumeTheme, deadline, deadlineNote, notes,
+  }));
 
   // ── Leaving with typed changes ────────────────────────────────────────────────
   // Every other event screen autosaves on blur; this one writes nothing until
@@ -226,21 +234,25 @@ export function EventForm({
         : canApprove || status !== "approved"
           ? { status }
           : {};
+    // create: every field; edit: only what was changed here (see `opened`)
+    const touched = (k: keyof typeof opened, v: string) => mode !== "edit" || v !== opened[k];
     const payload = {
       tenant_id: tenantId,
-      group_id: groupId,
-      name: name.trim(),
-      event_date: eventDate || null,
-      venue: venue.trim() || null,
-      event_type: eventType,
-      show_start_time: showStart || null,
-      hard_out_time: hardOut || null,
+      ...(touched("groupId", groupId) ? { group_id: groupId } : {}),
+      ...(touched("name", name) ? { name: name.trim() } : {}),
+      ...(touched("eventDate", eventDate) ? { event_date: eventDate || null } : {}),
+      ...(touched("venue", venue) ? { venue: venue.trim() || null } : {}),
+      ...(touched("eventType", eventType) ? { event_type: eventType } : {}),
+      ...(touched("showStart", showStart) ? { show_start_time: showStart || null } : {}),
+      ...(touched("hardOut", hardOut) ? { hard_out_time: hardOut || null } : {}),
       ...statusPatch,
-      notes: notes.trim() || null,
-      map_url: mapUrl.trim() || null,
-      costume_theme: costumeTheme.trim() || null,
-      deadline: deadline ? new Date(`${deadline}T23:59:00`).toISOString() : null,
-      deadline_note: deadlineNote.trim() || null,
+      ...(touched("notes", notes) ? { notes: notes.trim() || null } : {}),
+      ...(touched("mapUrl", mapUrl) ? { map_url: mapUrl.trim() || null } : {}),
+      ...(touched("costumeTheme", costumeTheme) ? { costume_theme: costumeTheme.trim() || null } : {}),
+      ...(touched("deadline", deadline)
+        ? { deadline: deadline ? new Date(`${deadline}T23:59:00`).toISOString() : null }
+        : {}),
+      ...(touched("deadlineNote", deadlineNote) ? { deadline_note: deadlineNote.trim() || null } : {}),
     };
 
     // saveEventWrite = the online write it always was; on the desktop it can also
@@ -274,7 +286,8 @@ export function EventForm({
          The check is skipped entirely for the edits that do not move the key, which is
          nearly all of them, so the normal path is unchanged and costs no query. */
       const beforeKey = normalizeFestivalKey(event.name, event.event_date);
-      const afterKey = normalizeFestivalKey(payload.name, payload.event_date);
+      // the form's own values: an unchanged name / date is not in the payload any more
+      const afterKey = normalizeFestivalKey(name.trim(), eventDate || null);
       /* The plan the dialog was built from is deliberately NOT kept: nothing after this
          point acts on it any more. It existed to tell the post-save mover how many rows to
          move, and there is no mover — see the tombstone above. */

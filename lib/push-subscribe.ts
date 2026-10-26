@@ -93,8 +93,12 @@ export async function claimPushSubscription(args: {
   sub: PushSubscription;
 }): Promise<boolean> {
   try {
-    const { error } = await saveSubscription(args.supabase, args.userId, args.tenantId, args.sub);
-    return !error;
+    const { error, status } = await saveSubscription(args.supabase, args.userId, args.tenantId, args.sub);
+    // Only a REFUSAL says the row is someone else's: RLS answers 42501 / HTTP 403. supabase-js
+    // never throws for a dead network - it answers { error, status: 0 } (a 5xx, a timeout
+    // likewise) - and reading those as "not ours" unsubscribed the member's own phone on
+    // venue wifi, with the nudge already dismissed on it (2026-10-27).
+    return !(error && (error.code === "42501" || status === 403));
   } catch {
     return true; // could not ask - claim nothing, take nothing away
   }

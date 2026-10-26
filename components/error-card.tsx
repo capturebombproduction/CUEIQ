@@ -37,6 +37,12 @@ function BackToEvent({ eventId }: { eventId: string | null }) {
  * Thai and show the digest, which is what matches the Vercel log line that
  * logBundleFailure wrote. */
 const NEXT_REDACTED_PREFIX = "An error occurred in the Server Components render";
+/** …and what the same redacted throw says in a PRODUCTION BROWSER (2026-10-27): the prefix
+ *  above comes only from the Node flight client (the server render); the browser's
+ *  client - every render after hydration, every client navigation - builds it as
+ *  `Error(formatProdErrorMessage(441))` (react-server-dom-*-client.browser.production.js
+ *  resolveErrorProd), so in a real browser the card never matched it. */
+const REACT_REDACTED_441 = /^Minified React error #441\b/;
 
 /**
  * The body of every non-global error boundary in the web app.
@@ -103,7 +109,8 @@ export function ErrorCard({
   // redacted arm, blamed a server fetch for a browser bug, and told the user to send
   // a grey code that was not on screen — the box said "ไม่ทราบสาเหตุ".
   const redacted =
-    typeof error.message === "string" && error.message.startsWith(NEXT_REDACTED_PREFIX);
+    typeof error.message === "string" &&
+    (error.message.startsWith(NEXT_REDACTED_PREFIX) || REACT_REDACTED_441.test(error.message));
   const digestLine = error.digest ? `digest: ${error.digest}` : "";
   const details =
     (redacted ? digestLine : [error.message, digestLine].filter(Boolean).join("\n\n")) ||

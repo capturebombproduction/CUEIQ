@@ -247,6 +247,17 @@ export async function POST(req: Request) {
     if (!["admin", "platform_admin", "tenant_owner"].includes(String(callerRole?.role))) {
       return json(req, { error: "forbidden" }, 403);
     }
+    // ...and the author must still be here. Accounts are deleted SOFTLY now, so a deleted
+    // author keeps feedback.user_id and the null check above no longer catches them; their
+    // membership is what the delete takes away (app/api/admin/users, 2026-10-27).
+    const { data: author, error: authorErr } = await admin
+      .from("tenant_members")
+      .select("user_id")
+      .eq("tenant_id", tenantId)
+      .eq("user_id", submitterId)
+      .maybeSingle();
+    if (authorErr) return readFailed(req, "tenant_members", authorErr);
+    if (!author) return noOp(req); // the author's account is gone
     title = "💬 ทีมงานตอบฟีดแบคของคุณแล้ว";
     // The first line of what they originally wrote, so the push says WHICH report.
     const asked = (fb.message as string) ?? "";

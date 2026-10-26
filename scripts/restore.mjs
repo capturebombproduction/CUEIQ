@@ -23,7 +23,10 @@ const client = new S3Client({
   credentials: { accessKeyId: R2_ACCESS_KEY_ID, secretAccessKey: R2_SECRET_ACCESS_KEY },
 });
 
-// Find the newest object under backups/.
+// Find the newest GOOD object under backups/. A night whose dump failed is kept under
+// backups/partial/ (lib/backup-keys.ts) and must never be "the latest backup" - after a
+// night with a rotated key it holds no table at all (2026-10-27).
+const PARTIAL_BACKUP_PREFIX = "backups/partial/";
 let token;
 let newest = null;
 do {
@@ -31,6 +34,7 @@ do {
     new ListObjectsV2Command({ Bucket: R2_BUCKET, Prefix: "backups/", ContinuationToken: token })
   );
   for (const o of res.Contents ?? []) {
+    if (o.Key?.startsWith(PARTIAL_BACKUP_PREFIX)) continue;
     if (!newest || o.LastModified > newest.LastModified) newest = o;
   }
   token = res.IsTruncated ? res.NextContinuationToken : undefined;
@@ -53,13 +57,17 @@ const total = Object.values(counts).reduce((a, b) => a + b, 0);
 console.log(`generatedAt: ${snap.generatedAt} · commit: ${snap.commit ?? "?"}`);
 console.log(`tables: ${Object.keys(snap.data ?? {}).length} · rows: ${total}`);
 for (const [t, n] of Object.entries(counts).sort()) console.log(`  ${t}: ${n}`);
-if (snap.errors && Object.keys(snap.errors).length) {
-  console.log("dump errors:", snap.errors);
-}
+const dumpFailed = !!(snap.errors && Object.keys(snap.errors).length);
+if (dumpFailed) console.log("dump errors:", snap.errors);
 
 const outArg = process.argv.indexOf("--out");
 const out = outArg > -1 ? process.argv[outArg + 1] : `backups/restored-${newest.Key.split("/").pop()}`;
 mkdirSync("backups", { recursive: true });
 writeFileSync(out, text);
 console.log(`saved local copy -> ${out}`);
+// A snapshot with a failed table is NOT a good backup, however cleanly it parses.
+if (dumpFailed) {
+  console.error("\nNOT OK — this snapshot is missing tables (see dump errors above).");
+  process.exit(2);
+}
 console.log("\nOK — backup is retrievable + parses cleanly.");
