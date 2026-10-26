@@ -186,4 +186,11 @@ describe("main.cjs — the restart box never restarts on a stray key", () => {
     expect(fn).toContain("cancelId: 1,");
     expect(fn).toContain("if (response === 0) await installUpdate();");
   });
+
+  it("the launch box's default (and cancel) button is ไว้ก่อน (Space = START)", () => {
+    const fn = slice("async function promptAtLaunch(version)", /\r?\n\}\r?\n/);
+    expect(fn).toContain('buttons: ["อัปเดตเลย", "ไว้ก่อน"]');
+    expect(fn).toContain("defaultId: 1,");
+    expect(fn).toContain("cancelId: 1,");
+  });
 });

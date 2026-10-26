@@ -40,6 +40,10 @@ const GUARDED_FILES = [
   // back, so an anon delete in the reconnect minute removed nobody and the tab said
   // บันทึกแล้ว (lineup-editor.anon-delete.test.tsx).
   "components/event/lineup-editor.tsx",
+  // 2026-10-27 (hunt 3): the Artists page's member and band deletes read only `error`, so
+  // an anon delete took the row off the screen and it was back on the next load
+  // (group-manager.anon-delete.test.tsx).
+  "components/group/group-manager.tsx",
 ];
 
 /** Opt-out marker: put it in a comment within 8 lines above the write. */

@@ -11,6 +11,7 @@ import { useConfirm } from "@/components/ui/confirm-dialog";
 import { captureElementToImage, safeFileStem } from "@/lib/export-image";
 import { privateChannel, runOrderTopic } from "@/lib/realtime";
 import { compareRunOrder, hasRunOrderTie } from "@/lib/run-order-sort";
+import { parseClockToSeconds } from "@/lib/time";
 import { cn } from "@/lib/utils";
 
 export type RunSequence = {
@@ -49,6 +50,46 @@ const KINDS: { value: string; label: string }[] = [
 ];
 
 const hhmm = (t: string | null) => (t ? t.slice(0, 5) : "");
+
+/**
+ * The stage slots in the order the day plays them (2026-10-27). A plain "HH:MM:SS"
+ * string sort put an evening festival's after-midnight closer (21:00 … 23:00, then
+ * 00:30) FIRST: นำเข้าจากเวทีวง seeded it as row 1, the board's เริ่มงาน named it, the
+ * run-status card projected the evening from 00:30, and a band booked on both sides of
+ * midnight got its "(รอบ 1)" / "(รอบ 2)" the wrong way round. The day is a circle, so the
+ * show begins after its LONGEST quiet stretch: sort by clock, then start at the slot
+ * that follows the widest gap - the wrap from the last slot round to the first counts
+ * too, and wins a tie, so a show that never crosses midnight keeps the plain clock
+ * order. One anchor cannot do this (dayOrderSeconds in lib/clone-event.ts, keyed to the
+ * earliest slot): anchored on a lone 00:30 it puts a daytime show's evening sets before
+ * its morning. A start that is not a clock time sorts after every timed one, by text.
+ */
+function slotsInPlayOrder(slots: RunBandEvent[]): RunBandEvent[] {
+  const timed: { b: RunBandEvent; sec: number }[] = [];
+  const other: RunBandEvent[] = [];
+  for (const b of slots) {
+    const sec = parseClockToSeconds(b.stage_start);
+    if (sec == null) other.push(b);
+    else timed.push({ b, sec });
+  }
+  timed.sort((x, y) => x.sec - y.sec);
+  let first = 0;
+  if (timed.length > 1) {
+    let widest = timed[0].sec + 86400 - timed[timed.length - 1].sec;
+    for (let i = 1; i < timed.length; i++) {
+      const gap = timed[i].sec - timed[i - 1].sec;
+      if (gap > widest) {
+        widest = gap;
+        first = i;
+      }
+    }
+  }
+  return [
+    ...[...timed.slice(first), ...timed.slice(0, first)].map((t) => t.b),
+    ...other.sort((x, y) => ((x.stage_start ?? "") < (y.stage_start ?? "") ? -1 : 1)),
+  ];
+}
+
 // The native selects wear the Input primitive's field (FIELD: the ≥3:1 --input
 // boundary) at its height, and 16 px text below sm — iOS zooms the whole page into
 // any focused field under 16 px and never zooms back.
@@ -425,9 +466,8 @@ export function RunOrderBuilder({
   // slot gets BOTH lines — de-duping on linked_event_id alone (what this did) gave it
   // one, and the missing slot was simply never called on the day.
   async function importBands() {
-    const slots = bandEvents
-      .filter((b) => b.stage_start)
-      .sort((x, y) => (x.stage_start! < y.stage_start! ? -1 : 1));
+    // in the order the day plays them, across midnight too (slotsInPlayOrder)
+    const slots = slotsInPlayOrder(bandEvents.filter((b) => b.stage_start));
     const perBand = new Map<string, RunBandEvent[]>(); // this band's slots, in play order
     for (const b of slots) {
       const list = perBand.get(b.id);

@@ -39,7 +39,8 @@ export function cspMessage(v: CspViolation): string {
 }
 
 /** Who a render crash caught by the in-app error card is reported as - set by the
- *  ErrorMonitor the (app) layout mounts (null outside it: the root error page). */
+ *  ErrorMonitor the (app) layout mounts, and kept after it unmounts (see there); null
+ *  until one has mounted (a crash before sign-in reports nothing). */
 let reporter: { userId: string; tenantId: string | null } | null = null;
 
 /**
@@ -79,12 +80,15 @@ export function ErrorMonitor({
 }) {
   // A layout effect: it runs before any passive effect of the same commit, so an
   // error card that renders on the very first paint still finds who to report as.
+  // NOT cleared on unmount (2026-10-27). A crash in the shell itself - the header, the
+  // bell, the tab bar, the account panel, a getWorkspace() throw on a refresh - is caught
+  // by app/error.tsx, the boundary AROUND the (app) layout, which unmounts this monitor:
+  // its cleanup emptied `reporter` before the root card's effect reported, and none of
+  // those crashes ever reached the Dev Inbox. The last identity is safe to keep: the
+  // client_errors insert policy accepts only user_id = auth.uid() of a tenant member, so
+  // a row sent after a sign-out or as another account is refused, never misattributed.
   useLayoutEffect(() => {
-    const me = { userId, tenantId };
-    reporter = me;
-    return () => {
-      if (reporter === me) reporter = null;
-    };
+    reporter = { userId, tenantId };
   }, [userId, tenantId]);
   useEffect(() => {
     const onError = (e: ErrorEvent) => {

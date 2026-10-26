@@ -166,18 +166,23 @@ async function authEmailById(
  * Is `userId` a member of THIS tenant? Guards the service-role mutations (which can
  * otherwise reach any account globally) so a tenant admin can only touch accounts
  * inside their own label — defense-in-depth for a future multi-tenant deployment.
+ *
+ * `null` = the read itself failed (2026-10-27): callers answer readFailed(), never the
+ * 404 "ไม่พบผู้ใช้นี้ในค่ายของคุณ" - a DB hiccup used to tell the admin the person was not
+ * in the label at all.
  */
 async function isTenantMember(
   admin: ReturnType<typeof createAdminClient>,
   tenantId: string,
   userId: string
-): Promise<boolean> {
-  const { data } = await admin
+): Promise<boolean | null> {
+  const { data, error } = await admin
     .from("tenant_members")
     .select("user_id")
     .eq("tenant_id", tenantId)
     .eq("user_id", userId)
     .maybeSingle();
+  if (error) return null;
   return !!data;
 }
 
@@ -367,8 +372,12 @@ export async function PATCH(req: Request) {
 
   // The target must belong to the caller's tenant — don't let a tenant admin reset
   // a password / change roles on an account outside their own label by guessing an id.
-  if (userId !== gate.callerId && !(await isTenantMember(admin, gate.tenantId, userId))) {
-    return NextResponse.json({ error: "ไม่พบผู้ใช้นี้ในค่ายของคุณ" }, { status: 404 });
+  if (userId !== gate.callerId) {
+    const inTenant = await isTenantMember(admin, gate.tenantId, userId);
+    if (inTenant === null) return readFailed();
+    if (!inTenant) {
+      return NextResponse.json({ error: "ไม่พบผู้ใช้นี้ในค่ายของคุณ" }, { status: 404 });
+    }
   }
 
   // Master Admin can only be modified by itself — block other admins (covers both
@@ -497,7 +506,9 @@ export async function DELETE(req: Request) {
 
   // The target must belong to the caller's tenant — deleteUser() removes the auth
   // account globally, so gate it on membership first (never reach another label).
-  if (!(await isTenantMember(admin, tenantId, userId))) {
+  const inTenant = await isTenantMember(admin, tenantId, userId);
+  if (inTenant === null) return readFailed();
+  if (!inTenant) {
     return NextResponse.json({ error: "ไม่พบผู้ใช้นี้ในค่ายของคุณ" }, { status: 404 });
   }
 
@@ -534,19 +545,28 @@ export async function DELETE(req: Request) {
   // group_roles / tenant_members, and the phone's push_subscriptions row kept receiving
   // them. Each one is checked: a failure is said, and the delete can be pressed again
   // (2026-10-27).
-  const cleanup = await Promise.all([
-    admin.from("group_roles").delete().eq("tenant_id", tenantId).eq("user_id", userId),
-    admin.from("push_subscriptions").delete().eq("user_id", userId),
-    admin.from("tenant_members").delete().eq("tenant_id", tenantId).eq("user_id", userId),
-  ]);
-  const failed = cleanup.find((r) => r.error);
-  if (failed?.error) {
-    console.error("[admin/users] delete cleanup failed:", failed.error.message);
+  // tenant_members goes LAST, only once the other two are gone (2026-10-27, hunt 3): it
+  // is the row the isTenantMember gate above reads, so when it landed beside a failed
+  // group_roles delete the "กดลบอีกครั้ง" retry met a 404 and the leftovers stayed for good.
+  const cleanupFailed = (message: string) => {
+    console.error("[admin/users] delete cleanup failed:", message);
     return NextResponse.json(
       { error: "ปิดบัญชีแล้ว (เข้าใช้ไม่ได้อีก) แต่ยังเอาออกจากวง/ค่ายไม่ครบ — กดลบอีกครั้ง" },
       { status: 500 }
     );
-  }
+  };
+  const cleanup = await Promise.all([
+    admin.from("group_roles").delete().eq("tenant_id", tenantId).eq("user_id", userId),
+    admin.from("push_subscriptions").delete().eq("user_id", userId),
+  ]);
+  const failed = cleanup.find((r) => r.error);
+  if (failed?.error) return cleanupFailed(failed.error.message);
+  const { error: memberErr } = await admin
+    .from("tenant_members")
+    .delete()
+    .eq("tenant_id", tenantId)
+    .eq("user_id", userId);
+  if (memberErr) return cleanupFailed(memberErr.message);
 
   return NextResponse.json({ ok: true });
 }

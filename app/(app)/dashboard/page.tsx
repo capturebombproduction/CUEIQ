@@ -45,7 +45,7 @@ export default async function DashboardPage() {
   // for anyone who cannot drive Live Mode — the practice room its "ซ้อม" opens.
   // Best-effort: a failed read here only drops those two extras, never the list.
   const canRunLive = canLiveEdit(ws.perms);
-  const [eventsRes, { data: tplRows }, { data: callRows }, { data: roomRows }, { data: runRows }] = await Promise.all([
+  const [eventsRes, { data: tplRows }, { data: callRows, error: callErr }, { data: roomRows }, { data: runRows }] = await Promise.all([
     supabase
       .from("events")
       .select("*, groups(name, color, exempt_from_deadline)")
@@ -90,10 +90,15 @@ export default async function DashboardPage() {
   // season of shows (lib/read-guard.ts; 2026-10-24 review). The error boundary retries.
   assertReadsSucceeded("DashboardPage", { "รายการงาน": eventsRes });
   const data = eventsRes.data;
-  const callTimes = callTimeByEvent(
-    (callRows ?? []) as { event_id: string; start_time: string | null; kind: string | null }[],
-    Object.fromEntries((data ?? []).map((e) => [e.id, e.show_start_time]))
-  );
+  // A FAILED read is "unknown" (undefined: the ticket leaves its นัด cell out), never {} -
+  // which EventsList reads as "read, and this show has no call" and printed "นัด —" on the
+  // one cell members open the dashboard for, ~2 h before stage (2026-10-27 hunt).
+  const callTimes = callErr
+    ? undefined
+    : callTimeByEvent(
+        (callRows ?? []) as { event_id: string; start_time: string | null; kind: string | null }[],
+        Object.fromEntries((data ?? []).map((e) => [e.id, e.show_start_time]))
+      );
   const roomByGroup = practiceRoomByGroup(
     (roomRows ?? []) as { id: string; group_id: string }[],
     (runRows ?? []) as { event_id: string | null; group_id: string }[]

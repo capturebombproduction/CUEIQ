@@ -459,6 +459,10 @@ export function LiveMode({
   // online sync: which Storage path this device currently holds locally (per item),
   // and which items are busy uploading/downloading (for the UI spinner).
   const cachedPathRef = useRef<Record<string, string | null>>({});
+  // Rows whose file was picked HERE and is not linked online yet: an old master still on
+  // its way must not replace it (handleFileChange). Cleared when the link lands, or when
+  // the row's bytes are dropped as another song's (dropHeldAudio).
+  const pickedRef = useRef<Set<string>>(new Set());
   const [audioBusy, setAudioBusy] = useState<Record<string, "up" | "down">>({});
   // which download-effect run set an item's busy flag — so a superseded run can
   // still clear its own flag without clobbering a newer run's active download
@@ -1343,6 +1347,7 @@ export function LiveMode({
     const url = audioUrlsRef.current[id];
     if (url) URL.revokeObjectURL(url);
     delete cachedPathRef.current[id];
+    pickedRef.current.delete(id); // the row is another song now: its file is downloaded again
     const without = <T,>(prev: Record<string, T>) => {
       if (!(id in prev)) return prev;
       const next = { ...prev };
@@ -1354,9 +1359,13 @@ export function LiveMode({
     deleteAudio(eventId, id).catch(() => {});
   }
 
+  // A local source wins over the R2 key, as it does at playback (the source ladder in the
+  // download effect). Asked the key first, a row whose master this device already held
+  // never reached that ladder: a take replaced at a no-wifi venue (queued upload) or
+  // "ใช้ไฟล์ในเครื่องนี้" played the OLD master with every indicator green (2026-10-27).
   function audioVersionOf(it: { song_id?: string | null; audio_path?: string | null }) {
-    if (it.audio_path) return it.audio_path;
     if (it.song_id && localSongIdsRef.current.has(it.song_id)) return `local:${it.song_id}`;
+    if (it.audio_path) return it.audio_path;
     return null;
   }
 
@@ -1378,8 +1387,8 @@ export function LiveMode({
         .map(
           (it) =>
             `${it.id}:${
-              it.audio_path ??
-              (it.song_id && localSongIds.has(it.song_id) ? `local:${it.song_id}` : "")
+              // the same order as audioVersionOf: a local source first
+              it.song_id && localSongIds.has(it.song_id) ? `local:${it.song_id}` : it.audio_path ?? ""
             }`
         )
         .join("|"),
@@ -1435,6 +1444,7 @@ export function LiveMode({
         deferredOnAirRef.current.delete(it.id);
         // already holding this exact version locally? skip.
         if (cachedPathRef.current[it.id] === version && audioUrlsRef.current[it.id]) continue;
+        if (pickedRef.current.has(it.id)) continue; // the operator's own pick (see pickedRef)
         setAudioBusy((prev) => ({ ...prev, [it.id]: "down" }));
         busyOwnerRef.current[it.id] = runId;
         try {
@@ -1481,7 +1491,10 @@ export function LiveMode({
           // path stays NULL for a local-only row — that is how audio-store marks
           // "the only copy that exists", and audio-prefetch's orphan sweep skips
           // exactly those records rather than deleting bytes it can't re-fetch.
-          saveAudio(eventId, it.id, blob, name, path).catch(() => {});
+          // NULL too for a local OVERRIDE of a row that has a master: filed under the R2
+          // key, the record vouched for those bytes AS that master, and after
+          // "กลับไปใช้ต้นฉบับ" the next open played the discarded take (2026-10-27).
+          saveAudio(eventId, it.id, blob, name, local?.blob ? null : path).catch(() => {});
           /* …and tell the SHARED library cache too, but only about bytes that BELONG in it:
              · `fromNetwork` — a cache hit is already filed, and a per-device local override
                has no `path` to file it under (that null is how audio-store marks "the only
@@ -1509,6 +1522,14 @@ export function LiveMode({
           // retry once the row leaves the air is a local read, not a second download.
           if (onAirRow(it.id) && audioUrlsRef.current[it.id]) {
             deferredOnAirRef.current.add(it.id);
+            // a superseded run stops here, as the swap below does - walking on, it
+            // downloaded the rest of the set alongside the newer run (2026-10-27)
+            if (cancelled) return;
+            continue;
+          }
+          // Picked in Live while this was on its way: the pick wins (see pickedRef).
+          if (pickedRef.current.has(it.id)) {
+            if (cancelled) return;
             continue;
           }
           cachedPathRef.current[it.id] = version;
@@ -2808,6 +2829,9 @@ export function LiveMode({
 
     // instant local playback - the old URL may still be sounding (see retireUrl)
     if (audioUrls[itemId]) retireUrl(itemId, audioUrls[itemId]);
+    // before the URL exists: a download of the row's OLD master landing after this pick
+    // minted itself over it and revoked the pick (2026-10-27) - see pickedRef
+    pickedRef.current.add(itemId);
     const url = URL.createObjectURL(file);
     setAudioUrls((prev) => ({ ...prev, [itemId]: url }));
     setAudioNames((prev) => ({ ...prev, [itemId]: file.name }));
@@ -2877,6 +2901,7 @@ export function LiveMode({
       void writeSongFileFacts(supabase, { id: songId, duration_seconds: item.duration_seconds, bpm: null }, path, file);
       songAudioRef.current[songId] = { path, name: file.name };
       cachedPathRef.current[itemId] = path;
+      pickedRef.current.delete(itemId); // linked: this IS the row's master now
       setItems((prev) =>
         prev.map((it) =>
           it.id === itemId
@@ -4485,7 +4510,9 @@ export function LiveMode({
     ) {
       const { id, prevVol, handedOver } = loopFadeRef.current;
       loopFadeRef.current = null;
-      if (!handedOver || id !== playingId || !state.running) {
+      // Paused is not "moved off": PAUSE → MANUAL → RUN gave a bed back the level the
+      // operator's Auto Mute had taken over (2026-10-27). A reset clears playingId.
+      if (!handedOver || id !== playingId) {
         // not setVolumeFor: that drops a duck entry (fadeKey), and the track would keep
         // the MC's 30 as its level; the duck effect below gives the pre-duck level back
         fadeVolumeFor(id, prevVol, 0);

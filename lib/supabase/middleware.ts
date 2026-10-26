@@ -3,7 +3,10 @@ import { NextResponse, type NextRequest } from "next/server";
 
 // Every authenticated (app) route — so an unauthenticated hit redirects at the
 // edge instead of rendering the layout first (the layout also guards, as defense
-// in depth). Keep in sync with the routes under app/(app).
+// in depth). Keep in sync with the routes under app/(app) -
+// middleware.protected-prefixes.test.ts fails on a route missing here. /crew and
+// /feedback were (2026-10-27): a signed-out tap on the feedback-reply push got the
+// layout's bare redirect("/login"), lost `next`, and landed on /dashboard.
 const PROTECTED_PREFIXES = [
   "/dashboard",
   "/events",
@@ -12,6 +15,8 @@ const PROTECTED_PREFIXES = [
   "/groups",
   "/library",
   "/practice",
+  "/crew",
+  "/feedback",
 ];
 const AUTH_PAGES = ["/login", "/register"];
 

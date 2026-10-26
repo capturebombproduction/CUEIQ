@@ -61,7 +61,11 @@ export function useFullscreen(): { fs: boolean; available: boolean; toggle: () =
   const [fs, setFs] = useState(false);
   const [available, setAvailable] = useState(false);
   useEffect(() => {
-    setAvailable(!isStandalone() && fsSupported());
+    // …and always while the page IS fullscreen (2026-10-27): Chromium reports
+    // (display-mode: fullscreen) for a tab in HTML fullscreen, so isStandalone() read
+    // the fullscreen this switch had turned on as an installed app, and the panel,
+    // reopened to turn it off, had no switch left (Esc was the only way out).
+    setAvailable(fsSupported() && (!isStandalone() || !!document.fullscreenElement));
     const onChange = () => setFs(!!document.fullscreenElement);
     document.addEventListener("fullscreenchange", onChange);
     onChange();

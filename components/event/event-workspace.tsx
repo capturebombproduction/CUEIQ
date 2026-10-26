@@ -284,9 +284,20 @@ export function EventWorkspace({
     const stale: string[] = [];
     let lineupMoved = false;
     for (const [tab, fingerprint] of Object.entries(seeds)) {
-      if (tab === view) continue; // active tab: the user's state wins, never remount
       const before = seededWith.current[tab];
       seededWith.current[tab] = fingerprint;
+      // Active tab: the user's state wins, never remount — and the data that arrived
+      // while it was active counts as SEEN (2026-10-27). It used to be skipped before
+      // this record, so the fingerprint stayed the one from before the refresh and the
+      // panel was re-keyed the moment it was LEFT, from props older than its own edits:
+      // บันทึก / อัปเดต on Schedule brings back row = B, the Ar then saves C, switches
+      // tab, and the panel comes back showing B — and its next blur writes B over C (a
+      // trimmed song length back, and Live's AUTO cuts on the old one). The live lineup
+      // was taken back from that same old list, so a member taken off after the refresh
+      // was on a Mics tile again and in the first เพิ่มไมค์'s seed (the round-15 bug).
+      // The active editor already holds everything it wrote; the next refresh that
+      // lands while it is hidden still re-seeds it if the server moved on.
+      if (tab === view) continue;
       // The live lineup follows the server on exactly the terms the Lineup panel is
       // re-seeded on (same fingerprint, same "not while it is the active tab"), so
       // the panel and the tabs that read its list never disagree. Opened or not: an
@@ -326,7 +337,7 @@ export function EventWorkspace({
       view !== "summary" &&
       (typeof navigator === "undefined" || navigator.onLine)
     ) {
-      router.refresh();
+      void refreshOnceSaved();
     }
     setView(v);
     if (typeof window !== "undefined") {
@@ -340,6 +351,22 @@ export function EventWorkspace({
         window.history.replaceState(null, "", `#${v}`);
       }
     }
+  }
+
+  // A refresh re-seeds every HIDDEN panel whose server data changed — from what the
+  // server held when the refresh READ it. Both refreshes here follow a blur (the click
+  // on Summary or on บันทึก / อัปเดต takes focus from the field being edited), and that
+  // blur has just STARTED the field's save: refreshing at once raced it, and a read
+  // that won the race re-seeded the panel just left without the last edit — which its
+  // next blur then wrote back over the server (2026-10-27). So wait for the writes on
+  // the wire to land first (bounded, as confirmSaved's own wait: past it, refresh
+  // anyway). Nothing pending — the usual case — refreshes at once, synchronously.
+  async function refreshOnceSaved() {
+    const deadline = Date.now() + 2500;
+    while (unsavedWork().pending > 0 && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    router.refresh();
   }
 
   // Reassurance "save" — data already auto-saves on edit; this just pulls fresh
@@ -356,12 +383,9 @@ export function EventWorkspace({
     // that write in flight and call a perfectly healthy autosave "ยังไม่ได้บันทึก"
     // — on the single most common path this button has. Only `failed` is an answer
     // at this instant, so give the writes a moment to land and then judge on that.
+    // (The refresh waits for them too — see refreshOnceSaved.)
     commitFocusedField();
-    router.refresh();
-    const deadline = Date.now() + 2500;
-    while (unsavedWork().pending > 0 && Date.now() < deadline) {
-      await new Promise((r) => setTimeout(r, 100));
-    }
+    await refreshOnceSaved();
     const { pending, failed } = unsavedWork();
     if (failed > 0) {
       toast.error("ยังบันทึกไม่ครบ", {

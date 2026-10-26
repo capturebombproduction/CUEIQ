@@ -35,11 +35,27 @@ export function GroupManager({
   // replaces the one on screen. It was read once at mount, so the bar promised the
   // latest data - a member another Ar added never appeared, and new sort orders were
   // worked out from the stale list (2026-10-27; the Library's twin, c4388cf).
-  const [seenInitial, setSeenInitial] = useState({ initialGroups, initialMembers });
+  // Adopted when the CONTENT changed, each list on its own - not on a new array alone
+  // (2026-10-27, hunt 3): the desktop Artists page handed in a fresh `bands` array on
+  // every re-render (auth-js' SIGNED_IN on each return to the window, the hourly
+  // TOKEN_REFRESHED), and each one put the roster back to the first fetch - a member
+  // just added vanished, and since every field saves on blur, tabbing through wrote the
+  // old name / mic number over the newer one. A page copy that only re-arrived equal
+  // carries nothing newer than what is on screen.
+  const [seenInitial, setSeenInitial] = useState(() => ({
+    initialGroups,
+    initialMembers,
+    groupsKey: JSON.stringify(initialGroups),
+    membersKey: JSON.stringify(initialMembers),
+  }));
   if (initialGroups !== seenInitial.initialGroups || initialMembers !== seenInitial.initialMembers) {
-    setSeenInitial({ initialGroups, initialMembers });
-    setGroups(initialGroups);
-    setMembers(initialMembers);
+    const groupsKey =
+      initialGroups === seenInitial.initialGroups ? seenInitial.groupsKey : JSON.stringify(initialGroups);
+    const membersKey =
+      initialMembers === seenInitial.initialMembers ? seenInitial.membersKey : JSON.stringify(initialMembers);
+    setSeenInitial({ initialGroups, initialMembers, groupsKey, membersKey });
+    if (groupsKey !== seenInitial.groupsKey) setGroups(initialGroups);
+    if (membersKey !== seenInitial.membersKey) setMembers(initialMembers);
   }
   const [newGroup, setNewGroup] = useState("");
   const [busy, setBusy] = useState(false);
@@ -113,23 +129,34 @@ export function GroupManager({
     // Gather the R2 audio keys this delete will orphan BEFORE the DB cascade wipes
     // the rows: every library song's file + any legacy per-item file on the group's
     // events. (The cascade only removes DB rows, not the R2 objects.)
+    // A read that FAILED is not "no files" (2026-10-27): going on would cascade the rows
+    // away with their masters still on R2 - unreachable from then on (see below). Refuse,
+    // before anything is touched, and let the delete be pressed again.
+    const readFailed = (error: { message: string }) => {
+      toast.error("ลบไม่สำเร็จ", {
+        description: `อ่านรายการไฟล์เสียงของวงไม่สำเร็จ ยังไม่ได้ลบอะไร ลองใหม่อีกครั้ง (${error.message})`,
+      });
+    };
     const r2Keys = new Set<string>();
-    const { data: songRows } = await supabase
+    const { data: songRows, error: songsErr } = await supabase
       .from("songs")
       .select("audio_path")
       .eq("group_id", g.id);
+    if (songsErr) return readFailed(songsErr);
     (songRows ?? []).forEach((s) => s.audio_path && r2Keys.add(s.audio_path));
-    const { data: evRows } = await supabase
+    const { data: evRows, error: evErr } = await supabase
       .from("events")
       .select("id")
       .eq("group_id", g.id);
+    if (evErr) return readFailed(evErr);
     const evIds = (evRows ?? []).map((e) => e.id as string);
     if (evIds.length) {
-      const { data: itemRows } = await supabase
+      const { data: itemRows, error: itemsErr } = await supabase
         .from("setlist_items")
         .select("audio_path")
         .in("event_id", evIds)
         .not("audio_path", "is", null);
+      if (itemsErr) return readFailed(itemsErr);
       (itemRows ?? []).forEach((i) => i.audio_path && r2Keys.add(i.audio_path));
     }
 
@@ -160,15 +187,19 @@ export function GroupManager({
         : keys.length;
     }
 
-    const { error } = await supabase.from("groups").delete().eq("id", g.id);
-    if (error) {
+    // Asks for its row back (lib/write-guard.ts): sent as anon after a failed token
+    // refresh, the delete matched no row with no error - the band vanished from the
+    // screen and was back on the next load (2026-10-27).
+    const { data: delRows, error } = await supabase.from("groups").delete().eq("id", g.id).select("id");
+    if (error || wroteNothing(delRows)) {
       // Deleting the audio first means a failed row delete leaves the band alive with
       // its files already gone — say so, or the missing audio looks like a bug later.
+      const why = error?.message ?? (await noRowsMessage());
       const gone = keys.length - failed;
       toast.error("ลบไม่สำเร็จ", {
         description: gone
-          ? `${error.message} — แต่ไฟล์เสียงของวงถูกลบไปแล้ว ${gone} ไฟล์ ต้องอัปโหลดใหม่`
-          : error.message,
+          ? `${why} — แต่ไฟล์เสียงของวงถูกลบไปแล้ว ${gone} ไฟล์ ต้องอัปโหลดใหม่`
+          : why,
       });
       setGroups(snapG);
       setMembers(snapM);
@@ -272,9 +303,12 @@ export function GroupManager({
     if (!ok) return;
     const snap = members;
     setMembers((prev) => prev.filter((x) => x.id !== id));
-    const { error } = await supabase.from("members").delete().eq("id", id);
-    if (error) {
-      toast.error("ลบไม่สำเร็จ", { description: error.message });
+    // Asks for its row back like the roster's other writes (lib/write-guard.ts): sent as
+    // anon after a failed token refresh it deleted nobody, and the member was back on
+    // the next load - and in the Lineup and the Mic Map (2026-10-27).
+    const { data, error } = await supabase.from("members").delete().eq("id", id).select("id");
+    if (error || wroteNothing(data)) {
+      toast.error("ลบไม่สำเร็จ", { description: error?.message ?? (await noRowsMessage()) });
       setMembers(snap);
     }
   }

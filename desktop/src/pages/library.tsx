@@ -17,6 +17,9 @@ import { useWorkspace } from "~/data/workspace-context";
 export function Library() {
   const { ws } = useWorkspace();
   const [songs, setSongs] = useState<Song[] | null>(null);
+  // Served from the read-cache rather than a fresh read: SongLibrary must not sweep the
+  // song cache against it (its GC effect).
+  const [fromCache, setFromCache] = useState(false);
   const [loadError, setLoadError] = useState(false);
   const bands = ws ? viewableGroups(ws.perms, ws.groups) : [];
   const ids = bands.map((g) => g.id);
@@ -55,6 +58,7 @@ export function Library() {
         return;
       }
       setLoadError(false);
+      setFromCache(rows === null);
       setSongs(served);
     })();
     return () => {
@@ -109,6 +113,7 @@ export function Library() {
           tenantId={ws.membership.tenant_id}
           groups={bands}
           initialSongs={songs}
+          fromCache={fromCache}
           perms={ws.perms}
           toolbarEnd={<RefreshButton variant="secondary" className="h-[46px] px-3" />}
         />

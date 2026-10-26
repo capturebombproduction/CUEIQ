@@ -30,7 +30,11 @@ import {
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
-import { MyFeedbackList, announceFeedbackSent } from "@/components/my-feedback-list";
+import {
+  FEEDBACK_UNREAD_EVENT,
+  MyFeedbackList,
+  announceFeedbackSent,
+} from "@/components/my-feedback-list";
 import {
   Dialog,
   DialogContent,
@@ -97,9 +101,24 @@ export function FeedbackUnreadProvider({
 }) {
   const [unread, setUnread] = useState(0);
   const [draft, setDraft] = useState<Draft>(EMPTY_DRAFT);
+  // A list that read (or stamped) this person's answers says how many are unread now -
+  // the /feedback page's own list included (FEEDBACK_UNREAD_EVENT). Newer than the
+  // mount read below whenever it arrives after that read STARTED.
+  const listSaidRef = useRef(0);
+  useEffect(() => {
+    const onUnread = (e: Event) => {
+      const n = (e as CustomEvent<number>).detail;
+      if (typeof n !== "number") return;
+      listSaidRef.current += 1;
+      setUnread(n);
+    };
+    window.addEventListener(FEEDBACK_UNREAD_EVENT, onUnread);
+    return () => window.removeEventListener(FEEDBACK_UNREAD_EVENT, onUnread);
+  }, []);
   useEffect(() => {
     if (!userId) return;
     let alive = true;
+    const asked = listSaidRef.current;
     createClient()
       .from("feedback")
       .select("id")
@@ -107,7 +126,8 @@ export function FeedbackUnreadProvider({
       .not("reply", "is", null)
       .is("reply_seen_at", null)
       .then(({ data }) => {
-        if (alive && data) setUnread(data.length);
+        // a list that answered meanwhile knows better than this read
+        if (alive && data && listSaidRef.current === asked) setUnread(data.length);
       });
     return () => {
       alive = false;

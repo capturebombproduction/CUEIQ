@@ -95,8 +95,13 @@ export function dayOrderSeconds(
   const sec = parseClockToSeconds(start ?? null);
   if (sec == null) return Number.POSITIVE_INFINITY;
   if (anchorSec == null) return sec;
-  if (anchorSec >= LATE_SHOW_SEC && sec < SMALL_HOURS_END_SEC) return sec + 86400;
-  if (anchorSec < SMALL_HOURS_END_SEC && sec >= LATE_SHOW_SEC) return sec - 86400;
+  // …and only when the row really is on the far side of midnight from the show, the short
+  // way round the clock: a 05:00 departure for an upcountry 16:00 stage (11 h BEFORE it)
+  // printed last, under the booth (2026-10-27 hunt).
+  if (anchorSec >= LATE_SHOW_SEC && sec < SMALL_HOURS_END_SEC && aroundTheClock(anchorSec, sec) > 0)
+    return sec + 86400;
+  if (anchorSec < SMALL_HOURS_END_SEC && sec >= LATE_SHOW_SEC && aroundTheClock(anchorSec, sec) < 0)
+    return sec - 86400;
   return sec;
 }
 

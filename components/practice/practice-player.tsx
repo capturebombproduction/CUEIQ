@@ -499,6 +499,27 @@ export function PracticePlayer({
       wakeRef.current = null;
     };
   }, [playing]);
+  // …and asked for again when the page comes back with the song still playing
+  // (2026-10-27): the browser drops the lock whenever the page is hidden - a switch to
+  // LINE mid-song - and `playing` never changed, so the effect above never asked again
+  // and the screen slept on the song (on iOS taking the Web Audio song and the
+  // metronome down with it). As Live Mode does (live-mode.tsx, "re-acquire Wake Lock").
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState !== "visible" || !engineRef.current?.playing || wakeRef.current) return;
+      navigator.wakeLock
+        ?.request("screen")
+        .then((wl) => {
+          wl.addEventListener("release", () => {
+            if (wakeRef.current === wl) wakeRef.current = null;
+          });
+          wakeRef.current = wl;
+        })
+        .catch(() => {});
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
+  }, []);
 
   // Newest tap wins: each selectSong takes a token, and after every await a stale
   // call bails out — a slow download tapped FIRST must never tear down / override
@@ -539,7 +560,6 @@ export function PracticePlayer({
     }
     const token = ++selectTokenRef.current;
     if (opts?.overlap) overlapReadRef.current = token;
-    flushRun(); // finalize the previous song's practice time
     setLoadingId(song.id);
     try {
       // the run's next song was fetched while the last one played — take it once
@@ -560,6 +580,12 @@ export function PracticePlayer({
         if (opts?.fromRun) setRun(null);
         return;
       }
+      // Finalize the previous song's practice time - only now that this tap has the
+      // song to replace it with (2026-10-27). Done at the tap, a read that failed (venue
+      // wifi, an expired link, offline and not cached) left the old song sounding with
+      // nothing accounting for it: its seconds so far dropped, and nothing it played
+      // afterwards - its end, the next pick, the page going away - ever logged.
+      flushRun();
       // An overlap lets the song now playing sound out its end under the next one;
       // anything else replaces it outright, and silences an earlier overlap's tail.
       // Only a song still AT its end is handed over: the read above can take a while
@@ -661,24 +687,38 @@ export function PracticePlayer({
   // its end: cutting the music the band is playing along to is the harshest answer, and
   // going on "after" a row that is gone needs a place in the set the card cannot light.
   // The card goes back to "เล่นทั้งเซ็ต", and a toast says why the set stopped following.
+  //
+  // …once the take-out is the server's (2026-10-27). ✕ takes the row off the screen at
+  // once and the delete follows; ending the run on that, a delete that then FAILED (venue
+  // wifi) put the row back and left the set stopping after this song although it never
+  // changed. So while a row's delete is out (removingRef) the run is left as it is, and
+  // removeSong ends it when the delete lands.
+  const removingRef = useRef<Set<string>>(new Set());
+  // the run as last rendered - removeSong decides after its await
+  const runNowRef = useRef<RunState | null>(null);
+  runNowRef.current = run;
+  function stopFollowingRoomSet() {
+    setRun(null);
+    clearGap();
+    toast.info("หยุดเล่นต่อตามเซ็ตแล้ว", {
+      description: engineRef.current?.playing
+        ? "เพลงที่กำลังเล่นถูกเอาออกจากเซ็ต — เล่นเพลงนี้ต่อจนจบแล้วหยุด"
+        : "เพลงที่เพิ่งเล่นถูกเอาออกจากเซ็ต",
+    });
+  }
   useEffect(() => {
     if (!run || run.showId !== eventId) return;
     const queue = roomQueue(practiceSongs);
     const here = run.queue[run.pos];
     const pos = here ? queue.findIndex((q) => q.itemId === here.itemId) : -1;
     if (pos < 0) {
-      setRun(null);
-      clearGap();
-      toast.info("หยุดเล่นต่อตามเซ็ตแล้ว", {
-        description: engineRef.current?.playing
-          ? "เพลงที่กำลังเล่นถูกเอาออกจากเซ็ต — เล่นเพลงนี้ต่อจนจบแล้วหยุด"
-          : "เพลงที่เพิ่งเล่นถูกเอาออกจากเซ็ต",
-      });
+      if (here && removingRef.current.has(here.itemId)) return; // its delete is still out
+      stopFollowingRoomSet();
       return;
     }
     if (pos === run.pos && sameQueue(queue, run.queue)) return;
     setRun({ ...run, queue, pos });
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- clearGap only clears a timer and sets state
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- stopFollowingRoomSet only clears a timer, sets state and toasts
   }, [run, practiceSongs, eventId]);
 
   // The run's next song, read ahead while this one plays (see nextFileRef). A read
@@ -776,7 +816,16 @@ export function PracticePlayer({
     // …and never over the song sounding again - whatever took it up again in the wait
     if (!run || runKey(run) !== key || loadingId || engineRef.current?.playing) return;
     const entry = run.queue[run.pos + 1];
-    if (!entry) return;
+    if (!entry) {
+      // Nothing follows it any more (2026-10-27): the room's set was edited in the wait -
+      // the next song taken out, or the song that ended moved to the bottom - and the
+      // run, found again by its row, is now at the end. It ends as a set's last song
+      // does (onEndedRef): returning here left the card on "กำลังเล่นเพลงที่ N/N" with
+      // its หยุดเล่นต่อ key, silent for good.
+      setRun(null);
+      toast.success("ซ้อมครบทั้งเซ็ตแล้ว");
+      return;
+    }
     setRun({ ...run, pos: run.pos + 1 });
     void selectSong(entry.song, { fromRun: true });
   };
@@ -1056,23 +1105,35 @@ export function PracticePlayer({
       confirmText: "เอาออก",
     });
     if (!ok) return;
-    setItems((prev) => prev.filter((i) => i.id !== itemId));
-    const { data, error } = await createClient()
-      .from("practice_songs")
-      .delete()
-      .eq("id", itemId)
-      .select("id");
-    if (error) {
-      toast.error("เอาเพลงออกไม่สำเร็จ", { description: await writeFailureNote(error) });
-      setItems(snapshot);
-      return;
-    }
-    // 0 rows = removed nothing on the server (RLS mismatch or a stale-session anon
-    // fallback) — the song is still in everyone else's list, so it must not vanish
-    // from just this screen
-    if (wroteNothing(data)) {
-      toast.error("เอาเพลงออกไม่สำเร็จ", { description: await noRowsMessage() });
-      setItems(snapshot);
+    // The room's set run waits for the answer (see removingRef) - held until the row is
+    // back on a failure, so the run never sees it gone in between.
+    removingRef.current.add(itemId);
+    try {
+      setItems((prev) => prev.filter((i) => i.id !== itemId));
+      const { data, error } = await createClient()
+        .from("practice_songs")
+        .delete()
+        .eq("id", itemId)
+        .select("id");
+      if (error) {
+        toast.error("เอาเพลงออกไม่สำเร็จ", { description: await writeFailureNote(error) });
+        setItems(snapshot);
+        return;
+      }
+      // 0 rows = removed nothing on the server (RLS mismatch or a stale-session anon
+      // fallback) — the song is still in everyone else's list, so it must not vanish
+      // from just this screen
+      if (wroteNothing(data)) {
+        toast.error("เอาเพลงออกไม่สำเร็จ", { description: await noRowsMessage() });
+        setItems(snapshot);
+        return;
+      }
+      // Gone on the server: a room's set run still on this row stops following the set
+      // now, as the set-follow effect does for a row that is gone.
+      const r = runNowRef.current;
+      if (r && r.showId === eventId && r.queue[r.pos]?.itemId === itemId) stopFollowingRoomSet();
+    } finally {
+      removingRef.current.delete(itemId);
     }
   }
 

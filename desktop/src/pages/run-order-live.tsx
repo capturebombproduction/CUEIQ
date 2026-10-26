@@ -89,14 +89,21 @@ export function RunOrderLivePage() {
       // there, leaving this page during an outage and coming back rewound the show
       // to the moment it was first opened - under a notice promising
       // "คุมคิวต่อได้ตามปกติ" (2026-10-26). Server rows only; the caller re-lays the queue.
-      onRows={(seqs) =>
+      onRows={(seqs, source) => {
+        // A board opened from the copy said "ออฟไลน์ — นี่คือคิวที่เครื่องนี้เก็บไว้ล่าสุด"
+        // for the rest of the show: the notice was set at page load and nothing took
+        // it down once the wifi was back and the caller had re-read the server
+        // (2026-10-27). A "read" is that re-read - the whole board as the server holds
+        // it. A press that merely got through ("write") is not: on a link that passes
+        // writes but drops the SELECT, the rest of the board is still the old copy.
+        if (source === "read") setOfflineCopy(false);
         saveRunOrderLive(id!, {
           name: data.name,
           date: data.date,
           seqs,
           tenantId: ws.membership!.tenant_id,
-        })
-      }
+        });
+      }}
       notice={
         offlineCopy ? (
           // Say it plainly: this is what the board looked like the last time this

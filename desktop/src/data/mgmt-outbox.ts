@@ -843,6 +843,10 @@ async function applyAudioUploadOp(
     if (upd.error) {
       if (isQueueableWriteError(upd.error.message, onLine, upd.status))
         throw new Error(upd.error.message);
+      // 0053: the song moved to another band while this take waited - its key names the
+      // old band, whose folder the new band's accounts cannot read
+      if (upd.error.message.includes("song audio belongs to another band"))
+        return { conflict: "เพลงนี้ถูกย้ายไปวงอื่นแล้ว — ไฟล์ที่รออัปโหลดอยู่ใต้วงเดิม ให้อัปไฟล์ใหม่จากคลังเพลง" };
       return { conflict: upd.error.message };
     }
     if (!upd.data || upd.data.length === 0) {

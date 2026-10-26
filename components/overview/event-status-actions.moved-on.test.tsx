@@ -53,13 +53,16 @@ async function approveFromPending(onChanged: (s: string) => void) {
 }
 
 describe("EventStatusActions — the row moved on under the board", () => {
-  it("already approved (a cut-off try landed, or another approver): it is done - the band and the board are told", async () => {
+  it("already approved by another approver: it is done - the board is told, the band is NOT told again", async () => {
+    // 2026-10-27 hunt: a board left open for hours re-sent "อนุมัติงานแล้ว" (the route's
+    // dedupe is 5 minutes) - the approver who got there first already told the band
     h.server = "approved";
     const onChanged = vi.fn();
     await approveFromPending(onChanged);
     expect(supa.callsTo("events", "update")).toHaveLength(1);
     expect(onChanged).toHaveBeenCalledWith("approved");
-    expect(h.notify).toHaveBeenCalledWith("event_approved", { eventId: "e1" });
+    expect(h.notify).not.toHaveBeenCalled();
+    expect(h.toast.success).toHaveBeenCalledWith("อนุมัติแล้ว");
     expect(h.toast.error).not.toHaveBeenCalled();
   });
 

@@ -55,7 +55,9 @@ import {
   listRunSeqOps,
   newRunSeqPressId,
   onRunSeqOutboxChange,
+  RUNSEQ_LANDED_EVENT,
   RUNSEQ_QUEUED_MESSAGE,
+  type RunSeqLanded,
   type RunSeqOp,
 } from "@/lib/run-order-outbox";
 import { compareRunOrder } from "@/lib/run-order-sort";
@@ -150,6 +152,12 @@ function normSec(s: number): number {
   return n;
 }
 
+/** How long the caller's own row write may go unanswered before the press is queued
+ *  instead (2026-10-27, see apply()). The desktop's read budget for this same board
+ *  (RUN_ORDER_TIMEOUT_MS in desktop/src/data/run-order.ts), which this shared component
+ *  cannot import: slow still gets to commit, never-answering no longer holds the dock. */
+export const CALLER_WRITE_TIMEOUT_MS = 8000;
+
 /** A drift (minutes, late + / early −) as a short Thai phrase. */
 function driftPhrase(min: number): string {
   if (min === 0) return "ตรงเวลา";
@@ -232,8 +240,14 @@ export function EventLiveCaller({
    * The desktop writes its offline read-cache from this: written only at page load,
    * that cache rewound the board to page-open state after a navigation or a restart
    * during an outage (2026-10-26).
+   *
+   * `source` says how the board learned them: "read" = a refetch it applied, i.e. the
+   * whole board as the server holds it now; "write" = a press that committed, laid onto
+   * the rows of the last read. Only a "read" proves the board matches the other devices -
+   * the desktop's "this is an offline copy" notice comes down on that, never on a press
+   * that got through a link the board's own re-read cannot (2026-10-27).
    */
-  onRows?: (rows: RunSeqLive[]) => void;
+  onRows?: (rows: RunSeqLive[], source: "read" | "write") => void;
 }) {
   const supabase = useMemo(() => createClient(), []);
   const confirm = useConfirm();
@@ -244,14 +258,36 @@ export function EventLiveCaller({
   const serverRowsRef = useRef<RunSeqLive[]>(initial);
   const onRowsRef = useRef(onRows);
   onRowsRef.current = onRows;
-  function serverHolds(next: RunSeqLive[]) {
+  function serverHolds(next: RunSeqLive[], source: "read" | "write") {
     serverRowsRef.current = next;
     try {
-      onRowsRef.current?.(next);
+      onRowsRef.current?.(next, source);
     } catch {
       /* a page's copy of the board must never break the press that produced it */
     }
   }
+  // ...and every queued press the FLUSH lands is a write the server now holds too
+  // (2026-10-27). This ref used to learn such a press only from the re-read that follows
+  // it, so on venue wifi that lets the flush's writes through but drops the board's
+  // SELECT, it kept the rows from BEFORE the landed press. The desktop's offline copy had the
+  // press (run-order.ts lays every landing onto it), but the very next press that
+  // committed online wrote the copy again from here: "จบ + ต่อไป" rewound, the act it
+  // ended live again in the copy, and opened offline later the board offered it as NOW.
+  // The ref only - the copy is laid already, and `rows` is not touched: the clear-the-way
+  // flush in apply() lands a row's OLDER queued press while the board shows the newer
+  // one it is about to send.
+  useEffect(() => {
+    const onLanded = (e: Event) => {
+      const landed = (e as CustomEvent<RunSeqLanded>).detail;
+      if (!landed?.rowId || !landed.patch) return;
+      if (!serverRowsRef.current.some((r) => r.id === landed.rowId)) return; // another board's row
+      serverRowsRef.current = serverRowsRef.current.map((r) =>
+        r.id === landed.rowId ? { ...r, ...landed.patch } : r
+      );
+    };
+    window.addEventListener(RUNSEQ_LANDED_EVENT, onLanded);
+    return () => window.removeEventListener(RUNSEQ_LANDED_EVENT, onLanded);
+  }, []);
   const [now, setNow] = useState(() => Date.now());
   // false until the client mounts — the wall clock / elapsed / countdowns depend on
   // "now" and the local timezone, which differ from the server's (Vercel is UTC), so
@@ -526,7 +562,7 @@ export function EventLiveCaller({
     setQueued(ops);
     queueCountRef.current = waitingCount(ops);
     setRows(data as RunSeqLive[]);
-    serverHolds(data as RunSeqLive[]);
+    serverHolds(data as RunSeqLive[], "read");
     return "applied";
   }
   const refetchRef = useRef(refetch);
@@ -785,20 +821,58 @@ export function EventLiveCaller({
       return "queued";
     }
 
-    const results = await Promise.all(
+    // BOUNDED too (2026-10-27) - the press itself, not only the clear-the-way flush above.
+    // supabase-js has no fetch timeout, and on venue wifi that has associated but has no
+    // upstream (navigator.onLine TRUE, nothing ever answers) this await sat until the
+    // browser gave up on the socket - about a minute on iOS, minutes on Android. The press
+    // was neither committed nor queued, `busy` held every dock key disabled, inFlightRef
+    // swallowed every จบ + ต่อไป, and a reload lost the press. Past the deadline the
+    // request is cut and the press is queued, exactly as the already-queued branch above
+    // does. The cut write may still have reached the server first; that is harmless:
+    // every row write is a compare-and-swap, and the replay counts a row that already
+    // holds the patch - or an earlier version of it, when a later press merged in - as
+    // this press, done (patchAlreadyHolds / earlierPatchHeld, lib/run-order-outbox.ts).
+    // Its late answer is never read: the race has settled, so nothing below runs for it
+    // and the gate is released exactly once.
+    const cut = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<"timeout">((resolve) => {
+      timer = setTimeout(() => resolve("timeout"), CALLER_WRITE_TIMEOUT_MS);
+    });
+    const write = Promise.all(
       updates.map((u) => {
         let q = supabase.from("run_sequence").update(u.partial).eq("id", u.id);
         for (const [k, v] of Object.entries(u.expect ?? {})) {
           q = v == null ? q.is(k, null) : q.eq(k, v);
         }
         // select the row back: 0 rows = deleted or precondition lost the race
-        return q.select("id");
+        return q.select("id").abortSignal(cut.signal);
       })
-    ).finally(() => {
-      // clear the write gate even if the round-trip threw, or refetch stays deferred
-      writesInFlightRef.current--;
-      setBusy(false);
-    });
+    );
+    let answer: Awaited<typeof write> | "timeout" | undefined;
+    try {
+      answer = await Promise.race([write, deadline]);
+    } finally {
+      clearTimeout(timer);
+      // clear the write gate even if the round-trip threw, or refetch stays deferred -
+      // but not on the deadline: that press still has to be queued, and is released below
+      if (answer !== "timeout") {
+        writesInFlightRef.current--;
+        setBusy(false);
+      }
+    }
+    if (answer === "timeout") {
+      cut.abort();
+      try {
+        await queueOffline(updates, null, true);
+        toast.success(RUNSEQ_QUEUED_MESSAGE, { id: "runseq-offline-queued" });
+        bcast();
+      } finally {
+        release();
+      }
+      return "queued";
+    }
+    const results = answer;
     const failedResult = results.find((r) => r.error);
     const err = failedResult?.error;
     // The HTTP status of the SAME response the error came from — a 5xx/429 here is the
@@ -817,7 +891,8 @@ export function EventLiveCaller({
         serverRowsRef.current.map((r) => {
           const u = landed.find((x) => x.id === r.id);
           return u ? { ...r, ...u.partial } : r;
-        })
+        }),
+        "write"
       );
     }
     if (err) {
@@ -986,8 +1061,17 @@ export function EventLiveCaller({
   // app has no undo, so the ledger lives in localStorage (keyed to this festival, so
   // it survives a mid-show reload) and รีเซ็ต hands the slack back — otherwise a dry
   // run before doors permanently eats the real show's planned buffer.
+  //
+  // ⚠️ AND WHAT THE DRAIN LEFT THERE (2026-10-27): each entry is { before, after }, after
+  // = the buffer_seconds the drain wrote. With `before` alone, รีเซ็ต handed it back to any
+  // row whose buffer differed from it - so a buffer a staffer RE-PLANNED in the builder
+  // after the drain (300 drained to 0, then set to 600) was written back to 300 and the
+  // plan edit was lost. A row is restored only while it still holds `after`, and the
+  // write is conditional on it. A bare number is a ledger stored before this (localStorage
+  // outlives a deploy) and knows no `after`: it keeps the old rule.
+  type BufferLedgerEntry = number | { before: number; after: number };
   const bufferLedgerKey = `cueiq-runorder-buffer:${tenantId}:${eventDate ?? "x"}:${eventName}`;
-  function readBufferLedger(): Record<string, number> {
+  function readBufferLedger(): Record<string, BufferLedgerEntry> {
     try {
       const parsed = JSON.parse(localStorage.getItem(bufferLedgerKey) || "null");
       return parsed && typeof parsed === "object" ? parsed : {};
@@ -995,7 +1079,26 @@ export function EventLiveCaller({
       return {};
     }
   }
-  function writeBufferLedger(next: Record<string, number> | null) {
+  /** An entry's pre-drain buffer, either format; null for anything unreadable. */
+  function ledgerBefore(e: BufferLedgerEntry | undefined): number | null {
+    if (typeof e === "number") return e;
+    return e && typeof e === "object" && typeof e.before === "number" ? e.before : null;
+  }
+  /** What รีเซ็ต writes back into this row's buffer and the value the row must still hold
+   *  for it (`guard`, null for an old bare-number entry) - or null to leave the row be. */
+  function bufferRestore(
+    r: RunSeqLive,
+    ledger: Record<string, BufferLedgerEntry>
+  ): { to: number; guard: number | null } | null {
+    const e = ledger[r.id];
+    if (typeof e === "number") return e !== r.buffer_seconds ? { to: e, guard: null } : null;
+    if (!e || typeof e !== "object" || typeof e.before !== "number" || typeof e.after !== "number")
+      return null;
+    // re-planned since the drain (or never drained at all): the builder's value stands
+    if (r.buffer_seconds !== e.after || e.before === e.after) return null;
+    return { to: e.before, guard: e.after };
+  }
+  function writeBufferLedger(next: Record<string, BufferLedgerEntry> | null) {
     try {
       if (next && Object.keys(next).length > 0)
         localStorage.setItem(bufferLedgerKey, JSON.stringify(next));
@@ -1049,8 +1152,16 @@ export function EventLiveCaller({
         partial: { buffer_seconds: r.buffer_seconds - take },
         expect: { status: "pending", buffer_seconds: r.buffer_seconds },
       });
-      // remember the ORIGINAL (first drain wins) so รีเซ็ต can hand it back
-      if (ledger[r.id] == null) ledger[r.id] = r.buffer_seconds;
+      // remember the ORIGINAL (first drain wins) so รีเซ็ต can hand it back - and what
+      // this drain leaves, so it hands it back only over that (the ledger note above).
+      // A row that no longer holds what our last drain left was re-planned since: the
+      // slack this drain takes is the new plan's, so that is the one to hand back.
+      const prev = ledger[r.id];
+      const replanned = typeof prev === "object" && prev?.after !== r.buffer_seconds;
+      ledger[r.id] = {
+        before: (replanned ? null : ledgerBefore(prev)) ?? r.buffer_seconds,
+        after: r.buffer_seconds - take,
+      };
       remain -= take;
     }
     if (drains.length > 0) {
@@ -1080,9 +1191,9 @@ export function EventLiveCaller({
   async function resetAll() {
     // put back whatever ดึง buffer consumed on this device, alongside the live state
     const ledger = readBufferLedger();
-    const restores = ordered.filter(
-      (r) => ledger[r.id] != null && ledger[r.id] !== r.buffer_seconds
-    );
+    // only rows that still hold what the drain left (the ledger note above takeBuffer)
+    const restoreOf = new Map(ordered.map((r) => [r.id, bufferRestore(r, ledger)]));
+    const restores = ordered.filter((r) => restoreOf.get(r.id));
     const ok = await confirm({
       title: "รีเซ็ตการคุมคิว?",
       description: restores.length
@@ -1092,25 +1203,32 @@ export function EventLiveCaller({
     });
     if (!ok) return;
     const done = await apply(
-      ordered.map((r) => ({
-        id: r.id,
-        partial: {
-          status: "pending",
-          actual_start: null,
-          actual_end: null,
-          offset_min: null,
-          ...(ledger[r.id] != null && ledger[r.id] !== r.buffer_seconds
-            ? { buffer_seconds: ledger[r.id] }
-            : {}),
-        },
-        // Reset is the one press that clears the whole board, so it is the one
-        // that must never replay blind. Queued with no precondition it becomes
-        // "make every row pending, whatever is there now" — and a dry run done
-        // backstage on dead wifi would, hours later, erase the real show another
-        // device had already driven half way through. With the rows we saw as
-        // the precondition, a board that moved on parks for a human instead.
-        expect: { status: r.status, offset_min: r.offset_min },
-      }))
+      ordered.map((r) => {
+        const back = restoreOf.get(r.id);
+        return {
+          id: r.id,
+          partial: {
+            status: "pending",
+            actual_start: null,
+            actual_end: null,
+            offset_min: null,
+            ...(back ? { buffer_seconds: back.to } : {}),
+          },
+          // Reset is the one press that clears the whole board, so it is the one
+          // that must never replay blind. Queued with no precondition it becomes
+          // "make every row pending, whatever is there now" — and a dry run done
+          // backstage on dead wifi would, hours later, erase the real show another
+          // device had already driven half way through. With the rows we saw as
+          // the precondition, a board that moved on parks for a human instead.
+          // A restored buffer is guarded the same way: written back only over what
+          // the drain left, never over a plan the builder changed meanwhile (2026-10-27).
+          expect: {
+            status: r.status,
+            offset_min: r.offset_min,
+            ...(back?.guard != null ? { buffer_seconds: back.guard } : {}),
+          },
+        };
+      })
     );
     // ONLY once the restore is really on the server. The queued reset now carries
     // a precondition, so it can PARK — and if the ledger were already gone there

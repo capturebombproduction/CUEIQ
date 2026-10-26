@@ -64,6 +64,22 @@ export function announceFeedbackSent() {
   if (typeof window !== "undefined") window.dispatchEvent(new Event(FEEDBACK_SENT_EVENT));
 }
 
+/**
+ * "This many answers are unread now" - fired on window by EVERY mounted list, for the
+ * shell's one count (FeedbackUnreadProvider, components/feedback-button.tsx): after a
+ * read that holds all of this person's reports (its own truth), and after its stamp
+ * landed. The /feedback page - where the "ทีมงานตอบฟีดแบคของคุณแล้ว" push lands - had no
+ * way to bring that count down: it stamped the answer read, and the More tab, the avatar
+ * and the tile kept their dot for the rest of the session (2026-10-27).
+ */
+export const FEEDBACK_UNREAD_EVENT = "cueiq:feedback-unread";
+function announceUnread(count: number) {
+  if (typeof window !== "undefined")
+    window.dispatchEvent(new CustomEvent<number>(FEEDBACK_UNREAD_EVENT, { detail: count }));
+}
+/** How many reports one read asks for - a read shorter than this holds them all. */
+const LIST_LIMIT = 30;
+
 export function MyFeedbackList({
   userId,
   onSeen,
@@ -89,7 +105,7 @@ export function MyFeedbackList({
       )
       .eq("user_id", userId)
       .order("created_at", { ascending: false })
-      .limit(30);
+      .limit(LIST_LIMIT);
     if (seq !== loadSeq.current) return;
     // AN EMPTY READ IS NOT AN EMPTY TABLE (lib/auth-session.ts). supabase-js
     // substitutes the anon key after a failed token refresh and RLS then answers []
@@ -104,7 +120,10 @@ export function MyFeedbackList({
       if (seq === loadSeq.current) setLoadFailed(true);
       return;
     }
-    if (data && seq === loadSeq.current) setRows(data as MyFeedbackRow[]);
+    if (data && seq === loadSeq.current) {
+      setRows(data as MyFeedbackRow[]);
+      if (data.length < LIST_LIMIT) announceUnread(unreadReplies(data as MyFeedbackRow[]).length);
+    }
   }, [userId]);
 
   useEffect(() => {
@@ -135,12 +154,16 @@ export function MyFeedbackList({
       .select("id")
       .then(({ data }) => {
         if (!alive || !data?.length) return;
+        const stamped = new Set((data as { id: string }[]).map((r) => r.id));
         setRows((prev) =>
           prev
             ? prev.map((r) => (ids.includes(r.id) ? { ...r, reply_seen_at: now } : r))
             : prev
         );
         onSeen?.(data.length);
+        // what is still unread, if this list holds everything (see FEEDBACK_UNREAD_EVENT)
+        if (rows.length < LIST_LIMIT)
+          announceUnread(unreadReplies(rows).filter((r) => !stamped.has(r.id)).length);
       });
     return () => {
       alive = false;

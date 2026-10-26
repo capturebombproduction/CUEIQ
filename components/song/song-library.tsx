@@ -197,6 +197,10 @@ function friendlyError(message?: string): string | undefined {
     return "สถานะลิขสิทธิ์ของเพลงนี้ถูกเปลี่ยนจากหน้าอื่นแล้ว — โหลดหน้านี้ใหม่แล้วลองอีกครั้ง (เปลี่ยนสถานะได้เฉพาะทีมค่าย/แอดมิน)";
   if (message.includes("only an editor may change song details"))
     return "แก้ข้อมูลเพลงได้เฉพาะแอดมิน/Ar ของวงนี้";
+  // 0053: the band moved (on another device) and this file's key names the old band, or
+  // a band move met a file attached elsewhere since this list loaded
+  if (message.includes("song audio belongs to another band"))
+    return "ไฟล์เสียงกับวงของเพลงนี้ไม่ตรงกัน (อาจมีคนย้ายวงหรือแนบไฟล์จากเครื่องอื่น) — โหลดหน้านี้ใหม่ ลบไฟล์เสียงก่อนย้ายวง แล้วอัปไฟล์ใหม่";
   return message;
 }
 
@@ -240,6 +244,7 @@ export function SongLibrary({
   perms,
   toolbarEnd,
   footer,
+  fromCache = false,
 }: {
   tenantId: string;
   groups: Group[];
@@ -253,6 +258,8 @@ export function SongLibrary({
    * the library it ended under the fixed player and its note could not be read.
    */
   footer?: ReactNode;
+  /** initialSongs is the desktop's read-cache, not a fresh read (see the cache GC). */
+  fromCache?: boolean;
 }) {
   const supabase = createClient();
   const confirm = useConfirm();
@@ -299,6 +306,11 @@ export function SongLibrary({
   // just measured from the new file (measureUploadedSong runs in the background).
   const openedFormRef = useRef<FormState | null>(null);
   const [saving, setSaving] = useState(false);
+  // Which save the dialog belongs to. A save with a file holds "กำลังบันทึก…" for the
+  // whole upload, and ยกเลิก stays live: its tail then closed the NEXT song's dialog and
+  // dropped that dialog's picked file, unsaved (2026-10-27). Opening a dialog starts a
+  // new sequence; an older save's tail leaves it alone.
+  const saveSeqRef = useRef(0);
   const [detecting, setDetecting] = useState(false);
   // file picked in the add/edit dialog — uploaded to R2 on save (one-step add+upload)
   const [pickedFile, setPickedFile] = useState<File | null>(null);
@@ -669,6 +681,10 @@ export function SongLibrary({
     [songs]
   );
   useEffect(() => {
+    // Never against the desktop's read-cache: a catalogue days old names the take that
+    // was replaced since, and the sweep then deleted the CURRENT master that
+    // เตรียมเพลง had pulled onto this laptop (practice + preview read it) (2026-10-27).
+    if (fromCache) return;
     const current = new Map<string, string | null>();
     for (const s of songs) current.set(s.id, s.audio_path ?? null);
     if (current.size === 0) return;
@@ -715,6 +731,8 @@ export function SongLibrary({
   const sheetSong = sheetId ? songs.find((s) => s.id === sheetId) ?? null : null;
 
   function openAdd() {
+    saveSeqRef.current++;
+    setSaving(false);
     setPickedFile(null);
     openedFormRef.current = null;
     setForm(emptyForm(editGroups[0]?.id ?? ""));
@@ -722,6 +740,8 @@ export function SongLibrary({
   }
 
   function openEdit(song: Song) {
+    saveSeqRef.current++;
+    setSaving(false);
     setPickedFile(null);
     const opened: FormState = {
       id: song.id,
@@ -788,13 +808,20 @@ export function SongLibrary({
     // and presign lets only that band's viewers read it: moved to another band, the
     // song went silent for the new band's accounts (403) while an admin still heard it.
     // A file still queued on this desktop is a file too: its key was minted under the
-    // band it was picked in, and the flush would land it there after the move.
-    if (current && form.group_id !== current.group_id && (current.audio_path || pendingUploads.has(current.id))) {
+    // band it was picked in, and the flush would land it there after the move. So is one
+    // still UPLOADING here (the row's กำลังอัป…): it lands under the old band (2026-10-27).
+    if (
+      current &&
+      form.group_id !== current.group_id &&
+      (current.audio_path || pendingUploads.has(current.id) || audioBusy[current.id] === "up")
+    ) {
       toast.error("ย้ายวงไม่ได้ ขณะเพลงนี้มีไฟล์เสียง", {
         description: "ไฟล์ถูกเก็บไว้ใต้วงเดิม สมาชิกวงใหม่จะเปิดไม่ได้ — ลบไฟล์เสียงก่อน ย้ายวง แล้วอัปไฟล์ใหม่",
       });
       return;
     }
+    const seq = ++saveSeqRef.current;
+    const stillMine = () => saveSeqRef.current === seq;
     setSaving(true);
     // ลิขสิทธิ์ is sent CONDITIONALLY (guard 0034): the DB refuses a non-approver
     // changing copyright_status, and it compares against the CURRENT row — so a value
@@ -848,7 +875,7 @@ export function SongLibrary({
         .select("*")
         .single();
       if (error || !data) {
-        setSaving(false);
+        if (stillMine()) setSaving(false);
         toast.error("บันทึกไม่สำเร็จ", { description: friendlyError(error?.message) });
         return;
       }
@@ -863,7 +890,7 @@ export function SongLibrary({
         .select("*")
         .single();
       if (error || !data) {
-        setSaving(false);
+        if (stillMine()) setSaving(false);
         toast.error("เพิ่มเพลงไม่สำเร็จ", { description: friendlyError(error?.message) });
         return;
       }
@@ -882,9 +909,11 @@ export function SongLibrary({
     // A newly-added song is forced to copyright 'pending' (DB trigger) for a
     // non-approver → let the approvers know it's waiting (route no-ops otherwise).
     if (!form.id && saved) notify("song_pending", { songId: saved.id });
-    setPickedFile(null);
-    setSaving(false);
-    setOpen(false);
+    if (stillMine()) {
+      setPickedFile(null);
+      setSaving(false);
+      setOpen(false);
+    }
   }
 
   async function onDelete(song: Song) {
@@ -1064,12 +1093,15 @@ export function SongLibrary({
       await uploadEventAudio(path, file, file.type);
       uploaded = true;
       // the old file's loudness/waveform/beat go with it (lib/song-file-facts.ts)
-      const { data, error } = await supabase
+      const { data, error, status: writeStatus } = await supabase
         .from("songs")
         .update({ audio_path: path, audio_name: file.name, audio_expires_at: null, ...STALE_FILE_FACTS, ...landPatch })
         .eq("id", song.id)
         .select("id, copyright_status");
-      if (error) throw error;
+      // A PostgREST error is a plain object, not an Error: thrown bare, it reached the
+      // toast and the desktop's offline queue as "[object Object]" - a write cut off at a
+      // dead venue AP was refused a place in the queue (2026-10-27). Its text AND status.
+      if (error) throw Object.assign(new Error(error.message), { status: writeStatus });
       // No error and no row = the update never landed (anon after a failed token
       // refresh, or the row is gone) — the DB still points at prevPath, so deleting
       // it below would leave the song pointing at nothing. See lib/write-guard.ts.
@@ -1114,6 +1146,9 @@ export function SongLibrary({
       return path;
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
+      // presign / R2 (httpError) and the row write above carry the HTTP status: a 5xx or
+      // 429 is worth queueing whatever its text says (isQueueableWriteError).
+      const status = (e as { status?: unknown } | null)?.status;
       // ⭐#1 step 6 — offline (desktop): don't lose the bytes. They become this
       // song's local source, so this machine plays them straight away, and an
       // audio.upload op remembers to make them the master when the net is back.
@@ -1131,6 +1166,7 @@ export function SongLibrary({
         basePath: prevPath,
         songTitle: song.title,
         errorMessage: message,
+        errorStatus: typeof status === "number" ? status : null,
       });
       if (queued) {
         setLocalIds((prev) => new Set(prev).add(song.id));
@@ -1138,7 +1174,7 @@ export function SongLibrary({
         toast.success(AUDIO_QUEUED_MESSAGE, { id: `audio-queued-${song.id}` });
         return null;
       }
-      toast.error("อัปโหลดไม่สำเร็จ", { description: message });
+      toast.error("อัปโหลดไม่สำเร็จ", { description: friendlyError(message) });
       // The PUT landed but the update threw. A thrown update does NOT prove the
       // server rejected it — a dropped response after PostgREST committed looks
       // identical here. So delete the fresh object only when we can PROVE no row
@@ -1198,7 +1234,7 @@ export function SongLibrary({
         .update({ audio_path: null, audio_name: null, file_name: null, audio_expires_at: null })
         .eq("id", song.id)
         .select("id");
-      if (error) throw error;
+      if (error) throw new Error(error.message); // a plain object - see uploadSongAudio
       // No error and no row = the update never landed (anon after a failed token
       // refresh, or the row is gone) — the DB still points at `path`, so deleting
       // it below would leave the song pointing at nothing. See lib/write-guard.ts.

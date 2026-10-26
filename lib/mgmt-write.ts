@@ -85,8 +85,19 @@ export async function listPendingAudioUploads(): Promise<Set<string>> {
 }
 
 export type SaveEventResult =
-  | { ok: true; id: string; queued: boolean }
+  /** `behind`: queued while ONLINE, joining an earlier edit still waiting (see below). */
+  | { ok: true; id: string; queued: boolean; behind?: boolean }
   | { ok: false; message?: string };
+
+/** Is an event create/update for this id still waiting in this device's queue? */
+type QueuedEventOpReader = (eventId: string) => Promise<boolean>;
+
+let queuedEventOpReader: QueuedEventOpReader | null = null;
+
+/** Desktop-only: let the event form ask whether its event already has an edit queued. */
+export function registerQueuedEventOpReader(reader: QueuedEventOpReader | null): void {
+  queuedEventOpReader = reader;
+}
 
 export async function saveEventWrite(args: {
   mode: "create" | "edit";
@@ -101,6 +112,22 @@ export async function saveEventWrite(args: {
   const onLine = typeof navigator === "undefined" || navigator.onLine !== false;
   // Known-offline with a queue available: skip the doomed network attempt.
   if (queueSink && !onLine) return queueWrite(args);
+  // Queue-behind, as the four child-list editors do (tryQueueBehindPendingChildList): an
+  // edit of an event whose earlier offline edit (or offline create) still waits must JOIN
+  // it. Written online, it moved updated_at past the queued edit's base, the flush parked
+  // that edit as someone else's conflict, and "ใช้ของออนไลน์" lost it (2026-10-27).
+  if (args.mode === "edit" && args.eventId && queueSink && queuedEventOpReader) {
+    let pending = false;
+    try {
+      pending = await queuedEventOpReader(args.eventId);
+    } catch {
+      /* can't tell - ask the server as before */
+    }
+    if (pending) {
+      const res = await queueWrite(args);
+      return res.ok ? { ...res, behind: true } : res;
+    }
+  }
 
   try {
     const supabase = createClient();
@@ -282,10 +309,13 @@ export async function tryQueueAudioUpload(args: {
   basePath: string | null;
   songTitle: string | null;
   errorMessage?: string | null;
+  /** The failed response's HTTP status when there was one: a presign / R2 / PostgREST
+   *  5xx or 429 is transient whatever its text says (see isQueueableWriteError). */
+  errorStatus?: number | null;
 }): Promise<boolean> {
   if (!queueSink) return false;
   const onLine = typeof navigator === "undefined" || navigator.onLine !== false;
-  if (!isQueueableWriteError(args.errorMessage ?? null, onLine)) return false;
+  if (!isQueueableWriteError(args.errorMessage ?? null, onLine, args.errorStatus ?? null)) return false;
   // Refuse absurd files rather than take the whole origin's storage down with
   // them — the queued setlist edits sitting in the same budget are not worth a
   // gigabyte of stems.

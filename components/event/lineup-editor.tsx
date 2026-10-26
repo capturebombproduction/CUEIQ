@@ -197,6 +197,13 @@ export function LineupEditor({
     commit(next);
     // Both writes ask for their rows back: a 0-row answer is how an anon write shows
     // itself (see write()).
+    // Putting her ON when another device already did (2026-10-27): the insert hits
+    // event_members' unique (event_id, member_id) - 23505 - and this screen rolled
+    // back to "ไม่มา" with Postgres' English sentence while the server had her ON,
+    // which is what both asked for. That is the "already off" twin, so it is answered
+    // the same way: as no row and no error - done with a live session, and still
+    // ยังไม่ได้บันทึก + rolled back without one (write()), exactly as เลือกทั้งหมด's
+    // upsert that ignored her is.
     await write(
       () =>
         wasIn
@@ -209,7 +216,10 @@ export function LineupEditor({
           : supabase
               .from("event_members")
               .insert({ tenant_id: tenantId, event_id: eventId, member_id: memberId })
-              .select("member_id"),
+              .select("member_id")
+              .then((res) =>
+                res.error?.code === "23505" ? { data: [], error: null, status: res.status } : res
+              ),
       next,
       lineup,
       "บันทึกไม่สำเร็จ",

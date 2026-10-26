@@ -1,6 +1,6 @@
 // Desktop จัดการวง (Artists) — mirrors app/(app)/groups/page.tsx. Reuses
 // GroupManager verbatim (band + roster CRUD), scoped to the bands the user may view.
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { RefreshButton } from "@/components/refresh-button";
 import { PageTitle } from "@/components/page-title";
 import { GroupManager } from "@/components/group/group-manager";
@@ -14,7 +14,11 @@ export function Artists() {
   const { ws } = useWorkspace();
   const [members, setMembers] = useState<Member[] | null>(null);
   const [loadError, setLoadError] = useState(false);
-  const bands = ws ? viewableGroups(ws.perms, ws.groups) : [];
+  // Memoized (2026-10-27): it is GroupManager's initialGroups, and a fresh array on every
+  // render - App re-renders on each auth event (SIGNED_IN on every return to the window,
+  // the hourly TOKEN_REFRESHED) - read as a refreshed page and put the roster back to
+  // the first fetch, over a member just added or a field just renamed.
+  const bands = useMemo(() => (ws ? viewableGroups(ws.perms, ws.groups) : []), [ws]);
   const ids = bands.map((g) => g.id);
   const key = ids.join(",");
 

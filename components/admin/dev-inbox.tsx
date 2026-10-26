@@ -75,10 +75,17 @@ interface ErrorGroup {
   last_seen: string;
   ids: string[];
 }
+// A server crash's digest (error-monitor.tsx puts it at the END of the message as
+// "[digest N]") is part of the key (2026-10-27): in a production browser every server
+// crash reads "Minified React error #441; visit https://react.dev/…", so the first 80
+// characters were the same for all of them - different crashes folded into one ×N card
+// that showed only the newest digest, and "ลบกลุ่มนี้" deleted the rest unread.
+const DIGEST = /\[digest ([^\]\s]+)\]/;
 function groupErrors(rows: ErrorRow[]): ErrorGroup[] {
   const map = new Map<string, ErrorGroup>();
   for (const r of rows) {
-    const key = `${r.kind}:${r.message.slice(0, 80)}`;
+    const digest = DIGEST.exec(r.message)?.[1];
+    const key = `${r.kind}:${r.message.slice(0, 80)}${digest ? `:digest ${digest}` : ""}`;
     const existing = map.get(key);
     if (existing) {
       existing.count++;

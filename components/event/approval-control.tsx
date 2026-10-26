@@ -8,7 +8,10 @@ import { createClient } from "@/lib/supabase/client";
 import { notify } from "@/lib/notify-client";
 import { wroteNothing, noRowsMessage } from "@/lib/write-guard";
 import { Button } from "@/components/ui/button";
-import type { GroupStatus } from "@/lib/types";
+import { STATUS_META, type GroupStatus } from "@/lib/types";
+
+const knownStatus = (s: GroupStatus): GroupStatus =>
+  Object.prototype.hasOwnProperty.call(STATUS_META, s) ? s : "draft";
 
 /**
  * Approval-lifecycle button on the event detail header. Editing is no longer gated
@@ -33,21 +36,46 @@ export function ApprovalControl({
 
   async function setStatus(next: GroupStatus, msg: string) {
     setBusy(true);
+    // Only over the status this page SHOWED (2026-10-27) - EventStatusActions' rule
+    // since c4388cf. A page left open on "rejected" while staff approved the show
+    // used to drag it back to รออนุมัติ, and page every approver about it.
     const { data, error } = await createClient()
       .from("events")
       .update({ status: next })
       .eq("id", eventId)
+      .eq("status", status)
       .select("id");
-    setBusy(false);
     if (error) {
+      setBusy(false);
       toast.error("เปลี่ยนสถานะไม่สำเร็จ", { description: error.message });
       return;
     }
     if (wroteNothing(data)) {
       // 0 rows with no error = never resubmitted — don't page the approvers over it.
-      toast.error(await noRowsMessage());
+      // Say WHY when it is the status that moved on (the update above was conditional),
+      // in EventStatusActions' words, and bring the page up to what the row holds.
+      const { data: row } = await createClient()
+        .from("events")
+        .select("status")
+        .eq("id", eventId)
+        .maybeSingle();
+      setBusy(false);
+      const nowStatus = (row as { status?: GroupStatus } | null)?.status;
+      if (nowStatus === next) {
+        // Already resubmitted - from another device, which told the approvers itself.
+        toast.success(msg);
+        router.refresh();
+      } else if (nowStatus && nowStatus !== status) {
+        toast.error("สถานะงานนี้เปลี่ยนไปแล้ว", {
+          description: `ตอนนี้เป็น “${STATUS_META[knownStatus(nowStatus)].label}” — ดูให้แน่ใจก่อนแล้วค่อยเปลี่ยนอีกครั้ง`,
+        });
+        router.refresh();
+      } else {
+        toast.error(await noRowsMessage());
+      }
       return;
     }
+    setBusy(false);
     toast.success(msg);
     // resubmit/revert both land on pending_review → ping the approvers
     if (next === "pending_review") notify("event_submitted", { eventId });

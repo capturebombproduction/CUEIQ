@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Check, X, Loader2, ChevronDown } from "lucide-react";
 import { toast } from "sonner";
 import { createClient } from "@/lib/supabase/client";
@@ -53,6 +53,9 @@ export function EventStatusActions({
   const [status, setStatus] = useState<GroupStatus>(initialStatus);
   const [busy, setBusy] = useState(false);
   const [open, setOpen] = useState(false);
+  // What a try the timeout cut off asked for: it MAY have landed with nobody told, and only
+  // this screen knows it sent it (see the 0-row branch below).
+  const cutRef = useRef<GroupStatus | null>(null);
 
   async function set(next: GroupStatus) {
     if (next === status) {
@@ -86,6 +89,7 @@ export function EventStatusActions({
       toast.error("เน็ตช้าเกินไป — ยังไม่รู้ว่าบันทึกแล้วหรือยัง", {
         description: "กดรีเฟรชเพื่อดูสถานะล่าสุด แล้วค่อยลองใหม่",
       });
+      cutRef.current = next;
       setStatus(prev);
     } else if (error) {
       toast.error("เปลี่ยนสถานะไม่สำเร็จ", { description: error.message });
@@ -99,16 +103,27 @@ export function EventStatusActions({
         .eq("id", eventId)
         .maybeSingle();
       const nowStatus = (row as { status?: GroupStatus } | null)?.status;
+      // The band hears a verdict once. From here only when it is OUR cut-off try that
+      // landed: another approver who got there first already told them, and /api/notify's
+      // dedupe is 5 minutes - a board left open for hours sent a second "อนุมัติงานแล้ว"
+      // (2026-10-27 hunt).
+      const ourCutLanded = nowStatus != null && nowStatus === cutRef.current;
+      cutRef.current = null;
+      const tellBand = (s: GroupStatus) => {
+        if (s === "approved" || s === "rejected")
+          notify(s === "approved" ? "event_approved" : "event_rejected", { eventId });
+      };
       if (nowStatus === next) {
         // Already what was asked: the try a timeout cut off DID land (the retry then found
-        // nothing to change, and the band was never told), or another approver got there.
-        // It is done - say so, tell the band (the route's dedupe stops a double) and the
-        // board's counts (2026-10-27).
+        // nothing to change), or another approver got there. It is done - say so, and tell
+        // the board's counts (2026-10-27).
         toast.success(next === "approved" ? "อนุมัติแล้ว" : "ปฏิเสธแล้ว");
-        notify(next === "approved" ? "event_approved" : "event_rejected", { eventId });
+        if (ourCutLanded) tellBand(next);
         onChanged?.(next);
         setOpen(false);
       } else if (nowStatus && nowStatus !== prev) {
+        // …a cut-off อนุมัติ that landed, then ปฏิเสธ pressed: the band was never told of it
+        if (ourCutLanded) tellBand(nowStatus);
         toast.error("สถานะงานนี้เปลี่ยนไปแล้ว", {
           description: `ตอนนี้เป็น “${STATUS_META[knownStatus(nowStatus)].label}” — ดูให้แน่ใจก่อนแล้วค่อยเปลี่ยนอีกครั้ง`,
         });
@@ -120,6 +135,7 @@ export function EventStatusActions({
         setStatus(prev);
       }
     } else {
+      cutRef.current = null;
       toast.success(next === "approved" ? "อนุมัติแล้ว" : "ปฏิเสธแล้ว");
       notify(next === "approved" ? "event_approved" : "event_rejected", { eventId });
       onChanged?.(next);

@@ -321,8 +321,20 @@ export function ScheduleEditor({
     // collide with the first and hand the band a duplicate-name error for a button
     // press they had no way to get right. "รอบ 2" is a starting point they can
     // rename to whatever the day actually is ("ชุด 2", "ก่อนขึ้นเวที").
-    const photoRounds = items.filter((i) => i.kind === "photo").length;
-    const label = kind === "photo" && photoRounds > 0 ? `รอบ ${photoRounds + 1}` : null;
+    // …a name nobody has yet, though (2026-10-27). "รอบ <count+1>" ignored the names in
+    // use: with the unnamed round, "รอบ 2" and "รอบ 3", deleting "รอบ 2" made the next
+    // press suggest "รอบ 3" again - the duplicate-name error online, and on the desktop
+    // offline a snapshot that parks forever. So: the unnamed round when its key is free
+    // (it is the one the Overview edits; the first press always lands there), else the
+    // first "รอบ k" from count+1 up whose key (0042's, photoRoundKey) is not taken.
+    const photoRows = items.filter((i) => i.kind === "photo");
+    const photoKeys = new Set(photoRows.map((i) => photoRoundKey(i.label)));
+    let label: string | null = null;
+    if (kind === "photo" && photoKeys.has(photoRoundKey(null))) {
+      let k = photoRows.length + 1;
+      while (photoKeys.has(photoRoundKey(`รอบ ${k}`))) k += 1;
+      label = `รอบ ${k}`;
+    }
     // Offline (or joining a snapshot still queued): the row is minted locally
     // (stable client uuid — no remap on sync).
     const local: ScheduleItem = {
@@ -484,12 +496,16 @@ export function ScheduleEditor({
   }
 
   // Day span: earliest start → latest end (end falls back to its start time).
+  // Earliest / latest in the DAY's order, as the timeline below reads it (2026-10-27):
+  // by plain string compare an 18:00 → 01:30 day read "00:30–22:30", backwards.
+  const anchor = stageAnchorSeconds(items, {});
+  const dayPos = (t: string) => dayOrderSeconds(t, anchor);
   const starts = items.map((i) => i.start_time).filter(Boolean) as string[];
   const ends = items
     .map((i) => i.end_time || i.start_time)
     .filter(Boolean) as string[];
-  const firstStart = starts.length ? starts.reduce((a, b) => (a < b ? a : b)) : null;
-  const lastEnd = ends.length ? ends.reduce((a, b) => (a > b ? a : b)) : null;
+  const firstStart = starts.length ? starts.reduce((a, b) => (dayPos(a) <= dayPos(b) ? a : b)) : null;
+  const lastEnd = ends.length ? ends.reduce((a, b) => (dayPos(a) >= dayPos(b) ? a : b)) : null;
 
   const summaryStrip = items.length > 0 && (
     <div className="well flex flex-wrap items-center gap-x-4 gap-y-1 rounded-[2px] px-3 py-2 text-sm shadow-edge">

@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
-import { saveEventWrite } from "@/lib/mgmt-write";
+import { QUEUED_BEHIND_PENDING_MESSAGE, saveEventWrite } from "@/lib/mgmt-write";
 import { useHoldBottomSlot } from "@/lib/bottom-slot";
 import { createClient } from "@/lib/supabase/client";
 import { useConfirm } from "@/components/ui/confirm-dialog";
@@ -316,7 +316,10 @@ export function EventForm({
          5xx/429 from a server that is up (round 10 taught isQueueableWriteError to read the
          HTTP status), and telling someone with full wifi bars that they are offline sends
          them off to fix a network that is fine. */
-      if (res.queued) {
+      if (res.queued && res.behind) {
+        // online, but an earlier edit of this event still waits on this device: joined it
+        toast.success(QUEUED_BEHIND_PENDING_MESSAGE);
+      } else if (res.queued) {
         const reallyOffline = typeof navigator !== "undefined" && navigator.onLine === false;
         toast.success(
           reallyOffline

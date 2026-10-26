@@ -350,8 +350,11 @@ async function presign(
   // showtime. Timing out here stays RETRYABLE (unlike the byte transfer): a refresh
   // that is merely slow usually lands during the backoff, and the next attempt then
   // reads the fresh token straight out of the session store.
+  // ASCII "timeout", like UPLOAD_TIMEOUT_MESSAGE: once the retries are spent this is the
+  // error the Library's offline queue classifies, and a Thai-only message read as a
+  // permanent rejection - the take was not queued at a dead venue AP (2026-10-27).
   const headers = await raceAbort(endpointHeaders(), PRESIGN_TIMEOUT_MS, signal, {
-    timeoutMessage: "หมดเวลายืนยันสิทธิ์ (เครือข่ายไม่ตอบสนอง)",
+    timeoutMessage: "timeout — หมดเวลายืนยันสิทธิ์ (เครือข่ายไม่ตอบสนอง)",
     retryableTimeout: true,
   });
   // Cancelled while the token was resolving (headers won that race by a hair) →

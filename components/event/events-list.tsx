@@ -300,6 +300,29 @@ const eventCache = (): EventCacheBridge | undefined =>
     ? undefined
     : (window as unknown as { cueiqEventCache?: EventCacheBridge }).cueiqEventCache;
 
+/** When this device last re-read each held show's bundle (see refreshHeldBundles). */
+const lastBundleRefresh = new Map<string, number>();
+const BUNDLE_REFRESH_EVERY_MS = 5 * 60_000;
+
+/**
+ * Re-read, in the background, every upcoming show THIS device already holds a copy of.
+ * "Ready" is files + a bundle on disk, and neither notices an edit that adds no file: a
+ * set reordered or cut on a phone, a Loop or fade, the schedule, the mics. prepareAll
+ * re-reads every bundle, but its button only shows while something is MISSING — so with
+ * every file on disk, the copy Live opens at a no-wifi venue stayed last week's
+ * (2026-10-27 hunt). Called only after the readiness reads came back, i.e. online.
+ * Sequential and best-effort; each show at most once per BUNDLE_REFRESH_EVERY_MS, since
+ * the readiness pass also runs on every return to the window.
+ */
+async function refreshHeldBundles(cache: EventCacheBridge, eventIds: string[]) {
+  const now = Date.now();
+  const due = eventIds.filter(
+    (id) => cache.isCached(id) && now - (lastBundleRefresh.get(id) ?? -Infinity) >= BUNDLE_REFRESH_EVERY_MS
+  );
+  for (const id of due) lastBundleRefresh.set(id, now);
+  for (const id of due) await cache.warm(id).catch(() => {});
+}
+
 export function EventsList({
   events,
   editableGroupIds,
@@ -514,6 +537,7 @@ export function EventsList({
       );
       setReadiness(out);
       setTargetsByEvent(outTargets);
+      if (cache) void refreshHeldBundles(cache, eventIds);
     } catch {
       /* best-effort — no badge on failure */
     }

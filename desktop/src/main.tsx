@@ -10,6 +10,7 @@ import {
   registerPendingAudioDropper,
   registerPendingAudioReader,
   registerQueuedChildListReader,
+  registerQueuedEventOpReader,
 } from "@/lib/mgmt-write";
 import {
   dropPendingAudioUploadOp,
@@ -33,6 +34,12 @@ registerPendingAudioDropper(dropPendingAudioUploadOp);
 // instead of writing online on top of it (lib/mgmt-write tryQueueBehindPendingChildList).
 registerQueuedChildListReader(async (kind, eventId) =>
   (await pendingMgmtOps()).some((op) => op.kind === kind && op.id === eventId)
+);
+// …and the event form the same for the event row itself (lib/mgmt-write saveEventWrite).
+registerQueuedEventOpReader(async (eventId) =>
+  (await pendingMgmtOps()).some(
+    (op) => (op.kind === "event.update" || op.kind === "event.create") && op.id === eventId
+  )
 );
 
 // Reused R2 audio transport (lib/audio-remote) targets a same-origin /api route on

@@ -940,10 +940,13 @@ async function promptAtLaunch(version) {
     // can resolve late on a slow venue hotspot, and a modal that lands over a
     // running show kills every click and every keyboard cue until someone finds
     // the mouse. Parentless, it is just a window the operator can ignore (Windows).
+    // The DEFAULT is "ไว้ก่อน", as in offerRestart: parentless, the box takes the focus,
+    // and Live / Quick Show open but not started is not "busy" - the operator's START
+    // (Space) would press "อัปเดตเลย" and start ~100 MB over the venue hotspot (2026-10-27).
     const { response, checkboxChecked } = await dialog.showMessageBox({
       type: "question",
       buttons: ["อัปเดตเลย", "ไว้ก่อน"],
-      defaultId: 0,
+      defaultId: 1,
       cancelId: 1,
       title: "CueIQ มีเวอร์ชันใหม่",
       message: `มีเวอร์ชันใหม่ (${version})`,
