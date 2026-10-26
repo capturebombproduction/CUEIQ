@@ -75,8 +75,10 @@ export function CreatePracticeButton({
       toast.success("สร้างห้องซ้อมแล้ว");
       router.push(`/events/${created.id as string}/practice`);
     } catch (err) {
+      // `error` above is PostgREST's plain object, not an Error: read its message too, or
+      // a refusal (RLS, a guard trigger) said "ไม่สำเร็จ" with no reason
       toast.error("สร้างห้องซ้อมไม่สำเร็จ", {
-        description: err instanceof Error ? err.message : undefined,
+        description: (err as { message?: string } | null)?.message || undefined,
       });
       setBusy(false);
     }

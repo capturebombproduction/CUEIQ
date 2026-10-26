@@ -146,8 +146,10 @@ export function SetlistVersions({
       toast.success("กู้คืนเซ็ตลิสต์แล้ว");
       setOpen(false);
     } catch (e) {
+      // restoreSnapshot rethrows PostgREST's plain object, not an Error: read its
+      // message too, or a refused restore said "ไม่สำเร็จ" with no reason
       toast.error("กู้คืนไม่สำเร็จ", {
-        description: e instanceof Error ? e.message : undefined,
+        description: (e as { message?: string } | null)?.message || undefined,
       });
     } finally {
       setBusy(false);
