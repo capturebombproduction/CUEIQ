@@ -30,10 +30,19 @@ export interface NotifyPayload {
 // undefined in the Next build → relative same-origin fetch, unchanged on web)
 // and authorize with a Bearer token, since cross-origin requests don't carry
 // the web's cookies. /api/notify accepts either, like /api/audio/presign.
+/** What /api/notify answered, for the one caller that shows it (the คุมคิว board):
+ *  `skipped: "not_show_time"` = "งานเริ่มแล้ว" was held back - not the show's real date
+ *  and time (app/api/notify step 3d). */
+export interface NotifyAnswer {
+  ok?: boolean;
+  sent?: number;
+  skipped?: string;
+}
+
 async function send(
   kind: NotifyKind,
   payload: NotifyPayload
-): Promise<void> {
+): Promise<NotifyAnswer | null> {
   const webOrigin = process.env.CUEIQ_WEB_ORIGIN;
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (webOrigin) {
@@ -41,17 +50,26 @@ async function send(
     const token = data.session?.access_token;
     if (token) headers.Authorization = `Bearer ${token}`;
   }
-  await fetch(`${webOrigin ?? ""}/api/notify`, {
+  const res = await fetch(`${webOrigin ?? ""}/api/notify`, {
     method: "POST",
     headers,
     body: JSON.stringify({ kind, ...payload }),
     keepalive: true,
   });
+  return typeof res?.json === "function" ? ((await res.json().catch(() => null)) as NotifyAnswer | null) : null;
 }
 
-export function notify(kind: NotifyKind, payload: NotifyPayload): void {
+export function notify(
+  kind: NotifyKind,
+  payload: NotifyPayload,
+  onAnswer?: (answer: NotifyAnswer) => void
+): void {
   try {
-    void send(kind, payload).catch(() => {});
+    void send(kind, payload)
+      .then((answer) => {
+        if (answer && onAnswer) onAnswer(answer);
+      })
+      .catch(() => {});
   } catch {
     /* never block the UI */
   }

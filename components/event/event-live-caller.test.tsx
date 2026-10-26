@@ -6,6 +6,8 @@ import { ConfirmProvider } from "@/components/ui/confirm-dialog";
 import { AccountPanel, AccountPanelProvider } from "@/components/account-panel";
 import type { RunSeqOp } from "@/lib/run-order-outbox";
 import { notify } from "@/lib/notify-client";
+import { toast } from "sonner";
+import { NOT_SHOW_TIME_MESSAGE } from "@/lib/show-time-window";
 import { EventLiveCaller, type RunSeqLive } from "./event-live-caller";
 import { bandTriplet } from "@/lib/band-triplet";
 import { spotFor } from "@/lib/skin";
@@ -653,7 +655,54 @@ describe("EventLiveCaller — every press still sends the same write", () => {
     const [s] = supa.callsTo("run_sequence", "update");
     expect(s.eq).toMatchObject({ id: "r1", status: "pending" });
     expect(s.values).toMatchObject({ status: "live" });
-    await waitFor(() => expect(notify).toHaveBeenCalledWith("run_order_live", { eventId: "ev-1" }));
+    await waitFor(() =>
+      expect(notify).toHaveBeenCalledWith("run_order_live", { eventId: "ev-1" }, expect.any(Function))
+    );
+  });
+
+  // 2026-10-26, พี่: "งานเริ่มแล้ว" only on the show's real date and time. The server holds a
+  // dry run's push back and says so; whoever pressed is told, so nobody assumes the label knows.
+  it("START outside the show's date and time: the board says the label was not told", async () => {
+    const fresh = liveBoard().map((r) => ({
+      ...r,
+      status: "pending",
+      actual_start: null,
+      actual_end: null,
+      offset_min: null,
+    }));
+    script(fresh);
+    const info = vi.spyOn(toast, "info");
+    vi.mocked(notify).mockImplementationOnce((_kind, _payload, onAnswer) =>
+      onAnswer?.({ ok: true, sent: 0, skipped: "not_show_time" })
+    );
+    try {
+      renderCaller(fresh);
+      fireEvent.click(screen.getByRole("button", { name: /เริ่มงาน/ }));
+      await waitFor(() => expect(info).toHaveBeenCalledWith(NOT_SHOW_TIME_MESSAGE, expect.anything()));
+    } finally {
+      info.mockRestore();
+    }
+  });
+
+  it("START at show time: the label was told, nothing extra is said", async () => {
+    const fresh = liveBoard().map((r) => ({
+      ...r,
+      status: "pending",
+      actual_start: null,
+      actual_end: null,
+      offset_min: null,
+    }));
+    script(fresh);
+    const info = vi.spyOn(toast, "info");
+    vi.mocked(notify).mockImplementationOnce((_kind, _payload, onAnswer) => onAnswer?.({ ok: true, sent: 3 }));
+    try {
+      renderCaller(fresh);
+      fireEvent.click(screen.getByRole("button", { name: /เริ่มงาน/ }));
+      await waitFor(() => expect(notify).toHaveBeenCalled());
+      expect(info).not.toHaveBeenCalledWith(NOT_SHOW_TIME_MESSAGE, expect.anything());
+    } finally {
+      info.mockRestore();
+    }
   });
 
   // 2026-10-26: a first START with no network was queued and the label was never told

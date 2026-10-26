@@ -59,6 +59,7 @@ import {
   type RunSeqOp,
 } from "@/lib/run-order-outbox";
 import { compareRunOrder } from "@/lib/run-order-sort";
+import { NOT_SHOW_TIME_MESSAGE } from "@/lib/show-time-window";
 import {
   formatClockOfDay,
   formatCountdown,
@@ -901,7 +902,12 @@ export function EventLiveCaller({
       // refuse it anyway, and the label would be told a show started that the
       // server cannot see. A queued first start carries announceLive instead: the outbox
       // tells the label once its replay has landed (lib/run-order-outbox.ts).
-      if (ok === "committed" && firstStart) notify("run_order_live", { eventId });
+      // The server sends it only on the show's real date and time (a dry run outside it
+      // tells nobody) - say so to whoever pressed, so a held-back push is never a surprise.
+      if (ok === "committed" && firstStart)
+        notify("run_order_live", { eventId }, (answer) => {
+          if (answer.skipped === "not_show_time") toast.info(NOT_SHOW_TIME_MESSAGE, { duration: 8000 });
+        });
     } finally {
       inFlightRef.current = false;
     }

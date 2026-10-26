@@ -14,8 +14,9 @@
 // lib/notify-link-routes.test.ts separately holds every destination to a real page in
 // both apps.
 // ---------------------------------------------------------------------------
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { canViewLibrary, makePerms } from "@/lib/permissions";
+import { bkkTodayKey } from "@/lib/time";
 import type { Role } from "@/lib/types";
 
 type Row = Record<string, unknown>;
@@ -41,6 +42,9 @@ const h = vi.hoisted(() => ({
   editAsked: [] as unknown[],
   /** how many run_sequence rows are live (run_order_live's anti-spoof) */
   liveCount: 1,
+  /** the festival's run order times (run_order_live's show-time gate) and its date */
+  runTimes: [] as Row[],
+  eventDate: null as string | null,
   /** the festival's events (run_order_live's per-recipient links); eq filters apply */
   festEvents: [] as Row[],
   /** group_roles rows (run_order_live's per-recipient links) */
@@ -104,6 +108,7 @@ function table(name: string) {
         group_id: "band-1",
         tenant_id: "tenant-1",
         status: h.eventStatus,
+        event_date: h.eventDate,
         groups: { name: "Seishin Kakumei" },
       };
     if (name === "tenant_members") return { user_id: "caller" }; // the caller belongs
@@ -119,7 +124,13 @@ function table(name: string) {
     return []; // notifications (dedupe), push_subscriptions, …
   };
   const q: Record<string, unknown> = {};
-  for (const m of ["select", "gt", "is", "or", "limit", "order"]) q[m] = () => q;
+  for (const m of ["gt", "is", "or", "limit", "order"]) q[m] = () => q;
+  // run_sequence is read twice: a head count (the live-row anti-spoof) and its rows' times
+  let headCount = false;
+  q.select = (_cols?: string, opts?: { head?: boolean }) => {
+    headCount = !!opts?.head;
+    return q;
+  };
   q.eq = (col: string, val: unknown) => {
     eqs.push([col, val]);
     return q;
@@ -141,10 +152,12 @@ function table(name: string) {
   q.delete = () => q;
   q.then = (ok: (v: unknown) => unknown, bad: (e: unknown) => unknown) =>
     Promise.resolve(
-      h.failRead.includes(`${name}:many`)
+      h.failRead.includes(`${name}:many`) || (name === "run_sequence" && !headCount && h.failRead.includes("run_sequence:rows"))
         ? READ_FAILED
-        : name === "run_sequence"
+        : name === "run_sequence" && headCount
         ? { data: null, count: h.liveCount, error: null } // select(…, { count, head })
+        : name === "run_sequence"
+        ? { data: h.runTimes, error: null }
         : name === "push_subscriptions" && h.pushReadFails
           ? { data: null, error: { message: "canceling statement due to statement timeout" } }
           : { data: many(), error: null }
@@ -187,6 +200,10 @@ beforeEach(() => {
   h.canEdit = true;
   h.editAsked = [];
   h.liveCount = 1;
+  // today in Bangkok with no planned times = the whole show day: every older
+  // run_order_live test below is a start on the real show day
+  h.eventDate = bkkTodayKey();
+  h.runTimes = [];
   h.festEvents = [];
   h.groupRoles = [];
   h.vapid = false;
@@ -337,6 +354,79 @@ describe("run_order_live comes only from someone who could start the show", () =
     h.liveCount = 0;
     await send({ kind: "run_order_live", eventId: "ev-1" });
     expect(h.inserted).toEqual([]);
+  });
+});
+
+// 2026-10-26, พี่: "ส่งเฉพาะเมื่อมันอยู่ในวันเวลางานจริงเท่านั้น". The crew runs the board as a
+// dry run too - backstage hours before, or the day before - and each dry run told all 19
+// accounts "🔴 งานเริ่มแล้ว". Only a start inside the run order's own date and time does.
+describe("run_order_live is sent only on the show's real date and time", () => {
+  const SHOW = [
+    { sort_order: 1, planned_start: "19:00:00", planned_end: "19:20:00" },
+    { sort_order: 2, planned_start: "19:20:00", planned_end: "20:30:00" },
+  ];
+  const at = (iso: string) => vi.setSystemTime(new Date(iso));
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    h.members = [ADMIN, STAFF_A, { user_id: "member-1", role: "member" }];
+    h.eventDate = "2026-11-07";
+    h.runTimes = SHOW;
+  });
+  afterEach(() => vi.useRealTimers());
+
+  it("a dry run the day before tells nobody, and says why", async () => {
+    at("2026-11-06T19:00:00+07:00");
+    const { res } = await send({ kind: "run_order_live", eventId: "ev-1" });
+    expect(await res.json()).toEqual({ ok: true, sent: 0, skipped: "not_show_time" });
+    expect(h.inserted).toEqual([]);
+  });
+
+  it("a backstage run-through two hours before the first row tells nobody", async () => {
+    at("2026-11-07T17:00:00+07:00");
+    await send({ kind: "run_order_live", eventId: "ev-1" });
+    expect(h.inserted).toEqual([]);
+  });
+
+  it("the real start, at the show's time, reaches the whole label", async () => {
+    at("2026-11-07T19:02:00+07:00");
+    const { res } = await send({ kind: "run_order_live", eventId: "ev-1" });
+    expect((await res.json()).skipped).toBeUndefined();
+    expect(h.inserted.map((r) => r.user_id).sort()).toEqual(["admin-1", "member-1", "staff-a"]);
+  });
+
+  it("a festival with no date tells nobody - its real day cannot be known", async () => {
+    h.eventDate = null;
+    at("2026-11-07T19:02:00+07:00");
+    await send({ kind: "run_order_live", eventId: "ev-1" });
+    expect(h.inserted).toEqual([]);
+  });
+
+  it("a failed read of the run order's times is an error, never a guess either way", async () => {
+    at("2026-11-07T19:02:00+07:00");
+    h.failRead = ["run_sequence:rows"];
+    const res = await POST(
+      new Request("http://localhost/api/notify", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ kind: "run_order_live", eventId: "ev-1" }),
+      })
+    );
+    expect(res.status).toBe(500);
+    expect(String((await res.json()).error)).toContain("run_sequence");
+    expect(h.inserted).toEqual([]);
+  });
+
+  it("someone who could not have started it is still refused, show time or not", async () => {
+    at("2026-11-06T19:00:00+07:00");
+    h.canApprove = false;
+    const res = await POST(
+      new Request("http://localhost/api/notify", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ kind: "run_order_live", eventId: "ev-1" }),
+      })
+    );
+    expect(res.status).toBe(403);
   });
 });
 

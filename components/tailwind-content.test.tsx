@@ -18,6 +18,8 @@ const PROBE = "[--tw-r15-content-probe:1]";
 const PROBE_RULE = ".\\[--tw-r15-content-probe\\:1\\]";
 
 const repoRoot = path.resolve(__dirname, "..");
+// each compile scans the whole repo: ~1 s alone, past vitest's 5 s under the full suite's load
+const COMPILE_MS = 30_000;
 const CONFIGS = {
   web: path.join(repoRoot, "tailwind.config.ts"),
   desktop: path.join(repoRoot, "desktop/tailwind.config.ts"),
@@ -52,7 +54,7 @@ describe.each(Object.entries(CONFIGS))("%s tailwind config", (_name, file) => {
     expect(await compile(file, false), `${PROBE} was not found even without the negations`).toContain(PROBE_RULE);
 
     expect(await compile(file, true), `${PROBE} came from a test file`).not.toContain(PROBE_RULE);
-  });
+  }, COMPILE_MS);
 
   it("negates test files and nothing else", () => {
     const negated = contentGlobs(file, true).filter((g) => g.startsWith("!"));
@@ -66,12 +68,12 @@ describe("what real source still emits", () => {
     const css = await compile(CONFIGS.web, true);
     expect(css).toContain(".antialiased"); // app/layout.tsx
     expect(css).toContain(".sticky"); // components/ui/table.tsx
-  });
+  }, COMPILE_MS);
 
   it("the desktop CSS keeps a class that only desktop/src uses", async () => {
     // desktop/src/components/shell.tsx — and shell.test.tsx quotes it too, so this also
     // shows the source file is read while its test is not the reason it is there
     const css = await compile(CONFIGS.desktop, true);
     expect(css).toContain(".\\[scrollbar-width\\:none\\]");
-  });
+  }, COMPILE_MS);
 });

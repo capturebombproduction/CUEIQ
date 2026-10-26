@@ -11,6 +11,7 @@ import {
   type FestivalEvent,
   type GroupRoleRow,
 } from "@/lib/dead-link";
+import { isShowTime, type RunTimes } from "@/lib/show-time-window";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -134,6 +135,8 @@ export async function POST(req: Request) {
   let festivalName = "";
   let festivalDate: string | null = null;
   let entryEventId = "";
+  // ...and the run order's planned times: the show's real date and time (step 3d)
+  let runTimes: RunTimes[] = [];
 
   if (EVENT_KINDS.has(kind)) {
     if (!eventId) return json(req, { error: "no eventId" }, 400);
@@ -277,6 +280,17 @@ export async function POST(req: Request) {
     const { count: liveCount, error: liveErr } = await liveQ;
     if (liveErr) return readFailed(req, "run_sequence", liveErr);
     if (!liveCount) return noOp(req); // not actually live → don't notify
+    let timesQ = admin
+      .from("run_sequence")
+      .select("sort_order, planned_start, planned_end")
+      .eq("tenant_id", tenantId)
+      .eq("event_name", ev.name as string);
+    timesQ = ev.event_date
+      ? timesQ.eq("event_date", ev.event_date as string)
+      : timesQ.is("event_date", null);
+    const { data: timeRows, error: timesErr } = await timesQ;
+    if (timesErr) return readFailed(req, "run_sequence", timesErr);
+    runTimes = (timeRows ?? []) as RunTimes[];
     title = "🔴 งานเริ่มแล้ว (Live)";
     // The DEFAULT link for this kind is the everyone-safe one. It used to be
     // `/events/${ev.id}/run-order/live` — the entry event, i.e. whichever single
@@ -342,6 +356,13 @@ export async function POST(req: Request) {
   if (RUN_ORDER_KINDS.has(kind) || APPROVER_KINDS.has(kind)) {
     const { data: canApprove } = await supabase.rpc("can_approve", { tid: tenantId });
     if (canApprove !== true) return json(req, { error: "forbidden" }, 403);
+  }
+  // 3d) ...and only on the show's real date and time (2026-10-26, พี่). The crew runs the
+  // board as a dry run too - backstage before the show, or the day before - and each one
+  // told the whole label "งานเริ่มแล้ว". Outside the run order's own window nothing is
+  // written or pushed; the answer says why, so the board can tell whoever pressed it.
+  if (kind === "run_order_live" && !isShowTime(festivalDate, runTimes)) {
+    return json(req, { ok: true, sent: 0, skipped: "not_show_time" });
   }
   if (EDITOR_KINDS.has(kind)) {
     const { data: canEdit } = await supabase.rpc("can_edit_group", { gid: groupId });

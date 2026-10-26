@@ -77,3 +77,30 @@ describe("notify (desktop: CUEIQ_WEB_ORIGIN defined)", () => {
     await new Promise((r) => setTimeout(r, 0));
   });
 });
+
+// 2026-10-26: the คุมคิว board shows why "งานเริ่มแล้ว" was held back (a dry run outside the
+// show's real date and time), so notify hands the server's answer to the one caller that asks.
+describe("notify's answer", () => {
+  it("hands the server's answer to onAnswer", async () => {
+    fetchMock.mockResolvedValue({ ok: true, json: async () => ({ ok: true, sent: 0, skipped: "not_show_time" }) });
+    const onAnswer = vi.fn();
+    notify("run_order_live", { eventId: "ev1" }, onAnswer);
+    await vi.waitFor(() => expect(onAnswer).toHaveBeenCalledWith({ ok: true, sent: 0, skipped: "not_show_time" }));
+  });
+
+  it("a body that is not JSON, or an onAnswer that throws, never reaches the caller", async () => {
+    fetchMock.mockResolvedValue({ ok: false, json: async () => Promise.reject(new SyntaxError("not json")) });
+    const onAnswer = vi.fn();
+    expect(() => notify("run_order_live", { eventId: "ev1" }, onAnswer)).not.toThrow();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(onAnswer).not.toHaveBeenCalled();
+
+    fetchMock.mockResolvedValue({ ok: true, json: async () => ({ ok: true }) });
+    const boom = vi.fn(() => {
+      throw new Error("boom");
+    });
+    notify("run_order_live", { eventId: "ev1" }, boom);
+    await vi.waitFor(() => expect(boom).toHaveBeenCalled());
+    await new Promise((r) => setTimeout(r, 0));
+  });
+});

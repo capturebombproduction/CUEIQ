@@ -228,7 +228,8 @@ describe("P3 · the overlap tail of a row cut shorter than its file", () => {
     await tick(20_000); // 15 s past the end of row 1's own 150 s
     // used to: the BGM is still playing under the song (155 s of file left)
     expect(media.state(first).paused).toBe(true);
-  });
+    // 165 s of fake show time: ~2 s alone, past vitest's 5 s under the full suite's load
+  }, 20_000);
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -515,5 +516,5 @@ describe("controls", () => {
     expect(stateSends().at(-1)!.payload.currentIndex).toBe(1);
     // the incoming row is on the spare, the outgoing still sounds (its last seconds)
     expect(media.state(media.first()!).paused).toBe(false);
-  });
+  }, 20_000);
 });
