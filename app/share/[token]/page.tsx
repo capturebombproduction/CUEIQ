@@ -12,6 +12,7 @@ import { PrintButton } from "@/components/print-button";
 import { LineupHeadline } from "@/components/event/lineup-headline";
 import { BandSkin } from "@/components/band-skin";
 import { createClient } from "@/lib/supabase/server";
+import { dayOrderSeconds, stageAnchorSeconds } from "@/lib/day-order";
 import { cn } from "@/lib/utils";
 import {
   computeSetlistTimes,
@@ -55,6 +56,7 @@ interface SharedBundle {
     start_time: string | null;
     end_time: string | null;
     notes: string | null;
+    sort_order?: number;
   }[];
   setlist: {
     id: string;
@@ -147,7 +149,18 @@ export default async function SharePage({ params }: { params: Promise<{ token: s
     );
   }
 
-  const { event, group, schedule, setlist, members } = bundle;
+  const { event, group, setlist, members } = bundle;
+  // The day in the order the in-app run sheet reads it (components/event/event-summary.tsx):
+  // round the stage, earliest first, a row with no time last, ties as the band ordered
+  // them. The RPC hands rows back in the order they were ADDED, so a call sheet built
+  // Stage-first sent the crew Stage 18:00 above Call 16:00 while the Summary and its JPG
+  // read Call first (hunt 6, 2026-10-27).
+  const dayAnchor = stageAnchorSeconds(bundle.schedule, event);
+  const schedule = [...bundle.schedule].sort(
+    (a, b) =>
+      dayOrderSeconds(a.start_time, dayAnchor) - dayOrderSeconds(b.start_time, dayAnchor) ||
+      (a.sort_order ?? 0) - (b.sort_order ?? 0)
+  );
   // Array.isArray, not `?? []` — the key is absent until 0039 is applied.
   const lineup = Array.isArray(bundle.lineup) ? bundle.lineup : [];
   // The map link is free text an editor pasted, and this page is PUBLIC +

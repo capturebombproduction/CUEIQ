@@ -68,10 +68,65 @@ describe("mergeOp", () => {
     expect(mergeOp(op({ queuedAt: 500 }), op({ queuedAt: 9000 })).queuedAt).toBe(500);
   });
 
-  // A parked row is a decision a human has not made yet. A later press must not
-  // quietly un-park it and go back to trying to overwrite whatever is on the server.
-  it("a parked op stays parked when another press folds into it", () => {
-    expect(mergeOp(op({ conflict: true }), op()).conflict).toBe(true);
+  // A parked op never replays - ทิ้ง is its one way out. A later press on the row used to
+  // fold INTO it: it took the parked op's stale precondition and its `conflict`, parked
+  // the moment it was queued, and through the shared press ids dragged the rest of its
+  // own press into the park (2026-10-27, hunt 6). Online the same press is a direct
+  // write that lands. Now it replaces the parked op - with ITS OWN precondition, so it is
+  // still a compare-and-swap that parks by itself when the board moved - and nothing of
+  // the parked press rides along: no old column, no old press id, no old precondition.
+  it("a press on a parked row replaces the parked op instead of folding into it", () => {
+    const parked = op({
+      patch: { status: "live", actual_start: "T-old", offset_min: 1 },
+      expect: { status: "pending" },
+      presses: ["p-old"],
+      conflict: true,
+      rev: 4,
+      prior: [{ status: "live", actual_start: "T-older" }],
+      announceLive: { eventId: "ev-1", at: 1 },
+      planBasis: "20:00:00",
+      label: "เริ่ม: วงเก่า",
+    });
+    const next = op({
+      patch: { status: "done", actual_end: "T-new" },
+      expect: { status: "live" },
+      presses: ["p-new"],
+      label: "จบ: วงเก่า",
+      queuedAt: 9000,
+    });
+    const merged = mergeOp(parked, next);
+    expect(merged.conflict).toBeFalsy();
+    expect(merged.patch).toEqual({ status: "done", actual_end: "T-new" });
+    expect(merged.expect).toEqual({ status: "live" });
+    expect(merged.presses).toEqual(["p-new"]);
+    expect(merged.prior).toBeUndefined();
+    expect(merged.announceLive).toBeUndefined();
+    expect(merged.planBasis).toBeUndefined();
+    expect(merged.queuedAt).toBe(9000);
+    // a fresh revision, never a repeated one: the flush deletes and rebases by rev
+    expect(merged.rev).toBe(5);
+  });
+
+  it("an un-parked op still folds a later press in (first precondition, latest values)", () => {
+    const merged = mergeOp(
+      op({ patch: { status: "live", offset_min: 2 }, expect: { status: "pending" }, presses: ["p1"], rev: 1 }),
+      op({ patch: { offset_min: 7 }, expect: { status: "live", offset_min: 2 }, presses: ["p2"] })
+    );
+    expect(merged.expect).toEqual({ status: "pending" });
+    expect(merged.patch).toEqual({ status: "live", offset_min: 7 });
+    expect(merged.presses).toEqual(["p1", "p2"]);
+  });
+
+  // RunSeqOp.planBasis belongs to the press that SET the drift (a start): a ± or an end
+  // folded in after it leaves it, a later start brings its own.
+  it("keeps the start's plan basis through a later ± or end, and takes a later start's", () => {
+    const start = op({ patch: { status: "live", offset_min: 3 }, expect: { status: "pending" }, planBasis: "20:00:00" });
+    const nudged = mergeOp(start, op({ patch: { offset_min: 8 } }));
+    expect(nudged.planBasis).toBe("20:00:00");
+    const restarted = mergeOp(nudged, op({ patch: { status: "live", offset_min: 0 }, planBasis: "21:00:00" }));
+    expect(restarted.planBasis).toBe("21:00:00");
+    const noPlan = mergeOp(nudged, op({ patch: { status: "live", offset_min: 4 }, planBasis: null }));
+    expect(noPlan.planBasis).toBeNull();
   });
 
   it("does not resurrect a precondition when the first op had none", () => {

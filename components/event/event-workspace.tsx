@@ -76,6 +76,7 @@ export function EventWorkspace({
   canRunLive = true,
   liveInHero = false,
   summaryFooter,
+  cachedCopy = false,
 }: {
   event: EventRow & { group: Group | null };
   eventId: string;
@@ -106,6 +107,12 @@ export function EventWorkspace({
    *  panel seeds its rows from page-load props, so a remount on every return to
    *  Summary would show a song just approved as waiting again. */
   summaryFooter?: ReactNode;
+  /** Desktop: these props are this device's stored copy of the show (the read-cache
+   *  plus the edits queued here), served because the server could not be reached -
+   *  not a server read. They are the last ONLINE read, so older than any edit saved
+   *  online since, and they re-seed no editor (see the seeds effect). The Summary
+   *  still shows them. */
+  cachedCopy?: boolean;
 }) {
   const modules = EVENT_TYPES[eventType]?.modules ?? EVENT_TYPES.idol.modules;
   const router = useRouter();
@@ -286,7 +293,18 @@ export function EventWorkspace({
   // of the live lineup Mics reads, for good. Leaving such a tab asks for a FRESH read
   // (changeView); the props THAT read brings re-seed it (rekeyOnNextData), never the
   // ones it missed while active - those predate its own edits.
+  // …and only a read that really holds those edits (hunt 6, 2026-10-27). The re-seed
+  // is forced (it does not wait for the fingerprint to move), so it took whatever came
+  // next: on the desktop a refresh that cannot reach the server is served from the
+  // read-cache - the last ONLINE read, older than the edit saved online after it - and
+  // on the web a read whose 2.5 s wait (refreshOnceSaved) ran out went out with the
+  // last save still on the wire. Either one put the panel back on B after C saved, and
+  // its next blur wrote B over C. So a left tab first WANTS a re-seed (wantsReseed); it
+  // is armed (rekeyOnNextData) only as a read goes out with nothing on the wire while
+  // the tab is hidden, and an answer that cannot vouch for it (a cached copy, or one
+  // landing after the tab was opened again) sends it back to waiting.
   const missedWhileActive = useRef<Set<string>>(new Set());
+  const wantsReseed = useRef<Set<string>>(new Set());
   const rekeyOnNextData = useRef<Set<string>>(new Set());
   const lastSeeds = useRef(seeds);
   useEffect(() => {
@@ -295,10 +313,32 @@ export function EventWorkspace({
     // new data, not just a tab change or a panel opening
     const freshData = seeds !== lastSeeds.current;
     lastSeeds.current = seeds;
+    if (cachedCopy) {
+      // The desktop's stored copy, not a server read (see the prop). A MOUNTED editor
+      // keeps what it holds and the fingerprint it was seeded with - a server read
+      // later is still compared against that - and the live lineup stays with its
+      // panel. An unopened tab seeds from these props when it opens, so it records
+      // them, as below.
+      for (const [tab, fingerprint] of Object.entries(seeds)) {
+        if (opened.has(tab)) continue;
+        const before = seededWith.current[tab];
+        seededWith.current[tab] = fingerprint;
+        if (tab === "lineup" && before !== undefined && before !== fingerprint) lineupMoved = true;
+      }
+      if (freshData) {
+        for (const tab of rekeyOnNextData.current) wantsReseed.current.add(tab);
+        rekeyOnNextData.current.clear();
+      }
+      if (lineupMoved) setLiveLineup(lineup);
+      return;
+    }
     for (const [tab, fingerprint] of Object.entries(seeds)) {
       const before = seededWith.current[tab];
       seededWith.current[tab] = fingerprint;
       if (tab === view && before !== undefined && before !== fingerprint) missedWhileActive.current.add(tab);
+      // armed, but its read landed while the tab is open again: it may predate what the
+      // tab saved since - back to waiting for the next read sent while it is hidden
+      if (tab === view && freshData && rekeyOnNextData.current.delete(tab)) wantsReseed.current.add(tab);
       if (tab !== view && freshData && rekeyOnNextData.current.delete(tab)) {
         if (tab === "lineup") lineupMoved = true;
         if (opened.has(tab)) stale.push(tab);
@@ -334,7 +374,7 @@ export function EventWorkspace({
       for (const tab of stale) next[tab] = (prev[tab] ?? 0) + 1;
       return next;
     });
-  }, [seeds, view, opened, lineup]);
+  }, [seeds, view, opened, lineup, cachedCopy]);
   const seedKey = (tab: string) => seedRev[tab] ?? 0;
 
   // True from a left-button press on the Summary segment until its click (or until
@@ -342,18 +382,36 @@ export function EventWorkspace({
   // click — see the trigger.
   const summaryPress = useRef(false);
 
+  // The tab on screen, for the refreshes below that finish after an await.
+  const viewRef = useRef(view);
+  useEffect(() => {
+    viewRef.current = view;
+  }, [view]);
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
+
   function changeView(v: string) {
     // A field still focused on the tab being left saves NOW (iOS does not blur before
     // the click), before any refresh below reads the server (ตาที่ 3, 2026-10-27).
     if (v !== view) commitFocusedField();
-    // Leaving a tab whose server data changed while it was the active one: read again,
-    // and let THAT answer re-seed it (see missedWhileActive). Summary refreshes below
-    // anyway; offline it waits for the next refresh that lands while it is hidden.
-    if (v !== view && missedWhileActive.current.delete(view)) {
-      rekeyOnNextData.current.add(view);
-      if (v !== "summary" && (typeof navigator === "undefined" || navigator.onLine)) {
-        void refreshOnceSaved();
-      }
+    // One press can arrive twice before the first has rendered (Radix: the mousedown,
+    // then the focus it causes) - the same move, not a second one: it asks for no read.
+    const repeat = v !== view && viewRef.current === v;
+    viewRef.current = v;
+    const online = !repeat && (typeof navigator === "undefined" || navigator.onLine);
+    let read = false;
+    // Leaving a tab whose server data changed while it was the active one - or one
+    // still waiting for the read that re-seeds it: read again, and let THAT answer
+    // re-seed it (see missedWhileActive / wantsReseed). Offline it waits for the next
+    // read sent while it is hidden.
+    if (v !== view && (missedWhileActive.current.delete(view) || wantsReseed.current.has(view))) {
+      wantsReseed.current.add(view);
+      read = true;
     }
     // Entering Summary (which renders the export JPG / printable run-sheet) from
     // an editor tab: pull fresh server data first, so the summary and its image
@@ -362,13 +420,9 @@ export function EventWorkspace({
     // overview photo-time export. Online only (offline we keep what we have
     // rather than hang on a refetch; on desktop the shim's refresh() re-loads
     // the event bundle in place).
-    if (
-      v === "summary" &&
-      view !== "summary" &&
-      (typeof navigator === "undefined" || navigator.onLine)
-    ) {
-      void refreshOnceSaved();
-    }
+    if (v === "summary" && view !== "summary") read = true;
+    // One read for both.
+    if (read && online) void refreshOnceSaved(v);
     setView(v);
     if (typeof window !== "undefined") {
       const hash = window.location.hash;
@@ -391,12 +445,55 @@ export function EventWorkspace({
   // next blur then wrote back over the server (2026-10-27). So wait for the writes on
   // the wire to land first (bounded, as confirmSaved's own wait: past it, refresh
   // anyway). Nothing pending — the usual case — refreshes at once, synchronously.
-  async function refreshOnceSaved() {
+  // `shown`: the tab that will be on screen when the read goes out (changeView calls
+  // this before its setView lands).
+  async function refreshOnceSaved(shown: string = viewRef.current) {
     const deadline = Date.now() + 2500;
+    let waited = false;
     while (unsavedWork().pending > 0 && Date.now() < deadline) {
+      waited = true;
       await new Promise((r) => setTimeout(r, 100));
     }
+    armReseeds(waited ? viewRef.current : shown);
     router.refresh();
+  }
+
+  // The read about to go out re-seeds the hidden tabs waiting for one - if nothing is on
+  // the wire, so it holds everything they saved (see wantsReseed). Past the wait with a
+  // save still out, it would not: they keep waiting, and one more read goes out once
+  // the saves have landed (hunt 6, 2026-10-27).
+  function armReseeds(shown: string) {
+    if (wantsReseed.current.size === 0) return;
+    if (unsavedWork().pending > 0) {
+      void reseedOnceSaved();
+      return;
+    }
+    for (const tab of [...wantsReseed.current]) {
+      if (tab === shown) continue; // on screen: never re-seeded, it asks again when left
+      wantsReseed.current.delete(tab);
+      rekeyOnNextData.current.add(tab);
+    }
+  }
+
+  const reseedWaiting = useRef(false);
+  async function reseedOnceSaved() {
+    if (reseedWaiting.current) return;
+    reseedWaiting.current = true;
+    try {
+      // bounded: past it the tab simply waits for the next read the user starts
+      const deadline = Date.now() + 30_000;
+      while (unsavedWork().pending > 0 && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 250));
+      }
+      if (!mounted.current || unsavedWork().pending > 0) return;
+      if (typeof navigator !== "undefined" && !navigator.onLine) return;
+      const shown = viewRef.current;
+      if (![...wantsReseed.current].some((tab) => tab !== shown)) return;
+      armReseeds(shown);
+      router.refresh();
+    } finally {
+      reseedWaiting.current = false;
+    }
   }
 
   // Reassurance "save" — data already auto-saves on edit; this just pulls fresh

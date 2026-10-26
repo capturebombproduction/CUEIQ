@@ -479,8 +479,15 @@ export function PracticePlayer({
   }, [vol]);
 
   const wakeRef = useRef<WakeLockSentinel | null>(null);
+  // Held through a set's WAIT too (2026-10-27 hunt 6): the song has stopped but the set
+  // has not - letting go at its end let an iPhone (auto-lock 30 s) lock in a 45 s MC
+  // wait, and iOS stops the timer and the Web Audio with it: the next song never came
+  // in. As Live Mode holds its lock across the show's silent stretches.
+  const holdScreen = playing || gapKey !== null;
+  const holdScreenRef = useRef(holdScreen);
+  holdScreenRef.current = holdScreen;
   useEffect(() => {
-    if (!playing) {
+    if (!holdScreen) {
       wakeRef.current?.release().catch(() => {});
       wakeRef.current = null;
       return;
@@ -498,7 +505,7 @@ export function PracticePlayer({
       wakeRef.current?.release().catch(() => {});
       wakeRef.current = null;
     };
-  }, [playing]);
+  }, [holdScreen]);
   // …and asked for again when the page comes back with the song still playing
   // (2026-10-27): the browser drops the lock whenever the page is hidden - a switch to
   // LINE mid-song - and `playing` never changed, so the effect above never asked again
@@ -507,13 +514,13 @@ export function PracticePlayer({
   useEffect(() => {
     let alive = true;
     const onVisible = () => {
-      if (document.visibilityState !== "visible" || !engineRef.current?.playing || wakeRef.current) return;
+      if (document.visibilityState !== "visible" || !holdScreenRef.current || wakeRef.current) return;
       navigator.wakeLock
         ?.request("screen")
         .then((wl) => {
           // The song stopped (or the player left, or the [playing] effect took a lock)
           // while the request was out: held now, nothing would ever release it (ตาที่ 3).
-          if (!alive || !engineRef.current?.playing || wakeRef.current) {
+          if (!alive || !holdScreenRef.current || wakeRef.current) {
             wl.release().catch(() => {});
             return;
           }

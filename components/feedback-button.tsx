@@ -70,6 +70,9 @@ type UnreadState = {
   setUnread: Dispatch<SetStateAction<number>>;
   draft: Draft;
   setDraft: Dispatch<SetStateAction<Draft>>;
+  /** A send of `draft` is still in flight (see FeedbackUnreadProvider). */
+  sending: boolean;
+  setSending: Dispatch<SetStateAction<boolean>>;
 };
 const FeedbackUnreadContext = createContext<UnreadState | null>(null);
 
@@ -91,6 +94,13 @@ const FeedbackUnreadContext = createContext<UnreadState | null>(null);
  * also closes on every page change). Held inside the tile, a report that failed to
  * send offline — whose toast promises "ข้อความยังอยู่ในกล่อง" — was wiped the moment
  * the member closed the sheet to get back to the show.
+ *
+ * …and so does the fact that it is BEING SENT (2026-10-27, hunt 6). The dialog invites
+ * closing mid-send ("ปิดหน้าต่าง") and the sheet unmounts the tile, so a "sending" flag
+ * held in the tile came back false on the next open: the same text with ส่ง enabled
+ * while the first send was still uploading its screenshot - pressed again, the report
+ * was filed twice, and whatever was typed meanwhile was wiped by the first send's
+ * success. The flag lives beside the draft it guards.
  */
 export function FeedbackUnreadProvider({
   userId,
@@ -101,6 +111,7 @@ export function FeedbackUnreadProvider({
 }) {
   const [unread, setUnread] = useState(0);
   const [draft, setDraft] = useState<Draft>(EMPTY_DRAFT);
+  const [sending, setSending] = useState(false);
   // A list that read (or stamped) this person's answers says how many are unread now -
   // the /feedback page's own list included (FEEDBACK_UNREAD_EVENT). Newer than the
   // mount read below whenever it arrives after that read STARTED.
@@ -134,7 +145,7 @@ export function FeedbackUnreadProvider({
     };
   }, [userId]);
   return (
-    <FeedbackUnreadContext.Provider value={{ unread, setUnread, draft, setDraft }}>
+    <FeedbackUnreadContext.Provider value={{ unread, setUnread, draft, setDraft, sending, setSending }}>
       {children}
     </FeedbackUnreadContext.Provider>
   );
@@ -176,10 +187,14 @@ export function FeedbackButton({
 }) {
   const [open, setOpen] = useState(false);
   const [tab, setTab] = useState<"new" | "mine">("new");
-  const [busy, setBusy] = useState(false);
   // No provider → no count and no fetch: the shells always mount one, and a
   // second, private fetch here would be a second source of truth for one dot.
   const shared = useContext(FeedbackUnreadContext);
+  // "Sending" is the shell's too, like the draft it guards (see FeedbackUnreadProvider):
+  // a tile reopened mid-send must still know the draft is on its way.
+  const [localBusy, setLocalBusy] = useState(false);
+  const busy = shared ? shared.sending : localBusy;
+  const setBusy = shared?.setSending ?? setLocalBusy;
   const unread = shared?.unread ?? 0;
   const setUnread: Dispatch<SetStateAction<number>> = shared?.setUnread ?? (() => {});
   // The draft is the shell's (see FeedbackUnreadProvider), so it outlives this tile;
@@ -425,6 +440,7 @@ export function FeedbackButton({
                         key={c.value}
                         type="button"
                         onClick={() => setCategory(c.value)}
+                        disabled={busy}
                         aria-pressed={category === c.value}
                         className={cn(
                           "chip chip-lg transition-colors duration-2",
@@ -443,12 +459,15 @@ export function FeedbackButton({
                   id="fb-msg"
                   value={message}
                   onChange={(e) => setMessage(e.target.value)}
+                  // what is on its way cannot change under it: the success clears this
+                  // box, and anything typed during the send went with it (2026-10-27)
+                  disabled={busy}
                   rows={5}
                   placeholder="อธิบายสั้น ๆ ก็ได้ครับ เช่น กดปุ่มนี้แล้วเสียงไม่เล่น…"
                   // the one raw textarea in the app, so it needs the 16px-on-phones
                   // rule components/ui/textarea.tsx carries — and this is the field
                   // people type into FROM a phone, to report the bug they just hit
-                  className="min-h-[96px] w-full rounded-[3px] bg-card px-3.5 py-2.5 text-base leading-relaxed shadow-[inset_0_0_0_1.5px_hsl(var(--input))] placeholder:text-faint focus-visible:outline-none focus-visible:shadow-[inset_0_0_0_2px_hsl(var(--ring))] sm:text-sm"
+                  className="min-h-[96px] w-full rounded-[3px] bg-card px-3.5 py-2.5 text-base leading-relaxed shadow-[inset_0_0_0_1.5px_hsl(var(--input))] placeholder:text-faint focus-visible:outline-none focus-visible:shadow-[inset_0_0_0_2px_hsl(var(--ring))] disabled:opacity-60 sm:text-sm"
                 />
               </div>
 
@@ -469,6 +488,7 @@ export function FeedbackButton({
                         type="button"
                         title="เอารูปนี้ออก"
                         onClick={() => removeFile(f)}
+                        disabled={busy}
                         className="absolute -right-1.5 -top-1.5 rounded-full bg-destructive p-0.5 text-destructive-foreground shadow"
                       >
                         <X className="h-3 w-3" />
@@ -480,6 +500,7 @@ export function FeedbackButton({
                       type="button"
                       data-testid="feedback-add-image"
                       onClick={() => fileInput.current?.click()}
+                      disabled={busy}
                       className="flex h-20 w-20 flex-col items-center justify-center gap-1 rounded-md border border-dashed text-xs text-muted-foreground transition-colors hover:bg-muted"
                     >
                       <ImagePlus className="h-4 w-4" />

@@ -34,6 +34,11 @@ export interface EventBundle {
   songs: Song[];
   lineup: string[]; // member_ids performing at this event (empty = not chosen yet)
   role: Role | null;
+  /** Set on a bundle served from this device's read-cache (servedFromCache below) -
+   *  the last ONLINE read plus the edits queued here - never on a server read, and
+   *  never stored. pages/event.tsx hands it to EventWorkspace (`cachedCopy`), whose
+   *  editors must not be re-seeded from it (hunt 6, 2026-10-27). */
+  fromCache?: true;
 }
 
 /** Read-cache key for one event's bundle — shared by the loader and the probes below. */
@@ -194,7 +199,10 @@ export async function loadEventBundleStatus(eventId: string): Promise<EventBundl
    *  rather than a retry button for a deletion they performed. */
   const servedFromCache = async (): Promise<EventBundleLoad> => {
     const overlay = await withPendingOverlay(readCache<EventBundle>(cacheKey), eventId);
-    return { bundle: overlay.bundle, unreachable: !overlay.deleted };
+    return {
+      bundle: overlay.bundle ? { ...overlay.bundle, fromCache: true } : null,
+      unreachable: !overlay.deleted,
+    };
   };
 
   // Offline: the network reads below would all fail, so serve the last good

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { createAdminClient, hasServiceRole } from "@/lib/supabase/admin";
 import { pushToUsers } from "@/lib/notify-server";
+import { PUSH_TTL_SECONDS } from "@/lib/push";
 import { cronSecretMatches, reportCronFailure } from "@/lib/cron-report";
 import { approvalNagBody, approvalsNeedingNag } from "@/lib/approval-nag";
 import { expireSupersededDailyNotifications } from "@/lib/notification-expiry";
@@ -151,7 +152,7 @@ async function runReminders(): Promise<Response> {
     // A failed push_subscriptions read throws (lib/notify-server.ts): report it as this
     // step's failure - never "nobody has a device", never the rest of the run (2026-10-25).
     try {
-      pushed += await pushToUsers(admin, targets, { title, body, link });
+      pushed += await pushToUsers(admin, targets, { title, body, link }, PUSH_TTL_SECONDS.reminder);
     } catch (e) {
       return failed(`push ${type} ${eventId}`, { message: e instanceof Error ? e.message : String(e) });
     }

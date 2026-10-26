@@ -24,6 +24,22 @@ function ensure() {
   ready = true;
 }
 
+/**
+ * How long a push service may hold a push for a phone that is off or offline before it
+ * drops it (2026-10-27 hunt 6). web-push's own default is 4 WEEKS: a phone switched off
+ * through the show woke up the next day to "🔴 งานเริ่มแล้ว (Live)" and "📅 โชว์วันนี้"
+ * for a show that was already over, and a tap opened a finished board. The bell keeps
+ * every row as history anyway - a late push only misleads.
+ */
+export const PUSH_TTL_SECONDS = {
+  /** "the show just went live": worth nothing once the show is well under way */
+  live: 3 * 3600,
+  /** the morning reminders cron: re-sent every day it still applies */
+  reminder: 12 * 3600,
+  /** approvals, a rejected song, a feedback reply: still worth a buzz for a few days */
+  default: 3 * 24 * 3600,
+} as const;
+
 export interface PushSub {
   endpoint: string;
   p256dh: string;
@@ -48,7 +64,8 @@ export interface PushSub {
  */
 export async function sendPush(
   sub: PushSub,
-  payload: object
+  payload: object,
+  ttlSeconds: number = PUSH_TTL_SECONDS.default
 ): Promise<"ok" | "gone" | "error"> {
   // Only ever a real push service (lib/push-endpoint.ts): the endpoint is the client's
   // to write. Not "gone" - a host this list does not know yet is never pruned.
@@ -57,7 +74,8 @@ export async function sendPush(
   try {
     await webpush.sendNotification(
       { endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } },
-      JSON.stringify(payload)
+      JSON.stringify(payload),
+      { TTL: ttlSeconds }
     );
     return "ok";
   } catch (e: unknown) {

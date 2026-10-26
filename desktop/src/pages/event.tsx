@@ -382,6 +382,10 @@ export function EventPage() {
         runSeq={runSeq}
         canRunLive={canRunLive}
         liveInHero
+        // Served from the read-cache (offline, or a read that timed out): the Summary
+        // shows it, the editors are not re-seeded from it - it is older than any edit
+        // saved online since the last online read (hunt 6, 2026-10-27).
+        cachedCopy={bundle.fromCache === true}
         // Under the run sheet, on Summary (spec G.3) — not between the hero and the
         // tabs, where 12 songs' rows pushed the tabs off a phone's first screen.
         summaryFooter={

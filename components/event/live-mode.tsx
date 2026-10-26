@@ -49,6 +49,7 @@ import { saveAudio, loadAudioForEvent, deleteAudio } from "@/lib/audio-store";
 import { heldFileIsAnotherSongs } from "@/lib/audio-targets";
 import { getCachedSongBlob, cacheSongBlob } from "@/lib/song-cache";
 import { getLocalSource, listLocalSourceIds } from "@/lib/local-source";
+import { listPendingAudioUploads } from "@/lib/mgmt-write";
 import { MGMT_CHILD_LANDED_EVENT, MGMT_OUTBOX_EVENT } from "@/lib/mgmt-outbox";
 import { persistLastRun } from "@/lib/show-run-outbox";
 import { setLiveShowActive } from "@/lib/live-guard";
@@ -462,7 +463,17 @@ export function LiveMode({
   // Rows whose file was picked HERE and is not linked online yet: an old master still on
   // its way must not replace it (handleFileChange). Cleared when the link lands, or when
   // the row's bytes are dropped as another song's (dropHeldAudio).
-  const pickedRef = useRef<Set<string>>(new Set());
+  // Keyed to the version the row wanted AT THE PICK (audioVersionOf): only that one is held
+  // off. Held off for good, an upload that failed (venue Wi-Fi) left the row deaf for the
+  // session - linked to another song in the setlist builder it played the pick under that
+  // song's title, and a newer master uploaded by the band never reached it (2026-10-27,
+  // hunt 6). A different version is newer than the pick: it loads, and the pick is over.
+  const pickedRef = useRef<Map<string, { url: string; version: string | null }>>(new Map());
+  /** The row's own pick, still waiting for its link, holds this version off. */
+  const pickHolds = (itemId: string, version: string | null) => {
+    const p = pickedRef.current.get(itemId);
+    return !!p && p.version === version;
+  };
   const [audioBusy, setAudioBusy] = useState<Record<string, "up" | "down">>({});
   // which download-effect run set an item's busy flag — so a superseded run can
   // still clear its own flag without clobbering a newer run's active download
@@ -1318,14 +1329,42 @@ export function LiveMode({
   // a venue link needs. Hold the effect until the answer exists (a few ms, and it
   // settles even when IndexedDB is unavailable).
   const [localsRead, setLocalsRead] = useState(false);
+  // A QUEUED take that leaves the local set has just landed (desktop/src/data/mgmt-outbox.ts:
+  // songs.audio_path written, the take cached under its new key, the override cleared, then
+  // notify). This page holds no word of the new path yet - the flush's "changed" goes out on
+  // this page's OWN songs channel, which never echoes - and falling back to the row's
+  // audio_path played the OLD master from the library cache over the take, every indicator
+  // green, its R2 copy already deleted (2026-10-27, hunt 6). So such a song stays local here
+  // until a server read made AFTER it left has been applied (refetchItems releases it); the
+  // bytes held meanwhile are the take, i.e. the new master. An override cleared by hand
+  // ("กลับไปใช้ต้นฉบับ") changes no path: it goes back to the master the row names at once, as
+  // hunt 3 decided. `queuedLocalRef`: songs seen as a queued upload while local here - kept
+  // through a parked conflict, whose "ใช้ของออนไลน์" / "ใช้ของฉัน" may move the path too.
+  const realLocalRef = useRef<Set<string>>(new Set());
+  const queuedLocalRef = useRef<Set<string>>(new Set());
+  const heldLocalRef = useRef<Map<string, number>>(new Map()); // songId → refetch seq when it left
+  const withHeldLocals = (ids: ReadonlySet<string>) => new Set([...ids, ...heldLocalRef.current.keys()]);
   useEffect(() => {
     let alive = true;
+    let readSeq = 0;
     const refresh = () => {
-      listLocalSourceIds()
-        .then((ids) => {
-          if (!alive) return;
-          setLocalSongIds(ids);
+      const mine = ++readSeq; // an older read landing late must not undo a newer one
+      Promise.all([listLocalSourceIds(), listPendingAudioUploads()])
+        .then(([ids, pending]) => {
+          if (!alive || mine !== readSeq) return;
+          let ask = false;
+          for (const id of realLocalRef.current) {
+            if (ids.has(id) || heldLocalRef.current.has(id) || !queuedLocalRef.current.has(id)) continue;
+            heldLocalRef.current.set(id, refetchSeqRef.current);
+            ask = true;
+          }
+          for (const id of ids) heldLocalRef.current.delete(id); // local again: simply local
+          for (const id of [...queuedLocalRef.current]) if (!ids.has(id)) queuedLocalRef.current.delete(id);
+          for (const id of pending) if (ids.has(id)) queuedLocalRef.current.add(id);
+          realLocalRef.current = ids;
+          setLocalSongIds(withHeldLocals(ids));
           setLocalsRead(true);
+          if (ask) refetchRef.current();
         })
         .catch(() => {
           if (alive) setLocalsRead(true); // no local sources ≠ never start
@@ -1444,7 +1483,7 @@ export function LiveMode({
         deferredOnAirRef.current.delete(it.id);
         // already holding this exact version locally? skip.
         if (cachedPathRef.current[it.id] === version && audioUrlsRef.current[it.id]) continue;
-        if (pickedRef.current.has(it.id)) continue; // the operator's own pick (see pickedRef)
+        if (pickHolds(it.id, version)) continue; // the operator's own pick (see pickedRef)
         setAudioBusy((prev) => ({ ...prev, [it.id]: "down" }));
         busyOwnerRef.current[it.id] = runId;
         try {
@@ -1454,9 +1493,12 @@ export function LiveMode({
           // BYTES load — the transport/position logic below is untouched (the
           // zero-tolerance single-audio-source path stays intact).
           const local = await getLocalSource(it.song_id);
-          // A local-only row with no bytes left (the queue flushed and cleared the
-          // override between the id listing and here) has no second source to try.
-          if (!path && !local) continue;
+          // A row that wants its LOCAL source and finds none (the queue flushed and cleared
+          // the override between the id listing and here, or a landed take is held local
+          // until the server's new path is read - heldLocalRef) has nothing right to load:
+          // the row's audio_path may be the master that take replaced, so it keeps what it
+          // holds (2026-10-27, hunt 6). A local-only row (no path) was always this case.
+          if (!local && version.startsWith("local:")) continue;
           /* 🔄 The source ladder used to be one chained `??` expression. It is spelled out
              now for ONE reason: the caller has to know whether these bytes came off the
              NETWORK, because only then are they news to the shared library cache.
@@ -1488,13 +1530,17 @@ export function LiveMode({
           const wanted = itemsRef.current.find((x) => x.id === it.id)?.audio_path;
           if (cancelled && wanted !== path) return;
           const name = it.audio_name ?? local?.name ?? "เพลง";
+          // Picked in Live while this was on its way: the pick wins (see pickedRef) - in the
+          // per-event store too. Saved first, these bytes wrote over the pick's own record
+          // (its only copy when its upload had failed), and a reload played them (hunt 6).
+          const pickWins = pickHolds(it.id, version);
           // path stays NULL for a local-only row — that is how audio-store marks
           // "the only copy that exists", and audio-prefetch's orphan sweep skips
           // exactly those records rather than deleting bytes it can't re-fetch.
           // NULL too for a local OVERRIDE of a row that has a master: filed under the R2
           // key, the record vouched for those bytes AS that master, and after
           // "กลับไปใช้ต้นฉบับ" the next open played the discarded take (2026-10-27).
-          saveAudio(eventId, it.id, blob, name, local?.blob ? null : path).catch(() => {});
+          if (!pickWins) saveAudio(eventId, it.id, blob, name, local?.blob ? null : path).catch(() => {});
           /* …and tell the SHARED library cache too, but only about bytes that BELONG in it:
              · `fromNetwork` — a cache hit is already filed, and a per-device local override
                has no `path` to file it under (that null is how audio-store marks "the only
@@ -1528,10 +1574,12 @@ export function LiveMode({
             continue;
           }
           // Picked in Live while this was on its way: the pick wins (see pickedRef).
-          if (pickedRef.current.has(it.id)) {
+          if (pickWins) {
             if (cancelled) return;
             continue;
           }
+          // a version newer than a pick still waiting for its link: the pick is over
+          pickedRef.current.delete(it.id);
           cachedPathRef.current[it.id] = version;
           const url = URL.createObjectURL(blob);
           if (audioUrlsRef.current[it.id]) URL.revokeObjectURL(audioUrlsRef.current[it.id]);
@@ -2362,6 +2410,19 @@ export function LiveMode({
     const s = stateRef.current;
     const curId = itemsRef.current[s.currentIndex]?.id;
     setItems(newItems);
+    // A landed take held local (heldLocalRef) lets go once a read issued AFTER it left -
+    // songs included - is the one applied here: the row goes from the take straight to its
+    // new path, in this same render, never through the master it replaced.
+    if (songsRes.data && heldLocalRef.current.size > 0) {
+      let released = false;
+      for (const [id, since] of [...heldLocalRef.current]) {
+        if (seq > since) {
+          heldLocalRef.current.delete(id);
+          released = true;
+        }
+      }
+      if (released) setLocalSongIds(withHeldLocals(realLocalRef.current));
+    }
     if (!curId) return;
     const newIdx = newItems.findIndex((it) => it.id === curId);
     if (newIdx >= 0 && newIdx !== s.currentIndex) {
@@ -2830,9 +2891,10 @@ export function LiveMode({
     // instant local playback - the old URL may still be sounding (see retireUrl)
     if (audioUrls[itemId]) retireUrl(itemId, audioUrls[itemId]);
     // before the URL exists: a download of the row's OLD master landing after this pick
-    // minted itself over it and revoked the pick (2026-10-27) - see pickedRef
-    pickedRef.current.add(itemId);
+    // minted itself over it and revoked the pick (2026-10-27) - see pickedRef. The version it
+    // holds off is the one the row wants now: the master the pick replaces.
     const url = URL.createObjectURL(file);
+    pickedRef.current.set(itemId, { url, version: audioVersionOf(item) });
     setAudioUrls((prev) => ({ ...prev, [itemId]: url }));
     setAudioNames((prev) => ({ ...prev, [itemId]: file.name }));
 
@@ -2900,8 +2962,16 @@ export function LiveMode({
       // waveform on it (lib/song-file-facts.ts). In the background and best-effort.
       void writeSongFileFacts(supabase, { id: songId, duration_seconds: item.duration_seconds, bpm: null }, path, file);
       songAudioRef.current[songId] = { path, name: file.name };
-      cachedPathRef.current[itemId] = path;
-      pickedRef.current.delete(itemId); // linked: this IS the row's master now
+      const pick = pickedRef.current.get(itemId);
+      if (pick?.url === url) {
+        cachedPathRef.current[itemId] = path;
+        pickedRef.current.delete(itemId); // linked: this IS the row's master now
+      } else if (pick) {
+        // a later pick on this row still waits: this link is older than it, held off too
+        pick.version = path;
+      }
+      // (no pick left: a newer master of the old song landed during the upload and ended
+      // it - the row now names this link, and fetches its file like any new version)
       setItems((prev) =>
         prev.map((it) =>
           it.id === itemId
@@ -4232,7 +4302,11 @@ export function LiveMode({
     // Switching to Auto resumes the script: run the countdown and (re)play the
     // current track synced to the elapsed time, so it continues per script even
     // after a detour into Manual.
-    if (mode === "auto" && state.begun) {
+    // Not once จบโชว์ has ended it: there is no script left to resume, and AUTO tapped there
+    // (the key stays live) put the last song on again from 0:00 - committed is cleared by
+    // จบโชว์ - and told every device the show was back on (2026-10-27, hunt 6). It only
+    // sets the mode; RUN is still the encore.
+    if (mode === "auto" && state.begun && !showEndedRef.current) {
       const audio = audioRef.current;
       // Anchor Auto to the track that's ACTUALLY SOUNDING — not wherever the user
       // merely cued/browsed in Manual. e.g. song 3 is playing, you tap song 5 to
@@ -4242,8 +4316,18 @@ export function LiveMode({
       // sounding track, so Auto then continues from there. The sounding track is
       // playingId locally, or committedRef when we're a file-less remote driving the
       // speaker device (no local playingId).
+      // …but a committed row whose sound is OVER here is not sounding: its file played out
+      // inside its slot, or NOW's own pad faded it (endedItemRef), on a device that holds its
+      // file. Faded, then a row cued (N / → / a tap), AUTO read it as the sounding track and
+      // played it again at full level a row behind the cue - and a file that had played out
+      // took the show back to its silent leftover slot (2026-10-27, hunt 6). With nothing
+      // sounding, Auto goes on from the row the show stands on, as when the cue came first
+      // (stopNowPad un-commits it then). No cue: that is the same row, as before. A row
+      // with no file here (an MC talk, a file-less remote) is still the committed one.
       const committed = committedRef.current;
-      const soundingId = playingId ?? committed.id;
+      const committedOver =
+        !playingId && !!committed.id && committed.id === endedItemRef.current && !!audioUrls[committed.id];
+      const soundingId = playingId ?? (committedOver ? null : committed.id);
       const soundIdx = soundingId
         ? items.findIndex((it) => it.id === soundingId)
         : -1;

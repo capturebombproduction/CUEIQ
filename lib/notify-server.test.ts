@@ -10,6 +10,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 const sent: string[] = [];
 vi.mock("@/lib/push", () => ({
+  PUSH_TTL_SECONDS: { live: 3 * 3600, reminder: 12 * 3600, default: 3 * 24 * 3600 },
   vapidConfigured: () => true,
   sendPush: async (s: { endpoint: string }) => {
     sent.push(s.endpoint);

@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { createClient as createServerClient } from "@/lib/supabase/server";
 import { createClient as createTokenClient } from "@supabase/supabase-js";
 import { createAdminClient, hasServiceRole } from "@/lib/supabase/admin";
-import { vapidConfigured, sendPush } from "@/lib/push";
+import { vapidConfigured, sendPush, PUSH_TTL_SECONDS } from "@/lib/push";
 import { ADMIN_ROLES } from "@/lib/types";
 import {
   runOrderLinksFor,
@@ -571,7 +571,8 @@ export async function POST(req: Request) {
             title,
             body: bodyOf(s.user_id as string),
             link: linkOf(s.user_id as string),
-          }
+          },
+          kind === "run_order_live" ? PUSH_TTL_SECONDS.live : PUSH_TTL_SECONDS.default
         );
         if (res === "ok") sent++;
         else if (res === "gone") dead.push(s.id as string);

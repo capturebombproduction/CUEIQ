@@ -1,4 +1,4 @@
-import { vapidConfigured, sendPush } from "@/lib/push";
+import { vapidConfigured, sendPush, PUSH_TTL_SECONDS } from "@/lib/push";
 import type { createAdminClient } from "@/lib/supabase/admin";
 
 type Admin = ReturnType<typeof createAdminClient>;
@@ -14,7 +14,8 @@ type Admin = ReturnType<typeof createAdminClient>;
 export async function pushToUsers(
   admin: Admin,
   userIds: string[],
-  payload: { title: string; body: string; link: string }
+  payload: { title: string; body: string; link: string },
+  ttlSeconds: number = PUSH_TTL_SECONDS.default
 ): Promise<number> {
   if (!vapidConfigured() || userIds.length === 0) return 0;
   const { data: subs, error } = await admin
@@ -28,7 +29,8 @@ export async function pushToUsers(
     (subs ?? []).map(async (s) => {
       const res = await sendPush(
         { endpoint: s.endpoint as string, p256dh: s.p256dh as string, auth: s.auth as string },
-        payload
+        payload,
+        ttlSeconds
       );
       if (res === "ok") sent++;
       else if (res === "gone") dead.push(s.id as string);

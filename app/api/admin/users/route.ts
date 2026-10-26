@@ -29,10 +29,15 @@ async function requireAdmin(): Promise<
   const supabase = await createClient();
   const {
     data: { user },
+    error: userErr,
   } = await supabase.auth.getUser();
+  // An auth server that did not answer is not "signed out" (2026-10-27, hunt 6).
+  if (!user && userErr?.name === "AuthRetryableFetchError") {
+    return { ok: false, status: 503, error: READ_FAILED_MESSAGE };
+  }
   if (!user) return { ok: false, status: 401, error: "ไม่ได้เข้าสู่ระบบ" };
 
-  const { data: member } = await supabase
+  const { data: member, error: memberErr } = await supabase
     .from("tenant_members")
     .select("tenant_id, role")
     .eq("user_id", user.id)
@@ -40,6 +45,10 @@ async function requireAdmin(): Promise<
     .limit(1)
     .maybeSingle();
 
+  // A FAILED read of the caller's membership is not "not an admin" (2026-10-27, hunt 6):
+  // a timeout here told the label's own admin "ต้องเป็นแอดมินเท่านั้น" on every console
+  // action - the misreport isTenantMember stopped making, one step earlier.
+  if (memberErr) return { ok: false, status: 503, error: READ_FAILED_MESSAGE };
   if (!member || member.role !== "admin") {
     return { ok: false, status: 403, error: "ต้องเป็นแอดมินเท่านั้น" };
   }
@@ -120,10 +129,12 @@ async function authAccountGone(
   return !!(data.user as { deleted_at?: string | null } | null)?.deleted_at;
 }
 
+const READ_FAILED_MESSAGE = "อ่านข้อมูลผู้ใช้ไม่สำเร็จ ลองใหม่อีกครั้ง";
+
 /** A read this answer depends on failed. Never answer it as "nothing there": a list of
  *  band-less users, saved back from the console, takes every user's bands away. */
 function readFailed() {
-  return NextResponse.json({ error: "อ่านข้อมูลผู้ใช้ไม่สำเร็จ ลองใหม่อีกครั้ง" }, { status: 503 });
+  return NextResponse.json({ error: READ_FAILED_MESSAGE }, { status: 503 });
 }
 
 /** Shared answer when targetEmail() can't resolve the target (fail closed). */
@@ -481,6 +492,12 @@ export async function PATCH(req: Request) {
       const { error: grErr } = await admin.from("group_roles").insert(rowsFor(groupRoles));
       if (grErr) return undo(grErr.message, true);
     }
+
+    // What was STORED - the sanitised band roles, not what the console sent - so the
+    // console can show it without a re-read (2026-10-27, hunt 6): its follow-up GET was
+    // the only way it learned of its own save, and a failed one left the old roles on
+    // screen for the next save of that user to send back.
+    return NextResponse.json({ ok: true, user: { user_id: userId, tenantRole, groupRoles } });
   }
 
   return NextResponse.json({ ok: true });

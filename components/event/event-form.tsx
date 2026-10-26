@@ -58,6 +58,39 @@ function friendlyError(message?: string): string | undefined {
   return message;
 }
 
+/** Why this show may NOT move to another band, or null when it may (2026-10-27 hunt 6).
+ *  Its setlist's library songs and its lineup belong to the band it is in, and every read
+ *  of them is band-scoped (the show's songs, its members, the presigned keys): after a move
+ *  every linked row played SILENT on stage - on every device, an admin's too - and the
+ *  lineup came up empty, with the files and the people still under the old band. Nothing
+ *  carries them along (0052 does that for practice rooms only). An empty show - the wrong
+ *  band picked a minute ago - still moves. Bounded like the festival read below; a read
+ *  that fails or never answers refuses the move, never waves it through. */
+async function bandMoveBlocker(eventId: string): Promise<string | null> {
+  const supabase = createClient();
+  const read = Promise.all([
+    supabase
+      .from("setlist_items")
+      .select("id", { count: "exact", head: true })
+      .eq("event_id", eventId)
+      .not("song_id", "is", null),
+    supabase.from("event_members").select("id", { count: "exact", head: true }).eq("event_id", eventId),
+  ]).then(([songs, people]) =>
+    songs.error || people.error ? null : { songs: songs.count ?? 0, people: people.count ?? 0 }
+  );
+  const counts = await Promise.race([
+    read.catch(() => null),
+    new Promise<null>((resolve) => setTimeout(() => resolve(null), 4000)),
+  ]);
+  if (!counts) return "ตรวจไม่ได้ว่างานนี้มีเพลงหรือไลน์อัปของวงเดิมแล้วหรือยัง — ลองใหม่อีกครั้งเมื่อเน็ตดี";
+  const held = [
+    counts.songs > 0 ? `เพลงในเซ็ตลิสต์ ${counts.songs} เพลง` : null,
+    counts.people > 0 ? `ไลน์อัป ${counts.people} คน` : null,
+  ].filter(Boolean);
+  if (held.length === 0) return null;
+  return `งานนี้มี${held.join(" และ ")}ของวงเดิมแล้ว ถ้าย้ายวง เพลงจะไม่มีเสียงและไลน์อัปจะหาย — ถ้าเลือกวงผิด ให้สร้างงานใหม่ในวงที่ถูก`;
+}
+
 export function EventForm({
   mode,
   tenantId,
@@ -279,6 +312,15 @@ export function EventForm({
       router.push(`/events/${res.id}`);
       router.refresh();
     } else if (event) {
+      // Another band: only while the show holds nothing of the old band's (bandMoveBlocker)
+      if (touched("groupId", groupId)) {
+        const blocker = await bandMoveBlocker(event.id);
+        if (blocker) {
+          setLoading(false);
+          toast.error("ย้ายวงไม่ได้", { description: blocker });
+          return;
+        }
+      }
       /* ── Does this edit move the festival board? Ask BEFORE writing anything ──────
          run_sequence keys on (tenant, event_name, event_date), so an ordinary typo fix
          used to detach this band from the whole festival — silently, and permanently if

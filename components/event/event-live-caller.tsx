@@ -659,15 +659,23 @@ export function EventLiveCaller({
     label?: string;
     /** the show's first start: if it is queued, the label is told once its replay lands */
     announceLive?: string;
+    /** A start: the planned_start its offset_min was worked out against (null = the drift
+     *  did not come from the plan). Rides the queue so a re-plan made while the press
+     *  waits moves the drift with it (RunSeqOp.planBasis, lib/run-order-outbox.ts). */
+    planBasis?: string | null;
   };
 
   /**
    * The write didn't go out because there is no network. Keep the operator's press
    * — the show is happening whether or not the wifi is — and replay it later.
    *
-   * Returns false for a REAL rejection (RLS, a constraint), which must still
-   * surface: queueing those would retry a doomed write forever.
+   * "rejected" for a REAL rejection (RLS, a constraint), which must still surface:
+   * queueing those would retry a doomed write forever. "unsaved" when this device's
+   * storage refused the queue write (a full disk, a broken store): the press is on this
+   * screen and nowhere else, so it must never be announced as queued - that toast
+   * promised a sync that could not happen (2026-10-27, hunt 6).
    */
+  type QueueOutcome = "queued" | "rejected" | "unsaved";
   /** The press id queueOffline() last gave out - ดึง buffer's drains join its drift's. */
   const lastQueuedPressRef = useRef<string | null>(null);
   async function queueOffline(
@@ -686,9 +694,9 @@ export function EventLiveCaller({
     // The press these rows belong to, when they continue one already queued (ดึง
     // buffer's drains after its drift). Otherwise this call IS one press.
     press?: string
-  ): Promise<boolean> {
+  ): Promise<QueueOutcome> {
     const onLine = typeof navigator === "undefined" || navigator.onLine !== false;
-    if (!force && !isQueueableWriteError(message, onLine, status)) return false;
+    if (!force && !isQueueableWriteError(message, onLine, status)) return "rejected";
     const festival = `${eventName}${eventDate ? ` · ${eventDate}` : ""}`;
     const at = Date.now();
     // Every row of ONE press carries the same id, so the replay lands the press whole
@@ -699,9 +707,10 @@ export function EventLiveCaller({
     lastQueuedPressRef.current = pressId;
     // before AND after the enqueues: a read that starts between two of them saw half
     queueEpochRef.current++;
+    let stored = true;
     try {
       for (const u of updates) {
-        await enqueueRunSeq({
+        const kept = await enqueueRunSeq({
           rowId: u.id,
           presses: [pressId],
           festival,
@@ -727,13 +736,24 @@ export function EventLiveCaller({
           label: u.label ?? rows.find((r) => r.id === u.id)?.title ?? "ลำดับในคิว",
           queuedAt: at,
           ...(u.announceLive ? { announceLive: { eventId: u.announceLive, at } } : {}),
+          ...(u.planBasis !== undefined ? { planBasis: u.planBasis } : {}),
           topic: runOrderTopic(tenantId, eventDate, eventName),
         });
+        if (!kept) stored = false;
       }
     } finally {
       queueEpochRef.current++;
     }
-    return true;
+    return stored ? "queued" : "unsaved";
+  }
+
+  /** The press is on this screen only: say so. The callers then pull the board back to
+   *  the server where it can be read (offline it cannot - the toast is the whole truth). */
+  function sayUnsaved() {
+    toast.error("เก็บการกดไว้ในเครื่องไม่สำเร็จ", {
+      id: "runseq-offline-unsaved",
+      description: "การกดนี้ยังไม่ถูกบันทึกที่ไหนเลย — พื้นที่เครื่องอาจเต็ม · กดใหม่อีกครั้งเมื่อเน็ตกลับมา",
+    });
   }
 
   /**
@@ -811,14 +831,19 @@ export function EventLiveCaller({
       // finally, not a plain call: a throw anywhere in here would leave the write
       // gate up for the rest of the session, and with it every refetch deferred —
       // the board would quietly stop taking updates from the other devices.
+      let kept: QueueOutcome = "unsaved";
       try {
-        await queueOffline(updates, null, true);
-        toast.success(RUNSEQ_QUEUED_MESSAGE, { id: "runseq-offline-queued" });
-        bcast();
+        kept = await queueOffline(updates, null, true);
+        if (kept === "queued") {
+          toast.success(RUNSEQ_QUEUED_MESSAGE, { id: "runseq-offline-queued" });
+          bcast();
+        } else sayUnsaved();
       } finally {
         release();
       }
-      return "queued";
+      if (kept === "queued") return "queued";
+      void refetchRef.current(); // a press kept nowhere must not stay on the board
+      return "failed";
     }
 
     // BOUNDED too (2026-10-27) - the press itself, not only the clear-the-way flush above.
@@ -863,14 +888,19 @@ export function EventLiveCaller({
     }
     if (answer === "timeout") {
       cut.abort();
+      let kept: QueueOutcome = "unsaved";
       try {
-        await queueOffline(updates, null, true);
-        toast.success(RUNSEQ_QUEUED_MESSAGE, { id: "runseq-offline-queued" });
-        bcast();
+        kept = await queueOffline(updates, null, true);
+        if (kept === "queued") {
+          toast.success(RUNSEQ_QUEUED_MESSAGE, { id: "runseq-offline-queued" });
+          bcast();
+        } else sayUnsaved();
       } finally {
         release();
       }
-      return "queued";
+      if (kept === "queued") return "queued";
+      void refetchRef.current(); // the cut write may have landed: the re-read says
+      return "failed";
     }
     const results = answer;
     const failedResult = results.find((r) => r.error);
@@ -907,12 +937,14 @@ export function EventLiveCaller({
       // Queueing that one too would replay it against a precondition it consumed
       // itself, and park the operator's own successful press as a conflict.
       const failed = updates.filter((_, i) => results[i].error);
-      if (await queueOffline(failed, err.message, false, errStatus)) {
+      const kept = await queueOffline(failed, err.message, false, errStatus);
+      if (kept === "queued") {
         toast.success(RUNSEQ_QUEUED_MESSAGE, { id: "runseq-offline-queued" });
         bcast();
         return "queued";
       }
-      toast.error("บันทึกไม่สำเร็จ", { description: err.message });
+      if (kept === "unsaved") sayUnsaved();
+      else toast.error("บันทึกไม่สำเร็จ", { description: err.message });
       /* Pull the board back to server truth so the optimistic rows don't linger — but
          SAY SO ONLY IF IT WORKED. During the same outage that caused the failure this
          refetch is a no-op (it bails on a failed read), so the toast above used to
@@ -982,6 +1014,8 @@ export function EventLiveCaller({
           partial: { status: "live", actual_start: t.toISOString(), offset_min: d },
           // another controller (or the builder) got here first → refetch, don't start
           expect: { status: "pending" },
+          // the plan this drift was read against - a queued start moves with a re-plan
+          planBasis: p != null ? firstPending.planned_start : null,
           // queued (no network, or the answer was lost), the label is told when it lands
           ...(firstStart ? { announceLive: eventId } : {}),
         },
@@ -1033,6 +1067,7 @@ export function EventLiveCaller({
         id: nextPending.id,
         partial: { status: "live", actual_start: t.toISOString(), offset_min: d },
         expect: { status: "pending" },
+        planBasis: p != null ? nextPending.planned_start : null, // see start()
       });
     }
     apply(updates).finally(() => {
@@ -1175,7 +1210,13 @@ export function EventLiveCaller({
       // Queue them alongside so the whole change replays as one - as one PRESS, so a
       // drift that parks takes its drains with it instead of letting them land alone.
       if (shifted === "queued") {
-        await queueOffline(drains, null, true, null, lastQueuedPressRef.current ?? undefined);
+        const kept = await queueOffline(drains, null, true, null, lastQueuedPressRef.current ?? undefined);
+        if (kept !== "queued") {
+          // kept nowhere: none of these rows will ever hold what the ledger says it left
+          sayUnsaved();
+          writeBufferLedger(ledgerBeforeDrain);
+          return;
+        }
         setRows((prev) =>
           prev.map((r) => {
             const d = drains.find((x) => x.id === r.id);

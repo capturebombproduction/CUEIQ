@@ -16,6 +16,7 @@ import {
   shortClock,
   TIMING_LABEL,
 } from "@/lib/time";
+import { dayOrderSeconds, stageAnchorSeconds } from "@/lib/day-order";
 
 /** -5 / 0 / +3: "เข้าหลังเพลงก่อนหน้า" with its sign, as it is set. */
 function signedSeconds(seconds: number | null | undefined): string {
@@ -246,12 +247,22 @@ export function buildRunSheetWorkbook(data: ExportData): XLSX.WorkBook {
   ];
 
   // ---- Schedule ----
+  // In the day's order, as the Summary and its JPG read it (components/event/event-summary.tsx):
+  // round the stage, a row with no time last, ties as the band ordered them. Both readers
+  // hand the rows over in sort_order - the order they were ADDED - so a day built
+  // Stage-first printed Stage 18:00 above Call 16:00 (hunt 6, 2026-10-27).
+  const dayAnchor = stageAnchorSeconds(schedule, event);
+  const day = [...schedule].sort(
+    (a, b) =>
+      dayOrderSeconds(a.start_time, dayAnchor) - dayOrderSeconds(b.start_time, dayAnchor) ||
+      (a.sort_order ?? 0) - (b.sort_order ?? 0)
+  );
   const scheduleSheet = XLSX.utils.aoa_to_sheet([
     ["ตารางนัดหมาย (Schedule)"],
     ["งาน", event.name],
     [],
     ["#", "ประเภท", "หัวข้อ", "สถานที่", "เริ่ม", "จบ", "โน้ต"],
-    ...schedule.map((s, i) => [
+    ...day.map((s, i) => [
       i + 1,
       SCHEDULE_KIND_LABELS[s.kind] ?? s.kind,
       s.label ?? "",

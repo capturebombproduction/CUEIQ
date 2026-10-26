@@ -49,6 +49,7 @@ import { settleOnAbort } from "@/lib/idb-tx";
 import { hasLiveSession } from "@/lib/auth-session";
 import { privateChannel } from "@/lib/realtime";
 import { notify } from "@/lib/notify-client";
+import { parseClockToSeconds } from "@/lib/time";
 
 /** Fired after any queue change so chips/panels can re-read (mirrors MGMT_OUTBOX_EVENT). */
 export const RUNSEQ_OUTBOX_EVENT = "cueiq:runseq-outbox-change";
@@ -72,12 +73,14 @@ export interface RunSeqLanded {
   topic?: string;
 }
 
-function announceLanded(op: RunSeqOp): void {
+/** `patch` = what the row now holds: the op's own, or the version moved onto a re-planned
+ *  start (planShiftMin) - the copies must take the drift the server took. */
+function announceLanded(op: RunSeqOp, patch: RunSeqPatch = op.patch): void {
   if (typeof window === "undefined" || typeof CustomEvent === "undefined") return;
   try {
     const detail: RunSeqLanded = {
       rowId: op.rowId,
-      patch: op.patch,
+      patch,
       festival: op.festival,
       topic: op.topic,
     };
@@ -152,6 +155,17 @@ export interface RunSeqOp {
    * records, which replay on their own as before.
    */
   presses?: string[];
+  /**
+   * The planned_start this op's offset_min was worked out against: a start's drift is
+   * actual_start − planned_start, read off the board THIS device showed. Set by the press
+   * that started the row (null = that drift did not come from the plan). Staff can re-plan
+   * the act in the builder while the press waits offline, and the drift then belongs to a
+   * plan the server no longer holds: every device read the show as late (or early) by the
+   * re-plan, and projected every act after it that far off (2026-10-27, hunt 6). The replay
+   * moves offset_min onto the plan the row holds by the same minutes the plan moved, so a
+   * ± nudge merged in after the start is kept (planShiftMin). Optional for older records.
+   */
+  planBasis?: string | null;
 }
 
 /** A fresh id for one press - every row that press writes carries it. */
@@ -196,9 +210,26 @@ export function compactPatch(p: RunSeqPatch): RunSeqPatch {
  *
  * Keeps the FIRST expect on purpose — see the header. `prev` undefined = this is
  * the first press for the row, so the op is taken as-is.
+ *
+ * ⚠️ EXCEPT OVER A PARKED OP (2026-10-27, hunt 6): the new press REPLACES it. Folded in,
+ * it took the parked op's precondition (the server state before the press that parked,
+ * which the server has since moved past) and its `conflict`, so it parked the moment it
+ * was queued - and through the shared press ids it took the rest of its own press with
+ * it. "จบ + ต่อไป" pressed offline on the board the server holds, after an earlier press
+ * on that act had parked, left the act it ended on stage for every device; online the very
+ * same press is a direct write (EventLiveCaller only counts un-parked ops as queued) and
+ * lands. A parked op never replays - its one way out is ทิ้ง - so nothing that could land
+ * is dropped: the newer press on the row is the operator's word on it, as the online write
+ * is. It carries ITS OWN precondition, so it is still a compare-and-swap and parks by
+ * itself when the board has moved. Its siblings - the other rows of the press that
+ * parked - share no press id with it and stay parked for a human (the red panel).
  */
 export function mergeOp(prev: RunSeqOp | undefined, next: RunSeqOp): RunSeqOp {
   if (!prev) return { ...next, rev: (next.rev ?? 0) + 1 };
+  if (prev.conflict) {
+    // only the rev carries over: the flush compares it, and it must never repeat
+    return { ...next, rev: (prev.rev ?? 0) + 1 };
+  }
   return {
     ...next,
     // the label + timestamp of the LATEST press describe where the row now is
@@ -218,7 +249,67 @@ export function mergeOp(prev: RunSeqOp | undefined, next: RunSeqOp): RunSeqOp {
     // this row now carries every press that touched it - which is what ties a later
     // press to the earlier ones it was built on
     presses: [...new Set([...(prev.presses ?? []), ...(next.presses ?? [])])],
+    // the plan the drift was worked out against belongs to the press that set the drift:
+    // a later start sets its own, a ± or an end leaves it (planBasis)
+    planBasis: next.planBasis !== undefined ? next.planBasis : prev.planBasis,
   };
+}
+
+/** Is `rec` the record `op` became - every press folded into `op` still in it? A press that
+ *  replaced a parked op (mergeOp) is not, and must not be rebased or parked on `op`'s word.
+ *  Records older than press ids carry none and count as descendants, as before. */
+function descendsFrom(rec: RunSeqOp, op: RunSeqOp): boolean {
+  const has = new Set(rec.presses ?? []);
+  return (op.presses ?? []).every((p) => has.has(p));
+}
+
+// ---------------------------------------------------------------------------
+// A start replayed onto a re-planned act (see RunSeqOp.planBasis).
+// ---------------------------------------------------------------------------
+
+/** Fold a minute difference into ±12 h - the caller's own rule (a 23:50 plan moved to
+ *  00:10 moved 20 minutes, not −1420). */
+function foldMin(m: number): number {
+  let n = m;
+  while (n > 720) n -= 1440;
+  while (n < -720) n += 1440;
+  return n;
+}
+
+/**
+ * The minutes to add to this op's offset_min so it reads against `plannedNow` (the row's
+ * planned_start on the server) instead of the plan its start was worked out against: 0
+ * when the op has no plan basis, either clock is not a clock, or the plan did not move.
+ */
+export function planShiftMin(op: Pick<RunSeqOp, "planBasis">, plannedNow: unknown): number {
+  const basis = parseClockToSeconds(op.planBasis ?? null);
+  const now = typeof plannedNow === "string" ? parseClockToSeconds(plannedNow) : null;
+  if (basis == null || now == null) return 0;
+  return foldMin(Math.round((basis - now) / 60));
+}
+
+/** `p` with its drift moved by `min` minutes - nothing else changes, and a patch that sets
+ *  no numeric drift is returned as is. */
+export function shiftOffset(p: RunSeqPatch, min: number): RunSeqPatch {
+  if (!min || typeof p.offset_min !== "number") return p;
+  return { ...p, offset_min: foldMin(p.offset_min + min) };
+}
+
+/** The op as it lands on a row whose plan moved `min` minutes: its patch and every earlier
+ *  version of it, all moved alike (an earlier replay may have landed a moved version). */
+function shiftOp(op: RunSeqOp, min: number): RunSeqOp {
+  if (!min) return op;
+  return {
+    ...op,
+    patch: shiftOffset(op.patch, min),
+    ...(op.prior ? { prior: op.prior.map((p) => shiftOffset(p, min)) } : {}),
+  };
+}
+
+/** Does this op need the row's planned_start before it can be written? */
+function needsPlan(op: RunSeqOp): boolean {
+  if (typeof op.planBasis !== "string") return false;
+  return [op.patch, ...(op.prior ?? [])].some((p) => typeof p.offset_min === "number");
 }
 
 /**
@@ -364,12 +455,18 @@ export function expectHolds(expect: RunSeqPatch, row: Record<string, unknown>): 
 /**
  * Would this op land on this row - its precondition holds, or the row already says
  * what it writes, or an earlier version landed and the rebased precondition holds?
- * The same three ways the replay itself can end in "done" (see doFlush).
+ * The same three ways the replay itself can end in "done" (see doFlush). A row read
+ * with its planned_start is also checked against the versions moved onto that plan
+ * (planShiftMin) - what the replay writes there, and may already have written.
  */
 export function opWouldLand(op: RunSeqOp, row: Record<string, unknown>): boolean {
-  if (expectHolds(op.expect, row) || patchAlreadyHolds(op.patch, row)) return true;
-  const landed = earlierPatchHeld(op, row);
-  return !!landed && expectHolds(expectOnto(op.expect, landed), row);
+  if (expectHolds(op.expect, row)) return true;
+  const shift = "planned_start" in row ? planShiftMin(op, row.planned_start) : 0;
+  return (shift ? [op, shiftOp(op, shift)] : [op]).some((v) => {
+    if (patchAlreadyHolds(v.patch, row)) return true;
+    const landed = earlierPatchHeld(v, row);
+    return !!landed && expectHolds(expectOnto(v.expect, landed), row);
+  });
 }
 
 /**
@@ -485,9 +582,12 @@ export function onRunSeqOutboxChange(cb: () => void): () => void {
   };
 }
 
-/** Queue (or fold into) the pending op for this row. Best-effort — a storage
- *  failure must never break the press the operator just made on stage. */
-export async function enqueueRunSeq(raw: RunSeqOp): Promise<void> {
+/** Queue (or fold into) the pending op for this row. Never throws — a storage
+ *  failure must never break the press the operator just made on stage — but SAYS
+ *  whether the press is stored: false = it is on this screen and nowhere else. The
+ *  caller used to be told nothing and announced "จะซิงค์ให้เมื่อเน็ตกลับ" about a press
+ *  that could never sync (a full disk, a broken store; 2026-10-27, hunt 6). */
+export async function enqueueRunSeq(raw: RunSeqOp): Promise<boolean> {
   const op: RunSeqOp = {
     ...raw,
     patch: compactPatch(raw.patch),
@@ -516,8 +616,10 @@ export async function enqueueRunSeq(raw: RunSeqOp): Promise<void> {
       });
     });
     announce();
+    return true;
   } catch {
-    /* best-effort: the board still shows the operator's press */
+    /* the board still shows the operator's press - the caller says it is not kept */
+    return false;
   }
 }
 
@@ -584,8 +686,11 @@ async function rebaseExpect(replayed: RunSeqOp): Promise<void> {
       get.onsuccess = () => {
         const cur = get.result as RunSeqOp | undefined;
         // Only the record that actually superseded the replayed one, and only
-        // while it is still un-parked.
+        // while it is still un-parked - and only one the replayed op BECAME: a press
+        // that replaced a parked op (mergeOp) carries its own precondition, which the
+        // replayed op's says nothing about.
         if (!cur || cur.conflict || (cur.rev ?? 0) === (replayed.rev ?? 0)) return;
+        if (!descendsFrom(cur, replayed)) return;
         store.put({ ...cur, expect: expectOnto(replayed.expect, replayed.patch) }, cur.rowId);
       };
       tx.oncomplete = () => {
@@ -603,32 +708,6 @@ async function rebaseExpect(replayed: RunSeqOp): Promise<void> {
     });
   } catch {
     /* best-effort — the next flush parks it, which is recoverable by hand */
-  }
-}
-
-async function removeRunSeq(rowIds: string[]): Promise<void> {
-  if (rowIds.length === 0) return;
-  try {
-    const db = await openDB();
-    await new Promise<void>((resolve, reject) => {
-      const tx = db.transaction(STORE, "readwrite");
-      const store = tx.objectStore(STORE);
-      rowIds.forEach((id) => store.delete(id));
-      tx.oncomplete = () => {
-        db.close();
-        resolve();
-      };
-      tx.onerror = () => {
-        db.close();
-        reject(tx.error);
-      };
-      settleOnAbort(tx, () => {
-        db.close();
-        reject(tx.error);
-      });
-    });
-  } catch {
-    /* it will simply be retried on the next flush */
   }
 }
 
@@ -688,7 +767,11 @@ async function parkRunSeq(ops: RunSeqOp[]): Promise<void> {
       ops.forEach((o) => {
         const get = store.get(o.rowId);
         get.onsuccess = () => {
-          const cur = (get.result as RunSeqOp | undefined) ?? o;
+          const stored = get.result as RunSeqOp | undefined;
+          // A newer press that REPLACED a parked op under this key (mergeOp) is not the
+          // op this flush judged: it waits for its own replay (2026-10-27, hunt 6).
+          if (stored && !descendsFrom(stored, o)) return;
+          const cur = stored ?? o;
           store.put({ ...cur, conflict: true }, o.rowId);
         };
       });
@@ -710,9 +793,36 @@ async function parkRunSeq(ops: RunSeqOp[]): Promise<void> {
   }
 }
 
-/** Throw away a parked op — the operator has looked at the board and accepted it. */
+/** Throw away a parked op — the operator has looked at the board and accepted it.
+ *  Only while it IS parked: a press made on that row since replaced it (mergeOp) and
+ *  waits to be sent - a ทิ้ง the panel offered for the old one must not take it. */
 export async function discardRunSeqOp(rowId: string): Promise<void> {
-  await removeRunSeq([rowId]);
+  try {
+    const db = await openDB();
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction(STORE, "readwrite");
+      const store = tx.objectStore(STORE);
+      const get = store.get(rowId);
+      get.onsuccess = () => {
+        const cur = get.result as RunSeqOp | undefined;
+        if (cur?.conflict) store.delete(rowId);
+      };
+      tx.oncomplete = () => {
+        db.close();
+        resolve();
+      };
+      tx.onerror = () => {
+        db.close();
+        reject(tx.error);
+      };
+      settleOnAbort(tx, () => {
+        db.close();
+        reject(tx.error);
+      });
+    });
+  } catch {
+    /* nothing removed - the panel still shows it, and ทิ้ง can be pressed again */
+  }
   announce();
 }
 
@@ -821,7 +931,9 @@ async function precheckPress(
   const ids = ops.map((o) => o.rowId);
   const { data, error } = await supabase
     .from("run_sequence")
-    .select(["id", ...PATCH_COLUMNS].join(", "))
+    // planned_start too: a start queued against a plan re-planned since lands moved
+    // onto it (RunSeqOp.planBasis), and opWouldLand judges that version as well
+    .select(["id", ...PATCH_COLUMNS, "planned_start"].join(", "))
     .in("id", ids);
   if (error || !data) return "wait";
   const byId = new Map(
@@ -873,15 +985,34 @@ async function doFlush(): Promise<RunSeqFlushResult> {
       // precondition this write is about to consume.
       const op = (await getRunSeqOp(snapshot.rowId)) ?? snapshot;
       if (op.conflict) return "conflict"; // parked while we were working
+      // A start whose drift was worked out against a plan staff have moved since (see
+      // RunSeqOp.planBasis): read the plan the row holds and write the drift moved onto
+      // it - by the minutes the plan moved, so a ± merged in after the start stays. One
+      // read, only for an op that carries a basis; an unchanged plan writes as before.
+      let shift = 0;
+      if (needsPlan(op)) {
+        const { data: plan, error: planErr } = await supabase
+          .from("run_sequence")
+          .select("id, planned_start")
+          .eq("id", op.rowId)
+          .maybeSingle();
+        if (planErr) return "wait"; // could not find out - stays queued
+        shift = planShiftMin(op, (plan as { planned_start?: unknown } | null)?.planned_start);
+      }
+      // what this replay writes, and every version of it the row may already hold (an
+      // earlier replay of the moved one, or the press's own cut online write)
+      const moved = shiftOp(op, shift);
+      const versions = shift ? [moved, op] : [op];
+      let written = moved.patch;
       const send = (expect: RunSeqPatch) => {
-        let q = supabase.from("run_sequence").update(op.patch).eq("id", op.rowId);
+        let q = supabase.from("run_sequence").update(moved.patch).eq("id", op.rowId);
         for (const [k, v] of Object.entries(expect)) {
           q = v == null ? q.is(k, null) : q.eq(k, v);
         }
         return q.select("id");
       };
       // what was actually replayed - its expect moves if the retry below rebases it
-      let replayed = op;
+      let replayed = moved;
       const { data, error } = await send(op.expect);
       // A network error is not a conflict — leave it queued and try again later.
       if (error) return "wait";
@@ -910,16 +1041,21 @@ async function doFlush(): Promise<RunSeqFlushResult> {
         if (probeErr) return "wait";
         stillExists = !!probe;
         const row = probe as unknown as Record<string, unknown> | null;
-        alreadyHolds = !!row && patchAlreadyHolds(op.patch, row);
+        const holder = row ? versions.find((v) => patchAlreadyHolds(v.patch, row)) : undefined;
+        alreadyHolds = !!holder;
+        if (holder) written = holder.patch;
         // The row holds an EARLIER version of this op (that attempt landed, its answer
         // was lost, then a press merged in): the server has moved exactly as this device
         // did, so move the precondition onto that state and retry ONCE (2026-10-25). Still
         // a compare-and-swap - a row someone else moved meanwhile matches nothing and parks.
-        const landed = row && !alreadyHolds ? earlierPatchHeld(op, row) : null;
+        const landed =
+          row && !alreadyHolds
+            ? (versions.map((v) => earlierPatchHeld(v, row)).find((p) => p != null) ?? null)
+            : null;
         if (landed) {
           const rebased = expectOnto(op.expect, landed);
           if (JSON.stringify(rebased) !== JSON.stringify(op.expect)) {
-            replayed = { ...op, expect: rebased };
+            replayed = { ...moved, expect: rebased };
             const retry = await send(rebased);
             if (retry.error) return "wait"; // network - stays queued, judged again next flush
             matched = retry.data?.length ?? 0;
@@ -944,8 +1080,9 @@ async function doFlush(): Promise<RunSeqFlushResult> {
       // precondition is the one this write just consumed. Move it forward onto
       // what the server now holds, or its next replay parks as a conflict the
       // operator never caused and their press is dropped from the board.
-      if (verdict === "done") await rebaseExpect(replayed);
-      if (verdict === "done") announceLanded(op);
+      // ...onto what the row HOLDS: the version this replay wrote, or the one it found
+      if (verdict === "done") await rebaseExpect({ ...replayed, patch: written });
+      if (verdict === "done") announceLanded(op, written);
       announce();
       if (verdict === "done" && op.topic) topics.add(op.topic);
       const word = op.announceLive;

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Plus, Pencil, Trash2, Loader2, UserPlus, ShieldCheck, Lock, KeyRound, Copy, Search } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -165,12 +165,42 @@ export function UserManager({
     setOpen(true);
   }
 
+  // Bumped by every save this console writes into `users` itself (see `stored`): a
+  // re-read that STARTED before one predates it and must not put the old roles back.
+  const savedSeq = useRef(0);
+
   async function refresh() {
+    const seq = savedSeq.current;
     const res = await fetch("/api/admin/users");
     if (res.ok) {
       const json = await res.json();
-      setUsers(json.users as ManagedUser[]);
+      if (seq === savedSeq.current) setUsers(json.users as ManagedUser[]);
     }
+  }
+
+  /**
+   * Put what the server STORED for one account into the list (2026-10-27, hunt 6). The
+   * console used to learn of its own save only through refresh(), and a re-read that
+   * failed (503 readFailed, a dead network) left the old band roles on screen: the next
+   * "แก้ไขสิทธิ์" on that user opened from them, and its save sent them back - undoing
+   * the first save without a word. The routes answer with the stored row (sanitised
+   * band roles included), so this is the server's truth, not the form's.
+   */
+  function stored(user: unknown) {
+    const u = user as Partial<ManagedUser> | null | undefined;
+    if (!u?.user_id || !u.tenantRole || !Array.isArray(u.groupRoles)) return;
+    const next = u as ManagedUser;
+    savedSeq.current += 1;
+    setUsers((prev) =>
+      prev.some((x) => x.user_id === next.user_id)
+        ? prev.map((x) =>
+            x.user_id === next.user_id
+              ? { ...x, tenantRole: next.tenantRole, groupRoles: next.groupRoles }
+              : x
+          )
+        : // a new account: same order as the server's list (by email)
+          [...prev, next].sort((a, b) => (a.email ?? "").localeCompare(b.email ?? ""))
+    );
   }
 
   // The server-rendered list reads public.profiles, whose `email` any member can
@@ -211,6 +241,7 @@ export function UserManager({
         });
         const json = await res.json().catch(() => ({}));
         if (!res.ok) throw new Error(json.error ?? "บันทึกไม่สำเร็จ");
+        stored(json.user);
         toast.success("อัปเดตสิทธิ์แล้ว");
       } else {
         const res = await fetch("/api/admin/users", {
@@ -226,10 +257,14 @@ export function UserManager({
         });
         const json = await res.json().catch(() => ({}));
         if (!res.ok) throw new Error(json.error ?? "สร้างบัญชีไม่สำเร็จ");
+        stored(json.user);
         toast.success(`สร้างบัญชี ${form.loginId} แล้ว`);
       }
       setOpen(false);
-      await refresh();
+      // Best-effort now that the list holds what was stored: a re-read that fails is not
+      // a failed save, and its "Failed to fetch" landed as a red toast right after the
+      // green one (2026-10-27, hunt 6).
+      await refresh().catch(() => {});
     } catch (e) {
       toast.error(e instanceof Error ? e.message : String(e));
     } finally {
