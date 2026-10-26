@@ -1058,6 +1058,36 @@ describe("Quick Show — the fade keys ride the track that is sounding", () => {
     expect(level.value).toBe("100");
   });
 
+  // 2026-10-26: จบโชว์ paused Opening with Auto Mute's 0 still on it (a paused song keeps its
+  // duck), so รันโชว์ carried it on silent.
+  it("Auto Mute → จบโชว์ → รันโชว์: Opening carries on, heard at its own level", async () => {
+    await boot(threeUp());
+    const primary = media.first() as HTMLMediaElement;
+    await click(startButton());
+    await click(screen.getByRole("button", { name: /Auto Mute/ }));
+    await tick(4_000);
+    expect(media.state(primary).volume).toBeCloseTo(0);
+    await click(endShowButton());
+    expect(media.state(primary).paused).toBe(true);
+    await click(transport().run);
+    await tick(1_000);
+    expect(media.state(primary).paused).toBe(false);
+    expect(media.state(primary).volume).toBeCloseTo(1);
+  });
+
+  it("(control) MC → pause → รันโชว์: still at the MC's 30", async () => {
+    await boot(threeUp());
+    const primary = media.first() as HTMLMediaElement;
+    await click(startButton());
+    await click(screen.getByRole("button", { name: /^MC$/ }));
+    await tick(3_000);
+    await click(transport().run); // pause
+    await click(transport().run); // run
+    await tick(1_000);
+    expect(media.state(primary).paused).toBe(false);
+    expect(media.state(primary).volume).toBeCloseTo(0.3);
+  });
+
   // 2026-10-24 review: Auto Mute is how a show ends, so it gets pressed after the last song
   // has already run out on its own. With nothing on the player the key used to take the
   // cued row - that same song - fade it to 0 and save the 0 as its level: the next show

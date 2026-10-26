@@ -474,6 +474,17 @@ describe("the bottom panel", () => {
 });
 
 describe("the next row's way in (lib/live-entry.ts)", () => {
+  // 2026-10-26: AUTO goes through a 0:00 row at once; the count names the row it lands on
+  it("a count that names a row past the next one: NEXT reads that row, and its strip carries the digit", () => {
+    mount({ entry: { title: "MC talk", at: 2, leadSec: 0, count: 3, manual: false }, remaining: 3, zone: "urgent" });
+    const next = screen.getByLabelText("Next channel");
+    expect(next.textContent).toContain("MC talk");
+    expect(next.textContent).not.toContain("Track 2");
+    const strips = screen.getAllByTestId("console-strip");
+    expect(within(strips[2]).getByTestId("console-strip-count").textContent).toBe("3");
+    expect(screen.getAllByTestId("console-strip-count")).toHaveLength(1);
+  });
+
   it("AUTO's last five seconds: the count takes the length's place in NEXT, and lands on the next strip", () => {
     mount({ entry: { title: "Track 2", leadSec: 0, count: 3, manual: false }, remaining: 3, zone: "urgent" });
     const next = screen.getByLabelText("Next channel");

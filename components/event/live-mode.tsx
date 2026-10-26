@@ -101,7 +101,7 @@ import {
 } from "@/lib/types";
 import { formatDuration, nowClock, pad2, runSecondsOf } from "@/lib/time";
 import { liveZone } from "@/lib/live-zone";
-import { ENTRY_COUNT_SEC, entryCue } from "@/lib/live-entry";
+import { ENTRY_COUNT_SEC, autoLandsOn, entryCue } from "@/lib/live-entry";
 import { restoreShow, SNAPSHOT_ALIVE_MS, STALE_RESTORE_MS } from "@/lib/live-restore";
 import { hardOutGap, hardOutReading } from "@/lib/live-hard-out";
 import { fadeLevel, nextFadeFrame } from "@/lib/fade";
@@ -1107,6 +1107,9 @@ export function LiveMode({
       el.setSinkId(sinkId).catch(() => el.setSinkId!("").catch(() => {}));
     };
     for (const el of playersRef.current) route(el);
+    // an output chosen mid-show: the pads' elements are made now too, not at a press
+    if (stateRef.current.begun) warmRoutedPool();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- warmRoutedPool reads refs only
   }, [sinkId]);
 
   // Apply sound-output to BOTH elements (muted is a persistent element property, so
@@ -2609,6 +2612,15 @@ export function LiveMode({
     audioRef2.current?.pause();
     withLayers(() => liveLayers.quiet(), false); // and every pad still sounding under NOW
     setAudioPlaying(false);
+    // …and the fade keys' moves end with it. Auto Mute's 0 (or the MC's 30) was a move for the
+    // song while it sounded, and a show that has ended is not sounding: kept as "a paused song
+    // keeps its duck", RUN after จบโชว์ carried the song on at the 0 - silent (2026-10-26). The
+    // song is paused here, so nobody hears its own level come back.
+    for (const id of Object.keys(duckRef.current)) {
+      const prev = duckRef.current[id];
+      delete duckRef.current[id];
+      setVolumeFor(id, prev);
+    }
     // Telling the OTHER devices needs no new message: every state broadcast
     // already carries this device's audio intent (audioFields), and that intent is
     // read off committedRef — which in the Manual-cue case still names the track we
@@ -3247,7 +3259,13 @@ export function LiveMode({
   // "เข้าใน 5 4 3 2 1" (lib/live-entry.ts): how the next row comes in - AUTO counts the last five
   // seconds of `remaining` (it ends on the moment Auto takes the next row), a row the next one
   // comes in over says so all along. The NOW card and CONSOLE's NEXT box; display only, and a
-  // viewer works it out from the same state. Not after จบโชว์.
+  // viewer works it out from the same state. Not after จบโชว์. AUTO goes straight through a
+  // 0:00 row (its advance moves on at once): the count names the row it lands on (2026-10-26).
+  const landAt =
+    state.mode === "auto"
+      ? autoLandsOn((i) => runBlock(items, i), state.currentIndex, items.length)
+      : state.currentIndex + 1;
+  const landing = items[landAt];
   const entry = showEnded
     ? null
     : entryCue({
@@ -3255,7 +3273,7 @@ export function LiveMode({
         running: state.running,
         remaining,
         blockSec: zoneBlock,
-        next: next ? { title: next.title, leadSec: leadOf(next) } : null,
+        next: next && landing ? { title: landing.title, leadSec: leadOf(next), at: landAt } : null,
       });
   // The zone's look is components/live/now-card.tsx + app/stage.css (.zone-warn /
   // .zone-urgent / .alarm-plate), on tokens no band skin writes.
@@ -3438,6 +3456,7 @@ export function LiveMode({
     }
   }
   function primeSecondaryAudio() {
+    warmRoutedPool(); // every tap: idempotent, and a no-op where nothing is routed
     if (secondaryPrimedRef.current) return;
     secondaryPrimedRef.current = true;
     primeElement(audioRef2.current);
@@ -3655,7 +3674,7 @@ export function LiveMode({
     return el.paused || el.ended || !el.src || el.src === SILENT_WAV || !!el.error;
   }
   /** One more element for the pads, set up as the first two are: sound on/off, the route, the tap. */
-  function addPlayer(): HTMLAudioElement {
+  function addPlayer(prime = true): HTMLAudioElement {
     const el = makePlayer();
     el.muted = !soundOutputRef.current;
     const routed = el as HTMLAudioElement & { setSinkId?: (id: string) => Promise<void> };
@@ -3667,8 +3686,21 @@ export function LiveMode({
     // Unlocked here, inside the tap that wants it (every caller is a pad, NOW's pad or Auto Mute):
     // WebKit grants play() per element, and one made by Auto Mute's adoptTail became Auto's spare -
     // the next overlap's play() from a timer was refused, a silent row on an iPad (2026-10-25).
-    primeElement(el);
+    if (prime) primeElement(el);
     return el;
+  }
+  /** On a device that routes the show to a chosen output (setSinkId: the desktop app, Chrome), an
+   *  element a pad press made took its route asynchronously while that press played it at once:
+   *  the first moments of the pad could come out of the default device - the laptop's own
+   *  speakers - and not the PA (2026-10-25 hunt). So the whole pool is made ahead, in the tap
+   *  that starts the show (or when an output is chosen mid-show), and every element's route has
+   *  landed long before a pad needs it. Elsewhere (no route chosen, no setSinkId: iPad, phones)
+   *  the pool grows at the presses, as before. Not primed: setSinkId means Chromium, which grants
+   *  play() per page, not per element - six silent plays in START's tap would be work for nothing
+   *  (and a spare that needs it is primed at its press, as ever). */
+  function warmRoutedPool() {
+    if (!sinkIdRef.current || typeof HTMLMediaElement === "undefined" || !("setSinkId" in HTMLMediaElement.prototype)) return;
+    while (playersRef.current.length > 0 && playersRef.current.length < MAX_PLAYERS) addPlayer(false);
   }
   /** An element free to take a row - not the primary, not a layer, not sounding: the spare first. */
   function freePlayer(not: readonly HTMLAudioElement[] = []): HTMLAudioElement {

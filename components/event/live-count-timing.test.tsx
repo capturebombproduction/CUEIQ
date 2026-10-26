@@ -273,3 +273,48 @@ describe("LiveMode · an AUTO row change never shows the OVERTIME plate", () => 
     expect(nowCard().getAttribute("data-zone")).not.toBe("over");
   });
 });
+
+// 2026-10-26: a row with no time (0:00) next. AUTO goes straight through it - its advance moves on
+// the moment it starts - and the count named it, a title nobody hears, over the row that comes in.
+describe("LiveMode · the count names the row AUTO lands on, past a 0:00 row", () => {
+  it("Track 1 → a 0:00 row → Track 3: the count says Track 3, and Track 3 is where AUTO lands", async () => {
+    const items = [
+      makeItem(1, { duration_seconds: 10 }),
+      makeItem(2, { kind: "mc", title: "Thank-you", duration_seconds: 0 }),
+      makeItem(3),
+    ];
+    useItems(items);
+    instrumentMediaElements();
+    await mountLive(items);
+    await act(async () => {
+      fireEvent.click(modeButton(/^Auto$/));
+    });
+    await startShowFromUi();
+    await act(async () => {
+      vi.advanceTimersByTime(7_500);
+    });
+    const line = screen.getByTestId("now-entry");
+    expect(line.textContent).toContain("Track 3");
+    expect(line.textContent).not.toContain("Thank-you");
+    // …and that is the row AUTO comes to
+    for (let ms = 0; ms < 4_000; ms += 250) {
+      await act(async () => {
+        vi.advanceTimersByTime(250);
+      });
+    }
+    expect(stateSends().at(-1)!.payload.currentIndex).toBe(2);
+  });
+
+  it("(control) MANUAL with the same set: the static line names the row after this one, as before", async () => {
+    const items = [
+      makeItem(1, { duration_seconds: 10 }),
+      makeItem(2, { kind: "mc", title: "Thank-you", duration_seconds: 0, buffer_before_seconds: -3 }),
+      makeItem(3),
+    ];
+    useItems(items);
+    instrumentMediaElements();
+    await mountLive(items);
+    await startShowFromUi();
+    expect(screen.getByTestId("now-entry").textContent).toContain("Thank-you");
+  });
+});

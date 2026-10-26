@@ -1140,6 +1140,15 @@ export function MyShow() {
     audioRef.current?.pause();
     audioRef2.current?.pause();
     setAudioPlaying(false);
+    // …and the fade keys' moves end with it, as in live-mode.tsx's endShow(): a show that has
+    // ended is not sounding, and the kept duck had รันโชว์ carry the song on at Auto Mute's 0
+    // (2026-10-26). Paused here, so nobody hears its own level come back.
+    for (const id of Object.keys(duckRef.current)) {
+      const prev = duckRef.current[id];
+      delete duckRef.current[id];
+      delete duckNowRef.current[id];
+      fadeVolumeFor(id, prev, 0);
+    }
     let next = s;
     if (s.running) {
       const frozen = s.itemStartedAt

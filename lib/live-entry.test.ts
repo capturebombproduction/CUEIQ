@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { ENTRY_COUNT_SEC, entryCue, entryWords } from "./live-entry";
+import { ENTRY_COUNT_SEC, autoLandsOn, entryCue, entryWords } from "./live-entry";
 
 const NEXT = { title: "Seishin Kakumei", leadSec: 0 };
 const OVER = { title: "Seishin Kakumei", leadSec: 5 };
@@ -66,5 +66,30 @@ describe("entryCue · AUTO counts 5 4 3 2 1 into EVERY next row (พี่ 2026-
     const cue = entryCue({ ...base, next: { title: "", leadSec: 4.6 }, remaining: 50 })!;
     expect(cue.title).toBe("—");
     expect(cue.leadSec).toBe(5);
+  });
+
+  it("carries the place of the row it names when given, and only then", () => {
+    expect(entryCue({ ...base, next: { ...NEXT, at: 4 }, remaining: 3 })!.at).toBe(4);
+    expect(entryCue({ ...base, remaining: 3 })).not.toHaveProperty("at");
+  });
+});
+
+// 2026-10-26: AUTO goes straight through a row whose run is 0:00 (its advance moves on at once),
+// and the count named that row - a title nobody hears - over the one that comes in.
+describe("autoLandsOn · the row AUTO comes to", () => {
+  const runs = (r: number[]) => (i: number) => r[i];
+  it("the next row, when it has a run", () => {
+    expect(autoLandsOn(runs([200, 180, 200]), 0, 3)).toBe(1);
+  });
+  it("past a 0:00 row, and past several", () => {
+    expect(autoLandsOn(runs([200, 0, 180, 200]), 0, 4)).toBe(2);
+    expect(autoLandsOn(runs([200, 0, 0, 180, 200]), 0, 5)).toBe(3);
+  });
+  it("past a row with no number at all", () => {
+    expect(autoLandsOn(runs([200, Number.NaN, 180]), 0, 3)).toBe(2);
+  });
+  it("the last row is where AUTO stops, even at 0:00", () => {
+    expect(autoLandsOn(runs([200, 0, 0]), 0, 3)).toBe(2);
+    expect(autoLandsOn(runs([200, 0]), 0, 2)).toBe(1);
   });
 });

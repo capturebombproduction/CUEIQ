@@ -580,6 +580,109 @@ describe("LiveMode pads · the encore after Auto Mute is heard", () => {
 
 });
 
+// 2026-10-26: the road the pads' fix did not take. จบโชว์ pauses the song Auto Mute had faded to
+// 0 and kept the duck (a paused song keeps its duck), so RUN carried it on at 0: silent.
+describe("LiveMode · RUN after Auto Mute → จบโชว์ is heard", () => {
+  it("Auto Mute → จบโชว์ → RUN: the song carries on, heard", async () => {
+    const media = await startPads();
+    await tick(10_000);
+    await click(screen.getByRole("button", { name: "Mute" }));
+    await tick(3_500);
+    await click(screen.getByTestId("end-show"));
+    await tick(1_000);
+    expect(playing(media, "item-1")).toEqual([]);
+    await click(screen.getByTestId("run-toggle"));
+    await tick(1_000);
+    const [one] = playing(media, "item-1");
+    expect(one).toBeTruthy();
+    expect(media.state(one).volume).toBeGreaterThan(0.5);
+  });
+
+  it("…at the song's own level, not 100: a song set to 60 comes back at 60, and 60 is what is saved", async () => {
+    localStorage.setItem(VOL_KEY, JSON.stringify({ "item-1": 60 }));
+    const media = await startPads();
+    await tick(10_000);
+    await click(screen.getByRole("button", { name: "Mute" }));
+    await tick(3_500);
+    await click(screen.getByTestId("end-show"));
+    await click(screen.getByTestId("run-toggle"));
+    await tick(1_000);
+    const [one] = playing(media, "item-1");
+    expect(media.state(one).volume).toBeCloseTo(0.6);
+    await act(async () => {
+      window.dispatchEvent(new Event("pagehide")); // the flush that saves the levels
+    });
+    expect(savedVols()["item-1"]).toBe(60);
+  });
+
+  it("(control) MC → Pause → RUN: still at the MC's 30 - the talking goes on", async () => {
+    const media = await startPads();
+    await tick(10_000);
+    await click(screen.getByRole("button", { name: "MC" }));
+    await tick(2_500);
+    await click(screen.getByTestId("run-toggle")); // pause
+    await tick(1_000);
+    await click(screen.getByTestId("run-toggle")); // run
+    await tick(1_000);
+    const [one] = playing(media, "item-1");
+    expect(media.state(one).volume).toBeCloseTo(0.3);
+  });
+});
+
+// 2026-10-26 (the 2026-10-25 hunt's "setSinkId race"): on a laptop routed to an interface, a pad
+// press made a new element, asked for its route (async) and played it at once - the first
+// moments of that pad out of the laptop's own speakers, not the PA.
+describe("LiveMode pads · a chosen output: no pad starts before its element's route has landed", () => {
+  const ROUTE_MS = 150;
+  let routed: Set<HTMLMediaElement>;
+  let asked: Map<HTMLMediaElement, string>;
+  beforeEach(() => {
+    routed = new Set();
+    asked = new Map();
+    Object.defineProperty(HTMLMediaElement.prototype, "setSinkId", {
+      configurable: true,
+      writable: true,
+      value: function (this: HTMLMediaElement, id: string) {
+        asked.set(this, id);
+        return new Promise<void>((resolve) =>
+          setTimeout(() => {
+            if (id) routed.add(this);
+            resolve();
+          }, ROUTE_MS)
+        );
+      },
+    });
+  });
+  afterEach(() => {
+    delete (HTMLMediaElement.prototype as unknown as Record<string, unknown>).setSinkId;
+  });
+
+  it("three pads in quick succession: each one plays on an element already routed to the interface", async () => {
+    localStorage.setItem("cueiq:audioSink", "usb-interface");
+    const media = await startPads();
+    await tick(1_000);
+    await press(2);
+    await press(3);
+    await press(5);
+    for (const id of ["item-2", "item-3", "item-5"]) {
+      const [el] = playing(media, id);
+      expect(el, id).toBeTruthy();
+      expect(asked.get(el), id).toBe("usb-interface");
+      expect(routed.has(el), id).toBe(true);
+    }
+  });
+
+  it("(control) no output chosen: no element is made ahead, the pool grows at the presses as before", async () => {
+    const media = await startPads();
+    // the two players (and START's own probe) - not the pool of eight
+    expect(media.elements.length).toBeLessThan(5);
+    expect([...asked.values()].every((id) => id === "")).toBe(true);
+    await tick(1_000);
+    await press(2);
+    expect(playing(media, "item-2")).toHaveLength(1);
+  });
+});
+
 describe("LiveMode pads · the encore, through the จบการแสดงเลยไหม bar", () => {
   it("Auto Mute → 'จบโชว์ · บันทึกเวลา' on its bar → encore on the same song's pad: it must be heard", async () => {
     const media = await startPads();

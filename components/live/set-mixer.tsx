@@ -86,6 +86,7 @@ export const SetMixer = memo(function SetMixer({
   playingId,
   liveRef,
   count = null,
+  countAt,
   pads,
 }: {
   items: readonly ConsoleItem[];
@@ -96,6 +97,8 @@ export const SetMixer = memo(function SetMixer({
   liveRef: RefObject<HTMLSpanElement | null>;
   /** AUTO's 5 4 3 2 1 before the next row comes in (lib/live-entry.ts), over that row's pad */
   count?: number | null;
+  /** the pad the count rides: the row AUTO comes to (past a 0:00 row); the next row if not given */
+  countAt?: number;
   pads?: PadsView | null;
 }) {
   const p = pads ?? IDLE;
@@ -253,7 +256,7 @@ export const SetMixer = memo(function SetMixer({
                 {sub && <span className="relative text-[10px] font-bold leading-[1.15]">{sub}</span>}
               </button>
               <div className="h-[11px] shrink-0 truncate text-center text-[9.5px] leading-[11px] text-muted-foreground [@container_(max-height:133px)]:hidden">{it.title}</div>
-              {count != null && i === index + 1 && (
+              {count != null && i === (countAt ?? index + 1) && (
                 <span data-testid="console-strip-count" className="pointer-events-none absolute inset-x-0 top-[22px] flex justify-center">
                   <b key={count} className="entry-digit num rounded-[2px] bg-background/85 px-1.5 text-[30px] leading-[36px] text-warning-ink">
                     {count}

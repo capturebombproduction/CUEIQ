@@ -17,6 +17,8 @@ export const ENTRY_COUNT_SEC = 5;
 export interface EntryCue {
   /** the row that comes in next */
   title: string;
+  /** its place in the running order, when given (AUTO lands past a 0:00 row: autoLandsOn) */
+  at?: number;
   /** how many seconds it comes in over the end of this one; 0 = after it */
   leadSec: number;
   /** 5…1 in the last five seconds before Auto takes the next row, else null */
@@ -46,8 +48,9 @@ export function entryCue({
   remaining: number;
   /** this row's run, seconds; a row with no time set never counts */
   blockSec: number;
-  /** the row after this one: its title and its lead (leadOf), or null on the last row */
-  next: { title: string; leadSec: number } | null;
+  /** the row that comes in next: its title, its place (autoLandsOn) and the lead of the row
+   *  after this one (leadOf - it is what ends this row's run), or null on the last row */
+  next: { title: string; leadSec: number; at?: number } | null;
 }): EntryCue | null {
   if (!next) return null;
   const leadSec = Number.isFinite(next.leadSec) ? Math.max(0, Math.round(next.leadSec)) : 0;
@@ -62,7 +65,19 @@ export function entryCue({
   // the static line is for a row the next one comes in over; any other row says nothing
   // until its count
   if (count === null && leadSec === 0) return null;
-  return { title: next.title || "—", leadSec, count, manual: !auto };
+  return { title: next.title || "—", ...(next.at !== undefined ? { at: next.at } : {}), leadSec, count, manual: !auto };
+}
+
+/**
+ * The row AUTO lands on after row `from`: the next one with a run of its own. A row whose run
+ * is 0:00 (no time set, or all of it under the next row's lead) is gone the moment it starts -
+ * Auto's advance moves on at once - so the count names the row after it, not a title nobody
+ * hears (2026-10-26). The last row is where AUTO stops, whatever its run.
+ */
+export function autoLandsOn(runOf: (i: number) => number, from: number, total: number): number {
+  let i = from + 1;
+  while (i < total - 1 && !(runOf(i) > 0)) i++;
+  return i;
 }
 
 /** The words before the digit ("เข้าซ้อนใน" / "เข้าใน"), or the static line's words. */

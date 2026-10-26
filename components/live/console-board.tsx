@@ -309,7 +309,7 @@ export function ConsoleBoard({
 
         <ClipEditor item={current} elapsed={elapsed} running={running} sections={curMarkers} section={section} />
 
-        <BottomPanel items={items} index={index} playingId={playingId} liveRef={stripLive} tap={tap} count={entry?.count ?? null} pads={pads} />
+        <BottomPanel items={items} index={index} playingId={playingId} liveRef={stripLive} tap={tap} count={entry?.count ?? null} countAt={entry?.at ?? index + 1} pads={pads} />
       </div>
 
       <aside aria-label="Playback" className="flex min-h-0 flex-col gap-2 [container-type:size]">
@@ -452,7 +452,10 @@ export function ConsoleBoard({
             <>
               <div className="flex min-w-0 items-center gap-2">
                 <span className="nlabel text-[16px]">Next</span>
-                <span className="min-w-0 flex-1 truncate text-[13px] font-medium">{next.title || "—"}</span>
+                {/* the count names the row AUTO lands on - past a 0:00 row, not that row */}
+                <span className="min-w-0 flex-1 truncate text-[13px] font-medium">
+                  {(entry?.count != null ? entry.title : next.title) || "—"}
+                </span>
                 {/* AUTO's last five seconds: the count takes the length's place, so the box keeps
                     its height (the meters above would shrink under a new row for five seconds) */}
                 {entry?.count != null ? (
@@ -939,6 +942,7 @@ function BottomPanel({
   liveRef,
   tap,
   count,
+  countAt,
   pads,
 }: {
   items: readonly ConsoleItem[];
@@ -947,6 +951,8 @@ function BottomPanel({
   liveRef: React.RefObject<HTMLSpanElement | null>;
   tap: SignalTap | null;
   count: number | null;
+  /** the strip the count lands on: the row AUTO comes to (past a 0:00 row) */
+  countAt: number;
   pads: PadsView | null;
 }) {
   const tabs: PanelTab[] = tap ? ["analyzer", "mixer", "spectrogram"] : ["mixer"];
@@ -1029,7 +1035,7 @@ function BottomPanel({
         </span>
       </div>
       {tab === "mixer" || !tap ? (
-        <SetMixer items={items} index={index} playingId={playingId} liveRef={liveRef} count={count} pads={pads} />
+        <SetMixer items={items} index={index} playingId={playingId} liveRef={liveRef} count={count} countAt={countAt} pads={pads} />
       ) : (
         <ConsoleAnalyzer tap={tap} trackKey={playingId} view={tab} />
       )}
