@@ -49,6 +49,10 @@ const h = vi.hoisted(() => ({
   vapid: false,
   /** the push_subscriptions read fails */
   pushReadFails: false,
+  /** reads that fail, as "<table>:one" (maybeSingle) or "<table>:many" (a list / a count) */
+  failRead: [] as string[],
+  /** the notifications insert fails */
+  failInsert: false,
 }));
 
 vi.mock("@/lib/supabase/server", () => ({
@@ -76,6 +80,7 @@ vi.mock("@/lib/supabase/admin", () => ({
   createAdminClient: () => ({ from: (t: string) => table(t) }),
 }));
 vi.mock("@/lib/push", () => ({ vapidConfigured: () => h.vapid, sendPush: vi.fn(async () => "ok") }));
+const READ_FAILED = { data: null, count: null, error: { message: "canceling statement due to statement timeout" } };
 
 /** A chainable, awaitable stand-in for one PostgREST query. */
 function table(name: string) {
@@ -126,16 +131,19 @@ function table(name: string) {
     }
     return q;
   };
-  q.maybeSingle = async () => ({ data: single(), error: null });
+  q.maybeSingle = async () => (h.failRead.includes(`${name}:one`) ? READ_FAILED : { data: single(), error: null });
   q.single = async () => ({ data: single(), error: null });
   q.insert = async (rows: Row | Row[]) => {
+    if (name === "notifications" && h.failInsert) return { error: { message: "insert failed" } };
     if (name === "notifications") h.inserted.push(...(Array.isArray(rows) ? rows : [rows]));
     return { error: null };
   };
   q.delete = () => q;
   q.then = (ok: (v: unknown) => unknown, bad: (e: unknown) => unknown) =>
     Promise.resolve(
-      name === "run_sequence"
+      h.failRead.includes(`${name}:many`)
+        ? READ_FAILED
+        : name === "run_sequence"
         ? { data: null, count: h.liveCount, error: null } // select(…, { count, head })
         : name === "push_subscriptions" && h.pushReadFails
           ? { data: null, error: { message: "canceling statement due to statement timeout" } }
@@ -183,6 +191,8 @@ beforeEach(() => {
   h.groupRoles = [];
   h.vapid = false;
   h.pushReadFails = false;
+  h.failRead = [];
+  h.failInsert = false;
 });
 
 describe("song_pending goes to the admins, who can open the Library", () => {
@@ -352,6 +362,76 @@ describe("a failed push_subscriptions read is an error, never 'nobody has a devi
     h.vapid = true;
     const { res } = await send({ kind: "event_submitted", eventId: "ev-1" });
     expect(await res.json()).toMatchObject({ ok: true, recipients: 4 });
+  });
+});
+
+// 2026-10-26: every other read the route makes coalesced a failure the same way. A failed
+// subject / live-row / membership / audience read answered ok with sent: 0 ("nothing to
+// send"); a failed dedupe read was "nobody was told yet" and told everyone again; a failed
+// bell insert still pushed (a push with no bell row, and no row for the next dedupe to see).
+// Each is now a 500 naming the read, before anything is written or pushed.
+describe("a failed read is an error, never 'nothing to send' or 'nobody told yet'", () => {
+  const post = (body: Record<string, unknown>) =>
+    POST(
+      new Request("http://localhost/api/notify", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      })
+    );
+  const refused = async (body: Record<string, unknown>, what: string) => {
+    const res = await post(body);
+    expect(res.status).toBe(500);
+    expect(String((await res.json()).error)).toContain(what);
+    expect(h.inserted).toEqual([]);
+  };
+
+  it("the show's subject read (events)", async () => {
+    h.failRead = ["events:one"];
+    await refused({ kind: "event_submitted", eventId: "ev-1" }, "events");
+  });
+  it("the feedback's subject read (feedback)", async () => {
+    h.failRead = ["feedback:one"];
+    await refused({ kind: "feedback_replied", feedbackId: "fb-1" }, "feedback");
+  });
+  it("the song's subject read (songs)", async () => {
+    h.failRead = ["songs:one"];
+    await refused({ kind: "song_pending", songId: "song-1" }, "songs");
+  });
+  it("run_order_live: the festival's event read, and its live-row count", async () => {
+    h.failRead = ["events:one"];
+    await refused({ kind: "run_order_live", eventId: "ev-1" }, "events");
+    h.failRead = ["run_sequence:many"];
+    await refused({ kind: "run_order_live", eventId: "ev-1" }, "run_sequence");
+  });
+  it("the caller's membership read: an error, not 'forbidden'", async () => {
+    h.failRead = ["tenant_members:one"];
+    await refused({ kind: "event_submitted", eventId: "ev-1" }, "tenant_members");
+  });
+  it("the audience read", async () => {
+    h.failRead = ["tenant_members:many"];
+    await refused({ kind: "event_submitted", eventId: "ev-1" }, "tenant_members");
+    h.failRead = ["group_roles:many"];
+    h.eventStatus = "approved";
+    await refused({ kind: "event_approved", eventId: "ev-1" }, "group_roles");
+  });
+  it("the dedupe read: nobody is told again on a guess", async () => {
+    h.vapid = true;
+    h.failRead = ["notifications:many"];
+    const { sendPush } = await import("@/lib/push");
+    vi.mocked(sendPush).mockClear();
+    await refused({ kind: "run_order_live", eventId: "ev-1" }, "notifications");
+    expect(sendPush).not.toHaveBeenCalled();
+  });
+  it("the bell insert: no push goes out without its bell row", async () => {
+    h.vapid = true;
+    h.failInsert = true;
+    const { sendPush } = await import("@/lib/push");
+    vi.mocked(sendPush).mockClear();
+    const res = await post({ kind: "event_submitted", eventId: "ev-1" });
+    expect(res.status).toBe(500);
+    expect(String((await res.json()).error)).toContain("notifications");
+    expect(sendPush).not.toHaveBeenCalled();
   });
 });
 

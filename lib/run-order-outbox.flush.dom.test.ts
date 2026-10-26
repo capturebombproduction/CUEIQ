@@ -13,12 +13,20 @@
 // ---------------------------------------------------------------------------
 import "fake-indexeddb/auto";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { makeSession, makeSupabaseFake, ok, type SupabaseFake } from "@/test/fakes/supabase";
+import { makeSession, makeSupabaseFake, offline, ok, type SupabaseFake } from "@/test/fakes/supabase";
 
 const h = vi.hoisted(() => ({ supa: null as unknown }));
 vi.mock("@/lib/supabase/client", () => ({ createClient: () => h.supa }));
+vi.mock("@/lib/notify-client", () => ({ notify: vi.fn() }));
 
-import { enqueueRunSeq, flushRunSeqOutbox, listRunSeqOps, type RunSeqOp } from "@/lib/run-order-outbox";
+import { notify } from "@/lib/notify-client";
+import {
+  ANNOUNCE_LIVE_WITHIN_MS,
+  enqueueRunSeq,
+  flushRunSeqOutbox,
+  listRunSeqOps,
+  type RunSeqOp,
+} from "@/lib/run-order-outbox";
 
 function deleteDB(name: string): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -50,6 +58,70 @@ beforeEach(async () => {
   await deleteDB("cueiq-outbox");
   supa = makeSupabaseFake({ session: makeSession() });
   h.supa = supa;
+  vi.mocked(notify).mockClear();
+});
+
+// ---------------------------------------------------------------------------
+// THE SHOW'S FIRST START, QUEUED, STILL TELLS THE LABEL (2026-10-26).
+//
+// /api/notify only believes "งานเริ่มแล้ว" once the server holds a live row, so the
+// board pings it only after its own write commits - and a first start pressed with no
+// network (or whose answer was lost) told nobody, ever. The queued press now carries the
+// word, and the flush says it once the replay lands - if the press is still news.
+// ---------------------------------------------------------------------------
+describe("run-order replay of the show's first start", () => {
+  const first = (at: number): RunSeqOp => ({ ...press, announceLive: { eventId: "ev-1", at } });
+
+  it("the replay lands → the label is told, once", async () => {
+    await enqueueRunSeq(first(Date.now()));
+    supa.setTable("run_sequence", (call) => (call.verb === "update" ? ok([{ id: "row-1" }]) : ok(null)));
+    await flushRunSeqOutbox();
+    expect(notify).toHaveBeenCalledTimes(1);
+    expect(notify).toHaveBeenCalledWith("run_order_live", { eventId: "ev-1" });
+  });
+
+  it("its answer was lost (the row already holds it) → told as well", async () => {
+    await enqueueRunSeq(first(Date.now()));
+    serverHolds({ id: "row-1", status: "live", actual_start: "2026-10-24T12:00:00+00:00" });
+    await flushRunSeqOutbox();
+    expect(notify).toHaveBeenCalledWith("run_order_live", { eventId: "ev-1" });
+  });
+
+  it("a press folded in after it keeps the word", async () => {
+    await enqueueRunSeq(first(Date.now()));
+    await enqueueRunSeq({ ...press, patch: { offset_min: 3 }, label: "เลื่อนคิว" });
+    expect((await listRunSeqOps())[0].announceLive).toMatchObject({ eventId: "ev-1" });
+  });
+
+  it("parked as a conflict, dropped, or still offline → nobody is told", async () => {
+    await enqueueRunSeq(first(Date.now()));
+    serverHolds({ id: "row-1", status: "done", actual_start: "2026-10-24T11:40:00+00:00" });
+    await flushRunSeqOutbox(); // parked
+    await deleteDB("cueiq-outbox");
+    await enqueueRunSeq(first(Date.now()));
+    serverHolds(null);
+    await flushRunSeqOutbox(); // dropped
+    await deleteDB("cueiq-outbox");
+    await enqueueRunSeq(first(Date.now()));
+    supa.setTable("run_sequence", () => offline());
+    await flushRunSeqOutbox(); // still no network: stays queued
+    expect(await listRunSeqOps()).toHaveLength(1);
+    expect(notify).not.toHaveBeenCalled();
+  });
+
+  it("a start that lands long after its press is old news: nobody is told", async () => {
+    await enqueueRunSeq(first(Date.now() - ANNOUNCE_LIVE_WITHIN_MS - 60_000));
+    supa.setTable("run_sequence", (call) => (call.verb === "update" ? ok([{ id: "row-1" }]) : ok(null)));
+    await flushRunSeqOutbox();
+    expect(notify).not.toHaveBeenCalled();
+  });
+
+  it("(control) any other press that lands tells nobody", async () => {
+    await enqueueRunSeq(press);
+    supa.setTable("run_sequence", (call) => (call.verb === "update" ? ok([{ id: "row-1" }]) : ok(null)));
+    await flushRunSeqOutbox();
+    expect(notify).not.toHaveBeenCalled();
+  });
 });
 
 describe("run-order replay after a lost response", () => {

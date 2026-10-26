@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import { renderToString } from "react-dom/server";
-import { makeSupabaseFake, makeSession, ok, type SupabaseFake } from "@/test/fakes/supabase";
+import { makeSupabaseFake, makeSession, ok, offline, type SupabaseFake } from "@/test/fakes/supabase";
 import { ConfirmProvider } from "@/components/ui/confirm-dialog";
 import { AccountPanel, AccountPanelProvider } from "@/components/account-panel";
 import type { RunSeqOp } from "@/lib/run-order-outbox";
@@ -21,7 +21,7 @@ import { spotFor } from "@/lib/skin";
 // style change in review; here it reads as a red test.
 // ─────────────────────────────────────────────────────────────────────────────
 
-const h = vi.hoisted(() => ({ supa: null as unknown, ops: [] as unknown[] }));
+const h = vi.hoisted(() => ({ supa: null as unknown, ops: [] as unknown[], enqueued: [] as unknown[] }));
 vi.mock("@/lib/supabase/client", () => ({ createClient: () => h.supa }));
 vi.mock("@/lib/notify-client", () => ({ notify: vi.fn() }));
 // Only the account panel (opened from the top bar's ⋯) reads these; the board does not.
@@ -34,6 +34,10 @@ vi.mock("next/navigation", () => ({
 vi.mock("@/lib/run-order-outbox", async (orig) => ({
   ...(await orig<typeof import("@/lib/run-order-outbox")>()),
   listRunSeqOps: async () => h.ops,
+  // what a press queued (jsdom has no IndexedDB: the real one is a best-effort no-op here)
+  enqueueRunSeq: async (op: unknown) => {
+    h.enqueued.push(op);
+  },
 }));
 
 // The report's JPG: only the file name it asks for is read (html-to-image has no canvas here).
@@ -119,6 +123,7 @@ function script(rows: RunSeqLive[]) {
 
 beforeEach(() => {
   h.ops = [];
+  h.enqueued = [];
   supa = makeSupabaseFake({ session: makeSession() });
   h.supa = supa;
   script(liveBoard());
@@ -649,6 +654,31 @@ describe("EventLiveCaller — every press still sends the same write", () => {
     expect(s.eq).toMatchObject({ id: "r1", status: "pending" });
     expect(s.values).toMatchObject({ status: "live" });
     await waitFor(() => expect(notify).toHaveBeenCalledWith("run_order_live", { eventId: "ev-1" }));
+  });
+
+  // 2026-10-26: a first START with no network was queued and the label was never told
+  it("START with no network: queued, no ping now - the queued press carries the label's word for its replay", async () => {
+    const fresh = liveBoard().map((r) => ({
+      ...r,
+      status: "pending",
+      actual_start: null,
+      actual_end: null,
+      offset_min: null,
+    }));
+    supa.setTable("run_sequence", (call) => (call.verb === "update" ? offline() : ok(fresh)));
+    renderCaller(fresh);
+    fireEvent.click(screen.getByRole("button", { name: /เริ่มงาน/ }));
+    await waitFor(() => expect(h.enqueued).toHaveLength(1));
+    expect(h.enqueued[0]).toMatchObject({ rowId: "r1", announceLive: { eventId: "ev-1" } });
+    expect(notify).not.toHaveBeenCalled();
+  });
+
+  it("(control) a later start with no network carries no word: only the show's first start tells the label", async () => {
+    supa.setTable("run_sequence", (call) => (call.verb === "update" ? offline() : ok(liveBoard())));
+    renderCaller();
+    fireEvent.click(screen.getByRole("button", { name: /จบ \+ ต่อไป/ }));
+    await waitFor(() => expect(h.enqueued.length).toBeGreaterThan(0));
+    for (const op of h.enqueued) expect(op).not.toHaveProperty("announceLive");
   });
 
   it("±1 in the dock pushes the live row's drift, conditional on the value it read", async () => {

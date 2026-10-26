@@ -58,6 +58,14 @@ function json(req: Request, body: unknown, status = 200) {
 
 const noOp = (req: Request) => json(req, { ok: true, sent: 0 });
 
+// A read that failed is not "nothing to send", "nobody told yet" or "forbidden" (2026-10-26):
+// each one used to coalesce to the answer that sends nothing - or, for the dedupe read, to
+// the one that tells everyone again. Say which read, and write nothing.
+function readFailed(req: Request, what: string, error: { message: string }) {
+  console.error(`[notify] ${what} read failed:`, error.message);
+  return json(req, { error: `${what}: ${error.message}`, sent: 0 }, 500);
+}
+
 export async function OPTIONS(req: Request) {
   return new NextResponse(null, { status: 204, headers: corsHeaders(req) });
 }
@@ -129,11 +137,12 @@ export async function POST(req: Request) {
 
   if (EVENT_KINDS.has(kind)) {
     if (!eventId) return json(req, { error: "no eventId" }, 400);
-    const { data: ev } = await admin
+    const { data: ev, error: evErr } = await admin
       .from("events")
       .select("id, name, group_id, tenant_id, status, groups(name)")
       .eq("id", eventId)
       .maybeSingle();
+    if (evErr) return readFailed(req, "events", evErr);
     if (!ev) return noOp(req);
     // anti-spoof: the real status must match the claimed kind
     const want =
@@ -161,11 +170,12 @@ export async function POST(req: Request) {
     messageBody = bandName ? `${name} · ${bandName}` : name;
   } else if (SONG_KINDS.has(kind)) {
     if (!songId) return json(req, { error: "no songId" }, 400);
-    const { data: sg } = await admin
+    const { data: sg, error: sgErr } = await admin
       .from("songs")
       .select("id, title, group_id, tenant_id, copyright_status, groups(name)")
       .eq("id", songId)
       .maybeSingle();
+    if (sgErr) return readFailed(req, "songs", sgErr);
     if (!sg) return noOp(req);
     const want =
       kind === "song_pending" || kind === "song_resubmitted"
@@ -211,22 +221,24 @@ export async function POST(req: Request) {
     // actually be on the row. Both checks run with the admin client so a member
     // cannot use their own RLS view to make either come out differently.
     if (!feedbackId) return json(req, { error: "no feedbackId" }, 400);
-    const { data: fb } = await admin
+    const { data: fb, error: fbErr } = await admin
       .from("feedback")
       .select("id, tenant_id, user_id, reply, message")
       .eq("id", feedbackId)
       .maybeSingle();
+    if (fbErr) return readFailed(req, "feedback", fbErr);
     if (!fb) return noOp(req);
     if (!(fb.reply as string | null)?.trim()) return noOp(req); // nothing was said
     if (!fb.user_id) return noOp(req); // author's account is gone
     tenantId = fb.tenant_id as string;
     submitterId = fb.user_id as string;
-    const { data: callerRole } = await admin
+    const { data: callerRole, error: roleErr } = await admin
       .from("tenant_members")
       .select("role")
       .eq("tenant_id", tenantId)
       .eq("user_id", user.id)
       .maybeSingle();
+    if (roleErr) return readFailed(req, "tenant_members", roleErr);
     // can_admin_tenant's role set, evaluated here rather than through the rpc so it
     // cannot be answered by the caller's own session.
     if (!["admin", "platform_admin", "tenant_owner"].includes(String(callerRole?.role))) {
@@ -245,11 +257,12 @@ export async function POST(req: Request) {
     // (tenant + name + date, resolved from the event the board was opened for) must
     // actually have a row gone live.
     if (!eventId) return json(req, { error: "no eventId" }, 400);
-    const { data: ev } = await admin
+    const { data: ev, error: evErr } = await admin
       .from("events")
       .select("id, name, tenant_id, event_date")
       .eq("id", eventId)
       .maybeSingle();
+    if (evErr) return readFailed(req, "events", evErr);
     if (!ev) return noOp(req);
     tenantId = ev.tenant_id as string;
     let liveQ = admin
@@ -261,7 +274,8 @@ export async function POST(req: Request) {
     liveQ = ev.event_date
       ? liveQ.eq("event_date", ev.event_date as string)
       : liveQ.is("event_date", null);
-    const { count: liveCount } = await liveQ;
+    const { count: liveCount, error: liveErr } = await liveQ;
+    if (liveErr) return readFailed(req, "run_sequence", liveErr);
     if (!liveCount) return noOp(req); // not actually live → don't notify
     title = "🔴 งานเริ่มแล้ว (Live)";
     // The DEFAULT link for this kind is the everyone-safe one. It used to be
@@ -293,12 +307,13 @@ export async function POST(req: Request) {
   }
 
   // 3) The caller must belong to the subject's tenant (blocks cross-tenant spam).
-  const { data: callerMember } = await admin
+  const { data: callerMember, error: memberErr } = await admin
     .from("tenant_members")
     .select("user_id")
     .eq("tenant_id", tenantId)
     .eq("user_id", user.id)
     .maybeSingle();
+  if (memberErr) return readFailed(req, "tenant_members", memberErr);
   if (!callerMember) return json(req, { error: "forbidden" }, 403);
   // 3b) ...and, for a show or a song, be able to see that band. The anti-spoof above
   // only proves the state is true: a member of another band could still re-send a
@@ -337,32 +352,23 @@ export async function POST(req: Request) {
   let recipientIds: string[] = [];
   if (recipientRule === "submitter") {
     recipientIds = [submitterId];
-  } else if (recipientRule === "all_tenant") {
-    const { data } = await admin
-      .from("tenant_members")
-      .select("user_id")
-      .eq("tenant_id", tenantId);
-    recipientIds = (data ?? []).map((r) => r.user_id as string);
-  } else if (recipientRule === "approvers") {
-    const { data } = await admin
-      .from("tenant_members")
-      .select("user_id")
-      .eq("tenant_id", tenantId)
-      .in("role", ["admin", "label_staff"]);
-    recipientIds = (data ?? []).map((r) => r.user_id as string);
-  } else if (recipientRule === "admins") {
-    const { data } = await admin
-      .from("tenant_members")
-      .select("user_id")
-      .eq("tenant_id", tenantId)
-      .in("role", ADMIN_ROLES);
-    recipientIds = (data ?? []).map((r) => r.user_id as string);
   } else {
-    const { data } = await admin
-      .from("group_roles")
-      .select("user_id")
-      .eq("group_id", groupId)
-      .eq("role", "artist_manager");
+    const audience =
+      recipientRule === "all_tenant"
+        ? admin.from("tenant_members").select("user_id").eq("tenant_id", tenantId)
+        : recipientRule === "approvers"
+          ? admin
+              .from("tenant_members")
+              .select("user_id")
+              .eq("tenant_id", tenantId)
+              .in("role", ["admin", "label_staff"])
+          : recipientRule === "admins"
+            ? admin.from("tenant_members").select("user_id").eq("tenant_id", tenantId).in("role", ADMIN_ROLES)
+            : admin.from("group_roles").select("user_id").eq("group_id", groupId).eq("role", "artist_manager");
+    const { data, error: audienceErr } = await audience;
+    if (audienceErr) {
+      return readFailed(req, recipientRule === "band_ar" ? "group_roles" : "tenant_members", audienceErr);
+    }
     recipientIds = (data ?? []).map((r) => r.user_id as string);
   }
   // de-dupe + never notify the person who triggered it
@@ -396,12 +402,14 @@ export async function POST(req: Request) {
           ? meta.feedback_id
           : meta.event_id
   );
-  const { data: already } = await admin
+  const { data: already, error: alreadyErr } = await admin
     .from("notifications")
     .select("user_id, read_at")
     .eq("type", kind)
     .eq(subjectCol, subjectId)
     .gt("created_at", dedupeSince);
+  // unknown is not "nobody was told yet": that answer told everyone again
+  if (alreadyErr) return readFailed(req, "notifications", alreadyErr);
   const recent = already ?? [];
   const stillUnread = new Set(
     recent.filter((r) => !r.read_at).map((r) => r.user_id as string)
@@ -491,7 +499,12 @@ export async function POST(req: Request) {
     link: linkOf(uid),
     meta,
   }));
-  await admin.from("notifications").insert(rows);
+  const { error: insertErr } = await admin.from("notifications").insert(rows);
+  // no push without its bell row: they must agree (6), and the next dedupe reads the rows
+  if (insertErr) {
+    console.error("[notify] notifications insert failed:", insertErr.message);
+    return json(req, { error: `notifications: ${insertErr.message}`, sent: 0 }, 500);
+  }
 
   // 6) Web Push (best-effort; prune dead subscriptions) — only to recipients who
   // did NOT already get a push for this exact (type, subject) inside the window.

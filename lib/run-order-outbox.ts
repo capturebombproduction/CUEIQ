@@ -38,6 +38,7 @@ import { createClient } from "@/lib/supabase/client";
 import { settleOnAbort } from "@/lib/idb-tx";
 import { hasLiveSession } from "@/lib/auth-session";
 import { privateChannel } from "@/lib/realtime";
+import { notify } from "@/lib/notify-client";
 
 /** Fired after any queue change so chips/panels can re-read (mirrors MGMT_OUTBOX_EVENT). */
 export const RUNSEQ_OUTBOX_EVENT = "cueiq:runseq-outbox-change";
@@ -93,7 +94,20 @@ export interface RunSeqOp {
    * operator's own presses as a conflict (2026-10-25). Optional for older records.
    */
   prior?: RunSeqPatch[];
+  /**
+   * Set on the show's FIRST start when it could not go out (no network, or its answer was
+   * lost): the event the board was opened from, and when the press was made. Once the replay
+   * lands, the label is told the show went live ("🔴 งานเริ่มแล้ว"). The press could not tell
+   * it - /api/notify only believes a live row the server holds - and a start that replayed
+   * later told nobody (2026-10-26). Optional for older records.
+   */
+  announceLive?: { eventId: string; at: number };
 }
+
+/** A start that lands later than this after its press is old news: nobody is told it went
+ *  live (the route would believe it - the row is live for the whole show - and a festival
+ *  started at 14:00 would push "งานเริ่มแล้ว" at 20:00). */
+export const ANNOUNCE_LIVE_WITHIN_MS = 30 * 60_000;
 
 /** How many earlier versions an op keeps - a row gets a handful of presses offline. */
 const MAX_PRIOR = 20;
@@ -142,6 +156,8 @@ export function mergeOp(prev: RunSeqOp | undefined, next: RunSeqOp): RunSeqOp {
     topic: next.topic ?? prev.topic,
     // the version this press replaces may already be on the server - see `prior`
     prior: [...(prev.prior ?? []), prev.patch].slice(-MAX_PRIOR),
+    // the first start's word to the label rides every press folded in after it
+    announceLive: prev.announceLive ?? next.announceLive,
   };
 }
 
@@ -615,6 +631,8 @@ async function doFlush(): Promise<RunSeqFlushResult> {
   const done: { rowId: string; rev: number }[] = [];
   const parked: RunSeqOp[] = [];
   const topics = new Set<string>();
+  // the show's first start landed from the queue: the events whose label is told (announceLive)
+  const goneLive = new Set<string>();
 
   for (const snapshot of ops) {
     try {
@@ -700,6 +718,8 @@ async function doFlush(): Promise<RunSeqFlushResult> {
         if (verdict === "done") await rebaseExpect(replayed);
         announce();
         if (verdict === "done" && op.topic) topics.add(op.topic);
+        const word = op.announceLive;
+        if (verdict === "done" && word && Date.now() - word.at <= ANNOUNCE_LIVE_WITHIN_MS) goneLive.add(word.eventId);
       }
     } catch {
       /* transport blew up mid-flush — keep it queued */
@@ -710,6 +730,9 @@ async function doFlush(): Promise<RunSeqFlushResult> {
   const all = await listRunSeqOps();
   if (done.length > 0 || parked.length > 0) announce();
   broadcastRunOrderChanged([...topics]);
+  // after the writes, as the online press does: the route re-checks the festival has a live
+  // row, and dedupes a second word inside its window
+  for (const eventId of goneLive) notify("run_order_live", { eventId });
   return {
     flushed: done.length,
     conflicts: all.filter((o) => o.conflict).length,

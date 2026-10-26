@@ -547,6 +547,8 @@ export function EventLiveCaller({
     expect?: Partial<RunSeqLive>;
     /** Thai label for the offline queue's chip / conflict list. */
     label?: string;
+    /** the show's first start: if it is queued, the label is told once its replay lands */
+    announceLive?: string;
   };
 
   /**
@@ -599,6 +601,7 @@ export function EventLiveCaller({
         },
         label: u.label ?? rows.find((r) => r.id === u.id)?.title ?? "ลำดับในคิว",
         queuedAt: at,
+        ...(u.announceLive ? { announceLive: { eventId: u.announceLive, at } } : {}),
         topic: runOrderTopic(tenantId, eventDate, eventName),
       });
     }
@@ -800,13 +803,16 @@ export function EventLiveCaller({
           partial: { status: "live", actual_start: t.toISOString(), offset_min: d },
           // another controller (or the builder) got here first → refetch, don't start
           expect: { status: "pending" },
+          // queued (no network, or the answer was lost), the label is told when it lands
+          ...(firstStart ? { announceLive: eventId } : {}),
         },
       ]);
       // Fire-and-forget AFTER the write lands so the route's anti-spoof (it re-checks
       // run_sequence has a live row) passes — which is also why a merely QUEUED
       // start must not notify: the server has no live row yet, so the route would
       // refuse it anyway, and the label would be told a show started that the
-      // server cannot see.
+      // server cannot see. A queued first start carries announceLive instead: the outbox
+      // tells the label once its replay has landed (lib/run-order-outbox.ts).
       if (ok === "committed" && firstStart) notify("run_order_live", { eventId });
     } finally {
       inFlightRef.current = false;
