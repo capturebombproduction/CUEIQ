@@ -70,8 +70,10 @@ export function DeletePracticeRoomButton({
       toast.success("ลบห้องซ้อมแล้ว");
       router.refresh();
     } catch (err) {
+      // PostgREST's error is a plain object, not an Error: read its message too, or a
+      // refusal said "ไม่สำเร็จ" with no reason
       toast.error("ลบห้องซ้อมไม่สำเร็จ", {
-        description: err instanceof Error ? err.message : undefined,
+        description: (err as { message?: string } | null)?.message || undefined,
       });
     } finally {
       setBusy(false);

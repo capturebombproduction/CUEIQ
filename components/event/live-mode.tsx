@@ -2922,7 +2922,8 @@ export function LiveMode({
       // online upload failed — still keep a local-only copy so THIS device can play
       if (cached) saveAudio(eventId, itemId, cached, file.name).catch(() => {});
       toast.error("อัปโหลดออนไลน์ไม่สำเร็จ — ไฟล์ยังเล่นได้เฉพาะเครื่องนี้", {
-        description: err instanceof Error ? err.message : undefined,
+        // the song / path / link writes throw PostgREST's plain object, not an Error
+        description: (err as { message?: string } | null)?.message || undefined,
       });
     } finally {
       setAudioBusy((prev) => {

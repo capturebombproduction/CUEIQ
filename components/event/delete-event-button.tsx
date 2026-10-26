@@ -63,8 +63,10 @@ export function DeleteEventButton({
       onDeleted?.(eventId); // drop the card immediately; don't wait for refresh
       router.refresh(); // reconcile with the server in the background
     } catch (err) {
+      // `error` above is PostgREST's plain object, not an Error: read its message too, or
+      // a refusal (a guard trigger, a network failure) said "ไม่สำเร็จ" with no reason
       toast.error("ลบงานไม่สำเร็จ", {
-        description: err instanceof Error ? err.message : undefined,
+        description: (err as { message?: string } | null)?.message || undefined,
       });
       setBusy(false);
     }

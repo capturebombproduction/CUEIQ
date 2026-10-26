@@ -9,7 +9,7 @@
 // the holder / mic vanished from the tab and was still on the server for everyone else.
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, act, waitFor } from "@testing-library/react";
-import { makeSupabaseFake, ok, type SupabaseFake } from "@/test/fakes/supabase";
+import { makeSupabaseFake, ok, fail, type SupabaseFake } from "@/test/fakes/supabase";
 import type { MicAssignment } from "@/lib/types";
 
 const h = vi.hoisted(() => ({
@@ -64,6 +64,16 @@ describe("DeleteEventButton", () => {
     expect(onDeleted).not.toHaveBeenCalled();
     expect(h.toastError).toHaveBeenCalledWith("ยังไม่ได้ลบงาน", expect.anything());
     expect(screen.getByTitle("ลบงานนี้")).not.toBeDisabled();
+  });
+
+  // 2026-10-27: PostgREST's error is a plain object, not an Error - the toast dropped its
+  // message, so a refusal (a guard trigger, a dead network) said "ไม่สำเร็จ" with no reason.
+  it("a delete the server refused says why", async () => {
+    supa = makeSupabaseFake({ script: { events: fail("เหตุผลจากเซิร์ฟเวอร์") } });
+    h.supa = supa;
+    const onDeleted = await pressDelete();
+    expect(onDeleted).not.toHaveBeenCalled();
+    expect(h.toastError).toHaveBeenCalledWith("ลบงานไม่สำเร็จ", { description: "เหตุผลจากเซิร์ฟเวอร์" });
   });
 
   it("a delete that removed the show still says so and drops the card", async () => {
