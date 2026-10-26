@@ -97,6 +97,8 @@ type Sentinel = {
   fire: () => void;
 };
 let held: Sentinel[] = [];
+/** set: the next request answers only when the test calls it (a slow wake-lock grant) */
+let gate: null | ((go: () => void) => void) = null;
 let visibility: DocumentVisibilityState = "visible";
 const flush = async () => {
   for (let i = 0; i < 6; i++) await Promise.resolve();
@@ -104,6 +106,7 @@ const flush = async () => {
 
 beforeEach(() => {
   held = [];
+  gate = null;
   visibility = "visible";
   Object.defineProperty(document, "visibilityState", { configurable: true, get: () => visibility });
   Object.defineProperty(navigator, "wakeLock", {
@@ -123,6 +126,7 @@ beforeEach(() => {
           },
         };
         held.push(s);
+        if (gate) await new Promise<void>((go) => gate!(go));
         return s;
       },
     },
@@ -205,6 +209,26 @@ describe("practice player — the screen wake lock", () => {
     expect(held).toHaveLength(1);
   });
 
+  it("a lock granted only after the song stopped is let go at once (ตาที่ 3)", async () => {
+    mount();
+    await tapSong();
+    let grant: () => void = () => {};
+    gate = (go) => {
+      grant = go;
+    };
+    await awayAndBack(); // back with the song playing: the lock is asked for, slowly
+    expect(held).toHaveLength(2);
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "หยุดชั่วคราว" }));
+      await flush();
+    });
+    expect(h.engine!.playing).toBe(false);
+    await act(async () => {
+      grant(); // the browser answers now
+      await flush();
+    });
+    expect(held[1].released).toBe(true);
+  });
   it("the player gone, a page coming back asks for nothing", async () => {
     const { unmount } = mount();
     await tapSong();

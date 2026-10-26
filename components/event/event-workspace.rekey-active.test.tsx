@@ -190,6 +190,26 @@ describe("EventWorkspace · a refresh that landed while the tab was active", () 
     expect((await screen.findByRole("button", { name: /นิค3/ })).getAttribute("aria-pressed")).toBe("false");
   });
 
+  // ตาที่ 3: counting that refresh as seen must not lose ANOTHER device's change it carried.
+  // Leaving the tab reads again, and that fresh answer re-seeds it (and the live lineup).
+  it("another device's change that landed while the tab was active reaches it once it is left", async () => {
+    const user = userEvent.setup();
+    const { rerender, container } = render(tree([], ["m1", "m2", "m3"]));
+    await user.click(tab("Lineup"));
+    await screen.findByRole("button", { name: /นิค2/ });
+    // another device took นิค2 off; a refresh lands while Lineup is the active tab
+    rerender(tree([], ["m1", "m3"]));
+    router.refresh.mockClear();
+
+    await user.click(tab("Mics"));
+    await waitFor(() => expect(router.refresh, "leaving it reads again").toHaveBeenCalledTimes(1));
+    rerender(tree([], ["m1", "m3"])); // that read lands
+    await screen.findByText("Mic Map");
+    expect(tiles(container)).toEqual(["1", "3"]);
+    await user.click(tab("Lineup"));
+    expect((await screen.findByRole("button", { name: /นิค2/ })).getAttribute("aria-pressed")).toBe("false");
+  });
+
   // What the re-key is FOR still works: once the tab is hidden, the next refresh that
   // brings something new (here another device's location, with this one's C) re-seeds it.
   it("the panel is still re-seeded by the next refresh that lands while it is hidden", async () => {

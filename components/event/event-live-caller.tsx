@@ -1142,6 +1142,7 @@ export function EventLiveCaller({
     // drain the absorbed minutes from the pending rows' buffers, front to back
     const drains: CallerUpdate[] = [];
     const ledger = readBufferLedger();
+    const ledgerBeforeDrain = { ...ledger }; // the entries this drain replaces (see the failed branch)
     let remain = absorb * 60;
     for (const r of pending) {
       if (remain <= 0) break;
@@ -1182,6 +1183,20 @@ export function EventLiveCaller({
           })
         );
       } else if ((await apply(drains)) === "failed") {
+        // A drain that did not land must not stay in the ledger (2026-10-27, ตาที่ 3): its
+        // `after` names a buffer the row never got, so รีเซ็ต read the row as re-planned
+        // and handed nothing back, and the next ดึง buffer replaced the original `before`
+        // with the drained value - the dry run's slack gone for good. Rows that DID land
+        // (apply laid them into serverRowsRef) keep the new entry.
+        const settled = { ...ledger };
+        for (const d of drains) {
+          const e = settled[d.id];
+          const holds = serverRowsRef.current.find((r) => r.id === d.id)?.buffer_seconds;
+          if (typeof e !== "object" || holds === e.after) continue;
+          if (ledgerBeforeDrain[d.id] === undefined) delete settled[d.id];
+          else settled[d.id] = ledgerBeforeDrain[d.id];
+        }
+        writeBufferLedger(settled);
         return;
       }
     }

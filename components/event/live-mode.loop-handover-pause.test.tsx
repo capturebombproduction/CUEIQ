@@ -159,4 +159,59 @@ describe("live — Auto Mute in a Loop bed's end-fade, then PAUSE and RUN", () =
     // was: the pause gave the bed its pre-key level back - the muted bed is audible again
     expect(media.state(primary).volume).toBeCloseTo(0);
   });
+
+  it("moving off the bed afterwards gives it its own level back for its next turn (ตาที่ 3 check)", async () => {
+    // Argon asked: with the end-fade record dropped on the pause, does anything ever give the
+    // bed its level back? The fade key's duck does (the duck effect), once it stops sounding.
+    const set = [
+      makeItem(1, { kind: "mc", title: "MC", loop_audio: true, duration_seconds: 10 }),
+      makeItem(2, { duration_seconds: 240 }),
+    ];
+    const media = instrumentMediaElements();
+    h.saved = [{ itemId: "item-1", blob: new Blob(["bgm"]), name: "bgm.wav", path: null }];
+    await mountLive(set);
+    await startShowFromUi();
+    const primary = media.first()!;
+    const levelBefore = media.state(primary).volume;
+    expect(levelBefore).toBeGreaterThan(0); // an MC bed's own level (30 %)
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /^Auto$/ }));
+    });
+    await tick(7_750);
+    await act(async () => {
+      fireEvent.click(autoMuteKey());
+    });
+    await tick(250);
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("run-toggle")); // PAUSE
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /^Manual$/ }));
+    });
+    await tick(500);
+    // the show moves on: the next song PLAYS (the bed is no longer the one sounding)…
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("next"));
+    });
+    await tick(250);
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("run-toggle"));
+    });
+    await tick(1_000);
+    // …then back to the bed, and it runs again
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("run-toggle"));
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("prev"));
+    });
+    await tick(500);
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("run-toggle"));
+    });
+    await tick(1_000);
+    const sounding = [media.first(), media.second()].find((el) => el && !media.state(el).paused)!;
+    expect(sounding).toBeTruthy();
+    expect(media.state(sounding).volume).toBeCloseTo(levelBefore);
+  });
 });

@@ -11,7 +11,7 @@
 import "fake-indexeddb/auto";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, waitFor, cleanup, within, act } from "@testing-library/react";
-import { makeSupabaseFake, makeSession, ok, type SupabaseFake, type RecordedCall } from "@/test/fakes/supabase";
+import { makeSupabaseFake, makeSession, ok, fail, type SupabaseFake, type RecordedCall } from "@/test/fakes/supabase";
 import { ConfirmProvider } from "@/components/ui/confirm-dialog";
 import { AccountPanelProvider } from "@/components/account-panel";
 import { runOrderTopic } from "@/lib/realtime";
@@ -160,6 +160,35 @@ describe("รีเซ็ต hands ดึง buffer's slack back", () => {
     fireEvent.click(screen.getByRole("button", { name: /ดึง buffer/ }));
     await waitFor(() => expect(server[1].buffer_seconds).toBe(360));
     expect(JSON.parse(localStorage.getItem(LEDGER_KEY)!)).toEqual({ B: { before: 600, after: 360 } });
+  });
+
+  it("a second drain that is REFUSED leaves the ledger as the first one left it (ตาที่ 3)", async () => {
+    render(caller());
+    await drainB(); // 300 → 120, ledger { before 300, after 120 }
+    // late again by 1 minute; this time the server refuses B's buffer write (not a network
+    // error - nothing to queue): the drift lands, the drain does not
+    server[0].offset_min = 1;
+    supa.setTable("run_sequence", (call: RecordedCall) => {
+      if (call.verb === "update" && "buffer_seconds" in (call.values as object)) return fail("permission denied for table run_sequence", 403);
+      if (call.verb === "update") {
+        const hit = server.filter((r) => r.id === call.eq.id);
+        for (const r of hit) Object.assign(r, call.values as object);
+        return ok(hit.map((r) => ({ id: r.id })));
+      }
+      return ok(server.map((r) => ({ ...r })));
+    });
+    await act(async () => {
+      supa.channelFor(runOrderTopic(TENANT, DATE, FEST))!.emit("changed", { sender: "builder" });
+    });
+    await screen.findByText(/เลท +1/).catch(() => null);
+    fireEvent.click(screen.getByRole("button", { name: /ดึง buffer/ }));
+    await waitFor(() => expect(server[0].offset_min).toBe(0));
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 30));
+    });
+    expect(server[1].buffer_seconds).toBe(120); // the drain never landed
+    // was: { before: 300, after: 60 } - รีเซ็ต then read B as re-planned and gave nothing back
+    expect(JSON.parse(localStorage.getItem(LEDGER_KEY)!)).toEqual({ B: { before: 300, after: 120 } });
   });
 
   it("(control) a ledger stored before { before, after } keeps the old rule", async () => {

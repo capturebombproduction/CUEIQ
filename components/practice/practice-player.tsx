@@ -505,11 +505,18 @@ export function PracticePlayer({
   // and the screen slept on the song (on iOS taking the Web Audio song and the
   // metronome down with it). As Live Mode does (live-mode.tsx, "re-acquire Wake Lock").
   useEffect(() => {
+    let alive = true;
     const onVisible = () => {
       if (document.visibilityState !== "visible" || !engineRef.current?.playing || wakeRef.current) return;
       navigator.wakeLock
         ?.request("screen")
         .then((wl) => {
+          // The song stopped (or the player left, or the [playing] effect took a lock)
+          // while the request was out: held now, nothing would ever release it (ตาที่ 3).
+          if (!alive || !engineRef.current?.playing || wakeRef.current) {
+            wl.release().catch(() => {});
+            return;
+          }
           wl.addEventListener("release", () => {
             if (wakeRef.current === wl) wakeRef.current = null;
           });
@@ -518,7 +525,10 @@ export function PracticePlayer({
         .catch(() => {});
     };
     document.addEventListener("visibilitychange", onVisible);
-    return () => document.removeEventListener("visibilitychange", onVisible);
+    return () => {
+      alive = false;
+      document.removeEventListener("visibilitychange", onVisible);
+    };
   }, []);
 
   // Newest tap wins: each selectSong takes a token, and after every await a stale

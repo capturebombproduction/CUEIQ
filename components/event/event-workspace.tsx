@@ -280,12 +280,30 @@ export function EventWorkspace({
   // only ever feeds the comparison below, it must not itself trigger a render.
   const seededWith = useRef<Record<string, string>>({});
   const [seedRev, setSeedRev] = useState<Record<string, number>>({});
+  // Tabs that were ACTIVE when server data of theirs changed (ตาที่ 3, 2026-10-27): the
+  // refresh is counted as seen below, so leaving the tab would never apply it - another
+  // device's change (a member taken off, a row renamed) stayed out of the panel, and out
+  // of the live lineup Mics reads, for good. Leaving such a tab asks for a FRESH read
+  // (changeView); the props THAT read brings re-seed it (rekeyOnNextData), never the
+  // ones it missed while active - those predate its own edits.
+  const missedWhileActive = useRef<Set<string>>(new Set());
+  const rekeyOnNextData = useRef<Set<string>>(new Set());
+  const lastSeeds = useRef(seeds);
   useEffect(() => {
     const stale: string[] = [];
     let lineupMoved = false;
+    // new data, not just a tab change or a panel opening
+    const freshData = seeds !== lastSeeds.current;
+    lastSeeds.current = seeds;
     for (const [tab, fingerprint] of Object.entries(seeds)) {
       const before = seededWith.current[tab];
       seededWith.current[tab] = fingerprint;
+      if (tab === view && before !== undefined && before !== fingerprint) missedWhileActive.current.add(tab);
+      if (tab !== view && freshData && rekeyOnNextData.current.delete(tab)) {
+        if (tab === "lineup") lineupMoved = true;
+        if (opened.has(tab)) stale.push(tab);
+        continue;
+      }
       // Active tab: the user's state wins, never remount — and the data that arrived
       // while it was active counts as SEEN (2026-10-27). It used to be skipped before
       // this record, so the fingerprint stayed the one from before the refresh and the
@@ -325,6 +343,18 @@ export function EventWorkspace({
   const summaryPress = useRef(false);
 
   function changeView(v: string) {
+    // A field still focused on the tab being left saves NOW (iOS does not blur before
+    // the click), before any refresh below reads the server (ตาที่ 3, 2026-10-27).
+    if (v !== view) commitFocusedField();
+    // Leaving a tab whose server data changed while it was the active one: read again,
+    // and let THAT answer re-seed it (see missedWhileActive). Summary refreshes below
+    // anyway; offline it waits for the next refresh that lands while it is hidden.
+    if (v !== view && missedWhileActive.current.delete(view)) {
+      rekeyOnNextData.current.add(view);
+      if (v !== "summary" && (typeof navigator === "undefined" || navigator.onLine)) {
+        void refreshOnceSaved();
+      }
+    }
     // Entering Summary (which renders the export JPG / printable run-sheet) from
     // an editor tab: pull fresh server data first, so the summary and its image
     // reflect edits that auto-saved in the editor but otherwise live only in that
