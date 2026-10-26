@@ -504,7 +504,13 @@ export async function DELETE(req: Request) {
   // intact so the user stays listed and the delete can simply be retried. (The old
   // order stripped memberships first; a failed deleteUser then left a live account
   // that the isTenantMember gate above turned into a permanent 404.)
-  const { error } = await admin.auth.admin.deleteUser(userId);
+  // SOFT delete (GoTrue marks the account deleted, scrambles its email, drops its
+  // identities and sessions - it can never sign in again). A hard delete fails for
+  // nearly every real account: events.created_by / feedback.user_id / replied_by are
+  // `on delete set null`, that UPDATE runs on GoTrue's own connection with
+  // auth.uid() null, and the events/feedback guard triggers raise on it - so the
+  // whole delete rolled back with "Database error deleting user" on every retry.
+  const { error } = await admin.auth.admin.deleteUser(userId, true);
   if (error) return NextResponse.json({ error: error.message }, { status: 400 });
 
   await admin.from("group_roles").delete().eq("tenant_id", tenantId).eq("user_id", userId);

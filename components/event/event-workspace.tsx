@@ -531,6 +531,7 @@ export function EventWorkspace({
             schedule={schedule}
             setlist={setlist}
             members={members}
+            micMap={micMap}
             showMic={modules.micMap}
             onNavigate={changeView}
             lineup={liveLineup}

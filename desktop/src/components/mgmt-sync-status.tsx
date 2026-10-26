@@ -29,10 +29,12 @@ export function MgmtSyncStatus({ headless = false }: { headless?: boolean } = {}
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const alive = useRef(true);
+  const pendingRef = useRef(0);
 
   const refresh = useCallback(async () => {
     const [p, c] = await Promise.all([pendingMgmtCount(), listMgmtConflicts()]);
     if (!alive.current) return;
+    pendingRef.current = p;
     setPending(p);
     setConflicts(c);
     if (c.length === 0) setOpen(false);
@@ -56,12 +58,27 @@ export function MgmtSyncStatus({ headless = false }: { headless?: boolean } = {}
       }
     };
     flushAndRefresh(); // boot: drain anything a previous offline session left queued
+    // Boot + 'online' alone left a queue whose one attempt did nothing (supabase-js
+    // still signing as anon in the reconnect minute, or a venue AP that never fires
+    // 'online') waiting for a reboot or a click on the chip - while later edits wrote
+    // straight to the server on top of it. Re-armed on returning to the foreground
+    // and on a slow timer while anything is queued, as components/outbox-flusher.tsx
+    // does for the show-run and running-order queues.
+    const onVisible = () => {
+      if (document.visibilityState === "visible") flushAndRefresh();
+    };
+    const timer = setInterval(() => {
+      if (pendingRef.current > 0) flushAndRefresh();
+    }, 30_000);
     window.addEventListener("online", flushAndRefresh);
     window.addEventListener(MGMT_OUTBOX_EVENT, refresh);
+    document.addEventListener("visibilitychange", onVisible);
     return () => {
       alive.current = false;
+      clearInterval(timer);
       window.removeEventListener("online", flushAndRefresh);
       window.removeEventListener(MGMT_OUTBOX_EVENT, refresh);
+      document.removeEventListener("visibilitychange", onVisible);
     };
   }, [refresh]);
 

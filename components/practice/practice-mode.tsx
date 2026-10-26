@@ -44,9 +44,21 @@ export function PracticeMode({
   currentUserId: string;
 }) {
   const [runSignal, setRunSignal] = useState(0);
-  // The practice list lives HERE (above the Tabs) so it survives switching to the
-  // journal tab and back — the player unmounts on tab switch, so its own state would
-  // reset to the stale server prop and "lose" songs you just added.
+  // Both tabs stay MOUNTED once shown — the inactive one is only hidden. Radix
+  // unmounts an inactive TabsContent by default, and everything a band has going in
+  // the player died on a trip to สมุดซ้อม: the song stopped, the set run ended, a
+  // running break timer (เวลาพัก) vanished with its end beep, the metronome stopped;
+  // and a journal note being typed was gone after a hop to the player to replay the
+  // bar it was about. Deliberate consequences: the song (and its synced metronome)
+  // plays on while the journal is open, as in any player with tabs, and the auto-log
+  // logs it when it ends or the next one is picked, not when the tab flips.
+  // The journal mounts on its first open (so a room nobody writes in reads nothing
+  // more than before) and re-reads on every open after that, as its remount did.
+  const [tab, setTab] = useState("player");
+  const [journalShown, setJournalShown] = useState(false);
+  // The practice list lives HERE (above the Tabs) so it survives the player being
+  // unmounted (it used to be on every tab switch) — its own state would reset to
+  // the stale server prop and "lose" songs you just added.
   const [practiceItems, setPracticeItems] = useState(() =>
     practiceList.slice().sort((a, b) => a.sort_order - b.sort_order)
   );
@@ -109,7 +121,16 @@ export function PracticeMode({
         <h1 className="mt-0.5 truncate text-[20px] font-semibold leading-tight">{roomName}</h1>
       </div>
 
-      <Tabs defaultValue="player">
+      <Tabs
+        value={tab}
+        onValueChange={(v) => {
+          setTab(v);
+          if (v === "journal") {
+            setJournalShown(true);
+            setRunSignal((n) => n + 1); // fresh on every open, as the remount was
+          }
+        }}
+      >
         <TabsList className="sm:max-w-sm">
           <TabsTrigger value="player">
             <Headphones className="h-4 w-4" aria-hidden /> เครื่องเล่น
@@ -119,7 +140,8 @@ export function PracticeMode({
           </TabsTrigger>
         </TabsList>
 
-        <TabsContent value="player" className="mt-3">
+        {/* forceMount + hidden: see `tab` above */}
+        <TabsContent value="player" forceMount hidden={tab !== "player"} className="mt-3">
           <PracticePlayer
             roomName={roomName}
             eventId={eventId}
@@ -136,16 +158,18 @@ export function PracticeMode({
           />
         </TabsContent>
 
-        <TabsContent value="journal" className="mt-3">
-          <PracticeJournal
-            eventId={eventId}
-            groupId={groupId}
-            tenantId={tenantId}
-            members={members}
-            canManage={canManage}
-            currentUserId={currentUserId}
-            refreshSignal={runSignal}
-          />
+        <TabsContent value="journal" forceMount hidden={tab !== "journal"} className="mt-3">
+          {journalShown && (
+            <PracticeJournal
+              eventId={eventId}
+              groupId={groupId}
+              tenantId={tenantId}
+              members={members}
+              canManage={canManage}
+              currentUserId={currentUserId}
+              refreshSignal={runSignal}
+            />
+          )}
         </TabsContent>
       </Tabs>
     </div>

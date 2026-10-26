@@ -16,8 +16,9 @@ import { createClient } from "@/lib/supabase/client";
 import { Button } from "@/components/ui/button";
 import { applicationServerKeyMatches } from "@/lib/push-key-match";
 import { urlBase64ToUint8Array, vapidPublicKey } from "@/lib/push-client";
-import { enablePush as subscribeToPush } from "@/lib/push-subscribe";
+import { claimPushSubscription, enablePush as subscribeToPush } from "@/lib/push-subscribe";
 import { hasLiveSession } from "@/lib/auth-session";
+import { isDeliberateSignOut } from "@/lib/sign-out-intent";
 import { wroteNothing, noRowsMessage } from "@/lib/write-guard";
 import {
   acknowledgeUnsavedWork,
@@ -283,9 +284,21 @@ export function NotificationBell({
         setPushState("default");
         return;
       }
+      // "On" only when the server sends THIS account's pushes here: re-save the row as
+      // ours (lib/push-subscribe.ts claimPushSubscription). A row another account still
+      // holds is let go, so the enable button comes back and mints a fresh endpoint.
+      // Only with a live session - an anon write is refused too, and proves nothing.
+      if (sub && (await hasLiveSession())) {
+        const mine = await claimPushSubscription({ supabase, userId, tenantId, sub });
+        if (!mine) {
+          await sub.unsubscribe().catch(() => {});
+          setPushState("default");
+          return;
+        }
+      }
       setPushState(sub ? "on" : "default");
     })().catch(() => setPushState("unsupported"));
-  }, [supabase]);
+  }, [supabase, userId, tenantId]);
 
   // On sign-out (any path — the bell lives in the header, so it sees the auth
   // event) release this device's push subscription: otherwise on a shared device
@@ -297,6 +310,11 @@ export function NotificationBell({
   useEffect(() => {
     const { data } = supabase.auth.onAuthStateChange((event) => {
       if (event !== "SIGNED_OUT") return;
+      // Only a sign-out somebody chose. auth-js also says SIGNED_OUT for a revoked
+      // refresh token or a venue captive portal's 4xx (lib/sign-out-intent.ts): the
+      // same person signs back in and found push silently off. Whoever signs in next
+      // on a shared device re-claims or lets go of the row on mount (claimPushSubscription).
+      if (!isDeliberateSignOut()) return;
       void (async () => {
         if (!("serviceWorker" in navigator)) return;
         const reg = await navigator.serviceWorker.getRegistration();

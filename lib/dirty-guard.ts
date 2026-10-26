@@ -31,23 +31,102 @@
 // shape for the same reason and this is its twin.
 // ---------------------------------------------------------------------------
 
+// THREE KINDS OF "WOULD BE LOST", and who may take each one back:
+//
+//   • a FAILURE reported with no owner (`markSettled(false)`): sticky until the user
+//     is told (acknowledgeUnsavedWork) or the page reloads — nothing else knows
+//     which row it was about.
+//   • a FAILURE that belongs to one editor (`markSettled(false, owner)`, every
+//     useSaveSignal): that editor takes it back itself (clearFailures) once its
+//     next writes land — the moment its own badge goes back to บันทึกแล้ว. Before
+//     2026-10-26 every failure was the first kind, so a photo round named "ชุด 1"
+//     (taken), renamed "ชุด 2" and saved fine, still made "บันทึก / อัปเดต" say
+//     ยังบันทึกไม่ครบ and every link out ask, for the rest of the session — the
+//     badge said บันทึกแล้ว and the warning said the opposite. The granularity is
+//     the editor, the same as the badge: a later save of a DIFFERENT row in the
+//     same editor also clears it, exactly as it already turned the badge green.
+//   • a DRAFT: a form that does not autosave (EventForm) holding typed changes
+//     nobody has pressed บันทึก for (setUnsavedDraft). Unlike the autosaving
+//     editors, here text in a field IS the unsaved work — nothing is on the wire
+//     and nothing will be. It lives here rather than in the form so the exits
+//     that ask by hand (sign-out, the bell) and the desktop's update installer
+//     see it too.
+
+/** Who a failure or a draft belongs to — any object the owner keeps for its life. */
+export type SaveOwner = object;
+
 /** Writes started and not yet settled. */
 let pending = 0;
-/** A write that reported failure since the last acknowledgement. Sticky: a LATER
- *  write succeeding says nothing about the row that failed, so success does not
- *  clear it — only telling the user does (acknowledgeUnsavedWork), or a reload. */
-let failed = 0;
+/** Failures reported without an owner since the last acknowledgement. Sticky: a
+ *  LATER write succeeding says nothing about the row that failed — only telling the
+ *  user does (acknowledgeUnsavedWork), or a reload. */
+let failedLoose = 0;
+/** Failures that belong to an editor, by that editor. Cleared by the same editor's
+ *  next successful save (clearFailures), by an acknowledgement, or by a reload. */
+const failedBy = new Map<SaveOwner, number>();
+/** Forms holding typed changes that have not been saved. */
+const drafts = new Set<SaveOwner>();
+/** Told after every change — the desktop has to know BEFORE anything tries to close. */
+const listeners = new Set<() => void>();
+
+function changed(): void {
+  for (const fn of [...listeners]) {
+    try {
+      fn();
+    } catch {
+      /* a listener's failure is its own; the counters are already right */
+    }
+  }
+}
+
+function failedCount(): number {
+  let n = failedLoose;
+  for (const c of failedBy.values()) n += c;
+  return n;
+}
 
 /** A write is starting. Pair with settled() exactly once, on every path. */
 export function markPending(): void {
   pending += 1;
+  changed();
 }
 
 /** A write finished. `ok:false` for a real failure only — never for an offline
- *  queue, which is saved (see the header). */
-export function markSettled(ok: boolean): void {
+ *  queue, which is saved (see the header). Pass `owner` when the caller can later
+ *  say that the same work did save after all (see clearFailures). */
+export function markSettled(ok: boolean, owner?: SaveOwner): void {
   pending = Math.max(0, pending - 1);
-  if (!ok) failed += 1;
+  if (!ok) {
+    if (owner) failedBy.set(owner, (failedBy.get(owner) ?? 0) + 1);
+    else failedLoose += 1;
+  }
+  changed();
+}
+
+/** The editor that reported these failures has since saved its rows: they are on
+ *  the server now, so leaving loses nothing of theirs. Only that owner's failures
+ *  go — an ownerless one and another editor's stay. */
+export function clearFailures(owner: SaveOwner): void {
+  if (failedBy.delete(owner)) changed();
+}
+
+/** A form's typed-but-unsaved state. `dirty:false` when it saves, and when it goes
+ *  away (unmount): a form that is no longer on screen has nothing left to lose. */
+export function setUnsavedDraft(owner: SaveOwner, dirty: boolean): void {
+  const had = drafts.has(owner);
+  if (dirty === had) return;
+  if (dirty) drafts.add(owner);
+  else drafts.delete(owner);
+  changed();
+}
+
+/** Be told whenever any of the above changes (synchronously, from the call that
+ *  changed it). Returns the unsubscribe. */
+export function subscribeUnsavedWork(fn: () => void): () => void {
+  listeners.add(fn);
+  return () => {
+    listeners.delete(fn);
+  };
 }
 
 /**
@@ -59,22 +138,28 @@ export function markSettled(ok: boolean): void {
  */
 export function markAbandoned(n: number): void {
   pending = Math.max(0, pending - Math.max(0, n));
+  changed();
 }
 
 export interface UnsavedWork {
   /** writes still in flight */
   pending: number;
-  /** writes that reported failure and have not been acknowledged */
+  /** writes that reported failure and have not been acknowledged or re-saved */
   failed: number;
+  /** forms with typed changes nobody has saved — present only when there are any,
+   *  so the common snapshot stays the two-field shape every caller compares */
+  drafts?: number;
 }
 
 export function unsavedWork(): UnsavedWork {
-  return { pending, failed };
+  const work: UnsavedWork = { pending, failed: failedCount() };
+  if (drafts.size > 0) work.drafts = drafts.size;
+  return work;
 }
 
 /** True when leaving right now could lose something. */
 export function hasUnsavedWork(): boolean {
-  return pending > 0 || failed > 0;
+  return pending > 0 || failedCount() > 0 || drafts.size > 0;
 }
 
 /**
@@ -111,6 +196,9 @@ export function unsavedWorkMessageFor(
   if (work.failed > 0) {
     return `มีการแก้ไขที่ยังบันทึกไม่สำเร็จ — ${leaving}จะหายไป ออกเลยไหม?`;
   }
+  if ((work.drafts ?? 0) > 0) {
+    return `มีการแก้ไขที่ยังไม่ได้กดบันทึก — ${leaving}จะหายไป ออกเลยไหม?`;
+  }
   if (work.pending > 0) {
     return `กำลังบันทึกอยู่ — ${leaving}อาจบันทึกไม่ครบ ออกเลยไหม?`;
   }
@@ -118,16 +206,25 @@ export function unsavedWorkMessageFor(
 }
 
 /** The user has been shown the warning and chose to go anyway. Clears the sticky
- *  failure so they are not asked about the same lost edit at every later exit. */
+ *  failures so they are not asked about the same lost edit at every later exit.
+ *  A draft is NOT cleared: it belongs to a form that is still mounted, and the
+ *  navigation the user just accepted unmounts it (which clears it) — while a
+ *  sign-out that then aborts leaves it on screen, still unsaved, still worth asking
+ *  about. */
 export function acknowledgeUnsavedWork(): void {
-  failed = 0;
+  failedLoose = 0;
+  failedBy.clear();
+  changed();
 }
 
 /** Tests only — and the one call that must never appear in app code, because a
  *  reset that isn't an acknowledgement is how a real failure gets forgotten. */
 export function resetDirtyGuard(): void {
   pending = 0;
-  failed = 0;
+  failedLoose = 0;
+  failedBy.clear();
+  drafts.clear();
+  changed();
 }
 
 /**

@@ -16,6 +16,7 @@ import { createClient } from "@/lib/supabase/client";
 import { canEditGroup, viewableGroups } from "@/lib/permissions";
 import type { EventRow } from "@/lib/types";
 import { useWorkspace } from "~/data/workspace-context";
+import { onRouterRefresh } from "~/shims/next-navigation";
 
 type Room = EventRow & PracticeRoomRow;
 
@@ -28,6 +29,13 @@ export function Training() {
   const [stats, setStats] = useState<Record<string, PracticeRoomStats> | undefined>(undefined);
   const ids = ws ? viewableGroups(ws.perms, ws.groups).map((g) => g.id) : [];
   const key = ids.join(",");
+  // router.refresh() from the reused web components (DeletePracticeRoomButton ends
+  // in it) reaches only pages subscribed through the shim — this one wasn't, so a
+  // deleted room stayed listed (the toast said ลบห้องซ้อมแล้ว; opening it said ไม่พบ,
+  // a second delete said ไม่สำเร็จ). Each refresh re-reads the list below; what is
+  // on screen stays until the new answer is in, and a failed re-read keeps it.
+  const [refreshTick, setRefreshTick] = useState(0);
+  useEffect(() => onRouterRefresh(() => setRefreshTick((n) => n + 1)), []);
 
   useEffect(() => {
     if (!ws?.membership) return;
@@ -67,7 +75,7 @@ export function Training() {
       alive = false;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ws?.membership?.tenant_id, key]);
+  }, [ws?.membership?.tenant_id, key, refreshTick]);
 
   if (!ws?.membership || !ws.user) {
     return (

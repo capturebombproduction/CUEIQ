@@ -66,6 +66,9 @@ export interface OverviewEvent {
   boothMore?: TimeRange[];
   photo: string | null; // start (inline-editable via PhotoTimeCell)
   photoEnd: string | null; // end of the photo window
+  // The event's OTHER named ถ่ายรูป rounds (mig 0042), earliest first. photo/photoEnd/
+  // photoItemId are the main round - see lib/photo-rounds.ts.
+  photoMore?: { start: string | null; end: string | null; label: string | null }[];
   // inline-action support
   tenant_id: string;
   canEditPhoto: boolean; // band is self_photo=false AND viewer may set photo time
@@ -178,6 +181,35 @@ function fmtSlots(first: TimeRange, more?: TimeRange[]): ReactNode {
   );
 }
 
+/** The other named photo rounds, one line each: "16:00–16:15 · ชุด 2". */
+function fmtPhotoMore(ev: OverviewEvent): ReactNode {
+  return (ev.photoMore ?? []).map((r, i) => (
+    <div key={i}>
+      {fmtRange(r)}
+      {r.label ? ` · ${r.label}` : ""}
+    </div>
+  ));
+}
+
+/** The main photo call plus every other round (see photoMore). A main round with no
+ *  time yet (the "+ ถ่ายรูป" row staff fill in later) prints nothing beside them. */
+function fmtPhotoSlots(ev: OverviewEvent): ReactNode {
+  const main = fmtRange({ start: ev.photo, end: ev.photoEnd });
+  if (!ev.photoMore?.length) return main;
+  return (
+    <>
+      {(ev.photo || ev.photoEnd) && <div>{main}</div>}
+      {fmtPhotoMore(ev)}
+    </>
+  );
+}
+
+/** The act's first photo call: the main round's, else the earliest other round's. A
+ *  blank main round used to hide a timed "รอบ 2" from the board and the crew JPG. */
+function firstPhotoStart(ev: OverviewEvent): string | null {
+  return ev.photo ?? ev.photoMore?.find((r) => r.start)?.start ?? null;
+}
+
 // ISO date with weekday for the date picker / export subtitle: "2026-06-21 · Sat".
 function fmtDateWd(date: string): string {
   const d = new Date(`${date}T00:00:00`);
@@ -240,14 +272,15 @@ function toMinutes(t: string): number {
 // up the list. Falls back to booth → photo when there's no stage time; a show with
 // no time at all sorts last.
 function stageMinutes(ev: OverviewEvent): number {
-  const t = ev.stage?.start ?? ev.booth?.start ?? ev.photo;
+  const t = ev.stage?.start ?? ev.booth?.start ?? firstPhotoStart(ev);
   return t ? toMinutes(t) : Number.POSITIVE_INFINITY;
 }
 // Each activity sorts by ITS OWN start time so its table reads in that activity's
 // order (a late-stage act with an early photo slot must sit early in the PHOTO
 // table, not be dragged down by its stage time). Untimed acts sort last.
 function photoMinutes(ev: OverviewEvent): number {
-  return ev.photo ? toMinutes(ev.photo) : Number.POSITIVE_INFINITY;
+  const t = firstPhotoStart(ev);
+  return t ? toMinutes(t) : Number.POSITIVE_INFINITY;
 }
 function boothMinutes(ev: OverviewEvent): number {
   return ev.booth?.start ? toMinutes(ev.booth.start) : Number.POSITIVE_INFINITY;
@@ -270,7 +303,7 @@ function byDateThen(minutes: (ev: OverviewEvent) => number, newestFirst = false)
     return minutes(a) - minutes(b);
   };
 }
-const hasPhoto = (ev: OverviewEvent) => !!ev.photo;
+const hasPhoto = (ev: OverviewEvent) => !!firstPhotoStart(ev);
 const hasBooth = (ev: OverviewEvent) => !!(ev.booth && (ev.booth.start || ev.booth.end));
 
 interface Bucket {
@@ -439,11 +472,12 @@ function PhotoCell({ ev }: { ev: OverviewEvent }) {
           nextSortOrder={ev.photoSortOrder}
           onSaved={(next) => onPhotoSaved(ev.id, next)}
         />
+        {fmtPhotoMore(ev)}
       </span>
-      <span className="hidden print:inline">{fmtRange({ start: ev.photo, end: ev.photoEnd })}</span>
+      <span className="hidden print:inline">{fmtPhotoSlots(ev)}</span>
     </>
   ) : (
-    <>{fmtRange({ start: ev.photo, end: ev.photoEnd })}</>
+    <>{fmtPhotoSlots(ev)}</>
   );
 }
 
@@ -1183,7 +1217,7 @@ function ExportSchedule({
                 rows={photoRows}
                 showBandColumn={showBandColumn}
                 secondary={secondary}
-                timeOf={(ev) => fmtRange({ start: ev.photo, end: ev.photoEnd })}
+                timeOf={(ev) => fmtPhotoSlots(ev)}
               />
             </div>
           )}

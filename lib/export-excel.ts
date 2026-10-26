@@ -117,7 +117,10 @@ export function buildRunSheetWorkbook(data: ExportData): XLSX.WorkBook {
   const showStartSec = parseClockToSeconds(event.show_start_time);
   const hardOutSec = parseClockToSeconds(event.hard_out_time);
   const hasClock = showStartSec != null;
-  const timing = computeSetlistTimes(setlist, showStartSec ?? 0, hardOutSec);
+  // No show start = no set to be early or late: timed from 00:00, a 20-minute set
+  // against a 13:40 hard out printed "อยู่ในเวลา เหลือ 13:20:00" (the run sheet's
+  // own rule, components/event/event-summary.tsx).
+  const timing = computeSetlistTimes(setlist, showStartSec ?? 0, hasClock ? hardOutSec : null);
 
   // A multi-line โน้ต becomes one sheet row per line, label on the first only
   // (same shape as the summary's ApptList) — SheetJS community can't set
@@ -200,8 +203,10 @@ export function buildRunSheetWorkbook(data: ExportData): XLSX.WorkBook {
     ];
   });
 
+  // …and with no songs there is nothing to be on time either (the summary says the
+  // same: "On time" is a claim about a set).
   const hardOutLine =
-    hardOutSec == null
+    timing.hardOutSec == null || setlist.length === 0
       ? []
       : [
           [],

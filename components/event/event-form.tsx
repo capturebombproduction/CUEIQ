@@ -7,6 +7,7 @@ import { saveEventWrite } from "@/lib/mgmt-write";
 import { useHoldBottomSlot } from "@/lib/bottom-slot";
 import { createClient } from "@/lib/supabase/client";
 import { useConfirm } from "@/components/ui/confirm-dialog";
+import { useUnsavedDraftGuard } from "@/components/event/use-leave-guard";
 import {
   describeFestivalMovePlan,
   festivalKeyChanged,
@@ -100,12 +101,41 @@ export function EventForm({
   const [notes, setNotes] = useState(event?.notes ?? "");
   const [loading, setLoading] = useState(false);
 
+  // ── Leaving with typed changes ────────────────────────────────────────────────
+  // Every other event screen autosaves on blur; this one writes nothing until
+  // บันทึก. So a link tap ("‹ EVENTS", the tab bar, กลับไปหน้างาน) or a tab close
+  // after moving the show start 17:00 → 17:30 used to leave silently with the old
+  // time in the database — on show day, the call sheet keeps the old time. Dirty =
+  // what is on screen differs from what the form opened with (or last saved).
+  const formSnapshot = JSON.stringify([
+    name, groupId, eventType, eventDate, showStart, hardOut, venue, mapUrl,
+    costumeTheme, status, deadline, deadlineNote, notes,
+  ]);
+  const [savedSnapshot, setSavedSnapshot] = useState(formSnapshot);
+  useUnsavedDraftGuard(formSnapshot !== savedSnapshot);
+
+  // The map link a venue preset put in the field (null = the field is the user's).
+  // A saved event whose link IS its venue's preset counts as auto-filled, so
+  // moving that show to another venue doesn't keep the old venue's map.
+  const [autoMapUrl, setAutoMapUrl] = useState<string | null>(() => {
+    const preset = findVenuePreset(event?.venue);
+    return preset && event?.map_url === preset.mapUrl ? preset.mapUrl : null;
+  });
+
   function onVenueChange(v: string) {
     setVenue(v);
     // Auto-fill the map link from a known venue, unless the user already
-    // pasted one of their own.
+    // pasted one of their own; take it back when the venue stops matching.
     const preset = findVenuePreset(v);
-    if (preset && !mapUrl.trim()) setMapUrl(preset.mapUrl);
+    const ours = !mapUrl.trim() || mapUrl === autoMapUrl;
+    if (!ours) return;
+    if (preset) {
+      setMapUrl(preset.mapUrl);
+      setAutoMapUrl(preset.mapUrl);
+    } else if (autoMapUrl) {
+      setMapUrl("");
+      setAutoMapUrl(null);
+    }
   }
 
   /**
@@ -222,6 +252,7 @@ export function EventForm({
         toast.error("สร้างงานไม่สำเร็จ", { description: friendlyError(res.message) });
         return;
       }
+      setSavedSnapshot(formSnapshot);
       /* 🔤 Same rule as the edit path below: `res.queued` is now ALSO true for a 5xx/429
          from a server that is up, so "ออฟไลน์อยู่" would send someone with full wifi bars
          off to fix a network that is fine. Ask the browser, not the queue. */
@@ -265,6 +296,9 @@ export function EventForm({
         toast.error("บันทึกไม่สำเร็จ", { description: friendlyError(res.message) });
         return;
       }
+      // Saved (or queued on this device, which is saved — it will sync): nothing
+      // left to warn about on the way out.
+      setSavedSnapshot(formSnapshot);
       /* 🔤 "ออฟไลน์อยู่" only when we actually are. `res.queued` is now ALSO true for a
          5xx/429 from a server that is up (round 10 taught isQueueableWriteError to read the
          HTTP status), and telling someone with full wifi bars that they are offline sends

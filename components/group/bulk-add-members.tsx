@@ -22,7 +22,8 @@ import {
 export function BulkAddMembers({
   onAdd,
 }: {
-  onAdd: (text: string) => Promise<void>;
+  /** false = nothing was added: the dialog stays open with the text (it was thrown away). */
+  onAdd: (text: string) => Promise<boolean | void>;
 }) {
   const [open, setOpen] = useState(false);
   const [text, setText] = useState("");
@@ -32,7 +33,7 @@ export function BulkAddMembers({
     if (!text.trim()) return;
     setBusy(true);
     try {
-      await onAdd(text);
+      if ((await onAdd(text)) === false) return;
       setText("");
       setOpen(false);
     } finally {

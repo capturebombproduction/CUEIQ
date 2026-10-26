@@ -1190,11 +1190,20 @@ export function LiveMode({
     };
     document.addEventListener("click", onClick, true);
     window.addEventListener("beforeunload", onBeforeUnload);
+    // Browser Back is a soft navigation that neither guard sees (no click, no unload) -
+    // it unmounts Live and its players stop. Its most accidental trigger on a laptop,
+    // Chrome's two-finger swipe, is a root overscroll gesture: switched off while the
+    // show runs. (The back button itself stays: re-pushing history entries under
+    // Next's router risks the full reload that this guard exists to prevent.)
+    const root = document.documentElement;
+    const overscrollBefore = root.style.overscrollBehaviorX;
+    root.style.overscrollBehaviorX = "none";
     return () => {
       setLiveShowActive(false);
       window.cueiqNative?.setUnloadReason(null).catch(() => {});
       document.removeEventListener("click", onClick, true);
       window.removeEventListener("beforeunload", onBeforeUnload);
+      root.style.overscrollBehaviorX = overscrollBefore;
     };
   }, [soundOutput, isController, state.begun, eventId]);
 
@@ -2206,6 +2215,11 @@ export function LiveMode({
   // exists only here. Server rows are older than it until the replay below lands,
   // so every refetch lays it back on top; cleared the moment a reorder is acked.
   const pendingOrderRef = useRef<Record<string, number> | null>(null);
+  // itemId → a Loop flag set with NO network (toggleLoop's offline branch), laid over
+  // every refetch the same way: the 'online' re-read used to put the server's
+  // loop_audio=false back, the element's loop flag followed, and the MC's bed ran out
+  // to silence. Cleared when a toggle with a network writes it, or the server agrees.
+  const pendingLoopRef = useRef<Record<string, boolean>>({});
   // `depth` only bounds the self-replay below; every other caller omits it.
   async function refetchItems(depth = 0): Promise<void> {
     if (writesInFlightRef.current > 0) {
@@ -2289,6 +2303,18 @@ export function LiveMode({
       newItems = newItems
         .map((it) => (pend[it.id] != null ? { ...it, sort_order: pend[it.id] } : it))
         .sort((a, b) => a.sort_order - b.sort_order);
+    }
+    const pendLoop = pendingLoopRef.current;
+    if (Object.keys(pendLoop).length > 0) {
+      newItems = newItems.map((it) => {
+        const want = pendLoop[it.id];
+        if (want == null) return it;
+        if (want === !!it.loop_audio) {
+          delete pendLoop[it.id]; // the server holds it now
+          return it;
+        }
+        return { ...it, loop_audio: want };
+      });
     }
     const s = stateRef.current;
     const curId = itemsRef.current[s.currentIndex]?.id;
@@ -2404,6 +2430,7 @@ export function LiveMode({
     // is something the show needs NOW and this screen is built to run without a
     // network. Reverting it there would take a working control away mid-show.
     if (error && isOffline()) {
+      pendingLoopRef.current[itemId] = next; // no refetch may take it back (see the ref)
       toast.warning("ออฟไลน์ — ตั้งเล่นวนไว้เฉพาะเครื่องนี้", { id: "loop-offline" });
       return;
     }
@@ -2414,6 +2441,7 @@ export function LiveMode({
       toast.error("ตั้งค่าเล่นวนไม่สำเร็จ", { description: error?.message });
       return;
     }
+    delete pendingLoopRef.current[itemId];
     bcastSetlistChanged();
   }
 
@@ -3220,12 +3248,28 @@ export function LiveMode({
   // Running + this device holds the sounding track's file, but audio isn't playing —
   // e.g. after a reload (browsers block autoplay without a user gesture). Offer a tap.
   const soundingId = committedRef.current.id ?? current?.id ?? null;
+  // A Manual cue waits (running:false) while the song before it - the COMMITTED one -
+  // still sounds. A reload, or the OS pausing it (headset pulled, a media key), there
+  // left the PA silent with no banner, and RUN then started the CUED row instead.
+  // Offered while that song can still be sounding: a Loop until Auto Mute, anything
+  // else until the longer of its slot and its file.
+  const committedNow = committedRef.current;
+  const cueWaitsOverSound = (() => {
+    if (state.running || !committedNow.id || committedNow.anchor == null) return false;
+    if (committedNow.pausedAt != null || committedNow.id === current?.id) return false;
+    const ci = items.findIndex((x) => x.id === committedNow.id);
+    const it = items[ci];
+    if (!it) return false;
+    if (it.loop_audio) return true;
+    const fileLen = (it.song_id ? songSignal?.[it.song_id]?.duration : null) ?? 0;
+    return (now - committedNow.anchor) / 1000 < Math.max(runBlock(items, ci), fileLen);
+  })();
   const needsAudioResume =
     // only the device that sounds the show - a viewer never plays, so it would sit
     // under this banner for the whole show (and a tap played into a muted element)
     isController &&
     soundOutput &&
-    state.running &&
+    (state.running || cueWaitsOverSound) &&
     !audioPlaying &&
     !!soundingId &&
     !!audioUrls[soundingId] &&
@@ -3514,7 +3558,37 @@ export function LiveMode({
     swapAudio(); // incoming → primary (scrubber/volume follow it); outgoing → secondary
     setPlayingId(itemId);
     setAudioPlaying(true);
-    if (outgoingLoops) outgoing.pause();
+    if (outgoingLoops) {
+      outgoing.pause();
+      return;
+    }
+    // …and its own row is over |lead| s from now. A file that ends with its slot has gone
+    // quiet by then; one LONGER than its slot (an MC's 5-minute BGM in a 2:30 row, a song
+    // cut short) played on under the next song for minutes - with no lead, Auto's hard cut
+    // stops a row at its slot, so the overlap does too: Auto Mute's 3 s fade from there.
+    const src = outgoing.src;
+    const lead = leadOf(itemsRef.current.find((x) => x.id === itemId));
+    window.setTimeout(() => fadeOutTail(outgoing, src), lead * 1000);
+  }
+
+  /** The overlap's tail, still sounding once its row's time is over: fade it out (3 s). Bows
+   *  out when the spare was reused, paused, ended or taken under by a pad (adoptTail). */
+  function fadeOutTail(el: HTMLAudioElement, src: string) {
+    if (tailRef.current?.el !== el || el.src !== src || el.paused || el.ended) return;
+    const token = ++outFadeTokenRef.current;
+    xfadeRef.current = { el, token }; // adoptTail hands this fade over, as a crossfade's
+    const startVol = el.volume;
+    const t0 = performance.now();
+    const MS = 3000;
+    const step = (t: number) => {
+      if (outFadeTokenRef.current !== token) return;
+      if (el !== audioRef2.current || el.src !== src || tailRef.current?.el !== el) return;
+      const p = Math.min(1, Math.max(0, (t - t0) / MS));
+      el.volume = Math.min(1, Math.max(0, fadeLevel(startVol * 100, 0, p) / 100));
+      if (p < 1) nextFadeFrame(step);
+      else el.pause();
+    };
+    nextFadeFrame(step);
   }
 
   function crossfadeSwap(itemId: string, url: string, fromOffset = 0) {
@@ -3961,6 +4035,10 @@ export function LiveMode({
   // Resume audio after a reload / autoplay-block: load the sounding track and seek to
   // the current position. The user's tap supplies the gesture browsers require to play.
   function resumeAudio() {
+    // After a reload this tap is the ONLY gesture the device gets before Auto's next
+    // overlap or crossfade starts a row on the spare element - WebKit grants play()
+    // per element, so unprimed, that row was refused: silent, and the banner back.
+    primeSecondaryAudio();
     const audio = audioRef.current;
     const sid = committedRef.current.id ?? items[state.currentIndex]?.id ?? null;
     const url = sid ? audioUrls[sid] : undefined;
@@ -4087,6 +4165,7 @@ export function LiveMode({
     if (first) playItemAudio(first.id);
   }
   function setMode(mode: ShowMode) {
+    primeSecondaryAudio(); // a tap: Auto's overlap/crossfade will start rows on the spare
     // Switching to Auto resumes the script: run the countdown and (re)play the
     // current track synced to the elapsed time, so it continues per script even
     // after a detour into Manual.
@@ -4352,9 +4431,16 @@ export function LiveMode({
     }
     // moved off the faded item OR paused mid-fade → restore its volume so it isn't
     // left stuck silent on a re-cue / resume (then the fade re-arms if still near end).
+    // Also when the show stopped moving on by itself mid-fade: MANUAL pressed in the
+    // bed's last 3 s (the MC overran - "เข้าใน 3 2 1" and the operator holds), or the
+    // row became the last one. The fade ran on to 0 and the bed looped on SILENT,
+    // against Manual's promise "loop จนกว่าจะกด auto mute".
     if (
       loopFadeRef.current &&
-      (loopFadeRef.current.id !== playingId || !state.running)
+      (loopFadeRef.current.id !== playingId ||
+        !state.running ||
+        state.mode !== "auto" ||
+        state.currentIndex >= items.length - 1)
     ) {
       const { id, prevVol } = loopFadeRef.current;
       loopFadeRef.current = null;
@@ -4365,7 +4451,7 @@ export function LiveMode({
       if (state.begun) broadcastVolume(id, prevVol, 0);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [now, remaining, playingId, state.running, audioPlaying]);
+  }, [now, remaining, playingId, state.running, state.mode, audioPlaying]);
 
   // A track the fade keys moved while it sounded (fadeKey) gets its own level back
   // once it is no longer the one sounding - replaced by the next, stopped, or the show
@@ -4412,7 +4498,16 @@ export function LiveMode({
     if (e.ctrlKey || e.metaKey || e.altKey) return;
     const el = e.target as HTMLElement | null;
     const tag = el?.tagName;
-    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || el?.isContentEditable)
+    // A level slider is not a text field: Chromium (the desktop app) focuses an
+    // <input type="range"> on a mouse drag, and after one ride of STAGE's level
+    // Space / N / → did nothing (→ moved the level instead) - dead air in Manual.
+    // The show keys go to the show; the slider stays on the mouse.
+    const isRange = tag === "INPUT" && (el as HTMLInputElement).type === "range";
+    if (isRange) {
+      if (e.code === "Space" || e.code === "KeyN" || e.key === "n" || e.key === "N" ||
+          e.key === "ArrowRight" || e.key === "ArrowLeft")
+        e.preventDefault();
+    } else if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || el?.isContentEditable)
       return;
     const s = stateRef.current;
     const n = itemsRef.current.length;

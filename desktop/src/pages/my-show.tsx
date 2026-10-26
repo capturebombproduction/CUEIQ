@@ -1286,8 +1286,16 @@ export function MyShow() {
     if (e.ctrlKey || e.metaKey || e.altKey) return;
     const el = e.target as HTMLElement | null;
     const tag = el?.tagName;
-    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || el?.isContentEditable)
+    /* 🎚️ A slider is not a text field. Chromium/Electron FOCUSES the volume/scrub
+       <input type="range"> on a mouse drag, and guarding it like a text box left Space
+       and → dead until someone clicked elsewhere (→ nudged the slider instead): trim the
+       sounding song by mouse, then nothing cues — dead air in Manual (2026-10-26 hunt).
+       On a slider the show keys win, and ←/→ never move it; ↑/↓ still do. Text fields
+       stay guarded. */
+    const slider = tag === "INPUT" && (el as HTMLInputElement).type === "range";
+    if (!slider && (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || el?.isContentEditable))
       return;
+    if (slider && (e.key === "ArrowRight" || e.key === "ArrowLeft")) e.preventDefault();
     const s = stateRef.current;
     const n = itemsRef.current.length;
     /* 🔒 A HELD KEY IS ONE INTENTION, NOT FIFTY — same rule and same PLACEMENT as Live

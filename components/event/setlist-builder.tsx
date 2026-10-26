@@ -25,7 +25,12 @@ import { TimingInput } from "@/components/event/timing-input";
 import { RunMeter } from "@/components/event/run-meter";
 import { createClient } from "@/lib/supabase/client";
 import { newLocalRowId } from "@/lib/mgmt-outbox";
-import { OFFLINE_QUEUED_MESSAGE, tryQueueChildList } from "@/lib/mgmt-write";
+import {
+  OFFLINE_QUEUED_MESSAGE,
+  QUEUED_BEHIND_PENDING_MESSAGE,
+  tryQueueBehindPendingChildList,
+  tryQueueChildList,
+} from "@/lib/mgmt-write";
 import { deleteAudio } from "@/lib/audio-store";
 import { removeEventAudio } from "@/lib/audio-remote";
 import {
@@ -513,6 +518,22 @@ export function SetlistBuilder({
   const [items, setItems] = useState<SetlistItem[]>(
     [...initialItems].sort((a, b) => a.sort_order - b.sort_order)
   );
+  // The setlist as the SERVER holds it - or will, once what this builder queued
+  // offline has landed. It is the offline snapshot's base (the flush's online-wins
+  // guard compares the server against it), and it must not be `items`: the title,
+  // timing and note fields setLocal on every keystroke and persist on blur, so when a
+  // blur's write fails `items` already holds the edit - base == rows, and the flush
+  // parked the venue's own edit as "เวอร์ชันออนไลน์ถูกแก้ไขใหม่กว่าของเครื่องนี้" although
+  // nobody touched the online copy (planEnqueue keeps that first base, so every later
+  // offline edit of the night parked with it). Advanced only by a write the server
+  // acknowledged - with what was WRITTEN (a note is saved trimmed, kept raw on screen)
+  // - by a read of the server, and by a snapshot that was queued (the list the server
+  // will hold once the flush lands it; without that, the next offline edit after a
+  // flush would be based on the list from before it and park).
+  const ackedRef = useRef<SetlistItem[]>(items);
+  function ackRow(id: string, partial: Partial<SetlistItem>) {
+    ackedRef.current = ackedRef.current.map((it) => (it.id === id ? { ...it, ...partial } : it));
+  }
   const dragIndex = useRef<number | null>(null);
   const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
   // add-in-flight: ref blocks re-entry immediately, state disables the buttons
@@ -529,13 +550,18 @@ export function SetlistBuilder({
   // refetch when the setlist changes, and (b) learn which item is on air and lock it.
   const channelRef = useRef<RealtimeChannel | null>(null);
   const [liveItemId, setLiveItemId] = useState<string | null>(null);
+  // The same value for code that AWAITS (the delete's confirm sheet, a restore): what
+  // a handler closed over is the state from before the show moved on.
+  const liveItemIdRef = useRef<string | null>(null);
   useEffect(() => {
     const supabase = createClient();
     const ch = privateChannel(supabase, liveTopic(eventId));
     // a running Live Mode broadcasts its state; lock the on-air row (only while begun)
     ch.on("broadcast", { event: "state" }, ({ payload }) => {
       if (!payload) return;
-      setLiveItemId(payload.begun ? (payload.currentItemId ?? null) : null);
+      const onAir = payload.begun ? (payload.currentItemId ?? null) : null;
+      liveItemIdRef.current = onAir;
+      setLiveItemId(onAir);
     });
     ch.subscribe((status) => {
       if (status === "SUBSCRIBED") {
@@ -566,29 +592,46 @@ export function SetlistBuilder({
   // Restore a saved snapshot: insert the snapshot rows first (so a failure leaves
   // the current setlist intact), then delete the old rows + their audio.
   async function restoreSnapshot(snapshot: SnapshotItem[]) {
+    // A restore replaces EVERY row with fresh ids - the one on air included, so a
+    // running Live Mode would lose the song it is playing. The version list's confirm
+    // can sit open while the show moves on, so this is read now, after it.
+    if (liveItemIdRef.current) {
+      throw new Error(
+        "โชว์กำลังเล่นอยู่ — การกู้คืนจะแทนที่แถวที่กำลังเล่นอยู่บนเวทีด้วย รอให้จบโชว์ก่อนค่อยกู้คืน"
+      );
+    }
     const old = items;
     let inserted: SetlistItem[] = [];
-    if (snapshot.length) {
-      // song_id survives the snapshot (it's what makes the row playable), but a
-      // song deleted SINCE the save would violate the FK on insert (on-delete-
-      // set-null only nulls live rows) — restore those as unlinked instead.
-      const libraryIds = new Set(songs.map((s) => s.id));
-      // a version saved with the old "เผื่อเวลาหลัง" comes back as the one ตั้งเวลา field
-      const rows = foldWaitsIntoNext(snapshot).map(({ song_id, ...s }) => ({
-        tenant_id: tenantId,
-        event_id: eventId,
-        ...s,
-        song_id: song_id && libraryIds.has(song_id) ? song_id : null,
-      }));
-      const { data, error } = await supabase
+    // song_id survives the snapshot (it's what makes the row playable), but a
+    // song deleted SINCE the save would violate the FK on insert (on-delete-
+    // set-null only nulls live rows) — restore those as unlinked instead.
+    const libraryIds = new Set(songs.map((s) => s.id));
+    // a version saved with the old "เผื่อเวลาหลัง" comes back as the one ตั้งเวลา field
+    const rows = foldWaitsIntoNext(snapshot).map(({ song_id, ...s }) => ({
+      tenant_id: tenantId,
+      event_id: eventId,
+      ...s,
+      song_id: song_id && libraryIds.has(song_id) ? song_id : null,
+    }));
+    // The rows as a queued restore holds them: minted locally (stable client ids).
+    const minted = rows.map((r) => mintLocalItem(r.sort_order, { ...r }));
+    // This setlist already waits in the offline queue: the restore joins it there
+    // (see queueBehindPending), exactly as the offline path below.
+    if (await queueBehindPending(minted)) {
+      old.forEach((it) => deleteAudio(eventId, it.id).catch(() => {}));
+      minted.forEach((m) => localOnlyIds.current.add(m.id));
+      setItems([...minted].sort((a, b) => a.sort_order - b.sort_order));
+      return;
+    }
+    if (rows.length) {
+      const { data, error, status } = await supabase
         .from("setlist_items")
         .insert(rows)
         .select("*");
       if (error) {
-        // Offline restore: mint the snapshot rows locally and queue the whole
-        // list — flush lands the restore (or parks it if online changed first).
-        const minted = rows.map((r) => mintLocalItem(r.sort_order, { ...r }));
-        if (await queueOffline(minted, error.message)) {
+        // Offline restore: queue the whole minted list — flush lands the restore
+        // (or parks it if online changed first).
+        if (await queueOffline(minted, error.message, status)) {
           old.forEach((it) => deleteAudio(eventId, it.id).catch(() => {}));
           minted.forEach((m) => localOnlyIds.current.add(m.id));
           setItems([...minted].sort((a, b) => a.sort_order - b.sort_order));
@@ -606,7 +649,7 @@ export function SetlistBuilder({
       // full duplicate, with no unique constraint on (event_id, sort_order) to
       // stop it, and that is what the printed run sheet and Live Mode would then
       // use. See lib/write-guard.ts.
-      const { data: deleted, error } = await supabase
+      const { data: deleted, error, status: deleteStatus } = await supabase
         .from("setlist_items")
         .delete()
         .in(
@@ -616,7 +659,7 @@ export function SetlistBuilder({
         .select("id");
       if (error && inserted.length === 0) {
         // Restoring an EMPTY snapshot offline: queue "clear the setlist".
-        if (await queueOffline([], error.message)) {
+        if (await queueOffline([], error.message, deleteStatus)) {
           old.forEach((it) => deleteAudio(eventId, it.id).catch(() => {}));
           setItems([]);
           return;
@@ -683,9 +726,11 @@ export function SetlistBuilder({
                   rows: inserted,
                   baseRows: [...old, ...inserted],
                   errorMessage: error.message,
+                  status: deleteStatus,
                 })
               : false;
             if (queued) {
+              ackedRef.current = inserted; // what the server holds once the flush lands
               toast.success(OFFLINE_QUEUED_MESSAGE, { id: "mgmt-offline-queued" });
               old.forEach((it) => deleteAudio(eventId, it.id).catch(() => {}));
               setItems([...inserted].sort((a, b) => a.sort_order - b.sort_order));
@@ -704,6 +749,7 @@ export function SetlistBuilder({
               // local-only have a server counterpart, so a future batch write
               // hitting them for real is no longer a legitimate 0-row match.
               current.forEach((it) => localOnlyIds.current.delete(it.id));
+              ackedRef.current = current as SetlistItem[];
               setItems(current as SetlistItem[]);
             }
             throw new Error(
@@ -724,6 +770,7 @@ export function SetlistBuilder({
         if (it.audio_path && !it.song_id) removeEventAudio(it.audio_path).catch(() => {});
       });
     }
+    ackedRef.current = inserted;
     setItems(inserted.sort((a, b) => a.sort_order - b.sort_order));
     notifyLive();
   }
@@ -743,14 +790,16 @@ export function SetlistBuilder({
     );
   }
 
-  // ⭐#1 step 5: a write that failed on a DEAD NETWORK queues the whole post-edit
-  // setlist as one offline snapshot and returns true — keep the optimistic state
-  // (no notifyLive: the realtime channel is down with the network anyway). Web
-  // (no sink) / real rejections return false → the original error handling runs.
-  // `items` in this render's closure is the pre-edit list = the guard's base.
+  // ⭐#1 step 5: a write that failed on a DEAD NETWORK (or a 5xx/429 from a server
+  // that is up - pass the response's `status`) queues the whole post-edit setlist as
+  // one offline snapshot and returns true — keep the optimistic state (no
+  // notifyLive: the realtime channel is down with the network anyway). Web (no
+  // sink) / real rejections return false → the original error handling runs.
+  // The guard's base is ackedRef (the server's list), never `items` - see there.
   async function queueOffline(
     next: SetlistItem[],
-    errorMessage: string | null | undefined
+    errorMessage: string | null | undefined,
+    status?: number | null
   ): Promise<boolean> {
     const queued = await tryQueueChildList({
       kind: "setlist.upsert",
@@ -758,10 +807,36 @@ export function SetlistBuilder({
       tenantId,
       eventName,
       rows: next,
-      baseRows: items,
+      baseRows: ackedRef.current,
       errorMessage: errorMessage ?? null,
+      status: status ?? null,
     });
-    if (queued) toast.success(OFFLINE_QUEUED_MESSAGE, { id: "mgmt-offline-queued" });
+    if (queued) {
+      ackedRef.current = next;
+      toast.success(OFFLINE_QUEUED_MESSAGE, { id: "mgmt-offline-queued" });
+    }
+    return queued;
+  }
+
+  // Desktop: while a snapshot of this setlist still waits in the offline queue, an
+  // edit made after the net came back must join it, not write online - the queued
+  // snapshot is based on the server list from before it, and this person's own
+  // online write would make the flush park her queued edit as "เวอร์ชันออนไลน์ถูก
+  // แก้ไขใหม่กว่าของเครื่องนี้" (lib/mgmt-write.ts tryQueueBehindPendingChildList).
+  // Called BEFORE each online write; true = queued, the caller stops there.
+  async function queueBehindPending(next: SetlistItem[]): Promise<boolean> {
+    const queued = await tryQueueBehindPendingChildList({
+      kind: "setlist.upsert",
+      eventId,
+      tenantId,
+      eventName,
+      rows: next,
+      baseRows: ackedRef.current,
+    });
+    if (queued) {
+      ackedRef.current = next;
+      toast.success(QUEUED_BEHIND_PENDING_MESSAGE, { id: "mgmt-offline-queued" });
+    }
     return queued;
   }
 
@@ -783,16 +858,20 @@ export function SetlistBuilder({
   }
 
   async function persistInner(id: string, partial: Partial<SetlistItem>) {
-    const { data, error } = await supabase
+    const next = items.map((it) => (it.id === id ? { ...it, ...partial } : it));
+    if (await queueBehindPending(next)) {
+      save.end(true);
+      return;
+    }
+    const { data, error, status } = await supabase
       .from("setlist_items")
       .update(partial)
       .eq("id", id)
       .select("id");
     if (error) {
-      const next = items.map((it) => (it.id === id ? { ...it, ...partial } : it));
       // Queued offline IS saved — it is on disk and it will flush. Saying
       // "ยังไม่ได้บันทึก" for a venue with no wifi would be the wrong receipt.
-      if (await queueOffline(next, error.message)) {
+      if (await queueOffline(next, error.message, status)) {
         save.end(true);
         return;
       }
@@ -810,6 +889,7 @@ export function SetlistBuilder({
       toast.error("ยังไม่ได้บันทึก", { description: await noRowsMessage() });
       return;
     }
+    ackRow(id, partial); // what was WRITTEN - a note goes up trimmed
     save.end(true);
     notifyLive();
   }
@@ -829,6 +909,7 @@ export function SetlistBuilder({
       .order("id", { ascending: true }); // ties read the same as Live (lib/queries.ts)
     if (!data) return;
     const server = data as SetlistItem[];
+    ackedRef.current = server;
     const serverIds = new Set(server.map((it) => it.id));
     serverIds.forEach((id) => localOnlyIds.current.delete(id));
     const stillLocal = optimistic.filter(
@@ -839,6 +920,11 @@ export function SetlistBuilder({
     // new order. A running Live Mode needs to know regardless of who called us,
     // so broadcast here rather than trust every call site to remember it.
     notifyLive();
+  }
+
+  /** A batch write that came back with its row - it is on the server. */
+  function landed(r: { error: unknown; data: unknown[] | null }): boolean {
+    return !r.error && Array.isArray(r.data) && r.data.length > 0;
   }
 
   function update(id: string, partial: Partial<SetlistItem>) {
@@ -924,6 +1010,31 @@ export function SetlistBuilder({
     };
   }
 
+  // The highest sort_order of this event's rows: the server's, read just before an
+  // insert, or this screen's own copy when that is higher or the read fails (offline
+  // the insert behind it fails too and is queued with the local number). This copy
+  // alone is never re-seeded while its tab is open, so a laptop and a phone adding a
+  // row (or "จากคลัง") at once numbered both new rows the same - Live Mode then plays
+  // the two by uuid while each editor shows its own row last. run-order-builder's
+  // lastSortOrder() is the same read.
+  async function lastSortOrder(): Promise<number> {
+    const local = items.length ? Math.max(...items.map((i) => i.sort_order)) : 0;
+    try {
+      const { data, error } = await supabase
+        .from("setlist_items")
+        .select("sort_order")
+        .eq("event_id", eventId)
+        .order("sort_order", { ascending: false })
+        .limit(1);
+      const server = !error
+        ? Number((data?.[0] as { sort_order?: unknown } | undefined)?.sort_order)
+        : NaN;
+      return Number.isFinite(server) ? Math.max(local, server) : local;
+    } catch {
+      return local;
+    }
+  }
+
   /** Returns true when a row was actually added (inserted or queued offline). */
   async function insertItem(
     extra: Partial<SetlistItem> & { kind: SetlistKind }
@@ -941,10 +1052,17 @@ export function SetlistBuilder({
     insertingRef.current = true;
     setInserting(true);
     try {
-      const sort = items.length
-        ? Math.max(...items.map((i) => i.sort_order)) + 1
-        : 1;
-      const { data, error } = await supabase
+      // Joining a snapshot still queued (see queueBehindPending): numbered from this
+      // screen's list, which is the whole list that snapshot will write.
+      const queuedSort = items.length ? Math.max(...items.map((i) => i.sort_order)) + 1 : 1;
+      const queuedRow = mintLocalItem(queuedSort, extra);
+      if (await queueBehindPending([...items, queuedRow])) {
+        localOnlyIds.current.add(queuedRow.id);
+        setItems((prev) => [...prev, queuedRow]);
+        return true;
+      }
+      const sort = (await lastSortOrder()) + 1;
+      const { data, error, status } = await supabase
         .from("setlist_items")
         .insert({
           tenant_id: tenantId,
@@ -959,7 +1077,7 @@ export function SetlistBuilder({
         .single();
       if (error || !data) {
         const local = mintLocalItem(sort, extra);
-        if (await queueOffline([...items, local], error?.message)) {
+        if (await queueOffline([...items, local], error?.message, status)) {
           localOnlyIds.current.add(local.id);
           setItems((prev) => [...prev, local]);
           return true;
@@ -967,6 +1085,7 @@ export function SetlistBuilder({
         toast.error("เพิ่มไม่สำเร็จ", { description: error?.message });
         return false;
       }
+      ackedRef.current = [...ackedRef.current, data as SetlistItem];
       setItems((prev) => [...prev, data as SetlistItem]);
       notifyLive();
       return true;
@@ -1094,14 +1213,28 @@ export function SetlistBuilder({
         : "รายการนี้จะถูกลบออกจากเซ็ตลิสต์",
     });
     if (!ok) return;
+    // The sheet sat open while the show moved on: the row may be ON AIR now (Auto,
+    // or the operator's NEXT, took it). Deleting it would pull the playing song from
+    // under Live Mode, whose refetch then clamps onto the following row - the same
+    // re-check เปลี่ยน and ใส่เพลง make after their dialog, read from the ref because
+    // this handler's `liveItemId` is the one from before the sheet opened.
+    if (liveItemIdRef.current === id) {
+      toast.error("แถวนี้กำลังเล่นอยู่บนเวที — ยังลบไม่ได้");
+      return;
+    }
+    const next = snapshot.filter((it) => it.id !== id);
     setItems((prev) => prev.filter((it) => it.id !== id));
-    const { data, error } = await supabase
+    if (await queueBehindPending(next)) {
+      deleteAudio(eventId, id).catch(() => {}); // local cache
+      return;
+    }
+    const { data, error, status } = await supabase
       .from("setlist_items")
       .delete()
       .eq("id", id)
       .select("id");
     if (error) {
-      if (await queueOffline(snapshot.filter((it) => it.id !== id), error.message)) {
+      if (await queueOffline(next, error.message, status)) {
         deleteAudio(eventId, id).catch(() => {}); // local cache
         // legacy per-item R2 audio can't be deleted offline; benign orphan at worst
         return;
@@ -1117,6 +1250,7 @@ export function SetlistBuilder({
       setItems(snapshot);
       return;
     }
+    ackedRef.current = ackedRef.current.filter((it) => it.id !== id);
     deleteAudio(eventId, id).catch(() => {}); // local cache
     // don't delete a library song's file when removing a linked row (library owns it)
     if (removed?.audio_path && !removed.song_id)
@@ -1131,6 +1265,7 @@ export function SetlistBuilder({
     failMsg: string
   ) {
     setItems(renumbered);
+    if (await queueBehindPending(renumbered)) return;
     const changed = renumbered.filter(
       (it) => prev.find((o) => o.id === it.id)?.sort_order !== it.sort_order
     );
@@ -1143,10 +1278,23 @@ export function SetlistBuilder({
           .select("id")
       )
     );
+    // Every write that came back with its row is on the server, whatever its
+    // siblings did - so a snapshot queued for the rest is based on what is there.
+    results.forEach((r, i) => {
+      if (landed(r)) ackRow(changed[i].id, { sort_order: changed[i].sort_order });
+    });
     const failed = results.find((r) => r.error);
     if (failed?.error) {
-      if (await queueOffline(renumbered, failed.error.message)) return;
+      if (await queueOffline(renumbered, failed.error.message, failed.status)) return;
       toast.error(failMsg, { description: failed.error.message });
+      // Independent UPDATEs: some may have landed before one errored (a 503 on
+      // venue wifi). Asserting `prev` would then show an order the server no longer
+      // holds while Live plays the new one (ties by uuid) - re-read it instead, as
+      // the 0-row twin below does.
+      if (results.some(landed)) {
+        await reconcileFromServer(renumbered);
+        return;
+      }
       setItems(prev);
       return;
     }
@@ -1230,6 +1378,7 @@ export function SetlistBuilder({
     next[target] = { ...a, sort_order: b.sort_order };
     next.sort((x, y) => x.sort_order - y.sort_order);
     setItems(next);
+    if (await queueBehindPending(next)) return;
     const results = await Promise.all([
       supabase
         .from("setlist_items")
@@ -1242,16 +1391,29 @@ export function SetlistBuilder({
         .eq("id", b.id)
         .select("id"),
     ]);
+    const rowIds = [a.id, b.id];
+    const newSorts = [b.sort_order, a.sort_order];
+    // A write that came back with its row is on the server, even if its twin errored.
+    results.forEach((r, i) => {
+      if (landed(r)) ackRow(rowIds[i], { sort_order: newSorts[i] });
+    });
     const failed = results.find((r) => r.error);
     if (failed?.error) {
-      if (await queueOffline(next, failed.error.message)) return;
+      if (await queueOffline(next, failed.error.message, failed.status)) return;
       toast.error("สลับลำดับไม่สำเร็จ", { description: failed.error.message });
+      // One write landed and the other errored (a 503 / timeout on venue wifi): the
+      // DB holds a half-swap - both rows on ONE sort_order, which Live orders by
+      // uuid. Putting the pre-swap order back would show what the server no longer
+      // holds; re-read it, as the 0-row twin below does.
+      if (results.some(landed)) {
+        await reconcileFromServer(next);
+        return;
+      }
       setItems(items);
       return;
     }
     // A 0-row result on a row that only exists in the offline outbox so far
     // (localOnlyIds) is expected, not a failure — skip it when judging the pair.
-    const rowIds = [a.id, b.id];
     // ...but a row that DID write is on the server now, whatever the set says:
     // the flush re-uses the client-minted id, so the flag has to be cleared from
     // the evidence or every later swap is misjudged (see persistOrder).

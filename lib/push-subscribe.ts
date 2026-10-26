@@ -57,6 +57,49 @@ export async function pushAvailability(): Promise<PushAvailability> {
   }
 }
 
+/** Save this device's browser subscription as the signed-in user's (keyed on the endpoint). */
+function saveSubscription(
+  supabase: SupabaseClient,
+  userId: string,
+  tenantId: string | null,
+  sub: PushSubscription
+) {
+  const json = sub.toJSON() as { keys?: { p256dh?: string; auth?: string } };
+  return supabase.from("push_subscriptions").upsert(
+    {
+      user_id: userId,
+      tenant_id: tenantId,
+      endpoint: sub.endpoint,
+      p256dh: json.keys?.p256dh ?? "",
+      auth: json.keys?.auth ?? "",
+      user_agent: navigator.userAgent.slice(0, 200),
+    },
+    { onConflict: "endpoint" }
+  );
+}
+
+/**
+ * Re-save an EXISTING browser subscription for whoever is signed in now. On a shared
+ * band iPad the endpoint's row can still belong to the previous account (their session
+ * ended without the sign-out button: it died while the app was closed, or on Live where
+ * the bell is not mounted): the device said push was "on" while the server sent the
+ * NEW user's reminders nowhere and the old account's here. False = the row is not
+ * ours to take (RLS) - the caller drops the subscription so enablePush mints a fresh one.
+ */
+export async function claimPushSubscription(args: {
+  supabase: SupabaseClient;
+  userId: string;
+  tenantId: string | null;
+  sub: PushSubscription;
+}): Promise<boolean> {
+  try {
+    const { error } = await saveSubscription(args.supabase, args.userId, args.tenantId, args.sub);
+    return !error;
+  } catch {
+    return true; // could not ask - claim nothing, take nothing away
+  }
+}
+
 export type PushEnableResult =
   | { ok: true }
   /** The user said no (or dismissed the browser prompt). Not an error. */
@@ -91,20 +134,8 @@ export async function enablePush(args: {
         userVisibleOnly: true,
         applicationServerKey: urlBase64ToUint8Array(key) as BufferSource,
       });
-    const save = (sub: PushSubscription) => {
-      const json = sub.toJSON() as { keys?: { p256dh?: string; auth?: string } };
-      return args.supabase.from("push_subscriptions").upsert(
-        {
-          user_id: args.userId,
-          tenant_id: args.tenantId,
-          endpoint: sub.endpoint,
-          p256dh: json.keys?.p256dh ?? "",
-          auth: json.keys?.auth ?? "",
-          user_agent: navigator.userAgent.slice(0, 200),
-        },
-        { onConflict: "endpoint" }
-      );
-    };
+    const save = (sub: PushSubscription) =>
+      saveSubscription(args.supabase, args.userId, args.tenantId, sub);
 
     let sub = await subscribe();
     let { error } = await save(sub);

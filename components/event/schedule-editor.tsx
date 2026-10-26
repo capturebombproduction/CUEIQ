@@ -31,7 +31,9 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useConfirm } from "@/components/ui/confirm-dialog";
+import { photoRoundKey } from "@/lib/photo-rounds";
 import { SaveStatus, useSaveSignal } from "@/components/event/save-status";
+import { dayOrderSeconds, stageAnchorSeconds } from "@/lib/clone-event";
 import {
   Select,
   SelectContent,
@@ -79,9 +81,13 @@ const KIND_SHORT: Partial<Record<ScheduleKind, string>> = {
  *  — start time, a dot on a rail, what happens and where — with the stage row
  *  carrying the band's rail. Rows without a time keep their place at the end. */
 function ScheduleTimeline({ items }: { items: ScheduleItem[] }) {
+  // Round the stage, not down the clock string: a 00:30 booth after a 23:00 set is
+  // the END of that day, not the top of it (lib/clone-event.ts dayOrderSeconds —
+  // the run sheet reads the day the same way).
+  const anchor = stageAnchorSeconds(items, {});
   const ordered = [...items].sort(
     (a, b) =>
-      (a.start_time ?? "￿").localeCompare(b.start_time ?? "￿") ||
+      dayOrderSeconds(a.start_time, anchor) - dayOrderSeconds(b.start_time, anchor) ||
       (a.sort_order ?? 0) - (b.sort_order ?? 0)
   );
   return (
@@ -164,6 +170,17 @@ export function ScheduleEditor({
   // sign of it. See components/event/save-status.tsx.
   const save = useSaveSignal();
 
+  // The rows as the SERVER last acknowledged them - the offline guard's base. Not
+  // `items`: label / times / location / notes type into `items` on every key and
+  // save on blur, so by the time a failed save queued its snapshot the "pre-edit"
+  // base already held the edit, and the flush parked it as a FALSE conflict
+  // ("เวอร์ชันออนไลน์ถูกแก้ไขใหม่กว่า") - and planEnqueue keeps that first base, so every
+  // later offline edit of the session parked too (2026-10-26; the setlist builder's twin).
+  const ackedRef = useRef<ScheduleItem[]>(items);
+  const ackRow = (id: string, partial: Partial<ScheduleItem>) => {
+    ackedRef.current = ackedRef.current.map((it) => (it.id === id ? { ...it, ...partial } : it));
+  };
+
   function setLocal(id: string, partial: Partial<ScheduleItem>) {
     setItems((prev) =>
       prev.map((it) => (it.id === id ? { ...it, ...partial } : it))
@@ -174,7 +191,7 @@ export function ScheduleEditor({
   // list as one offline snapshot and returns true — the caller keeps its
   // optimistic state instead of rolling back. Web (no sink) / real rejections
   // (RLS, 23505) return false and the original error handling runs unchanged.
-  // `items` here is this render's list = the pre-edit state (the guard's base).
+  // The guard's base is ackedRef (what the server holds), never `items` - see there.
   async function queueOffline(
     next: ScheduleItem[],
     errorMessage: string | null | undefined
@@ -185,10 +202,15 @@ export function ScheduleEditor({
       tenantId,
       eventName,
       rows: next,
-      baseRows: items,
+      baseRows: ackedRef.current,
       errorMessage: errorMessage ?? null,
     });
-    if (queued) toast.success(OFFLINE_QUEUED_MESSAGE, { id: "mgmt-offline-queued" });
+    if (queued) {
+      // what the server holds once this snapshot flushes (a later edit coalesces
+      // into it, and the planner keeps this op's original base anyway)
+      ackedRef.current = next;
+      toast.success(OFFLINE_QUEUED_MESSAGE, { id: "mgmt-offline-queued" });
+    }
     return queued;
   }
 
@@ -247,6 +269,7 @@ export function ScheduleEditor({
       toast.error("ยังไม่ได้บันทึก", { description: await noRowsMessage() });
       return;
     }
+    ackRow(id, partial);
     save.end(true);
   }
 
@@ -297,6 +320,7 @@ export function ScheduleEditor({
       else toast.error("Failed to add item", { description: error?.message });
       return;
     }
+    ackedRef.current = [...ackedRef.current, data as ScheduleItem];
     setItems((prev) => [...prev, data as ScheduleItem]);
   }
 
@@ -326,7 +350,9 @@ export function ScheduleEditor({
     if (wroteNothing(data)) {
       toast.error("ยังไม่ได้บันทึก", { description: await noRowsMessage() });
       setItems(snapshot);
+      return;
     }
+    ackedRef.current = ackedRef.current.filter((x) => x.id !== id);
   }
 
   /**
@@ -368,7 +394,9 @@ export function ScheduleEditor({
       if (results.some((r) => wroteNothing(r.data))) {
         toast.error("ยังไม่ได้บันทึก", { description: await noRowsMessage() });
         setItems(before);
+        return;
       }
+      for (const it of changed) ackRow(it.id, { sort_order: it.sort_order });
     } finally {
       setBusy(false);
     }
@@ -488,9 +516,16 @@ export function ScheduleEditor({
                 disabled={!editable}
                 onValueChange={(v) => {
                   const next = v as ScheduleKind;
+                  // Refuse only a round whose NAME is taken (0042's key) - a row
+                  // already named "ชุด 2" may become ถ่ายรูป next to "ชุด 1".
                   if (
                     next === "photo" &&
-                    items.some((i) => i.id !== it.id && i.kind === "photo")
+                    items.some(
+                      (i) =>
+                        i.id !== it.id &&
+                        i.kind === "photo" &&
+                        photoRoundKey(i.label) === photoRoundKey(it.label)
+                    )
                   ) {
                     toast.error(DUP_PHOTO.title, {
                       description: DUP_PHOTO.description,

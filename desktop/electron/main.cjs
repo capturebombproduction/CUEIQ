@@ -462,6 +462,32 @@ function updateBusyReason() {
   return null;
 }
 
+/**
+ * A quit made DURING a show must not run the Windows installer. autoInstallOnAppQuit (set at
+ * startup, below) installs a downloaded update on ANY quit: NSIS then runs silently, closes
+ * what is left and removes the old files before laying down the new ones. A quit mid-show is
+ * the start of a quick relaunch (the show restores within 6 h), and that relaunch lands on a
+ * half-removed install - broken launches for tens of seconds, on stage (2026-10-26 hunt).
+ * So the two quits a show can end in (the "ออกเลย" box, the crash-loop box) hold it for that
+ * quit. Nothing is lost: the chip keeps "ติดตั้ง", the download stays cached, and the next
+ * launch offers it again. electron-updater reads the flag inside its own "quit" handler, so
+ * flipping it right before the quit is enough. Windows only (winUpdater is null elsewhere).
+ */
+let installHeldForShowQuit = false;
+function holdInstallForShowQuit() {
+  if (!winUpdater) return;
+  winUpdater.autoInstallOnAppQuit = false;
+  installHeldForShowQuit = true;
+  console.log("AUTOUPDATE_HOLD_ON_QUIT show");
+}
+/** The box that held it was answered for a RELOAD, not a quit: the app lives on, so the next
+ *  ordinary quit installs again. */
+function releaseInstallHold() {
+  if (!installHeldForShowQuit || !winUpdater) return;
+  installHeldForShowQuit = false;
+  winUpdater.autoInstallOnAppQuit = true;
+}
+
 /** Ask the feed. `prompt` = the launch check's "อัปเดตเลย / ไว้ก่อน" (Windows only). */
 async function checkForUpdates({ prompt = false } = {}) {
   if (!updatesSupported()) {
@@ -972,7 +998,8 @@ function initAutoUpdate() {
   // A 107 MB download over venue wifi finishes minutes after it was agreed to — which
   // can easily be mid-show. offerRestart asks only when no show runs and nothing is
   // unsaved; otherwise the chip turns into "ติดตั้ง" and waits for a press, and
-  // autoInstallOnAppQuit still covers a plain quit.
+  // autoInstallOnAppQuit still covers a plain quit (not one made mid-show — see
+  // holdInstallForShowQuit).
   winUpdater.on("update-downloaded", (info) => {
     console.log("AUTOUPDATE_READY " + String(info?.version ?? ""));
     setUpdateState({ state: "ready", latest: info?.version ? String(info.version) : updateState.latest, percent: 100 });
@@ -2387,7 +2414,12 @@ async function createWindow() {
       message: copy.message,
       detail: copy.detail,
     });
-    if (choice === 1) event.preventDefault();
+    if (choice === 1) {
+      // Leaving a running show: the operator is about to reopen and carry on — never
+      // let this quit start the installer under that relaunch (holdInstallForShowQuit).
+      if (updateBusyReason() === "show") holdInstallForShowQuit();
+      event.preventDefault();
+    }
     // stayed: the quit is off, so a staged Mac update must not reopen on some later quit
     else macReopen = false;
   });
@@ -2438,6 +2470,9 @@ async function createWindow() {
     // Without this a reload out of an unsaved edit leaves "unsaved" latched, and the
     // very next exit — from a page where a SHOW is running — shows the wrong box.
     if (isMainFrame && !isInPlace) unloadReason = null;
+    // A document reload means the "ออกเลย" that held the update was for a reload, not a
+    // quit (a window close never starts a navigation): the app lives on.
+    if (isMainFrame && !isInPlace) releaseInstallHold();
   });
 
   // A dead renderer leaves a blank dark rectangle — no window navigate, no console,
@@ -2451,15 +2486,22 @@ async function createWindow() {
   let recentReloads = [];
   const MAX_RELOADS_PER_WINDOW = 3;
   const RELOAD_WINDOW_MS = 60_000;
+  // When a crash last took down a RUNNING show. Read before the resets below, and kept
+  // across the loop: a renderer that dies again while booting has not re-armed the show yet.
+  let showCrashAt = -Infinity;
   win.webContents.on("render-process-gone", (_e, details) => {
     if (details.reason === "clean-exit" || details.reason === "killed") return;
+    const now = Date.now();
+    if (updateBusyReason() === "show") showCrashAt = now;
     stopShowPowerSaveBlocker(); // the document that was holding it is gone either way
     unloadReason = null; // …and so is whatever it was refusing to unload for
-    const now = Date.now();
     recentReloads = recentReloads.filter((t) => now - t < RELOAD_WINDOW_MS);
     if (recentReloads.length >= MAX_RELOADS_PER_WINDOW) {
       // Reloading into whatever keeps killing the renderer would just loop forever
       // — stop and tell the operator instead of flashing the window indefinitely.
+      // The box tells them to close and reopen: mid-show that quit must not start the
+      // installer under their relaunch (holdInstallForShowQuit).
+      if (now - showCrashAt < RELOAD_WINDOW_MS) holdInstallForShowQuit();
       dialog.showMessageBox(win, {
         type: "error",
         title: "CueIQ ค้างซ้ำ",
@@ -2488,21 +2530,27 @@ async function createWindow() {
   // fires on a crash/OOM/kill — not on a wedged main thread. So the message says
   // what is actually true (restart it yourself, or run the show from Quick Show)
   // rather than promising a self-heal that will not arrive mid-show.
+  //
+  // ⚠️ Through backgroundNotice, never a bare dialog.showMessageBox: this box has no
+  // parent, and on macOS a parentless box is APP-MODAL (runModal) — once the renderer
+  // recovers, every click and keyboard cue of the running show stays frozen behind it
+  // until someone dismisses it (2026-10-26 hunt). The operator did not press anything
+  // to get it, so it follows the file's rule (see backgroundNotice): silent while a show
+  // runs or an edit is unsaved, shown otherwise.
   let unresponsiveDialogOpen = false;
   win.webContents.on("unresponsive", () => {
     if (unresponsiveDialogOpen) return; // don't stack a prompt per hang tick
     unresponsiveDialogOpen = true;
-    dialog
-      .showMessageBox({
-        type: "warning",
-        buttons: ["รับทราบ"],
-        defaultId: 0,
-        cancelId: 0,
-        title: "CueIQ ไม่ตอบสนอง",
-        message: "แอปไม่ตอบสนองชั่วคราว",
-        detail:
-          "ถ้ากำลังโหลด/ประมวลผลไฟล์เสียงใหญ่ รอสักครู่มักกลับมาเอง — ถ้าค้างนานจริง ให้ปิดโปรแกรมแล้วเปิดใหม่ (โชว์ที่ค้างไว้จะกลับมาต่อ) หรือใช้ Quick Show คุมโชว์ต่อแบบไม่ต้องใช้เน็ต",
-      })
+    backgroundNotice({
+      type: "warning",
+      buttons: ["รับทราบ"],
+      defaultId: 0,
+      cancelId: 0,
+      title: "CueIQ ไม่ตอบสนอง",
+      message: "แอปไม่ตอบสนองชั่วคราว",
+      detail:
+        "ถ้ากำลังโหลด/ประมวลผลไฟล์เสียงใหญ่ รอสักครู่มักกลับมาเอง — ถ้าค้างนานจริง ให้ปิดโปรแกรมแล้วเปิดใหม่ (โชว์ที่ค้างไว้จะกลับมาต่อ) หรือใช้ Quick Show คุมโชว์ต่อแบบไม่ต้องใช้เน็ต",
+    })
       .then(() => {
         unresponsiveDialogOpen = false;
       })

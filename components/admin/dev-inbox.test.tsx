@@ -172,7 +172,7 @@ describe("deleting a note", () => {
   const someoneElses = `${TENANT}/feedback/${OTHER}/abcd1234abcd1234.png`;
 
   it("deletes the author's own pictures with it - and nothing else the row names", async () => {
-    mount([ok([report({ images: [own, master, someoneElses] })]), ok([])]);
+    mount([ok([report({ images: [own, master, someoneElses] })]), ok([{ id: report().id }])]);
     await screen.findByText(/งานมี 2 ชุด/);
     fireEvent.click(screen.getByRole("button", { name: "ลบ" }));
     const dialog = await screen.findByRole("dialog");

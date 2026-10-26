@@ -18,8 +18,18 @@
 // preconditions of every press after the first describe state THIS DEVICE created
 // locally — state the server has never seen. Replaying those would deadlock the
 // row forever. So a merged op keeps the FIRST expect (the last server truth we
-// actually observed) and the LATEST value of each column. Rows are independent, so
-// no ordering between them is needed.
+// actually observed) and the LATEST value of each column.
+//
+// ⚠️ BUT A PRESS IS NOT A ROW. "จบ + ต่อไป" writes two rows (the live act → done, the
+// next → live), and the rows used to replay as independent compare-and-swaps. When
+// another device had driven the board meanwhile, the rows it had moved parked and
+// the row it had not reached yet still read `pending` — so the half of the press
+// that started the next act landed alone: two acts live, and the act after them
+// never called (2026-10-26). So every op carries the ids of the presses folded into
+// it (`presses`), and ops that share a press — directly, or through a row two
+// presses both touched — replay as ONE unit: checked together before anything is
+// written, and parked together when any of them parks. No migration: the unit
+// exists only in this queue.
 //
 // A precondition that no longer holds is PARKED, not clobbered and not dropped —
 // the same answer the management outbox and the audio-upload queue give. Two
@@ -102,6 +112,19 @@ export interface RunSeqOp {
    * later told nobody (2026-10-26). Optional for older records.
    */
   announceLive?: { eventId: string; at: number };
+  /**
+   * The id of every press folded into this op (see the header: a press is not a row).
+   * Ops that share one replay as a unit and park as a unit. Optional for older
+   * records, which replay on their own as before.
+   */
+  presses?: string[];
+}
+
+/** A fresh id for one press - every row that press writes carries it. */
+export function newRunSeqPressId(): string {
+  return typeof crypto !== "undefined" && "randomUUID" in crypto
+    ? crypto.randomUUID()
+    : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 }
 
 /** A start that lands later than this after its press is old news: nobody is told it went
@@ -158,7 +181,57 @@ export function mergeOp(prev: RunSeqOp | undefined, next: RunSeqOp): RunSeqOp {
     prior: [...(prev.prior ?? []), prev.patch].slice(-MAX_PRIOR),
     // the first start's word to the label rides every press folded in after it
     announceLive: prev.announceLive ?? next.announceLive,
+    // this row now carries every press that touched it - which is what ties a later
+    // press to the earlier ones it was built on
+    presses: [...new Set([...(prev.presses ?? []), ...(next.presses ?? [])])],
   };
+}
+
+/**
+ * The ops that must replay as one unit, each unit in replay order.
+ *
+ * Two ops belong together when they share a press, and the relation is transitive:
+ * "A→B" then "B→C" offline gives A{p1}, B{p1,p2}, C{p2} - one unit, because C's
+ * start was built on B's, which was built on A's end. An op with no press ids (an
+ * older record) is a unit of its own.
+ *
+ * Inside a unit: oldest press first, and a row being ENDED before a row being
+ * started - a unit cut short by the network then leaves the board with no act live
+ * for a moment rather than two.
+ */
+export function groupRunSeqPresses(ops: RunSeqOp[]): RunSeqOp[][] {
+  const parent = ops.map((_, i) => i);
+  const find = (i: number): number => {
+    while (parent[i] !== i) {
+      parent[i] = parent[parent[i]];
+      i = parent[i];
+    }
+    return i;
+  };
+  const owner = new Map<string, number>();
+  ops.forEach((o, i) => {
+    for (const p of o.presses ?? []) {
+      const j = owner.get(p);
+      if (j === undefined) owner.set(p, i);
+      else parent[find(i)] = find(j);
+    }
+  });
+  const units = new Map<number, number[]>();
+  ops.forEach((_, i) => {
+    const root = find(i);
+    const list = units.get(root);
+    if (list) list.push(i);
+    else units.set(root, [i]);
+  });
+  const ending = (o: RunSeqOp) => (o.patch.status === "done" ? 0 : 1);
+  return [...units.values()].map((idx) =>
+    idx
+      .sort(
+        (a, b) =>
+          ops[a].queuedAt - ops[b].queuedAt || ending(ops[a]) - ending(ops[b]) || a - b
+      )
+      .map((i) => ops[i])
+  );
 }
 
 /**
@@ -231,17 +304,34 @@ const PATCH_COLUMNS: (keyof RunSeqPatch)[] = [
 export function patchAlreadyHolds(patch: RunSeqPatch, row: Record<string, unknown>): boolean {
   const keys = PATCH_COLUMNS.filter((k) => patch[k] !== undefined);
   if (keys.length === 0) return false;
-  return keys.every((k) => {
-    const want = patch[k];
-    const have = row[k];
-    if (want === null || have === null || have === undefined) return want === null && have == null;
-    if (k === "actual_start" || k === "actual_end") {
-      const a = Date.parse(String(want));
-      const b = Date.parse(String(have));
-      return Number.isFinite(a) && a === b;
-    }
-    return String(want) === String(have);
-  });
+  return keys.every((k) => columnHolds(k, patch[k], row[k]));
+}
+
+function columnHolds(k: keyof RunSeqPatch, want: unknown, have: unknown): boolean {
+  if (want === null || have === null || have === undefined) return want === null && have == null;
+  if (k === "actual_start" || k === "actual_end") {
+    const a = Date.parse(String(want));
+    const b = Date.parse(String(have));
+    return Number.isFinite(a) && a === b;
+  }
+  return String(want) === String(have);
+}
+
+/** Would the conditional UPDATE match this row - does it hold every value `expect`
+ *  names (null = IS NULL)? An empty expect matches anything, as the write does. */
+export function expectHolds(expect: RunSeqPatch, row: Record<string, unknown>): boolean {
+  return PATCH_COLUMNS.every((k) => expect[k] === undefined || columnHolds(k, expect[k], row[k]));
+}
+
+/**
+ * Would this op land on this row - its precondition holds, or the row already says
+ * what it writes, or an earlier version landed and the rebased precondition holds?
+ * The same three ways the replay itself can end in "done" (see doFlush).
+ */
+export function opWouldLand(op: RunSeqOp, row: Record<string, unknown>): boolean {
+  if (expectHolds(op.expect, row) || patchAlreadyHolds(op.patch, row)) return true;
+  const landed = earlierPatchHeld(op, row);
+  return !!landed && expectHolds(expectOnto(op.expect, landed), row);
 }
 
 /**
@@ -296,10 +386,65 @@ function openDB(): Promise<IDBDatabase> {
   });
 }
 
-function announce(): void {
-  if (typeof window !== "undefined") {
-    window.dispatchEvent(new Event(RUNSEQ_OUTBOX_EVENT));
+// ---------------------------------------------------------------------------
+// The word that the queue changed - to this window AND to the other tabs.
+//
+// Every web tab mounts its own OutboxFlusher over the SAME IndexedDB, so the tab
+// that replays the presses is often not the tab showing the board (the Overview in
+// one tab, คุมคิว Live in another: switching tabs flushes in the one that became
+// visible). A window event reaches its own window only, and the board kept laying
+// already-landed presses over every refetch (2026-10-26). A BroadcastChannel carries
+// the word to the other tabs, which turn it back into their own window event.
+// ---------------------------------------------------------------------------
+const OUTBOX_CHANNEL = "cueiq:runseq-outbox";
+/** This module's copy, so a tab does not hear its own word twice. */
+const tabId = newRunSeqPressId();
+let sender: BroadcastChannel | null = null;
+
+/** Node's channel (tests) holds the process open; the browser's has no unref. */
+function unrefChannel(ch: BroadcastChannel): void {
+  (ch as unknown as { unref?: () => void }).unref?.();
+}
+
+function announce(crossTab = true): void {
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(new Event(RUNSEQ_OUTBOX_EVENT));
+  if (!crossTab || typeof BroadcastChannel === "undefined") return;
+  try {
+    if (!sender) {
+      sender = new BroadcastChannel(OUTBOX_CHANNEL);
+      unrefChannel(sender);
+    }
+    sender.postMessage({ from: tabId });
+  } catch {
+    /* best-effort: the other tab re-reads on its own refetch and focus anyway */
   }
+}
+
+/**
+ * Run `cb` whenever the queue may have changed - in this window or in another tab
+ * of this browser. Returns the unsubscribe. Screens listen through this rather than
+ * on RUNSEQ_OUTBOX_EVENT alone, which only ever hears this window.
+ */
+export function onRunSeqOutboxChange(cb: () => void): () => void {
+  if (typeof window === "undefined") return () => {};
+  window.addEventListener(RUNSEQ_OUTBOX_EVENT, cb);
+  let ch: BroadcastChannel | null = null;
+  try {
+    if (typeof BroadcastChannel !== "undefined") {
+      ch = new BroadcastChannel(OUTBOX_CHANNEL);
+      unrefChannel(ch);
+      ch.onmessage = (e: MessageEvent) => {
+        if ((e.data as { from?: string } | null)?.from !== tabId) cb();
+      };
+    }
+  } catch {
+    ch = null;
+  }
+  return () => {
+    window.removeEventListener(RUNSEQ_OUTBOX_EVENT, cb);
+    ch?.close();
+  };
 }
 
 /** Queue (or fold into) the pending op for this row. Best-effort — a storage
@@ -594,9 +739,10 @@ function broadcastRunOrderChanged(topics: string[]): void {
 let inFlightFlush: Promise<RunSeqFlushResult> | null = null;
 
 /**
- * Replay every un-parked op. Each is an independent conditional UPDATE, so one
- * failure never blocks the rest — the outbox lesson from round 5, where a single
- * rejected upload could freeze the whole queue.
+ * Replay every un-parked op, one PRESS at a time (see the header). Each row is a
+ * conditional UPDATE and each press is independent of the others, so one failure
+ * never blocks the rest — the outbox lesson from round 5, where a single rejected
+ * upload could freeze the whole queue.
  *
  * Re-entrant-safe: boot and the 'online' listener can fire together, and on the
  * web every open tab mounts its own OutboxFlusher over the SAME IndexedDB. Two
@@ -613,11 +759,54 @@ export function flushRunSeqOutbox(): Promise<RunSeqFlushResult> {
   return run;
 }
 
+/**
+ * Before ANY row of a multi-row press is written: would every one of them land?
+ *
+ *  • "go"   — yes (a row the builder deleted does not stop it: that op is dropped,
+ *             as it would be alone).
+ *  • "park" — one of them no longer holds what the press branched from, so writing
+ *             the others would land half a press. A human looks at the whole of it.
+ *  • "wait" — could not find out (network, or an empty answer with no proven
+ *             session - the header's anon minute). Leave it queued.
+ *
+ * Still a check, not a lock: a device that moves a row between this read and the
+ * writes makes that write park, and doFlush then parks the rest of the press
+ * unsent - the same window an online "จบ + ต่อไป" has between its two requests.
+ */
+async function precheckPress(
+  supabase: ReturnType<typeof createClient>,
+  members: RunSeqOp[]
+): Promise<"go" | "park" | "wait"> {
+  // as they stand NOW - a press made during the flush may have merged in
+  const ops = await Promise.all(members.map(async (m) => (await getRunSeqOp(m.rowId)) ?? m));
+  if (ops.some((o) => o.conflict)) return "park";
+  const ids = ops.map((o) => o.rowId);
+  const { data, error } = await supabase
+    .from("run_sequence")
+    .select(["id", ...PATCH_COLUMNS].join(", "))
+    .in("id", ids);
+  if (error || !data) return "wait";
+  const byId = new Map(
+    (data as unknown as Record<string, unknown>[]).map((r) => [String(r.id), r])
+  );
+  // fewer rows than asked for reads like "deleted" - and like anon (see the header)
+  if (ids.some((id) => !byId.has(id)) && !(await hasLiveSession())) return "wait";
+  for (const op of ops) {
+    const row = byId.get(op.rowId);
+    if (row && !opWouldLand(op, row)) return "park";
+  }
+  return "go";
+}
+
 async function doFlush(): Promise<RunSeqFlushResult> {
-  const ops = (await listRunSeqOps()).filter((o) => !o.conflict);
+  const queue = await listRunSeqOps();
+  const ops = queue.filter((o) => !o.conflict);
   if (ops.length === 0) {
-    const all = await listRunSeqOps();
-    return { flushed: 0, conflicts: all.length, remaining: all.length };
+    // Nothing to replay HERE - but another tab may just have drained what this
+    // tab's board still lays over its rows. Tell this window to re-read (only this
+    // window: nothing changed, so there is nothing to tell the other tabs).
+    announce(false);
+    return { flushed: 0, conflicts: queue.length, remaining: queue.length };
   }
   // Nothing here is safe to judge without a session (see the header): as anon the
   // UPDATE matches nothing and the probe finds nothing, which reads exactly like
@@ -634,7 +823,10 @@ async function doFlush(): Promise<RunSeqFlushResult> {
   // the show's first start landed from the queue: the events whose label is told (announceLive)
   const goneLive = new Set<string>();
 
-  for (const snapshot of ops) {
+  /** Replay one op. "wait" = could not find out (network, no session): leave it queued. */
+  const replayOne = async (
+    snapshot: RunSeqOp
+  ): Promise<"done" | "dropped" | "conflict" | "wait"> => {
     try {
       // Re-read the op as it stands NOW, not as the snapshot at the top of this
       // flush saw it. The operator keeps pressing while a flush is working
@@ -642,7 +834,7 @@ async function doFlush(): Promise<RunSeqFlushResult> {
       // record — sending the stale one would leave the merged press holding a
       // precondition this write is about to consume.
       const op = (await getRunSeqOp(snapshot.rowId)) ?? snapshot;
-      if (op.conflict) continue; // parked while we were working
+      if (op.conflict) return "conflict"; // parked while we were working
       const send = (expect: RunSeqPatch) => {
         let q = supabase.from("run_sequence").update(op.patch).eq("id", op.rowId);
         for (const [k, v] of Object.entries(expect)) {
@@ -654,7 +846,7 @@ async function doFlush(): Promise<RunSeqFlushResult> {
       let replayed = op;
       const { data, error } = await send(op.expect);
       // A network error is not a conflict — leave it queued and try again later.
-      if (error) continue;
+      if (error) return "wait";
       let matched = data?.length ?? 0;
       // Only ask whether the row still exists when nothing matched; on the happy
       // path this would be a second round trip per op for no information.
@@ -664,7 +856,7 @@ async function doFlush(): Promise<RunSeqFlushResult> {
         // The session can also expire DURING the flush — a long queue on venue
         // wifi is minutes of round trips. Re-ask before reading anything into an
         // empty answer, because from here the next step either parks or deletes.
-        if (!(await hasLiveSession())) continue;
+        if (!(await hasLiveSession())) return "wait";
         // Read back the patched columns too, so "the row already says this" (an
         // earlier attempt whose answer was lost) is not parked as a conflict.
         const cols = PATCH_COLUMNS.filter(
@@ -677,7 +869,7 @@ async function doFlush(): Promise<RunSeqFlushResult> {
           .maybeSingle();
         // Couldn't find out → don't guess. Leaving it queued is the reversible
         // choice; parking or dropping on a failed probe is not.
-        if (probeErr) continue;
+        if (probeErr) return "wait";
         stillExists = !!probe;
         const row = probe as unknown as Record<string, unknown> | null;
         alreadyHolds = !!row && patchAlreadyHolds(op.patch, row);
@@ -691,38 +883,69 @@ async function doFlush(): Promise<RunSeqFlushResult> {
           if (JSON.stringify(rebased) !== JSON.stringify(op.expect)) {
             replayed = { ...op, expect: rebased };
             const retry = await send(rebased);
-            if (retry.error) continue; // network - stays queued, judged again next flush
+            if (retry.error) return "wait"; // network - stays queued, judged again next flush
             matched = retry.data?.length ?? 0;
             // 0 rows as anon reads like "moved" too - no session, no verdict (header)
-            if (matched === 0 && !(await hasLiveSession())) continue;
+            if (matched === 0 && !(await hasLiveSession())) return "wait";
           }
         }
       }
       const verdict = classifyReplay(matched, stillExists, alreadyHolds);
-      if (verdict === "conflict") parked.push(op);
-      else {
-        // "done" or "dropped" — either way it leaves the queue, and it leaves NOW
-        // rather than after the loop. A flush is minutes of round trips on venue
-        // wifi and the operator keeps pressing throughout: while this op still
-        // sat in the store, a new press merged into it and inherited a
-        // precondition this replay had just consumed, so it was guaranteed to
-        // park as a false conflict. Removing per-op — and announcing it — means
-        // the next press starts a fresh op against state the server now holds.
-        done.push({ rowId: op.rowId, rev: op.rev ?? 0 });
-        await removeRunSeqIfRev([{ rowId: op.rowId, rev: op.rev ?? 0 }]);
-        // A press that merged in during THIS op's round trip is still stored (the
-        // rev no longer matches, so the delete above declined it) — and its
-        // precondition is the one this write just consumed. Move it forward onto
-        // what the server now holds, or its next replay parks as a conflict the
-        // operator never caused and their press is dropped from the board.
-        if (verdict === "done") await rebaseExpect(replayed);
-        announce();
-        if (verdict === "done" && op.topic) topics.add(op.topic);
-        const word = op.announceLive;
-        if (verdict === "done" && word && Date.now() - word.at <= ANNOUNCE_LIVE_WITHIN_MS) goneLive.add(word.eventId);
-      }
+      if (verdict === "conflict") return "conflict";
+      // "done" or "dropped" — either way it leaves the queue, and it leaves NOW
+      // rather than after the loop. A flush is minutes of round trips on venue
+      // wifi and the operator keeps pressing throughout: while this op still
+      // sat in the store, a new press merged into it and inherited a
+      // precondition this replay had just consumed, so it was guaranteed to
+      // park as a false conflict. Removing per-op — and announcing it — means
+      // the next press starts a fresh op against state the server now holds.
+      done.push({ rowId: op.rowId, rev: op.rev ?? 0 });
+      await removeRunSeqIfRev([{ rowId: op.rowId, rev: op.rev ?? 0 }]);
+      // A press that merged in during THIS op's round trip is still stored (the
+      // rev no longer matches, so the delete above declined it) — and its
+      // precondition is the one this write just consumed. Move it forward onto
+      // what the server now holds, or its next replay parks as a conflict the
+      // operator never caused and their press is dropped from the board.
+      if (verdict === "done") await rebaseExpect(replayed);
+      announce();
+      if (verdict === "done" && op.topic) topics.add(op.topic);
+      const word = op.announceLive;
+      if (verdict === "done" && word && Date.now() - word.at <= ANNOUNCE_LIVE_WITHIN_MS) goneLive.add(word.eventId);
+      return verdict;
     } catch {
-      /* transport blew up mid-flush — keep it queued */
+      return "wait"; // transport blew up mid-flush — keep it queued
+    }
+  };
+
+  // One PRESS at a time, not one row (see the header). Each unit is still
+  // independent of the others, so one failure never blocks the rest — the outbox
+  // lesson from round 5, where a single rejected upload could freeze the whole queue.
+  for (const unit of groupRunSeqPresses(queue)) {
+    const members = unit.filter((o) => !o.conflict);
+    if (members.length === 0) continue;
+    // A press these were built on has already parked: replaying them now is exactly
+    // the half-a-press this grouping exists to stop.
+    if (members.length < unit.length) {
+      parked.push(...members);
+      continue;
+    }
+    if (members.length > 1) {
+      const pre = await precheckPress(supabase, members);
+      if (pre === "wait") continue;
+      if (pre === "park") {
+        parked.push(...members);
+        continue;
+      }
+    }
+    for (let i = 0; i < members.length; i++) {
+      const outcome = await replayOne(members[i]);
+      if (outcome === "conflict") {
+        // this row, and the rest of its press unsent - what already landed stays
+        parked.push(...members.slice(i));
+        break;
+      }
+      // couldn't find out: the rest of the press waits with it for the next flush
+      if (outcome === "wait") break;
     }
   }
 

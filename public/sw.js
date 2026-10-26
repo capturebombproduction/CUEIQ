@@ -13,7 +13,7 @@
 // fetch handler the browser stops routing traffic through us entirely.
 //
 // Bump VERSION to force existing installs to pick up this worker.
-const VERSION = "v8-push-only";
+const VERSION = "v9-push-only";
 
 self.addEventListener("install", () => {
   // Take over from the old offline worker immediately (don't wait for tabs to close).
@@ -54,25 +54,47 @@ self.addEventListener("push", (event) => {
   event.waitUntil(self.registration.showNotification(title, options));
 });
 
+// A window on one of these pages is never navigated by a tap: Live Mode's audio,
+// the show caller board and the practice player live in that page, and a SW
+// navigate unloads it (silence mid-set) - Live Mode's leave-guard can't see it and
+// iOS ignores beforeunload. On an installed PWA there is only one window, so the
+// tap just brings the show back to the front.
+const KEEP_PAGE = /^\/events\/[^/]+\/(live|run-order\/live|practice)\/?$/;
+
+function keepsPage(c) {
+  try {
+    return KEEP_PAGE.test(new URL(c.url).pathname);
+  } catch {
+    return false;
+  }
+}
+
 self.addEventListener("notificationclick", (event) => {
   event.notification.close();
   const link = (event.notification.data && event.notification.data.link) || "/dashboard";
   const url = new URL(link, self.location.origin).href;
   event.waitUntil(
     (async () => {
-      const all = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
-      for (const c of all) {
-        if ("focus" in c) {
-          await c.focus();
-          if ("navigate" in c && c.url !== url) {
-            try {
-              await c.navigate(url);
-            } catch (e) {
-              /* cross-doc navigate can fail — ignore */
-            }
-          }
-          return;
+      const all = (await self.clients.matchAll({ type: "window", includeUncontrolled: true }))
+        .filter((c) => "focus" in c);
+      const same = all.find((c) => c.url === url);
+      if (same) {
+        await same.focus();
+        return;
+      }
+      const free = all.find((c) => "navigate" in c && !keepsPage(c));
+      if (free) {
+        await free.focus();
+        try {
+          await free.navigate(url);
+        } catch (e) {
+          /* cross-doc navigate can fail — ignore */
         }
+        return;
+      }
+      if (all.length > 0) {
+        await all[0].focus();
+        return;
       }
       if (self.clients.openWindow) await self.clients.openWindow(url);
     })()

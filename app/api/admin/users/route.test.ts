@@ -23,7 +23,7 @@ vi.mock("@/lib/supabase/admin", () => ({
   createAdminClient: () => h.admin,
 }));
 
-import { GET, PATCH } from "./route";
+import { DELETE, GET, PATCH } from "./route";
 
 let server: SupabaseFake;
 let db: SupabaseFake;
@@ -232,5 +232,25 @@ describe("PATCH /api/admin/users — a failed save leaves the user as they were"
     expect(state.tenantRole).toBe("member");
     expect(res.status).toBe(500);
     expect(json.error).toMatch(/สิทธิ์เดิม/);
+  });
+});
+
+describe("DELETE /api/admin/users — an account that created events or sent feedback", () => {
+  it("is SOFT-deleted: a hard delete's on-delete-set-null runs into the guard triggers", async () => {
+    db = makeSupabaseFake({
+      script: {
+        tenant_members: ok([{ user_id: TARGET }]),
+        group_roles: ok([]),
+      },
+    });
+    const deleteUser = vi.fn(async () => ({ data: {}, error: null }));
+    const client = adminClient(db);
+    h.admin = { ...client, auth: { admin: { ...client.auth.admin, deleteUser } } };
+
+    const res = await DELETE(new Request(`https://x/api/admin/users?user_id=${TARGET}`, { method: "DELETE" }));
+
+    expect(res.status).toBe(200);
+    expect(deleteUser).toHaveBeenCalledWith(TARGET, true);
+    expect(db.callsTo("tenant_members", "delete")).toHaveLength(1);
   });
 });

@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { toast } from "sonner";
-import { History, Save, RotateCcw, Loader2, Clock } from "lucide-react";
+import { History, Save, RotateCcw, Loader2, Clock, RefreshCw } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -87,19 +87,32 @@ export function SetlistVersions({
   const [open, setOpen] = useState(false);
   const [versions, setVersions] = useState<Version[]>([]);
   const [loading, setLoading] = useState(false);
+  // A read that failed is not an empty history: saying "ยังไม่มีเวอร์ชันที่บันทึกไว้"
+  // on a dead connection tells the Ar the versions she saved are gone.
+  const [loadFailed, setLoadFailed] = useState(false);
   const [label, setLabel] = useState("");
   const [busy, setBusy] = useState(false);
   const supabase = createClient();
 
   async function load() {
     setLoading(true);
-    const { data } = await supabase
-      .from("setlist_versions")
-      .select("id, label, snapshot, created_at")
-      .eq("event_id", eventId)
-      .order("created_at", { ascending: false });
-    setVersions((data ?? []) as Version[]);
-    setLoading(false);
+    try {
+      const { data, error } = await supabase
+        .from("setlist_versions")
+        .select("id, label, snapshot, created_at")
+        .eq("event_id", eventId)
+        .order("created_at", { ascending: false });
+      if (error) {
+        setLoadFailed(true);
+        return;
+      }
+      setLoadFailed(false);
+      setVersions((data ?? []) as Version[]);
+    } catch {
+      setLoadFailed(true);
+    } finally {
+      setLoading(false);
+    }
   }
 
   async function save() {
@@ -178,6 +191,15 @@ export function SetlistVersions({
         <div className="space-y-2">
           {loading ? (
             <p className="py-6 text-center text-sm text-muted-foreground">กำลังโหลด…</p>
+          ) : loadFailed ? (
+            <div role="alert" className="space-y-2 py-6 text-center text-sm">
+              <p className="text-muted-foreground">
+                โหลดประวัติเวอร์ชันไม่สำเร็จ — ตรวจสอบอินเทอร์เน็ตแล้วลองใหม่
+              </p>
+              <Button type="button" variant="outline" size="sm" onClick={load}>
+                <RefreshCw className="h-3.5 w-3.5" /> ลองใหม่
+              </Button>
+            </div>
           ) : versions.length === 0 ? (
             <p className="py-6 text-center text-sm text-muted-foreground">
               ยังไม่มีเวอร์ชันที่บันทึกไว้

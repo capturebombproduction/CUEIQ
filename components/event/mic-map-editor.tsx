@@ -327,13 +327,22 @@ export function MicMapEditor({
     if (!ok) return;
     const snapshot = mics;
     setMics((prev) => prev.filter((m) => m.id !== id));
-    const { error } = await supabase
+    const { data, error } = await supabase
       .from("mic_assignments")
       .delete()
-      .eq("id", id);
+      .eq("id", id)
+      .select("id");
     if (error) {
       if (await queueOffline(snapshot.filter((m) => m.id !== id), error.message)) return;
       toast.error("ลบไม่สำเร็จ", { description: error.message });
+      setMics(snapshot);
+      return;
+    }
+    // Removed nothing on the server (lib/write-guard.ts): the holder is still on the
+    // mic for everyone else and comes back on the next load — say so now, and put
+    // it back on screen, rather than show a map the server does not have.
+    if (wroteNothing(data)) {
+      toast.error("ยังไม่ได้ลบ", { description: await noRowsMessage() });
       setMics(snapshot);
     }
   }
@@ -346,15 +355,21 @@ export function MicMapEditor({
     if (!ok) return;
     const snapshot = mics;
     setMics((prev) => prev.filter((m) => m.mic_number !== micNumber));
-    const { error } = await supabase
+    const { data, error } = await supabase
       .from("mic_assignments")
       .delete()
       .eq("event_id", eventId)
-      .eq("mic_number", micNumber);
+      .eq("mic_number", micNumber)
+      .select("id");
     if (error) {
       if (await queueOffline(snapshot.filter((m) => m.mic_number !== micNumber), error.message))
         return;
       toast.error("ลบไม่สำเร็จ", { description: error.message });
+      setMics(snapshot);
+      return;
+    }
+    if (wroteNothing(data)) {
+      toast.error("ยังไม่ได้ลบ", { description: await noRowsMessage() });
       setMics(snapshot);
     }
   }

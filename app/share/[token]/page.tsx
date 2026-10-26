@@ -102,8 +102,34 @@ export async function generateMetadata({ params }: { params: Promise<{ token: st
 export default async function SharePage({ params }: { params: Promise<{ token: string }> }) {
   const { token } = await params;
   const supabase = await createClient();
-  const { data } = await supabase.rpc("get_shared_event", { p_token: token });
+  const { data, error } = await supabase.rpc("get_shared_event", { p_token: token });
   const bundle = data as SharedBundle | null;
+
+  // A FAILED READ IS NOT A REVOKED LINK (lib/read-guard.ts says the same of a zero
+  // count). A statement timeout / 5xx at the venue used to fall through to "ลิงก์ไม่
+  // ถูกต้องหรือถูกปิดการแชร์แล้ว — ขอลิงก์ใหม่": the crew was told the band withdrew
+  // the sheet, and making a new link (ปิดลิงก์ → สร้างลิงก์แชร์) kills the one already
+  // sent everywhere else. Say what happened and offer the same link again — a plain
+  // anchor, because this public page works without any client JS.
+  if (error) {
+    return (
+      <main className="grid min-h-screen place-items-center bg-background p-6 text-center">
+        <div className="space-y-2">
+          <Music2 className="mx-auto h-10 w-10 text-muted-foreground" />
+          <h1 className="text-lg font-semibold">โหลดไม่สำเร็จ — ลองใหม่อีกครั้ง</h1>
+          <p className="text-sm text-muted-foreground">
+            เน็ตหรือเซิร์ฟเวอร์อาจขัดข้องชั่วคราว — ไม่ต้องขอลิงก์ใหม่
+          </p>
+          <a
+            href={`/share/${encodeURIComponent(token)}`}
+            className="inline-block pt-1 text-sm font-medium text-primary-ink underline"
+          >
+            โหลดอีกครั้ง
+          </a>
+        </div>
+      </main>
+    );
+  }
 
   if (!bundle || !bundle.event) {
     return (
@@ -129,7 +155,9 @@ export default async function SharePage({ params }: { params: Promise<{ token: s
   const startSec = parseClockToSeconds(event.show_start_time);
   const hardOutSec = parseClockToSeconds(event.hard_out_time);
   const hasClock = startSec != null;
-  const timing = computeSetlistTimes(setlist, startSec ?? 0, hardOutSec);
+  // No show start = no set to be late: timed from 00:00, "เกิน Hard out" was a claim
+  // about a set nobody had placed on the clock (the in-app run sheet's rule).
+  const timing = computeSetlistTimes(setlist, startSec ?? 0, hasClock ? hardOutSec : null);
   const typeLabel = EVENT_TYPES[event.event_type]?.label ?? event.event_type;
 
   return (

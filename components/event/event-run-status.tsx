@@ -16,6 +16,7 @@ import {
   shortClock,
 } from "@/lib/time";
 import type { RunSeqLive } from "@/components/event/event-live-caller";
+import { compareRunOrder } from "@/lib/run-order-sort";
 
 // seconds-since-midnight (local) for a Date — to compare a live timestamp with the
 // planned clock-of-day. Mirrors event-live-caller.
@@ -145,10 +146,10 @@ export function EventRunStatusCard({
   }, [supabase, tenantId, eventName, eventDate]);
 
   // --- derived ---------------------------------------------------------------
-  const ordered = useMemo(
-    () => [...rows].sort((a, b) => a.sort_order - b.sort_order),
-    [rows]
-  );
+  // The caller's order, ties included (lib/run-order-sort.ts): sorted on sort_order
+  // alone, two tied rows came back in whatever order Postgres chose, and this card
+  // could name a different "last done" act - and drift - than the board it mirrors.
+  const ordered = useMemo(() => [...rows].sort(compareRunOrder), [rows]);
   const liveRow = ordered.find((r) => r.status === "live") ?? null;
   const doneRows = ordered.filter((r) => r.status === "done");
   const lastDone = doneRows.length ? doneRows[doneRows.length - 1] : null;

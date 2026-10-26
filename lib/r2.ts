@@ -13,6 +13,7 @@
 
 import { S3Client, ListObjectsV2Command, GetObjectCommand } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
+import { PARTIAL_BACKUP_PREFIX } from "@/lib/backup-keys";
 
 export const R2_BUCKET = process.env.R2_BUCKET ?? "";
 
@@ -77,6 +78,7 @@ export async function listBackups(): Promise<BackupObject[]> {
     );
     for (const o of res.Contents ?? []) {
       if (!o.Key || o.Key.endsWith("/")) continue; // skip the folder placeholder
+      if (o.Key.startsWith(PARTIAL_BACKUP_PREFIX)) continue; // an incomplete night
       out.push({
         key: o.Key,
         size: o.Size ?? 0,

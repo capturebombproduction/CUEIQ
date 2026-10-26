@@ -53,7 +53,10 @@ export type CloneResult = {
  *  else its earliest stage row. Null when it has neither. (Measuring from the stage
  *  row first put the anchor somewhere the dialog never showed whenever the two
  *  differed: stage 13:00, show start 13:05, type 17:35 → show start 17:40.) */
-export function stageAnchorSeconds(schedule: Row[], event: Row): number | null {
+export function stageAnchorSeconds(
+  schedule: readonly { kind?: unknown; start_time?: unknown }[],
+  event: { show_start_time?: unknown }
+): number | null {
   const showStart = parseClockToSeconds(event.show_start_time as string | null);
   if (showStart != null) return showStart;
   const stages = schedule
@@ -61,6 +64,29 @@ export function stageAnchorSeconds(schedule: Row[], event: Row): number | null {
     .map((r) => parseClockToSeconds(r.start_time as string | null))
     .filter((s): s is number => s != null);
   return stages.length ? Math.min(...stages) : null;
+}
+
+/** Seconds from `fromSec` to `toSec` the short way round the clock: −12 h … +12 h.
+ *  The rule lib/next-show.ts callTimeOf counts a show's day by — a 00:30 booth after
+ *  a 23:00 set is +1:30, not −22:30. */
+export function aroundTheClock(fromSec: number, toSec: number): number {
+  return ((((toSec - fromSec) % 86400) + 86400 + 43200) % 86400) - 43200;
+}
+
+/**
+ * Where a row falls in its show's day, for sorting: the row's distance from the
+ * stage anchor (stageAnchorSeconds), the short way round. A plain "HH:MM:SS" sort
+ * put a late show's after-midnight booth at the TOP of the day, above the call —
+ * and a copy moved past midnight (shiftClock wraps) lands exactly there. With no
+ * anchor it is the plain clock; a row with no time sorts after every timed one.
+ */
+export function dayOrderSeconds(
+  start: string | null | undefined,
+  anchorSec: number | null
+): number {
+  const sec = parseClockToSeconds(start ?? null);
+  if (sec == null) return Number.POSITIVE_INFINITY;
+  return anchorSec == null ? sec : aroundTheClock(anchorSec, sec);
 }
 
 /** A time-of-day moved by `deltaSec`, wrapped to the day ("HH:MM:SS"). A value
@@ -148,8 +174,7 @@ export async function cloneEvent(
     // The nearer way round the clock: a 23:00 set moved to 01:00 is "+2:00", not
     // "−22:00". Every row lands on the same clock time either way (shiftClock
     // wraps at midnight) — only what the toast reports changes.
-    shiftedBy =
-      anchor == null ? null : ((((target - anchor) % 86400) + 86400 + 43200) % 86400) - 43200;
+    shiftedBy = anchor == null ? null : aroundTheClock(anchor, target);
   }
 
   const eventRow = buildEvent(src as Row);
@@ -166,6 +191,15 @@ export async function cloneEvent(
         end_time: shiftClock(row.end_time, by),
       }));
     }
+  }
+
+  // The typed stage time IS the copy's show start. Moving the day cannot put it
+  // there when the source had no show start (shiftClock leaves a null a null): the
+  // rows moved from a stage row, or nothing moved at all, and the copy opened with
+  // ขึ้นเวที "—", no clock on its setlist, and "เวลาเริ่มโชว์" listed missing — right
+  // after the user typed it.
+  if (target != null && !eventRow.show_start_time) {
+    eventRow.show_start_time = formatClockOfDay(target, true);
   }
 
   const { data: created, error: insErr } = await supabase

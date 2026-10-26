@@ -534,24 +534,36 @@ export function EventsList({
     const todo = notReadyIds;
     if (todo.length === 0) return;
     const cache = eventCache();
-    const grandTotal = todo.reduce((n, id) => {
+    // EVERY upcoming show's bundle is pulled down again, not only the ones missing
+    // from this device. "Cached" is a presence check: a bundle written when the show
+    // was opened last week still carries last week's setlist / schedule / mics, and
+    // it is the copy Live Mode opens at a no-wifi venue — while the files fetched
+    // below come from the server's CURRENT setlist, so the dashboard said พร้อม and
+    // the band ran the old set. A bundle is a few KB next to the audio; re-reading
+    // them all is the cheap way to be sure. Shows needing nothing else go after.
+    const todoSet = new Set(todo);
+    const all = cache
+      ? [...todo, ...Object.keys(targetsByEvent).filter((id) => !todoSet.has(id))]
+      : todo;
+    const grandTotal = all.reduce((n, id) => {
       const r = readiness[id];
-      // + 1 step for an event whose bundle still has to be pulled down (same
-      // condition the loop below uses, so the counter can't overshoot)
-      return n + (r ? r.total - r.ready : 0) + (cache && r && !r.data ? 1 : 0);
+      // + 1 step per bundle re-read (same condition the loop below uses, so the
+      // counter can't overshoot)
+      return n + (todoSet.has(id) && r ? r.total - r.ready : 0) + (cache ? 1 : 0);
     }, 0);
     setBulk({ done: 0, total: grandTotal });
     let done = 0;
-    for (const id of todo) {
+    for (const id of all) {
       const r = readiness[id];
       // Data first: it's tiny next to the audio, and an event whose run sheet is
       // cached can at least be OPENED offline if the transfer is cut short later.
       // Swallow per event — one unreachable show must not abort the whole run.
-      if (cache && r && !r.data) {
+      if (cache) {
         await cache.warm(id).catch(() => {});
         done += 1;
         setBulk({ done, total: grandTotal });
       }
+      if (!todoSet.has(id)) continue;
       await prefetchEventAudio(id, targetsByEvent[id] ?? [], {
         onProgress: (p) => setBulk({ done: done + p.done, total: grandTotal }),
       });

@@ -129,10 +129,11 @@ export function PracticePlayer({
   groupId: string; // the band — "ซ้อมตามเซ็ตลิสต์" lists this band's shows
   currentUserId: string;
   songs: Song[]; // the band's full library — the pool the "add song" picker offers
-  // The practice list lives in PracticeMode (the parent) so it SURVIVES a tab switch
-  // — the player unmounts when you open the journal, and local state would reset to
-  // a stale server prop, dropping songs you just added (and then the unique key
-  // would reject re-adding them). Owning it above the Tabs fixes that.
+  // The practice list lives in PracticeMode (the parent) so it SURVIVES the player
+  // unmounting — it did on every switch to the journal until both tabs were kept
+  // mounted (practice-mode.tsx), and local state would reset to a stale server prop,
+  // dropping songs you just added (and then the unique key would reject re-adding
+  // them). Owning it above the Tabs fixes that.
   items: PracticeSong[];
   setItems: Dispatch<SetStateAction<PracticeSong[]>>;
   // Section markers live in the parent for the SAME reason — a marker added, then
@@ -145,7 +146,18 @@ export function PracticePlayer({
   onRunLogged?: () => void;
 }) {
   const confirm = useConfirm();
-  const songsById = useMemo(() => new Map(songs.map((s) => [s.id, s])), [songs]);
+  // A tempo the metronome saved to a song ("บันทึกลงเพลง") is that song's from now on.
+  // `songs` is the page-load snapshot, so without this a trip to another song and
+  // back handed the metronome the OLD bpm again (its song-change effect reads
+  // song.bpm) and the synced count ran at it until the page was reloaded.
+  const [savedBpm, setSavedBpm] = useState<Record<string, number>>({});
+  const songsById = useMemo(
+    () =>
+      new Map(
+        songs.map((s) => [s.id, s.id in savedBpm ? { ...s, bpm: savedBpm[s.id] } : s] as const)
+      ),
+    [songs, savedBpm]
+  );
   // ⭐#1 step 7 — a song whose only copy is a file held on THIS device (an upload
   // queued at a venue with no wifi) is playable here, so it must not be filtered
   // out of the practice list as if it had no audio at all.
@@ -299,17 +311,32 @@ export function PracticePlayer({
   }>({ song: null, accum: 0, startedAt: null, speed: 1 });
   runRef.current.speed = speed;
 
-  function flushRun() {
+  /**
+   * Log the song being accounted for (if it played long enough). Runs when another
+   * song is picked and when the player goes away — and, with `keepSong`, when the
+   * song ENDS and when the page is hidden for good (pagehide): a closed tab / closed
+   * desktop window / a phone that kills the backgrounded tab never unmounts anything,
+   * so the song a session ended on was never logged, however long it played. keepSong
+   * leaves the song in place: ▶ on it again (or a page restored from the back/forward
+   * cache) counts on as a new run of it, and seconds too few to log are kept, not lost.
+   */
+  function flushRun(keepSong = false) {
     const r = runRef.current;
     if (r.startedAt != null) {
       r.accum += (Date.now() - r.startedAt) / 1000;
+      // Closed here even on pagehide: after it the page is gone or frozen in the
+      // back/forward cache, and a frozen hour must never be logged as practice. A
+      // restored page counts again from its next 'play'.
       r.startedAt = null;
     }
     const song = r.song;
     const secs = Math.round(r.accum);
-    r.song = null;
-    r.accum = 0;
+    if (!keepSong) {
+      r.song = null;
+      r.accum = 0;
+    }
     if (!song || secs < RUN_LOG_THRESHOLD) return;
+    r.accum = 0; // logged — anything after this is a new run
     const supabase = createClient();
     supabase
       .from("practice_runs")
@@ -323,8 +350,32 @@ export function PracticePlayer({
         last_speed: r.speed,
         created_by: currentUserId,
       })
-      .then(() => onRunLogged?.());
+      .then(
+        ({ error }) => {
+          // Not a toast: nobody asked for this write, and it can land after the page
+          // is gone. But a refused insert must not refresh the journal as if logged.
+          if (error) {
+            console.error(
+              "[CueIQ] practice run not logged:",
+              error.code ?? "-",
+              error.message ?? "-"
+            );
+            return;
+          }
+          onRunLogged?.();
+        },
+        (err: unknown) => console.error("[CueIQ] practice run not logged:", err)
+      );
   }
+  // The engine's listeners and the pagehide listener are registered once; they call
+  // the CURRENT flushRun (its props), not the first render's.
+  const flushRunRef = useRef(flushRun);
+  flushRunRef.current = flushRun;
+  useEffect(() => {
+    const onHide = () => flushRunRef.current(true);
+    window.addEventListener("pagehide", onHide);
+    return () => window.removeEventListener("pagehide", onHide);
+  }, []);
 
   // one SoundTouch engine for the whole session (created once; talks to Web Audio)
   useEffect(() => {
@@ -350,7 +401,12 @@ export function PracticePlayer({
     };
     engine.onPreparing = (p) => setPreparing(p);
     // Through a ref: this effect runs once, and the run it must advance is state.
-    engine.onEnded = () => onEndedRef.current();
+    // The song that ended is logged first — the last one of a session has no next
+    // pick to log it.
+    engine.onEnded = () => {
+      flushRunRef.current(true);
+      onEndedRef.current();
+    };
     // The engine couldn't decode this song for slow-down and dropped back to 1×
     // native playback — follow it with the speed buttons so the UI isn't lying.
     engine.onStretchFailed = () => {
@@ -362,7 +418,13 @@ export function PracticePlayer({
     return () => {
       if (overlapTimerRef.current != null) window.clearTimeout(overlapTimerRef.current);
       if (gapTimerRef.current != null) window.clearTimeout(gapTimerRef.current);
-      flushRun(); // log whatever was playing when we leave
+      // A song tapped and still downloading must not land after we are gone: its
+      // selectSong is parked on the read and holds the engine it started with, so
+      // without a newer token it went on into load() + play() of the destroyed one —
+      // a song sounding with no ⏸ left on any screen. (The engine refuses too.)
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- the LATEST token is the point
+      ++selectTokenRef.current;
+      flushRunRef.current(); // log whatever was playing when we leave
       engine.destroy();
       engineRef.current = null;
     };
@@ -1411,6 +1473,7 @@ export function PracticePlayer({
           playing={playing}
           position={cur}
           speed={speed}
+          onBpmSaved={(songId, bpm) => setSavedBpm((m) => ({ ...m, [songId]: bpm }))}
           onDetectBeats={async () => {
             const buf = await engineRef.current?.getBuffer();
             return buf ? detectBeats(buf) : null;

@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Check, CloudOff, Loader2 } from "lucide-react";
-import { markAbandoned, markPending, markSettled } from "@/lib/dirty-guard";
+import { clearFailures, markAbandoned, markPending, markSettled } from "@/lib/dirty-guard";
 import { cn } from "@/lib/utils";
 
 /**
@@ -37,6 +37,12 @@ export function useSaveSignal() {
   // editor's real pending count, and a late failure that plants a sticky warning
   // about work nobody is waiting for. Abandonment has to be the last word.
   const alive = useRef(true);
+  // This editor's name in lib/dirty-guard.ts: its failures are filed under it, so
+  // the editor can take them back once it saves (see `end`).
+  const owner = useRef<object>({});
+  // The badge's state, readable synchronously in `end` — the guard has to be told
+  // in the same call, not after React gets round to the updater.
+  const shown = useRef<SaveState>("idle");
 
   const begin = useCallback(() => {
     inFlight.current += 1;
@@ -45,17 +51,26 @@ export function useSaveSignal() {
     // state dies when EventWorkspace re-keys a hidden tab, and the warning must
     // not die with it.
     markPending();
+    shown.current = "saving";
     setState("saving");
   }, []);
 
   const end = useCallback((ok: boolean) => {
     if (!alive.current) return; // markAbandoned already counted this one out
     inFlight.current = Math.max(0, inFlight.current - 1);
-    markSettled(ok);
     // A failure wins over anything still in flight and stays put: the toast that
     // accompanies it is gone in seconds, and what is on screen afterwards has to
     // keep saying that something did not land.
-    setState((prev) => (!ok || prev === "failed" ? "failed" : inFlight.current > 0 ? "saving" : "saved"));
+    const next: SaveState =
+      !ok || shown.current === "failed" ? "failed" : inFlight.current > 0 ? "saving" : "saved";
+    shown.current = next;
+    markSettled(ok, owner.current);
+    // …and once the badge is back to บันทึกแล้ว — every write since the failure
+    // landed — so is the leave-the-page warning. Left sticky (as it was until
+    // 2026-10-26), a field that failed and then saved fine kept "บันทึก / อัปเดต"
+    // saying ยังบันทึกไม่ครบ and every link out asking, over nothing lost.
+    if (next === "saved") clearFailures(owner.current);
+    setState(next);
   }, []);
 
   // An editor that unmounts mid-write (a tab re-key, or a navigation the guard

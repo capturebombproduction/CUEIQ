@@ -10,6 +10,7 @@ import { FIELD, Input } from "@/components/ui/input";
 import { useConfirm } from "@/components/ui/confirm-dialog";
 import { captureElementToImage, safeFileStem } from "@/lib/export-image";
 import { privateChannel, runOrderTopic } from "@/lib/realtime";
+import { compareRunOrder, hasRunOrderTie } from "@/lib/run-order-sort";
 import { cn } from "@/lib/utils";
 
 export type RunSequence = {
@@ -293,20 +294,38 @@ export function RunOrderBuilder({
     persist(id, partial, snap);
   }
 
+  // The last sort_order in use: the higher of this screen's rows and the SERVER's.
+  // This screen's rows are never re-read, so two staff screens open on one order
+  // both numbered their new row max+1 from their own copy - the same number twice,
+  // a tie ▲/▼ couldn't separate and the show caller's NEXT skipped. A failed read
+  // falls back to the local rows (the insert that follows reports the real error).
+  async function lastSortOrder(): Promise<number> {
+    const local = rows.length ? Math.max(...rows.map((r) => r.sort_order)) : 0;
+    const q = supabase
+      .from("run_sequence")
+      .select("sort_order")
+      .eq("tenant_id", tenantId)
+      .eq("event_name", eventName);
+    const { data, error } = await (eventDate ? q.eq("event_date", eventDate) : q.is("event_date", null))
+      .order("sort_order", { ascending: false })
+      .limit(1);
+    const server = !error ? Number((data?.[0] as { sort_order?: unknown } | undefined)?.sort_order) : NaN;
+    return Number.isFinite(server) ? Math.max(local, server) : local;
+  }
+
   async function addRow() {
     setBusy(true);
-    const sort = rows.length ? Math.max(...rows.map((r) => r.sort_order)) + 1 : 1;
     // Through the gate like every other write: a rollback read issued BEFORE this
     // insert would otherwise land after it and drop the new row off the screen while
     // it sits in the DB — and “นำเข้าจากเวทีวง” would then re-add its band.
-    const { data, error } = await guarded(() =>
+    const { data, error } = await guarded(async () =>
       supabase
         .from("run_sequence")
         .insert({
           tenant_id: tenantId,
           event_name: eventName,
           event_date: eventDate,
-          sort_order: sort,
+          sort_order: (await lastSortOrder()) + 1,
           title: "",
           kind: "other",
         })
@@ -345,37 +364,42 @@ export function RunOrderBuilder({
   }
 
   // Reorder by swapping sort_order with the neighbour (same trick the rest of the app
-  // uses — no full re-index needed).
+  // uses — no full re-index needed). Two rows on ONE number can't be separated by a
+  // swap (both would be written the same value - the press did nothing), so while
+  // the order holds a tie, ▲/▼ renumbers the whole order 1..n with the move applied.
   async function move(id: string, dir: -1 | 1) {
-    const sorted = [...rows].sort((a, b) => a.sort_order - b.sort_order);
+    const sorted = [...rows].sort(compareRunOrder);
     const idx = sorted.findIndex((r) => r.id === id);
     const j = idx + dir;
     if (j < 0 || j >= sorted.length) return;
     const a = sorted[idx];
     const b = sorted[j];
+    const writes = new Map<string, number>();
+    if (!hasRunOrderTie(sorted)) {
+      writes.set(a.id, b.sort_order);
+      writes.set(b.id, a.sort_order);
+    } else {
+      const moved = [...sorted];
+      moved[idx] = b;
+      moved[j] = a;
+      moved.forEach((r, k) => {
+        if (r.sort_order !== k + 1) writes.set(r.id, k + 1);
+      });
+    }
     const snap = rows;
     setRows((prev) =>
-      prev.map((r) =>
-        r.id === a.id
-          ? { ...r, sort_order: b.sort_order }
-          : r.id === b.id
-            ? { ...r, sort_order: a.sort_order }
-            : r
-      )
+      prev.map((r) => (writes.has(r.id) ? { ...r, sort_order: writes.get(r.id)! } : r))
     );
     const results = await guarded(() =>
-      Promise.all([
-        supabase
-          .from("run_sequence")
-          .update({ sort_order: b.sort_order })
-          .eq("id", a.id)
-          .select("id"),
-        supabase
-          .from("run_sequence")
-          .update({ sort_order: a.sort_order })
-          .eq("id", b.id)
-          .select("id"),
-      ])
+      Promise.all(
+        [...writes].map(([rowId, sortOrder]) =>
+          supabase
+            .from("run_sequence")
+            .update({ sort_order: sortOrder })
+            .eq("id", rowId)
+            .select("id")
+        )
+      )
     );
     const err = results.find((r) => r.error)?.error;
     // …and the same 0-row check as persist(): a swap RLS filtered out reports no error.
@@ -481,7 +505,6 @@ export function RunOrderBuilder({
       return;
     }
     setBusy(true);
-    let sort = rows.length ? Math.max(...rows.map((r) => r.sort_order)) : 0;
     const created: RunSequence[] = [];
     let failed: string | undefined;
     // One gate around the WHOLE loop: a rollback landing between two inserts would
@@ -489,6 +512,7 @@ export function RunOrderBuilder({
     // next import — which reads linked_event_id + planned_start off the rows on screen
     // — would add those slots all over again. Deferred until the import finishes.
     await guarded(async () => {
+      let sort = await lastSortOrder();
       for (const { band: b, round } of todo) {
         sort += 1;
         const { data, error } = await supabase
@@ -558,7 +582,7 @@ export function RunOrderBuilder({
     }
   }
 
-  const ordered = [...rows].sort((a, b) => a.sort_order - b.sort_order);
+  const ordered = [...rows].sort(compareRunOrder);
 
   // The link dropdown picks an EVENT, but bandEvents now holds one entry per stage
   // slot — rendering it straight would give a twice-booked band two options with the

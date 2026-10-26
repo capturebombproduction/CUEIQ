@@ -117,6 +117,18 @@ function shortUrl(url: string | null): string | null {
   }
 }
 
+/** A read that failed - said as such, with a retry, never as an empty inbox. */
+function LoadFailed({ onRetry }: { onRetry: () => void }) {
+  return (
+    <div className="flex flex-col items-center gap-3 rounded-[2px] border border-dashed border-destructive/40 py-8 text-center text-sm text-muted-foreground">
+      <p>โหลดข้อมูลไม่สำเร็จ — อาจเป็นเพราะเน็ตหรือเซิร์ฟเวอร์ ลองใหม่อีกครั้ง</p>
+      <Button variant="secondary" size="sm" onClick={onRetry}>
+        <RefreshCw aria-hidden /> ลองใหม่
+      </Button>
+    </div>
+  );
+}
+
 export function DevInbox({
   namesById = {},
   adminUserId,
@@ -134,6 +146,10 @@ export function DevInbox({
   const [errs, setErrs] = useState<ErrorRow[]>([]);
   const [showNoise, setShowNoise] = useState(false);
   const [loading, setLoading] = useState(true);
+  // A failed read is not an empty inbox: it used to render "ยังไม่มีฟีดแบค" and
+  // "ไม่มี error ที่ถูกบันทึก — ดีงาม" - the admin told in green that all was well.
+  const [fbFailed, setFbFailed] = useState(false);
+  const [errsFailed, setErrsFailed] = useState(false);
 
   async function load() {
     setLoading(true);
@@ -142,8 +158,10 @@ export function DevInbox({
       supabase.from("feedback").select("*").order("created_at", { ascending: false }).limit(100),
       supabase.from("client_errors").select("*").order("created_at", { ascending: false }).limit(200),
     ]);
-    setFb((f.data ?? []) as FeedbackRow[]);
-    setErrs((e.data ?? []) as ErrorRow[]);
+    setFbFailed(!!f.error);
+    setErrsFailed(!!e.error);
+    if (!f.error) setFb((f.data ?? []) as FeedbackRow[]);
+    if (!e.error) setErrs((e.data ?? []) as ErrorRow[]);
     setLoading(false);
   }
   useEffect(() => { load(); }, []);
@@ -229,14 +247,28 @@ export function DevInbox({
     // list was deleted for good along with the note.
     const row = fb.find((r) => r.id === id);
     const keys = (row?.images ?? []).filter((k) => isOwnFeedbackImage(k, row?.user_id));
+    const snapshot = fb;
     setFb((p) => p.filter((r) => r.id !== id));
-    await createClient().from("feedback").delete().eq("id", id);
+    // The pictures go only once the note is gone: a delete that failed (or touched no
+    // row - sent as anon) used to remove them anyway, and the note came back on the
+    // next load with broken images.
+    const { data, error } = await createClient().from("feedback").delete().eq("id", id).select("id");
+    if (error || wroteNothing(data)) {
+      setFb(snapshot);
+      toast.error("ลบไม่สำเร็จ", { description: error?.message ?? (await noRowsMessage()) });
+      return;
+    }
     await Promise.allSettled(keys.map((k) => removeEventAudio(k)));
   }
   async function delGroup(ids: string[]) {
     if (!ids.length) return;
+    const snapshot = errs;
     setErrs((p) => p.filter((r) => !ids.includes(r.id)));
-    await createClient().from("client_errors").delete().in("id", ids);
+    const { data, error } = await createClient().from("client_errors").delete().in("id", ids).select("id");
+    if (error || wroteNothing(data)) {
+      setErrs(snapshot);
+      toast.error("ลบไม่สำเร็จ", { description: error?.message ?? (await noRowsMessage()) });
+    }
   }
   async function clearNoise() {
     if (!(await confirm({ title: "ล้าง noise ทั้งหมด?", description: "ลบ error ที่เป็น hydration / localhost ออก — ลบถาวร" }))) return;
@@ -280,7 +312,8 @@ export function DevInbox({
 
       {/* feedback — one thread per report: their message, then the answer */}
       <TabsContent value="feedback" className="mt-3">
-        {!loading && fb.length === 0 && (
+        {!loading && fbFailed && <LoadFailed onRetry={load} />}
+        {!loading && !fbFailed && fb.length === 0 && (
           <p className="rounded-[2px] border border-dashed border-border py-8 text-center text-sm text-muted-foreground">
             ยังไม่มีฟีดแบค
           </p>
@@ -431,7 +464,8 @@ export function DevInbox({
           </div>
         </div>
 
-        {!loading && groups.length === 0 && (
+        {!loading && errsFailed && <LoadFailed onRetry={load} />}
+        {!loading && !errsFailed && groups.length === 0 && (
           <p className="flex items-center justify-center gap-2 rounded-[2px] border border-dashed border-border py-8 text-center text-sm text-muted-foreground">
             <CircleCheck className="h-4 w-4 text-success-ink" aria-hidden />
             ไม่มี error ที่ถูกบันทึก — ดีงาม

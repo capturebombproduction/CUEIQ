@@ -35,8 +35,9 @@ export const COLD_OFFLINE = "workspace: offline, and nothing of this account is 
 
 /** Resolves to `null` if `p` has not settled within `ms`.
  *
- *  THE CANONICAL COPY of this helper (events-list, event-bundle, run-order and
- *  song-library each keep a local twin; change one, change all five).
+ *  THE CANONICAL COPY of this helper (events-list, event-bundle, run-order,
+ *  song-library and pages/practice.tsx each keep a local twin; change one, change
+ *  all six).
  *
  *  There is no AbortController: the in-flight request is not cancelled, it is
  *  ABANDONED. That is safe here, and this is the checklist to re-verify before

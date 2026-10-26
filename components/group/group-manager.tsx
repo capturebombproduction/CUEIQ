@@ -195,12 +195,13 @@ export function GroupManager({
     setMembers((prev) => [...prev, data as Member]);
   }
 
-  async function bulkAddMembers(groupId: string, text: string) {
+  /** True when the members were added - the dialog keeps the pasted roster otherwise. */
+  async function bulkAddMembers(groupId: string, text: string): Promise<boolean> {
     const lines = text
       .split("\n")
       .map((l) => l.trim())
       .filter(Boolean);
-    if (!lines.length) return;
+    if (!lines.length) return false;
     const gm = membersOf(groupId);
     let sort = gm.length ? Math.max(...gm.map((m) => m.sort_order)) + 1 : 1;
     const rows = lines.map((line) => {
@@ -218,10 +219,16 @@ export function GroupManager({
     const { data, error } = await supabase.from("members").insert(rows).select("*");
     if (error || !data) {
       toast.error("เพิ่มสมาชิกไม่สำเร็จ", { description: error?.message });
-      return;
+      return false;
+    }
+    if (data.length === 0) {
+      // no error and no row: the insert never landed (anon after a failed refresh)
+      toast.error("เพิ่มสมาชิกไม่สำเร็จ", { description: await noRowsMessage() });
+      return false;
     }
     setMembers((prev) => [...prev, ...(data as Member[])]);
     toast.success(`เพิ่ม ${data.length} คนแล้ว`);
+    return true;
   }
 
   function setMemberLocal(id: string, partial: Partial<Member>) {

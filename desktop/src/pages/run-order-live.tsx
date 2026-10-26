@@ -10,7 +10,7 @@ import { RefreshButton } from "@/components/refresh-button";
 import { canApprove } from "@/lib/permissions";
 import { EventLiveCaller } from "@/components/event/event-live-caller";
 import { useWorkspace } from "~/data/workspace-context";
-import { loadRunOrderLive, type RunOrderLive } from "~/data/run-order";
+import { loadRunOrderLive, saveRunOrderLive, type RunOrderLive } from "~/data/run-order";
 import { ImmersiveLoading } from "~/components/immersive-loading";
 
 export function RunOrderLivePage() {
@@ -85,6 +85,11 @@ export function RunOrderLivePage() {
       canControl={canControl}
       backHref={canControl ? `/events/${id}/run-order` : `/events/${id}`}
       backLabel={canControl ? "Running Order" : data.name}
+      // The offline copy follows the board, not just the page load: written only
+      // there, leaving this page during an outage and coming back rewound the show
+      // to the moment it was first opened - under a notice promising
+      // "คุมคิวต่อได้ตามปกติ" (2026-10-26). Server rows only; the caller re-lays the queue.
+      onRows={(seqs) => saveRunOrderLive(id!, { name: data.name, date: data.date, seqs })}
       notice={
         offlineCopy ? (
           // Say it plainly: this is what the board looked like the last time this

@@ -605,6 +605,7 @@ export function UserManager({
             <DialogTitle>Reset password</DialogTitle>
             <DialogDescription>
               {pwTarget ? displayLoginId(pwTarget.email) || pwTarget.user_id : ""} — ผู้ใช้จะใช้รหัสใหม่นี้ล็อกอินครั้งต่อไป
+              และทุกเครื่องที่ล็อกอินบัญชีนี้อยู่จะถูกออกจากระบบ (อย่ารีเซ็ตบัญชีวงช่วงใกล้ขึ้นโชว์)
             </DialogDescription>
           </DialogHeader>
 

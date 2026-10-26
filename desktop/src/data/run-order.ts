@@ -12,10 +12,19 @@
 // our token is treated as a failed read, never as "the order is empty" — the
 // board is the thing a whole festival reads, so blanking it is the worst outcome.
 //
-// ⚠️ READS only. Driving the board offline (จบ+ต่อไป, ±min) still needs the
-// network: run_sequence is not in the management outbox, and two stage managers
-// each advancing an offline copy of one shared festival order is a conflict this
-// app has no answer for yet. A read-only board is honest; a divergent one is not.
+// Driving the board offline (จบ+ต่อไป, ±min) works: those presses ride their own
+// queue (lib/run-order-outbox.ts), which replays them on reconnect as
+// compare-and-swaps and PARKS what another device moved meanwhile — and the caller
+// lays every still-queued press back over whatever rows it renders, this cache
+// included.
+//
+// ⚠️ SO THIS CACHE MUST FOLLOW THE BOARD, not just the page load. Written only by
+// loadRunOrderLive, it held the board as it stood when the page was first opened:
+// leave คุมคิว Live during an outage (a band's setlist, the back key, a restart) and
+// the "offline copy" rewound the show to page-open state, and every press made on it
+// was built on rows the server left behind long ago (2026-10-26). The caller now
+// hands its server rows back on every refetch it applies and every press that
+// commits (EventLiveCaller's onRows), and the page writes them here.
 import { createClient } from "@/lib/supabase/client";
 import { hasLiveSession } from "@/lib/auth-session";
 import type { RunSeqLive } from "@/components/event/event-live-caller";
@@ -158,6 +167,15 @@ export async function loadRunOrderLive(
   } catch {
     return served(cached());
   }
+}
+
+/**
+ * Keep the offline copy where the board is: the rows the SERVER holds as the caller
+ * last learned them (never its queued overlay - the caller re-lays the queue itself,
+ * and a copy with a press baked in would keep it on screen after it parked).
+ */
+export function saveRunOrderLive(eventId: string, data: RunOrderLive): void {
+  writeCache(liveKey(eventId), data);
 }
 
 export async function loadRunOrderBuild(

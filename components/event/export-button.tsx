@@ -70,11 +70,16 @@ export function ExportButton({
         .select("*")
         .eq("event_id", eventId)
         .order("sort_order", { ascending: true }),
+      // Tied sort_order rows ("two rows added at once") are broken by id everywhere
+      // the set is played or edited — getEventBundle, Live Mode, the setlist builder —
+      // so every device agrees. Without it Postgres hands ties back in heap order and
+      // the printed sheet could swap two songs relative to what Live Mode plays.
       supabase
         .from("setlist_items")
         .select("*")
         .eq("event_id", eventId)
-        .order("sort_order", { ascending: true }),
+        .order("sort_order", { ascending: true })
+        .order("id", { ascending: true }),
       supabase
         .from("mic_assignments")
         .select("*")

@@ -200,6 +200,13 @@ function friendlyError(message?: string): string | undefined {
   return message;
 }
 
+/** The file name to show for a song: the file it plays now (audio_name), else the
+ *  name it was created with. Every replace path writes only audio_name, so showing
+ *  file_name named the OLD take after a swap. */
+function shownFileName(song: Pick<Song, "audio_name" | "file_name">): string | null {
+  return song.audio_name || song.file_name || null;
+}
+
 interface FormState {
   id: string | null;
   group_id: string;
@@ -268,6 +275,14 @@ export function SongLibrary({
   const canEditAny = editableGroupIds.size > 0;
   const approver = canApprove(perms);
   const [songs, setSongs] = useState<Song[]>(initialSongs);
+  // A refreshed list from the page (the "บันทึก / อัปเดต" bar's router.refresh(), the
+  // desktop's reload) replaces the one on screen - it used to be read once at mount,
+  // so the button promised the latest data and changed nothing but the count.
+  const [seenInitial, setSeenInitial] = useState(initialSongs);
+  if (initialSongs !== seenInitial) {
+    setSeenInitial(initialSongs);
+    setSongs(initialSongs);
+  }
   const [groupFilter, setGroupFilter] = useState<string>("all");
   const [query, setQuery] = useState("");
   const [copyFilter, setCopyFilter] = useState<string>("all");
@@ -279,6 +294,10 @@ export function SongLibrary({
   const [sheetId, setSheetId] = useState<string | null>(null);
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState<FormState>(emptyForm(editGroups[0]?.id ?? ""));
+  // The edit dialog as it opened: a length / file name the user didn't touch is left
+  // out of the save, so a rename can't write the old take's length back over the one
+  // just measured from the new file (measureUploadedSong runs in the background).
+  const openedFormRef = useRef<FormState | null>(null);
   const [saving, setSaving] = useState(false);
   const [detecting, setDetecting] = useState(false);
   // file picked in the add/edit dialog — uploaded to R2 on save (one-step add+upload)
@@ -695,17 +714,18 @@ export function SongLibrary({
 
   function openAdd() {
     setPickedFile(null);
+    openedFormRef.current = null;
     setForm(emptyForm(editGroups[0]?.id ?? ""));
     setOpen(true);
   }
 
   function openEdit(song: Song) {
     setPickedFile(null);
-    setForm({
+    const opened: FormState = {
       id: song.id,
       group_id: song.group_id,
       title: song.title,
-      file_name: song.file_name ?? "",
+      file_name: shownFileName(song) ?? "",
       durationStr: song.duration_seconds
         ? formatDuration(song.duration_seconds)
         : "",
@@ -713,7 +733,9 @@ export function SongLibrary({
       category: song.category ?? "",
       copyright_status: song.copyright_status,
       notes: song.notes ?? "",
-    });
+    };
+    openedFormRef.current = opened;
+    setForm(opened);
     setOpen(true);
   }
 
@@ -752,6 +774,23 @@ export function SongLibrary({
       toast.error("เลือกวงก่อน");
       return;
     }
+    // A length the parser refuses was sent as null onto a NOT NULL column (Postgres's
+    // English error) - say what to type instead, as the setlist's time field does.
+    const durationSeconds = form.durationStr.trim() ? parseDurationToSeconds(form.durationStr) : 0;
+    if (durationSeconds == null) {
+      toast.error("รูปแบบความยาวไม่ถูกต้อง", { description: "ใช้รูปแบบ m:ss เช่น 3:45" });
+      return;
+    }
+    const current = form.id ? songs.find((s) => s.id === form.id) : undefined;
+    // The file's R2 key names the band it was uploaded under (<tenant>/<band>/songs/…)
+    // and presign lets only that band's viewers read it: moved to another band, the
+    // song went silent for the new band's accounts (403) while an admin still heard it.
+    if (current && form.group_id !== current.group_id && current.audio_path) {
+      toast.error("ย้ายวงไม่ได้ ขณะเพลงนี้มีไฟล์เสียง", {
+        description: "ไฟล์ถูกเก็บไว้ใต้วงเดิม สมาชิกวงใหม่จะเปิดไม่ได้ — ลบไฟล์เสียงก่อน ย้ายวง แล้วอัปไฟล์ใหม่",
+      });
+      return;
+    }
     setSaving(true);
     // ลิขสิทธิ์ is sent CONDITIONALLY (guard 0034): the DB refuses a non-approver
     // changing copyright_status, and it compares against the CURRENT row — so a value
@@ -761,19 +800,26 @@ export function SongLibrary({
     // the patch entirely; a non-approver never sends it at all (the Select is already
     // disabled, this is the belt). A NEW song always carries it — the insert trigger
     // forces 'pending' for a non-approver anyway.
-    const current = form.id ? songs.find((s) => s.id === form.id) : undefined;
     const copyrightPatch: { copyright_status?: CopyrightStatus } =
       !form.id || (approver && form.copyright_status !== current?.copyright_status)
         ? { copyright_status: form.copyright_status }
         : {};
+    // Same rule for the length and the file name (see openedFormRef): untouched → not
+    // sent - unless a file was picked in this dialog, whose length is then the user's.
+    const opened = form.id && !pickedFile ? openedFormRef.current : null;
+    const filePatch: { file_name?: string | null; duration_seconds?: number } = {
+      ...(!opened || form.file_name !== opened.file_name
+        ? { file_name: form.file_name.trim() || null }
+        : {}),
+      ...(!opened || form.durationStr !== opened.durationStr
+        ? { duration_seconds: durationSeconds }
+        : {}),
+    };
     const payload = {
       tenant_id: tenantId,
       group_id: form.group_id,
       title: form.title.trim(),
-      file_name: form.file_name.trim() || null,
-      duration_seconds: form.durationStr
-        ? parseDurationToSeconds(form.durationStr)
-        : 0,
+      ...filePatch,
       language: form.language === NONE ? null : form.language,
       category: form.category.trim() || null,
       ...copyrightPatch,
@@ -830,15 +876,17 @@ export function SongLibrary({
 
   async function onDelete(song: Song) {
     // Warn if this song is linked into any setlist — those rows lose their file.
-    const { count } = await supabase
+    // A failed read is not "used nowhere": say so instead of the plain prompt.
+    const { count, error: usageError } = await supabase
       .from("setlist_items")
       .select("id", { count: "exact", head: true })
       .eq("song_id", song.id);
     const used = count ?? 0;
     const ok = await confirm({
       title: `ลบเพลง “${song.title}” ออกจากคลัง?`,
-      description:
-        used > 0
+      description: usageError
+        ? "ตรวจไม่ได้ว่าเพลงนี้ถูกใช้ในงานไหนอยู่บ้าง (เน็ตขัดข้อง) — ถ้าใช้อยู่ งานพวกนั้นจะไม่มีไฟล์เพลงนี้"
+        : used > 0
           ? `เพลงนี้ถูกใช้อยู่ใน ${used} รายการของงาน — ลบแล้วงานพวกนั้นจะไม่มีไฟล์เพลงนี้`
           : undefined,
       confirmText: "ลบเพลง",
@@ -1126,7 +1174,7 @@ export function SongLibrary({
     try {
       const { data, error } = await supabase
         .from("songs")
-        .update({ audio_path: null, audio_name: null, audio_expires_at: null })
+        .update({ audio_path: null, audio_name: null, file_name: null, audio_expires_at: null })
         .eq("id", song.id)
         .select("id");
       if (error) throw error;
@@ -1140,7 +1188,7 @@ export function SongLibrary({
       setSongs((prev) =>
         prev.map((s) =>
           s.id === song.id
-            ? { ...s, audio_path: null, audio_name: null, audio_expires_at: null }
+            ? { ...s, audio_path: null, audio_name: null, file_name: null, audio_expires_at: null }
             : s
         )
       );
@@ -1902,11 +1950,11 @@ export function SongLibrary({
                               min-content it held the Song column ~330 px wide and pushed
                               the table past the slab at tablet widths (CQ-39). break-all
                               lets it wrap; two lines at most, the full name on hover. */}
-                          {song.file_name && (
+                          {shownFileName(song) && (
                             <div className="flex items-start gap-1 text-xs text-muted-foreground">
                               <FileAudio className="mt-0.5 h-3 w-3 shrink-0" aria-hidden />
-                              <span className="line-clamp-2 min-w-0 break-all" title={song.file_name}>
-                                {song.file_name}
+                              <span className="line-clamp-2 min-w-0 break-all" title={shownFileName(song)!}>
+                                {shownFileName(song)}
                               </span>
                             </div>
                           )}
@@ -2155,10 +2203,10 @@ export function SongLibrary({
               </div>
               <div className="space-y-2">
                 <span className="eyebrow text-muted-foreground">Audio</span>
-                {sheetSong.file_name && (
+                {shownFileName(sheetSong) && (
                   <p className="flex items-center gap-1.5 text-[12.5px] text-muted-foreground">
                     <FileAudio className="h-3.5 w-3.5 shrink-0" aria-hidden />
-                    <span className="truncate">{sheetSong.file_name}</span>
+                    <span className="truncate">{shownFileName(sheetSong)}</span>
                   </p>
                 )}
                 <div className="flex flex-wrap items-center gap-2">

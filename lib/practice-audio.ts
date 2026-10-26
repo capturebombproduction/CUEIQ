@@ -112,6 +112,11 @@ export class PracticeAudioEngine {
   // song took over meanwhile — otherwise a late decode of the previous song would
   // be cached (and played) as the current one.
   private loadGen = 0;
+  // The prepare (decode + shifter) running for the loaded song. A ▶ tapped while
+  // load() was still decoding started a SECOND decode of the same song (two copies
+  // in memory) whose late landing tore down the playing shifter and restarted the
+  // song at 0:00 - so a prepare for the same song waits for the one in flight.
+  private prepareInFlight: { gen: number; done: Promise<PrepareOutcome> } | null = null;
   // Set by destroy(), which is terminal — the player drops the engine and builds a
   // new one. Closing the AudioContext REJECTS whatever decode was still running, so
   // the fallback path has to tell "this file won't decode" (act on it) apart from
@@ -202,7 +207,11 @@ export class PracticeAudioEngine {
     this._durationGen = this.loadGen;
   }
 
-  private ensureAudio(): HTMLAudioElement {
+  // null once destroyed: a call still in flight when the player left (a download
+  // that landed late, a decode that finished after the room closed) built a fresh
+  // element here and played the song with nothing left on screen to stop it.
+  private ensureAudio(): HTMLAudioElement | null {
+    if (this._destroyed) return null;
     if (!this.audio) this.audio = this.makeAudio();
     return this.audio;
   }
@@ -258,7 +267,9 @@ export class PracticeAudioEngine {
 
   // --- Web Audio / stretch --------------------------------------------------
 
-  private ensureCtx(): AudioContext {
+  // null once destroyed, for the same reason as ensureAudio
+  private ensureCtx(): AudioContext | null {
+    if (this._destroyed) return null;
     if (!this.ctx) {
       const Ctor =
         window.AudioContext ||
@@ -278,10 +289,12 @@ export class PracticeAudioEngine {
    * it here keeps the context running through the later async decode/play.
    */
   unlock() {
+    if (this._destroyed) return;
     // the element a set's overlapping song will play on, primed while we have the tap
-    if (!this.spare && !this._destroyed) this.spare = this.makeAudio();
-    if (this.spare) this.prime(this.spare);
+    if (!this.spare) this.spare = this.makeAudio();
+    this.prime(this.spare);
     const ctx = this.ensureCtx();
+    if (!ctx) return;
     if (ctx.state === "suspended") void ctx.resume().catch(() => {});
     if (!this._kicked) {
       try {
@@ -320,6 +333,7 @@ export class PracticeAudioEngine {
     const pre = !this.buffer && this.pre?.blob === blob ? this.pre : null;
     if (pre) this.pre = null;
     const ctx = this.ensureCtx();
+    if (!ctx) return; // destroyed — prepareOnce reports "stale"
     await ctx.resume().catch(() => {});
     if (gen !== this.loadGen) return; // a new song was loaded meanwhile
     if (!this.buffer) {
@@ -352,10 +366,27 @@ export class PracticeAudioEngine {
    * tell the player, instead of dying silently. Returns "fallback" if it fell back,
    * "stale" if the failure no longer concerns the song (or engine) on screen.
    */
-  private async prepareStretchOrFallback(startSec: number): Promise<PrepareOutcome> {
+  private prepareStretchOrFallback(startSec: number): Promise<PrepareOutcome> {
+    const running = this.prepareInFlight;
+    if (running && running.gen === this.loadGen) return running.done;
+    const flight = { gen: this.loadGen, done: this.prepareOnce(startSec) };
+    this.prepareInFlight = flight;
+    const settle = () => {
+      if (this.prepareInFlight === flight) this.prepareInFlight = null;
+    };
+    flight.done.then(settle, settle);
+    return flight.done;
+  }
+
+  private async prepareOnce(startSec: number): Promise<PrepareOutcome> {
     const gen = this.loadGen; // same claim prepareStretch takes — see loadGen
     try {
       await this.prepareStretch(startSec);
+      // prepareStretch gives up QUIETLY when it loses its claim (a newer song, or
+      // destroy()) — that is "stale" too, never "ready": play() on an engine
+      // destroyed mid-decode carried on into a fresh AudioContext, and a switch
+      // whose song was replaced mid-decode started the NEW song a second time.
+      if (gen !== this.loadGen || this._destroyed) return "stale";
       return "ready";
     } catch (err) {
       // A decode that fails LATE must not touch state it no longer owns: by then the
@@ -401,7 +432,7 @@ export class PracticeAudioEngine {
 
   private buildShifter(startSec: number) {
     const ctx = this.ensureCtx();
-    if (!this.buffer || !this.shifterCtor) return;
+    if (!ctx || !this.buffer || !this.shifterCtor) return;
     this.teardownShifter();
     const shifter: PitchShifter = new this.shifterCtor(ctx, this.buffer, BUFFER_SIZE, () =>
       this.handleEnd(shifter)
@@ -462,7 +493,11 @@ export class PracticeAudioEngine {
   /** Arm a new song. Sets up native streaming immediately; decodes for stretch
    *  only if we're already in a slow tempo (carried over from the last song). */
   async load(blob: Blob): Promise<void> {
+    // destroy() is terminal: a song whose download lands after the player left must
+    // not be armed (let alone played) on an element nobody can reach any more
+    if (this._destroyed) return;
     this.loadGen++; // invalidate any decode still in flight for the previous song
+    const wasPlaying = this._playing;
     this.teardownShifter();
     this.buffer = null; // force a fresh decode for the new song
     if (this.pre && (this.pre.blob !== blob || this._tempo >= 1)) this.pre = null; // not this song's
@@ -470,8 +505,13 @@ export class PracticeAudioEngine {
     this._time = 0;
     this._ended = false;
     this._playing = false;
+    // Said NOW, not after the decode below: slowed down, the old song is already
+    // silent (its shifter is gone) while a big WAV decodes for seconds - the key
+    // kept showing ⏸ and the metronome kept counting over nothing.
+    if (wasPlaying) this.onPlayingChange(false);
 
     const a = this.ensureAudio();
+    if (!a) return;
     if (this.objectUrl) URL.revokeObjectURL(this.objectUrl);
     this.objectUrl = URL.createObjectURL(blob);
     a.src = this.objectUrl;
@@ -482,6 +522,7 @@ export class PracticeAudioEngine {
       this.active = "stretch";
       // a song we can't decode still loads — it just plays at 1× (see the fallback)
       await this.prepareStretchOrFallback(0);
+      if (this._destroyed) return;
       this.onPlayingChange(false);
     } else {
       this.active = "native";
@@ -570,6 +611,7 @@ export class PracticeAudioEngine {
   preload(blob: Blob): void {
     if (this._tempo >= 1 || this._destroyed || this.pre?.blob === blob) return;
     const ctx = this.ensureCtx();
+    if (!ctx) return;
     this.pre = {
       blob,
       buffer: blob
@@ -600,6 +642,7 @@ export class PracticeAudioEngine {
     if (!blob) return null;
     const gen = this.loadGen;
     const ctx = this.ensureCtx();
+    if (!ctx) return null; // destroyed
     const arr = await blob.arrayBuffer();
     const decoded = await this.decode(ctx, arr);
     if (gen !== this.loadGen) return null; // song changed mid-decode — don't cache it
@@ -609,9 +652,10 @@ export class PracticeAudioEngine {
   }
 
   async play(): Promise<void> {
+    if (this._destroyed) return; // see load(): nothing may start once the player left
     if (this.active === "native") {
       const a = this.ensureAudio();
-      await a.play().catch(() => {}); // 'play' listener flips state
+      if (a) await a.play().catch(() => {}); // 'play' listener flips state
       return;
     }
     // stretch
@@ -630,7 +674,9 @@ export class PracticeAudioEngine {
       if (outcome === "stale") return;
     }
     const ctx = this.ensureCtx();
+    if (!ctx) return;
     if (ctx.state === "suspended") await ctx.resume().catch(() => {});
+    if (this._destroyed) return; // left while the context was resuming
     if (this._ended || this._time >= this._duration - 0.05) this.seek(0);
     if (!this.shifter) {
       await this.ensureShifterCtor();
@@ -652,6 +698,14 @@ export class PracticeAudioEngine {
     }
     if (this.active === "native") {
       this.audio?.pause(); // 'pause' listener flips state
+      return;
+    }
+    if (!this.shifter && this._playing) {
+      // A slow-down tapped mid-song is still decoding (the element is already quiet
+      // and no shifter exists yet): record the pause, so the switch doesn't start
+      // the song when the decode lands (doSwitch reads _playing again).
+      this._playing = false;
+      this.onPlayingChange(false);
       return;
     }
     if (this.shifter && this._playing) {
@@ -705,6 +759,9 @@ export class PracticeAudioEngine {
   destroy() {
     this._destroyed = true; // whatever the teardown below rejects must no-op from here
     this.loadGen++; // drop any decode still in flight
+    // the element's own 'pause' event lands after `audio` is dropped below, so it
+    // can't clear this — and nothing plays from here on
+    this._playing = false;
     this.stopTails();
     this.teardownShifter();
     this.buffer = null;
@@ -760,6 +817,7 @@ export class PracticeAudioEngine {
     this.switching = true;
     try {
       for (;;) {
+        if (this._destroyed) break;
         const want: Backend = this._tempo < 1 ? "stretch" : "native";
         if (want === this.active) {
           if (want === "stretch" && this.shifter) this.shifter.tempo = this._tempo;
@@ -784,7 +842,8 @@ export class PracticeAudioEngine {
       // prepare means a newer load owns `active` now, so we mustn't touch it either
       if ((await this.prepareStretchOrFallback(at)) !== "ready") return;
       if (this.shifter) this.shifter.tempo = this._tempo;
-      if (wasPlaying) await this.play();
+      // _playing, not just wasPlaying: a ⏸ pressed during the decode cleared it.
+      if (wasPlaying && this._playing) await this.play();
       else this.onPlayingChange(false);
     } else {
       // stretch → native
@@ -797,6 +856,7 @@ export class PracticeAudioEngine {
       }
       this.active = "native";
       const a = this.ensureAudio();
+      if (!a) return; // destroyed
       a.playbackRate = 1;
       this.setNativeTime(a, at);
       if (a.duration) this.setDuration(a.duration);

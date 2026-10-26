@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 import { AlertTriangle, RotateCw, CloudOff } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { immersiveEventId } from "@/components/chrome-gate";
+import { reportCaughtRenderError } from "@/components/error-monitor";
 
 /** The way out on Live Mode and the show-caller, which have no header and no tab bar
  *  (ChromeGate) — without it this card's reload was the only control on screen, and a
@@ -65,6 +66,7 @@ export function ErrorCard({
   useEffect(() => {
     setOffline(navigator.onLine === false);
     console.error(`[CueIQ] ${where} render error:`, error);
+    reportCaughtRenderError(error); // console.error alone never reached the Dev Inbox
   }, [error, where]);
 
   if (offline) {

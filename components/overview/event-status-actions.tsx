@@ -64,10 +64,14 @@ export function EventStatusActions({
     setStatus(next);
     const cut = new AbortController();
     const timer = setTimeout(() => cut.abort(), STATUS_WRITE_TIMEOUT_MS);
+    // Only over the status this screen SHOWED. The Overview never re-reads: approving
+    // from a board left open approved whatever the row was by then - a show the band
+    // had pulled back to draft (incomplete) came out "approved", and the band was told so.
     const { data, error } = await createClient()
       .from("events")
       .update({ status: next })
       .eq("id", eventId)
+      .eq("status", prev)
       .select("id")
       .abortSignal(cut.signal)
       .then(
@@ -88,8 +92,22 @@ export function EventStatusActions({
       setStatus(prev);
     } else if (wroteNothing(data)) {
       // 0 rows with no error = the write never landed — don't tell the band it did.
-      toast.error(await noRowsMessage());
-      setStatus(prev);
+      // Say WHY when it is the status that moved on (the update above was conditional).
+      const { data: row } = await createClient()
+        .from("events")
+        .select("status")
+        .eq("id", eventId)
+        .maybeSingle();
+      const nowStatus = (row as { status?: GroupStatus } | null)?.status;
+      if (nowStatus && nowStatus !== prev) {
+        toast.error("สถานะงานนี้เปลี่ยนไปแล้ว", {
+          description: `ตอนนี้เป็น “${STATUS_META[knownStatus(nowStatus)].label}” — ดูให้แน่ใจก่อนแล้วค่อยเปลี่ยนอีกครั้ง`,
+        });
+        setStatus(nowStatus);
+      } else {
+        toast.error(await noRowsMessage());
+        setStatus(prev);
+      }
     } else {
       toast.success(next === "approved" ? "อนุมัติแล้ว" : "ปฏิเสธแล้ว");
       notify(next === "approved" ? "event_approved" : "event_rejected", { eventId });

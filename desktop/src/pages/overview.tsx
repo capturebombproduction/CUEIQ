@@ -6,6 +6,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { PageTitle } from "@/components/page-title";
 import { RefreshButton } from "@/components/refresh-button";
 import { createClient } from "@/lib/supabase/client";
+import { photoRoundsOf } from "@/lib/photo-rounds";
 import {
   canApprove,
   canEditPhotoTime,
@@ -36,6 +37,7 @@ type SchedRow = {
   id: string;
   event_id: string;
   kind: string;
+  label: string | null;
   start_time: string | null;
   end_time: string | null;
   sort_order: number;
@@ -261,7 +263,7 @@ export function Overview() {
         readForEvents<SchedRow>("schedule_items", eventIds, (evIds, from, to) =>
           sb
             .from("schedule_items")
-            .select("id, event_id, kind, start_time, end_time, sort_order", {
+            .select("id, event_id, kind, label, start_time, end_time, sort_order", {
               count: "exact",
             })
             .eq("tenant_id", tid)
@@ -402,14 +404,15 @@ export function Overview() {
           .sort((a, b) => (a.start_time ?? "￿").localeCompare(b.start_time ?? "￿"))
           .map((it) => ({ start: it.start_time, end: it.end_time }));
       const rangeOf = (eventId: string, kind: string) => rangesOf(eventId, kind)[0] ?? null;
-      const photoOf = (eventId: string) =>
-        sched.find((s) => s.event_id === eventId && s.kind === "photo") ?? null;
+      // Every ถ่ายรูป round (mig 0042 allows several, each named) - lib/photo-rounds.ts.
+      const photosOf = (eventId: string) =>
+        photoRoundsOf(sched.filter((s) => s.event_id === eventId));
       const maxSortOf = (eventId: string) =>
         sched.reduce((m, s) => (s.event_id === eventId && s.sort_order > m ? s.sort_order : m), 0);
 
       const events: OverviewEvent[] = eventRows.map((e) => {
         const g = groupById.get(e.group_id);
-        const photoRow = photoOf(e.id);
+        const { main: photoRow, more: photoMore } = photosOf(e.id);
         const cr = copyrightOf(e.id);
         const comp = completenessOf(e);
         return {
@@ -428,6 +431,7 @@ export function Overview() {
           boothMore: rangesOf(e.id, "booth").slice(1),
           photo: photoRow?.start_time ?? null,
           photoEnd: photoRow?.end_time ?? null,
+          photoMore,
           tenant_id: e.tenant_id,
           canEditPhoto: g ? canEditPhotoTime(ws.perms, e.group_id, g.self_photo) : false,
           photoItemId: photoRow?.id ?? null,

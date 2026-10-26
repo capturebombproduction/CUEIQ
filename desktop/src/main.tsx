@@ -9,11 +9,13 @@ import {
   registerMgmtQueueSink,
   registerPendingAudioDropper,
   registerPendingAudioReader,
+  registerQueuedChildListReader,
 } from "@/lib/mgmt-write";
 import {
   dropPendingAudioUploadOp,
   enqueueMgmtOp,
   pendingAudioSongIds,
+  pendingMgmtOps,
 } from "~/data/mgmt-outbox";
 import { App } from "~/App";
 import "./index.css";
@@ -27,6 +29,11 @@ registerMgmtQueueSink(enqueueMgmtOp);
 registerPendingAudioReader(pendingAudioSongIds);
 // …and to cancel one that a later real upload has made obsolete.
 registerPendingAudioDropper(dropPendingAudioUploadOp);
+// …and let an editor whose list already waits in the queue join that snapshot
+// instead of writing online on top of it (lib/mgmt-write tryQueueBehindPendingChildList).
+registerQueuedChildListReader(async (kind, eventId) =>
+  (await pendingMgmtOps()).some((op) => op.kind === kind && op.id === eventId)
+);
 
 // Reused R2 audio transport (lib/audio-remote) targets a same-origin /api route on
 // the web; the desktop SPA has none, so point it at the web origin and authorize

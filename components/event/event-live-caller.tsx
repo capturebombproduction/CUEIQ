@@ -53,10 +53,12 @@ import {
   enqueueRunSeq,
   flushRunSeqOutbox,
   listRunSeqOps,
-  RUNSEQ_OUTBOX_EVENT,
+  newRunSeqPressId,
+  onRunSeqOutboxChange,
   RUNSEQ_QUEUED_MESSAGE,
   type RunSeqOp,
 } from "@/lib/run-order-outbox";
+import { compareRunOrder } from "@/lib/run-order-sort";
 import {
   formatClockOfDay,
   formatCountdown,
@@ -204,6 +206,7 @@ export function EventLiveCaller({
   backHref,
   backLabel,
   notice,
+  onRows,
 }: {
   tenantId: string;
   eventName: string;
@@ -220,10 +223,34 @@ export function EventLiveCaller({
   /** A page-level notice (the desktop's "this is a saved copy") shown first in the
    *  content, under the top bar. */
   notice?: ReactNode;
+  /**
+   * Called with the rows the SERVER now holds, each time the board learns them: a
+   * refetch it applied, or a press that committed. Never with the queue's overlay -
+   * still-queued presses are laid back over whatever the board renders anyway, and a
+   * copy that baked them in would show a press that later parks as if it had landed.
+   * The desktop writes its offline read-cache from this: written only at page load,
+   * that cache rewound the board to page-open state after a navigation or a restart
+   * during an outage (2026-10-26).
+   */
+  onRows?: (rows: RunSeqLive[]) => void;
 }) {
   const supabase = useMemo(() => createClient(), []);
   const confirm = useConfirm();
   const [rows, setRows] = useState<RunSeqLive[]>(initial);
+  // What the SERVER holds, as far as this board knows: the last refetch it applied,
+  // plus every write that came back committed. `rows` cannot stand in for it - it
+  // carries every optimistic press, the queued ones included. Read only for onRows.
+  const serverRowsRef = useRef<RunSeqLive[]>(initial);
+  const onRowsRef = useRef(onRows);
+  onRowsRef.current = onRows;
+  function serverHolds(next: RunSeqLive[]) {
+    serverRowsRef.current = next;
+    try {
+      onRowsRef.current?.(next);
+    } catch {
+      /* a page's copy of the board must never break the press that produced it */
+    }
+  }
   const [now, setNow] = useState(() => Date.now());
   // false until the client mounts — the wall clock / elapsed / countdowns depend on
   // "now" and the local timezone, which differ from the server's (Vercel is UTC), so
@@ -256,9 +283,11 @@ export function EventLiveCaller({
   // moves looks identical to one that is in sync — and at a festival that is the
   // difference between "we are fine" and "nobody downstream knows we ran late".
   const [queued, setQueued] = useState<RunSeqOp[]>([]);
+  // The queue's length as last read here (refetch() re-reads it too) - a read that
+  // finds it SHORTER means presses landed or parked since.
+  const queueCountRef = useRef(-1);
   useEffect(() => {
     let alive = true;
-    let lastCount = -1;
     const refresh = () => {
       listRunSeqOps().then((ops) => {
         if (!alive) return;
@@ -270,21 +299,37 @@ export function EventLiveCaller({
         // before deciding. Safe now that the overlay re-applies anything still
         // queued — before it, this refetch is exactly what would have wiped the
         // operator's own presses off the screen.
-        if (lastCount >= 0 && ops.length < lastCount) refetchRef.current();
-        lastCount = ops.length;
+        const shrank = queueCountRef.current >= 0 && ops.length < queueCountRef.current;
+        queueCountRef.current = ops.length;
+        if (shrank) refetchRef.current();
       });
     };
     refresh();
-    // the outbox fires this after every queue change, including the flush that
-    // empties it, so the chip disappears the moment the moves have landed
-    window.addEventListener(RUNSEQ_OUTBOX_EVENT, refresh);
+    // the outbox announces every queue change, including the flush that empties it,
+    // so the chip disappears the moment the moves have landed - and the same word
+    // from ANOTHER TAB of this browser, which drains the same IndexedDB with its own
+    // OutboxFlusher and used to announce to its own window only (2026-10-26)
+    const off = onRunSeqOutboxChange(refresh);
     return () => {
       alive = false;
-      window.removeEventListener(RUNSEQ_OUTBOX_EVENT, refresh);
+      off();
     };
   }, []);
-  const parked = queued.filter((o) => o.conflict);
+  // The queue is ONE store for every festival this device has ever called, and a
+  // press parked at last week's show stays until someone taps ทิ้ง. The banners name
+  // only THIS board's presses: another festival's red alarm told the operator to
+  // check "the board below", which held no such press (2026-10-26). A press is this
+  // board's when its row is on it or it names this board's topic; a record older
+  // than topics that names neither cannot be placed, so it is still shown.
+  const boardTopic = runOrderTopic(tenantId, eventDate, eventName);
+  const boardRowIds = useMemo(() => new Set(rows.map((r) => r.id)), [rows]);
+  const onThisBoard = (o: RunSeqOp) =>
+    boardRowIds.has(o.rowId) || !o.topic || o.topic === boardTopic;
+  const parked = queued.filter((o) => o.conflict && onThisBoard(o));
+  // Unfiltered on purpose: the overlay matches by row id, and apply()'s
+  // queued-row check must see every un-parked press there is.
   const waiting = queued.filter((o) => !o.conflict);
+  const waitingHere = waiting.filter(onThisBoard);
 
   // Server rows are only the truth for presses the server has SEEN. Anything
   // still in the queue happened on this device and nowhere else, so it is laid
@@ -296,23 +341,20 @@ export function EventLiveCaller({
   // remounting from its read cache after a restart at the venue; and any refetch
   // a broadcast triggers while the queue is still full.
   const ordered = useMemo(
-    () =>
-      [...applyRunSeqOverlay(rows, waiting)].sort(
-        (a, b) => a.sort_order - b.sort_order
-      ),
+    () => [...applyRunSeqOverlay(rows, waiting)].sort(compareRunOrder),
     [rows, waiting]
   );
   const liveRow = ordered.find((r) => r.status === "live") ?? null;
+  const livePos = liveRow ? ordered.indexOf(liveRow) : -1;
   const doneRows = ordered.filter((r) => r.status === "done");
   const lastDone = doneRows.length ? doneRows[doneRows.length - 1] : null;
   // current drift = the live row's, else the last finished row's, else on-time.
   const drift = liveRow?.offset_min ?? lastDone?.offset_min ?? 0;
-  const nextPending =
-    ordered.find(
-      (r) =>
-        r.status === "pending" &&
-        (!liveRow || r.sort_order > liveRow.sort_order)
-    ) ?? null;
+  // The first pending row AFTER the live one by POSITION. "A higher sort_order than
+  // the live row" skipped an act sharing the live row's number - two rows can tie
+  // (lib/run-order-sort.ts) - and the key read "จบ + ต่อไป · Seishin" while "Game"
+  // was still waiting (2026-10-26).
+  const nextPending = ordered.slice(livePos + 1).find((r) => r.status === "pending") ?? null;
   const firstPending = ordered.find((r) => r.status === "pending") ?? null;
   const started = ordered.some((r) => r.status !== "pending");
 
@@ -451,8 +493,22 @@ export function EventLiveCaller({
     // whole festival is called from is not a risk worth an unverified read.
     // An unverifiable empty answer is a read we could not trust — that IS a failure.
     if (data.length === 0 && rows.length > 0 && !(await hasLiveSession())) return "failed";
-    if (seq !== refetchSeqRef.current) return "deferred";
+    // Re-read the queue WITH the rows: the overlay lays every queued press over them,
+    // and a press that is no longer queued must not be. Another tab of this browser
+    // drains the same IndexedDB, and this board heard only its OWN window's word - so
+    // it kept painting presses that had landed, put the act that already finished
+    // back on stage once the show moved on, and the next press built on that board
+    // put a second act live (2026-10-26). A refetch is when the board takes the
+    // server's word, so the queue's word is taken in the same breath.
+    const ops = await listRunSeqOps();
+    if (seq !== refetchSeqRef.current) {
+      missedRefetchRef.current = true;
+      return "deferred";
+    }
+    setQueued(ops);
+    queueCountRef.current = ops.length;
     setRows(data as RunSeqLive[]);
+    serverHolds(data as RunSeqLive[]);
     return "applied";
   }
   const refetchRef = useRef(refetch);
@@ -558,6 +614,8 @@ export function EventLiveCaller({
    * Returns false for a REAL rejection (RLS, a constraint), which must still
    * surface: queueing those would retry a doomed write forever.
    */
+  /** The press id queueOffline() last gave out - ดึง buffer's drains join its drift's. */
+  const lastQueuedPressRef = useRef<string | null>(null);
   async function queueOffline(
     updates: CallerUpdate[],
     message: string | null | undefined,
@@ -570,15 +628,25 @@ export function EventLiveCaller({
        arrive as an HTML page whose text matches none of the network words — so the
        operator's press was neither written nor queued while the row was already
        advanced on screen. See lib/mgmt-outbox.ts for the full account. */
-    status?: number | null
+    status?: number | null,
+    // The press these rows belong to, when they continue one already queued (ดึง
+    // buffer's drains after its drift). Otherwise this call IS one press.
+    press?: string
   ): Promise<boolean> {
     const onLine = typeof navigator === "undefined" || navigator.onLine !== false;
     if (!force && !isQueueableWriteError(message, onLine, status)) return false;
     const festival = `${eventName}${eventDate ? ` · ${eventDate}` : ""}`;
     const at = Date.now();
+    // Every row of ONE press carries the same id, so the replay lands the press whole
+    // or parks it whole: "จบ + ต่อไป" replayed row by row put its next act live while
+    // the act it ended had already been moved by another device - two acts live at
+    // once, and the one after was never called (lib/run-order-outbox.ts, 2026-10-26).
+    const pressId = press ?? newRunSeqPressId();
+    lastQueuedPressRef.current = pressId;
     for (const u of updates) {
       await enqueueRunSeq({
         rowId: u.id,
+        presses: [pressId],
         festival,
         // Only the caller's own columns ride the queue — never the plan, which
         // belongs to the builder and must not be replayed over.
@@ -716,6 +784,18 @@ export function EventLiveCaller({
     const losers = updates.filter(
       (_, i) => !results[i].error && (results[i].data?.length ?? 0) === 0
     );
+    // What landed is on the server, whatever became of the rest of this press.
+    const landed = updates.filter(
+      (_, i) => !results[i].error && (results[i].data?.length ?? 0) > 0
+    );
+    if (landed.length > 0) {
+      serverHolds(
+        serverRowsRef.current.map((r) => {
+          const u = landed.find((x) => x.id === r.id);
+          return u ? { ...r, ...u.partial } : r;
+        })
+      );
+    }
     if (err) {
       // No network is not a failure on this screen — the festival is running and
       // the caller's press is the record of it. Queue it, KEEP the optimistic
@@ -951,9 +1031,10 @@ export function EventLiveCaller({
       // so a plain apply() would write them STRAIGHT to the server: the slack
       // would be spent while the lateness it was spent on stayed on the board,
       // and every other device would read a day that is later than it looks.
-      // Queue them alongside so the whole change replays as one.
+      // Queue them alongside so the whole change replays as one - as one PRESS, so a
+      // drift that parks takes its drains with it instead of letting them land alone.
       if (shifted === "queued") {
-        await queueOffline(drains, null, true);
+        await queueOffline(drains, null, true, null, lastQueuedPressRef.current ?? undefined);
         setRows((prev) =>
           prev.map((r) => {
             const d = drains.find((x) => x.id === r.id);
@@ -1072,7 +1153,7 @@ export function EventLiveCaller({
   const actOver = mounted && liveRemaining != null && liveRemaining < 0;
   const actPct =
     mounted && livePlannedDur ? Math.min(100, (liveElapsed / livePlannedDur) * 100) : 0;
-  const liveIdx = liveRow ? ordered.indexOf(liveRow) + 1 : 0;
+  const liveIdx = livePos + 1;
 
   return (
     // No transform / filter / backdrop-filter / container-type on this root or on the
@@ -1151,12 +1232,12 @@ export function EventLiveCaller({
         {/* Unsent presses. A board holding moves nobody else has seen looks exactly
             like one that is in sync, and at a festival that gap is the difference
             between "we are on time" and "nobody downstream knows we ran late". */}
-        {waiting.length > 0 && (
+        {waitingHere.length > 0 && (
           <div className="flex items-start gap-2 rounded-[2px] bg-warning/[.12] px-3 py-2 text-[13px] shadow-[inset_3px_0_0_hsl(var(--warning))]">
             <CloudOff className="mt-0.5 h-4 w-4 flex-none text-warning-ink" aria-hidden />
             <p>
               <span className="font-semibold text-warning-ink">
-                ค้างซิงค์ {waiting.length} รายการ
+                ค้างซิงค์ {waitingHere.length} รายการ
               </span>{" "}
               <span className="text-muted-foreground">
                 — คิวบนเครื่องนี้เดินต่อตามที่กดไว้ เครื่องอื่นจะยังไม่เห็นจนกว่าเน็ตจะกลับมา

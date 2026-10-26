@@ -154,6 +154,12 @@ export async function saveEventWrite(args: {
  * member_id arrays. When a snapshot is already queued for this (event × table),
  * the planner keeps the original base, so passing locally-advanced baseRows on
  * later edits is correct.
+ *
+ * `status` is the failed response's HTTP status (supabase-js returns it beside
+ * data/error). Pass it: a Supabase/Cloudflare 503/502/429 arrives as an HTML page in
+ * `error.message`, matches none of the network words, and without the status was
+ * classed a real rejection — the venue edit stayed on screen only, never queued.
+ * See isQueueableWriteError.
  */
 export async function tryQueueChildList(args: {
   kind: ChildListKind;
@@ -164,10 +170,11 @@ export async function tryQueueChildList(args: {
   rows: unknown[];
   baseRows: unknown[];
   errorMessage?: string | null;
+  status?: number | null;
 }): Promise<boolean> {
   if (!queueSink) return false;
   const onLine = typeof navigator === "undefined" || navigator.onLine !== false;
-  if (!isQueueableWriteError(args.errorMessage ?? null, onLine)) return false;
+  if (!isQueueableWriteError(args.errorMessage ?? null, onLine, args.status ?? null)) return false;
   try {
     await queueSink({
       kind: args.kind,
@@ -181,6 +188,70 @@ export async function tryQueueChildList(args: {
   } catch {
     // IndexedDB unavailable/full — genuinely can't queue; let the caller surface
     // its normal error (the write is lost either way, but never silently).
+    return false;
+  }
+}
+
+/** Toast for an edit made ONLINE that joined a snapshot still waiting in the queue. */
+export const QUEUED_BEHIND_PENDING_MESSAGE =
+  "บันทึกไว้ในเครื่องแล้ว — จะซิงค์พร้อมรายการที่ค้างซิงค์อยู่";
+
+/** Is a child-list snapshot for (kind × event) still waiting in this device's queue? */
+type QueuedChildListReader = (kind: ChildListKind, eventId: string) => Promise<boolean>;
+
+let queuedChildListReader: QueuedChildListReader | null = null;
+
+/** Desktop-only: let the editors ask whether their list already has a snapshot queued. */
+export function registerQueuedChildListReader(reader: QueuedChildListReader | null): void {
+  queuedChildListReader = reader;
+}
+
+/**
+ * Called by an editor BEFORE its online write. While a snapshot of this list is still
+ * queued, a later edit must JOIN that snapshot instead of going straight to the server:
+ * the queued snapshot's base is the server list as it stood before it, so the
+ * editor's own online write would make the flush see "the server moved" and park
+ * the queued edit as someone else's conflict ("เวอร์ชันออนไลน์ถูกแก้ไขใหม่กว่าของเครื่องนี้")
+ * although nobody else touched it — the net came back, the venue AP never fired
+ * 'online', and the person kept working. Joined, the planner keeps the ORIGINAL base
+ * and the flush lands both edits as one replace-set.
+ *
+ * Returns true when the edit was queued (the caller keeps its optimistic state and
+ * must NOT write online). Web (no sink / no reader), nothing queued, or a queue that
+ * won't store → false, and the caller writes online as before.
+ *
+ * Known window, accepted: a flush that lands the queued snapshot between the read and
+ * the enqueue leaves this edit queued alone, with `baseRows` as its base — callers pass
+ * the rows they expect the server to hold once their queue has landed, so even then
+ * the guard compares against the right list.
+ */
+export async function tryQueueBehindPendingChildList(args: {
+  kind: ChildListKind;
+  eventId: string;
+  tenantId: string;
+  eventName?: string | null;
+  rows: unknown[];
+  baseRows: unknown[];
+}): Promise<boolean> {
+  if (!queueSink || !queuedChildListReader) return false;
+  let pending = false;
+  try {
+    pending = await queuedChildListReader(args.kind, args.eventId);
+  } catch {
+    return false;
+  }
+  if (!pending) return false;
+  try {
+    await queueSink({
+      kind: args.kind,
+      id: args.eventId,
+      tenantId: args.tenantId,
+      eventName: args.eventName ?? null,
+      rows: sanitizeChildRows(args.kind, args.rows),
+      base: fingerprintChildRows(args.kind, args.baseRows),
+    });
+    return true;
+  } catch {
     return false;
   }
 }

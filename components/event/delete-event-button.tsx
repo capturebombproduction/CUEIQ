@@ -6,6 +6,7 @@ import { Trash2, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { createClient } from "@/lib/supabase/client";
 import { useConfirm } from "@/components/ui/confirm-dialog";
+import { noRowsMessage, wroteNothing } from "@/lib/write-guard";
 
 /**
  * Delete an event (type-to-confirm — there is no undo). Event-scoped rows
@@ -42,8 +43,21 @@ export function DeleteEventButton({
     setBusy(true);
     const supabase = createClient();
     try {
-      const { error } = await supabase.from("events").delete().eq("id", eventId);
+      const { data, error } = await supabase
+        .from("events")
+        .delete()
+        .eq("id", eventId)
+        .select("id");
       if (error) throw error;
+      // No error and no row = the delete reached the server and removed nothing
+      // (sent anon after a failed token refresh, or a band role just taken away —
+      // lib/write-guard.ts). Announcing it and dropping the card said the show was
+      // gone; it came back on the next refresh, or stayed hidden here until a reload.
+      if (wroteNothing(data)) {
+        toast.error("ยังไม่ได้ลบงาน", { description: await noRowsMessage() });
+        setBusy(false);
+        return;
+      }
       toast.success("ลบงานแล้ว");
       setBusy(false);
       onDeleted?.(eventId); // drop the card immediately; don't wait for refresh

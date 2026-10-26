@@ -114,6 +114,13 @@ describe("parseDurationToSeconds", () => {
     expect(parseDurationToSeconds("-5")).toBeNull();
     expect(parseDurationToSeconds("1:2:3:4")).toBeNull();
   });
+  it("reads the Thai-written m.ss as minutes, never as seconds", () => {
+    // Number("3.30") is 3.3 - this used to save a 3½-minute song as 0:03
+    expect(parseDurationToSeconds("3.30")).toBe(210);
+    expect(parseDurationToSeconds("1.05.30")).toBe(3930);
+    expect(parseDurationToSeconds("3.5")).toBeNull(); // 3:05 or 3½ min? not a guess
+    expect(parseDurationToSeconds("3:30.5")).toBeNull();
+  });
 });
 
 describe("parseClockToSeconds", () => {

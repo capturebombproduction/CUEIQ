@@ -46,12 +46,14 @@ import {
   type EventRow,
   type Group,
   type Member,
+  type MicAssignment,
   type ScheduleItem,
   type ScheduleKind,
   type SetlistItem,
 } from "@/lib/types";
 import { captureElementToImage, safeFileStem } from "@/lib/export-image";
 import { callTimeOf } from "@/lib/next-show";
+import { dayOrderSeconds, stageAnchorSeconds } from "@/lib/clone-event";
 import { type CompletenessResult } from "@/lib/completeness";
 import { EventRunStatusCard } from "@/components/event/event-run-status";
 import { LineupHeadline } from "@/components/event/lineup-headline";
@@ -147,6 +149,32 @@ type TimelineEntry = {
 // second STB directly under its first — "เอา stanby มารวมกัน ไม่ได้เรียงเป็นซีเควนซ์"
 // (Ipond, 2026-07-30) — so on a two-show day nobody could tell which standby belonged
 // to which stage slot. Read down the clock and the day plays back in order.
+/**
+ * THIS show's own Mic Map (mic_assignments), one entry per mic: the number and its
+ * holders in rotation order. The same rows, order and joining as lib/export-excel.ts
+ * micBaseRows' per-event branch — re-stated rather than imported because that module
+ * pulls the whole xlsx library, which this page's chunk must not carry (the Mics tab
+ * does the same; event-summary.mic-map.test.tsx pins the two together).
+ */
+export function showMicRows(micMap: MicAssignment[]): { num: number; holders: string }[] {
+  const byMic = new Map<number, MicAssignment[]>();
+  for (const m of micMap) {
+    const arr = byMic.get(m.mic_number) ?? [];
+    arr.push(m);
+    byMic.set(m.mic_number, arr);
+  }
+  return Array.from(byMic.entries())
+    .sort((a, b) => a[0] - b[0])
+    .map(([num, holders]) => ({
+      num,
+      holders: [...holders]
+        .sort((a, b) => a.order_index - b.order_index)
+        .map((h) => h.holder_name)
+        .filter(Boolean)
+        .join(", "),
+    }));
+}
+
 function TimelineLine({ e }: { e: TimelineEntry }) {
   const what = [e.label, e.detail].filter(Boolean).join(" · ");
   return (
@@ -172,6 +200,7 @@ export function EventSummary({
   schedule,
   setlist,
   members,
+  micMap = [],
   showMic,
   onNavigate,
   lineup = [],
@@ -186,6 +215,9 @@ export function EventSummary({
   schedule: ScheduleItem[];
   setlist: SetlistItem[];
   members: Member[];
+  /** THIS show's own Mic Map. When it has rows they win over the members' standing
+   *  mic numbers — on the Excel sheet already, and now on this sheet and its JPG. */
+  micMap?: MicAssignment[];
   showMic: boolean;
   onNavigate: (view: string) => void;
   lineup?: string[];
@@ -220,7 +252,11 @@ export function EventSummary({
   const showStartSec = parseClockToSeconds(event.show_start_time);
   const hardOutSec = parseClockToSeconds(event.hard_out_time);
   const hasClock = showStartSec != null;
-  const timing = computeSetlistTimes(setlist, showStartSec ?? 0, hardOutSec);
+  // The hard out is only something a SET can be early or late for once the set has
+  // a start. Without one computeSetlistTimes runs it from 00:00, and a 20-minute set
+  // against a 13:40 hard out printed a green "Remaining 13:20:00" — a claim about a
+  // set whose start nobody entered. The Hard Out tile still prints the time itself.
+  const timing = computeSetlistTimes(setlist, showStartSec ?? 0, hasClock ? hardOutSec : null);
 
   // EVERY row of a kind, earliest first — a band can have two stage slots, three
   // booth shifts and two costume changes in one day, and this sheet is what they
@@ -249,6 +285,12 @@ export function EventSummary({
 
   const stageRows = schedAll("stage");
   const stageCovered = stageRows.some((s) => range(s) === showWindow);
+
+  // Read round the stage, not down the clock string: a 23:00 set called at 21:00
+  // with a 00:30 booth printed the booth FIRST, above the call. Same anchor and rule
+  // as the call time above (lib/next-show.ts callTimeOf).
+  const dayAnchor = stageAnchorSeconds(schedule, event);
+  const eventMics = showMicRows(micMap);
 
   // The whole day as one list, earliest first. Every schedule row appears — including
   // kinds nothing hard-codes (today "other", which is both the DB default and what
@@ -305,7 +347,8 @@ export function EventSummary({
     .filter((e) => e.time || e.detail || e.note || e.label)
     .sort(
       (a, b) =>
-        (a.start ?? "￿").localeCompare(b.start ?? "￿") || a.sortOrder - b.sortOrder
+        dayOrderSeconds(a.start, dayAnchor) - dayOrderSeconds(b.start, dayAnchor) ||
+        a.sortOrder - b.sortOrder
     );
 
   const mapQuery = event.venue || event.name;
@@ -351,7 +394,7 @@ export function EventSummary({
   ];
 
   const overBadge =
-    hardOutSec != null && timing.isOver ? (
+    timing.hardOutSec != null && timing.isOver ? (
       <Badge variant="alarm" data-over-hard-out="">
         <OctagonAlert aria-hidden /> เกิน Hard Out +{formatDuration(timing.overBy)}
       </Badge>
@@ -612,7 +655,7 @@ export function EventSummary({
               {/* Over the hard out is the band-independent alarm (spec §0.3 rule 4),
                   never --destructive: lib/skin.ts moves that token off red for a red
                   band, and "เกิน Hard Out" came out violet on Seishin's sheet. */}
-              {hardOutSec != null &&
+              {timing.hardOutSec != null &&
                 (timing.isOver ? (
                   overBadge
                 ) : setlist.length > 0 ? (
@@ -757,29 +800,47 @@ export function EventSummary({
         {/* Captured too. It was left out of the JPG (16c3570) back when it was only
             the band's member list, two days before the per-event lineup moved into
             it — so the image never said who was coming, while the app did. */}
-        {members.length > 0 && (
+        {/* The show's own Mic Map wins over the members' standing numbers, as on
+            the Excel sheet (micBaseRows). Printing `m.mic_number` regardless gave an
+            Ar who moved Aya to mic 5 for this show an Excel that said 5 and a JPG —
+            the sheet that goes to the group chat — that said 1. */}
+        {(members.length > 0 || eventMics.length > 0) && (
           <Section title="Lineup & Mics">
-            <div className="mb-1.5">
-              <LineupHeadline members={members} lineup={lineup} />
-            </div>
-            <div className="flex flex-wrap gap-1.5">
-              {members.map((m) => {
-                const present = lineup.length === 0 || lineup.includes(m.id);
-                return (
-                  <Badge
-                    key={m.id}
-                    variant="secondary"
-                    className={cn(
-                      "font-normal",
-                      !present && "opacity-40 line-through"
-                    )}
-                  >
-                    {m.mic_number != null ? `${m.mic_number} · ` : ""}
-                    {m.nickname || m.name}
+            {members.length > 0 && (
+              <>
+                <div className="mb-1.5">
+                  <LineupHeadline members={members} lineup={lineup} />
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  {members.map((m) => {
+                    const present = lineup.length === 0 || lineup.includes(m.id);
+                    return (
+                      <Badge
+                        key={m.id}
+                        variant="secondary"
+                        className={cn(
+                          "font-normal",
+                          !present && "opacity-40 line-through"
+                        )}
+                      >
+                        {eventMics.length === 0 && m.mic_number != null ? `${m.mic_number} · ` : ""}
+                        {m.nickname || m.name}
+                      </Badge>
+                    );
+                  })}
+                </div>
+              </>
+            )}
+            {eventMics.length > 0 && (
+              <div className={cn("flex flex-wrap items-center gap-1.5", members.length > 0 && "mt-2")}>
+                <span className="text-xs text-muted-foreground">ไมค์งานนี้</span>
+                {eventMics.map((mic) => (
+                  <Badge key={mic.num} variant="secondary" className="font-normal">
+                    {mic.num} · {mic.holders || "—"}
                   </Badge>
-                );
-              })}
-            </div>
+                ))}
+              </div>
+            )}
           </Section>
         )}
 

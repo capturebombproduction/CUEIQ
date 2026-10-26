@@ -167,7 +167,8 @@ describe("desktop EventPage — อนุมัติ / ปฏิเสธ for a
     await waitFor(() => expect(loadEventBundle).toHaveBeenCalledWith(EVENT_ID));
     const write = (h.supa as ReturnType<typeof makeSupabaseFake>).lastCall("events", "update");
     expect(write?.values).toEqual({ status: "approved" });
-    expect(write?.eq).toEqual({ id: EVENT_ID });
+    // only over the status the screen showed (a stale board must not approve a draft)
+    expect(write?.eq).toEqual({ id: EVENT_ID, status: "pending_review" });
   });
 });
 

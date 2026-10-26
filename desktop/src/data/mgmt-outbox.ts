@@ -125,6 +125,12 @@ const NO_SESSION_REASON =
 const DELETE_NO_ROWS_REASON =
   "ลบงานนี้บนออนไลน์ไม่สำเร็จ — เซิร์ฟเวอร์ไม่ได้ลบให้ (อาจไม่มีสิทธิ์ลบ) ลองใหม่อีกครั้ง";
 
+/** Thai reason for a queued audio upload whose song row the server accepted the
+ *  write for while changing nothing — the master is still the one the guard saw,
+ *  so it was refused (no right to edit this song), not overwritten by anyone. */
+const AUDIO_WRITE_REFUSED_REASON =
+  "อัปไฟล์เสียงขึ้นออนไลน์ไม่สำเร็จ — เซิร์ฟเวอร์ไม่ได้บันทึกให้ (อาจไม่มีสิทธิ์แก้เพลงนี้) ลองใหม่อีกครั้ง";
+
 function openDB(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     if (typeof indexedDB === "undefined") {
@@ -500,6 +506,51 @@ async function applyChildListOp(
   };
   if (rows.length) {
     let up = await supabase.from(table).upsert(rows);
+    const isForeignKeyViolation = (e: { code?: string; message?: string }): boolean =>
+      e.code === "23503" || /violates foreign key constraint/i.test(e.message ?? "");
+    if (up.error && op.kind === "setlist.upsert" && isForeignKeyViolation(up.error)) {
+      // A library song this snapshot links was deleted online meanwhile (a temp song
+      // purged by คลังเพลง, or a deliberate delete). 0012's on-delete-set-null only
+      // nulls rows ALREADY on the server, never one being written, so the upsert hit
+      // the FK and parked with the raw Postgres text - and "ใช้ของฉัน" (this same
+      // path, force) re-sent the same rows into the same FK forever, leaving
+      // "ใช้ของออนไลน์" (every offline edit of the setlist thrown away) as the only
+      // way out. Land those rows unlinked instead, once - as restoreSnapshot in
+      // setlist-builder does for a saved version.
+      const linked = [
+        ...new Set(
+          rows
+            .map((r) => r.song_id)
+            .filter((v): v is string => typeof v === "string" && v.length > 0)
+        ),
+      ];
+      if (linked.length) {
+        const found = await supabase.from("songs").select("id").in("id", linked);
+        if (found.error) return failOrThrow(found.error.message, onLine, found.status);
+        // An anon read is EMPTY with no error (RLS) and would unlink every song in
+        // the set - only believe a read that provably carried our JWT.
+        await requireLiveSession();
+        const alive = new Set(((found.data ?? []) as { id: string }[]).map((s) => s.id));
+        if (linked.some((id) => !alive.has(id))) {
+          up = await supabase
+            .from(table)
+            .upsert(
+              rows.map((r) =>
+                typeof r.song_id === "string" && !alive.has(r.song_id) ? { ...r, song_id: null } : r
+              )
+            );
+        }
+      }
+      // Still the FK with every dead song unlinked: what is gone is the event itself.
+      // Say it in Thai rather than park Postgres' sentence.
+      if (up.error && isForeignKeyViolation(up.error)) {
+        return failOrThrow(
+          "งานหรือเพลงที่เซ็ตลิสต์นี้อ้างถึงถูกลบไปแล้วบนออนไลน์ — บันทึกรายการนี้ไม่ได้",
+          onLine,
+          up.status
+        );
+      }
+    }
     if (up.error && isUniqueViolation(up.error.code, up.error.message)) {
       // one-photo-per-event (mig 0036): an offline delete+re-add mints a fresh row
       // id, so the server's stale photo row blocks the upsert. Clear the rows the
@@ -721,21 +772,45 @@ async function applyAudioUploadOp(
       return { conflict: msg };
     }
     // the old file's loudness/waveform/beat go with it (lib/song-file-facts.ts)
-    const upd = await supabase
+    // write-guard-exempt: the rows ARE asked back - `.select()` is chained two statements
+    // down, after the compare-and-swap condition, and the 0-row branch below reads them.
+    let write = supabase
       .from("songs")
       .update({ audio_path: op.path, audio_name: op.fileName, audio_expires_at: null, ...STALE_FILE_FACTS })
-      .eq("id", op.id)
-      .select("id, copyright_status");
+      .eq("id", op.id);
+    // Compare-and-swap on the master the guard saw. The guard ran BEFORE the PUT,
+    // and the PUT of a 27-88 MB master takes minutes on venue wifi: a newer master
+    // uploaded meanwhile (another device, or this one's "เลือกไฟล์ใหม่แทนไฟล์ที่รออัปโหลด")
+    // was silently overwritten by this older queued take (2026-10-26 hunt). Only
+    // "ใช้ของฉัน" (force) overwrites whatever is there now — that is what it means.
+    if (!force) write = serverPath === null ? write.is("audio_path", null) : write.eq("audio_path", serverPath);
+    const upd = await write.select("id, copyright_status");
     if (upd.error) {
       if (isQueueableWriteError(upd.error.message, onLine, upd.status))
         throw new Error(upd.error.message);
       return { conflict: upd.error.message };
     }
     if (!upd.data || upd.data.length === 0) {
-      // 0 rows and no error: deleted between the guard read and the write — or
-      // sent as anon, which looks identical. Re-prove the session before parking.
+      // 0 rows and no error: deleted between the guard read and the write, the
+      // master changed under the compare-and-swap above — or sent as anon, which
+      // looks identical to both. Re-prove the session before parking anything.
       await requireLiveSession();
-      return { conflict: "เพลงนี้ถูกลบไปแล้วบนออนไลน์ — อัปไฟล์ขึ้นไม่ได้" };
+      if (force) return { conflict: "เพลงนี้ถูกลบไปแล้วบนออนไลน์ — อัปไฟล์ขึ้นไม่ได้" };
+      const now = await supabase.from("songs").select("id, audio_path").eq("id", op.id).maybeSingle();
+      if (now.error) {
+        if (isQueueableWriteError(now.error.message, onLine, now.status)) throw new Error(now.error.message);
+        return { conflict: now.error.message };
+      }
+      if (!now.data) return { conflict: "เพลงนี้ถูกลบไปแล้วบนออนไลน์ — อัปไฟล์ขึ้นไม่ได้" };
+      const nowPath = (now.data.audio_path as string | null) ?? null;
+      // Same master as the guard saw, yet the write matched nothing: refused (RLS),
+      // not raced. Saying "someone uploaded over it" would be a lie.
+      if (nowPath === serverPath) return { conflict: AUDIO_WRITE_REFUSED_REASON };
+      // A newer master landed while the PUT ran. Online wins, exactly as the guard
+      // would have said had it run now: park it. The local source stays (this device
+      // still holds the only copy of the take, and "ใช้ของฉัน" needs it), and the new
+      // master is left alone — the tail below never runs.
+      return { conflict: audioConflictReason({ audioPath: nowPath }) };
     }
     // Real replace just landed (not the "applied" pass-through below, which means
     // a previous flush already did this) — same trigger the online path fires on.

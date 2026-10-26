@@ -19,11 +19,19 @@ export function formatDuration(totalSeconds: number): string {
 
 /**
  * Parse a duration string into seconds.
- * Accepts "ss", "m:ss", or "h:mm:ss". Returns null if invalid.
+ * Accepts "ss", "m:ss", or "h:mm:ss" - and "m.ss" / "h.mm.ss", the way a length is
+ * commonly written in Thai ("3.30" = three and a half minutes). Number("3.30") is
+ * 3.3, which this used to round to 3 SECONDS: the library saved the song as 0:03 and
+ * Auto cut it there. A dotted value whose seconds aren't two digits ("3.5": 3:05 or
+ * 3½ minutes?) is refused rather than guessed. Returns null if invalid.
  */
 export function parseDurationToSeconds(input: string): number | null {
-  const str = input.trim();
+  let str = input.trim();
   if (str === "") return null;
+  if (str.includes(".")) {
+    if (str.includes(":") || !/^\d+(\.\d{2}){1,2}$/.test(str)) return null;
+    str = str.replace(/\./g, ":");
+  }
   const parts = str.split(":").map((p) => p.trim());
   if (parts.some((p) => p === "" || isNaN(Number(p)))) return null;
   const nums = parts.map(Number);

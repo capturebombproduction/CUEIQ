@@ -152,9 +152,10 @@ export function PracticeJournal({
   // probe result can no longer produce two opposite verdicts on the same screen.
   // (It could: the player half used to do `setInThisBand(data.length > 0)`, which
   // reads an anon-fallback empty answer as "not a member" and failed CLOSED.)
-  // They stay two reads rather than one because Radix unmounts the inactive tab —
-  // this probe only fires when สมุดซ้อม is opened, and hoisting it into the parent
-  // would mean plumbing the answer back down for no change in behaviour.
+  // They stay two reads rather than one because the journal mounts only when
+  // สมุดซ้อม is first opened (practice-mode.tsx) — this probe only fires then, and
+  // hoisting it into the parent would mean plumbing the answer back down for no
+  // change in behaviour.
   //
   // Unknown (in flight / offline / an unsigned read) keeps the composer — a member
   // at a venue must never be locked out of their own journal by a failed

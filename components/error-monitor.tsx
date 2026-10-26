@@ -1,6 +1,6 @@
 "use client";
 
-import { Component, useEffect, type ReactNode } from "react";
+import { Component, useEffect, useLayoutEffect, type ReactNode } from "react";
 import { logClientError } from "@/lib/client-log";
 import { Button } from "@/components/ui/button";
 import { FeedbackButton } from "@/components/feedback-button";
@@ -38,6 +38,27 @@ export function cspMessage(v: CspViolation): string {
   return `CSP ${v.d || "?"} blocked ${noQuery(v.b) || "?"}`;
 }
 
+/** Who a render crash caught by the in-app error card is reported as - set by the
+ *  ErrorMonitor the (app) layout mounts (null outside it: the root error page). */
+let reporter: { userId: string; tenantId: string | null } | null = null;
+
+/**
+ * Record a render crash that Next's own boundary caught. On the web every page
+ * sits inside app/(app)/error.tsx's boundary, which is nested INSIDE the layout's
+ * AppErrorBoundary - so the page crash never reached componentDidCatch below, and
+ * Next reports a caught error with console.error only: web white-screens (Live
+ * Mode's included) left nothing in the Dev Inbox. components/error-card.tsx calls this.
+ */
+export function reportCaughtRenderError(error: Error & { digest?: string }) {
+  if (!reporter) return;
+  void logClientError({
+    ...reporter,
+    kind: "react",
+    message: error?.message || "render crash",
+    stack: error?.stack ?? (error?.digest ? `digest ${error.digest}` : null),
+  });
+}
+
 /**
  * Global client-error capture. Mounted once in the (app) layout. Installs window
  * 'error' + 'unhandledrejection' listeners that forward to logClientError
@@ -50,6 +71,15 @@ export function ErrorMonitor({
   userId: string;
   tenantId: string | null;
 }) {
+  // A layout effect: it runs before any passive effect of the same commit, so an
+  // error card that renders on the very first paint still finds who to report as.
+  useLayoutEffect(() => {
+    const me = { userId, tenantId };
+    reporter = me;
+    return () => {
+      if (reporter === me) reporter = null;
+    };
+  }, [userId, tenantId]);
   useEffect(() => {
     const onError = (e: ErrorEvent) => {
       logClientError({

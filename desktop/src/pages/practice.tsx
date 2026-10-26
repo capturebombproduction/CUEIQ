@@ -20,6 +20,33 @@ type State = {
   partial: boolean;
 };
 
+/** How long each of the room's own two reads (markers, practice list) may wait.
+ *
+ *  The bundle above them is bounded and falls back to the copy on disk, but these two
+ *  were not: on a venue/hotel wifi that is joined but black-holed (navigator.onLine
+ *  TRUE, nothing answers) the room sat on "กำลังโหลดห้องซ้อม…" for good, with the
+ *  bundle, the songs and the cached masters all on this machine. Same budget as the
+ *  other desktop loaders' single read (EVENT_BUNDLE_TIMEOUT_MS / WORKSPACE_READ_
+ *  TIMEOUT_MS): slow still gets to deliver fresh data; never-answering is a failed
+ *  read, which this page already says out loud (`partial`). */
+const PRACTICE_ROOM_READ_TIMEOUT_MS = 8000;
+
+/** Resolves to `null` if `p` has not settled within `ms`. A local twin of the
+ *  canonical helper in ~/data/workspace.ts (read its comment before changing this
+ *  one): the request is ABANDONED, not cancelled; the timer is cleared on both
+ *  outcomes; a late value is discarded and a late rejection still observed. */
+function withTimeout<T>(p: PromiseLike<T>, ms: number): Promise<T | null> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  return Promise.race<T | null>([
+    p,
+    new Promise<null>((resolve) => {
+      timer = setTimeout(() => resolve(null), ms);
+    }),
+  ]).finally(() => {
+    if (timer !== undefined) clearTimeout(timer);
+  });
+}
+
 const EMPTY: State = {
   loading: false,
   bundle: null,
@@ -44,20 +71,29 @@ export function PracticeRoom() {
         return;
       }
       const sb = createClient();
+      // Each read bounded on its own (they run side by side, so the room waits at
+      // most one budget): a read that never answers is a FAILED read — `null` here
+      // — and takes the `partial` path below, so the room opens from the bundle.
       const [markerRes, practiceRes] = await Promise.all([
-        sb
-          .from("song_markers")
-          .select("*")
-          .eq("group_id", bundle.event.group_id)
-          .order("position_seconds", { ascending: true }),
-        sb
-          .from("practice_songs")
-          .select("*")
-          .eq("event_id", bundle.event.id)
-          .order("sort_order", { ascending: true }),
+        withTimeout(
+          sb
+            .from("song_markers")
+            .select("*")
+            .eq("group_id", bundle.event.group_id)
+            .order("position_seconds", { ascending: true }),
+          PRACTICE_ROOM_READ_TIMEOUT_MS
+        ),
+        withTimeout(
+          sb
+            .from("practice_songs")
+            .select("*")
+            .eq("event_id", bundle.event.id)
+            .order("sort_order", { ascending: true }),
+          PRACTICE_ROOM_READ_TIMEOUT_MS
+        ),
       ]);
       const markersBySong: Record<string, SongMarker[]> = {};
-      for (const m of (markerRes.data ?? []) as SongMarker[]) {
+      for (const m of (markerRes?.data ?? []) as SongMarker[]) {
         (markersBySong[m.song_id] ??= []).push(m);
       }
       // The last place on the desktop still coercing a FAILED read to []. The
@@ -71,8 +107,8 @@ export function PracticeRoom() {
           loading: false,
           bundle,
           markersBySong,
-          practiceList: (practiceRes.data ?? []) as PracticeSong[],
-          partial: !!markerRes.error || !!practiceRes.error,
+          practiceList: (practiceRes?.data ?? []) as PracticeSong[],
+          partial: !markerRes || !!markerRes.error || !practiceRes || !!practiceRes.error,
         });
     })().catch(() => alive && setState(EMPTY));
     return () => {

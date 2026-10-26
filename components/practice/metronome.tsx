@@ -26,6 +26,8 @@ import {
   type CountVoiceStatus,
 } from "@/lib/count-samples";
 import { wroteNothing, noRowsMessage } from "@/lib/write-guard";
+import { hasLiveSession } from "@/lib/auth-session";
+import { writeFailureMessage } from "@/lib/practice-journal-gate";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import type { Song } from "@/lib/types";
@@ -161,6 +163,10 @@ export function Metronome({
   const beatOriginRef = useRef(0); // which working-beat index counts as "1"
   const anchorCtxRef = useRef(0); // ctx time at the anchor
   const anchorPosRef = useRef(0); // song position (s) at the anchor
+  const anchorSpeedRef = useRef(1); // the speed the song has run at since the anchor
+  // True while a running SYNCED scheduler holds a song↔ctx anchor (both strategies),
+  // so the song's position "now" can be read off it — see livePos().
+  const anchorLiveRef = useRef(false);
 
   const voiceRef = useRef<SpeechSynthesisVoice | null>(null);
   const canSpeakRef = useRef(false);
@@ -479,16 +485,37 @@ export function Metronome({
     }
   }
 
-  // Phase-lock the metronome to the song's current position (sync mode).
-  function anchorSync() {
+  /**
+   * Where the song is NOW, for a re-anchor in the middle of playback (÷2 / ×2, a
+   * detect landing, BPM −/+, a speed change, ตั้งบีตแรก). The `position` prop is the
+   * player's last timeupdate — ~4 Hz, so up to 250 ms behind the song: anchoring on
+   * it put every following click that much late, until the next seek or pause, and
+   * the beat that had just sounded was scheduled again. The running anchor already
+   * maps the audio clock to the song (the same map the clicks are scheduled from;
+   * both clocks run off the audio hardware), so read the song's position off that.
+   * Play-start and seeks still anchor on the prop: there it is the fresh value (the
+   * point paused at, the point jumped to), and no anchor is running yet / any more.
+   */
+  function livePos(): number {
+    const ctx = ctxRef.current;
+    if (!ctx || !anchorLiveRef.current) return transportRef.current.position;
+    return anchorPosRef.current + (ctx.currentTime - anchorCtxRef.current) * anchorSpeedRef.current;
+  }
+
+  // Phase-lock the metronome to the song's position `pos` (default: the last one
+  // the player reported — see livePos for when that is too old).
+  function anchorSync(pos: number = transportRef.current.position) {
     const ctx = ctxRef.current;
     if (!ctx) return;
-    const { position: pos, speed: spd } = transportRef.current;
+    const spd = transportRef.current.speed;
+    // Both strategies keep the map, so a later mid-play re-anchor can read "now" off it.
+    anchorCtxRef.current = ctx.currentTime;
+    anchorPosRef.current = pos;
+    anchorSpeedRef.current = Math.max(0.01, spd || 1);
+    anchorLiveRef.current = true;
     const beats = beatTimesRef.current;
     if (beatLockActive() && beats) {
       // anchor the song↔ctx clock mapping at "now", point at the first beat ≥ pos
-      anchorCtxRef.current = ctx.currentTime;
-      anchorPosRef.current = pos;
       let lo = 0;
       let hi = beats.length;
       while (lo < hi) {
@@ -518,8 +545,9 @@ export function Metronome({
     barLatchedRef.current = false;
     if (timerRef.current) clearInterval(timerRef.current);
     if (anchored) {
-      anchorSync();
+      anchorSync(); // play-start: the prop is where the song starts from
     } else {
+      anchorLiveRef.current = false; // a manual run follows no song
       beatAbsRef.current = 0;
       nextNoteRef.current = ctx.currentTime + 0.1;
     }
@@ -531,6 +559,7 @@ export function Metronome({
   function stopScheduler() {
     if (timerRef.current) clearInterval(timerRef.current);
     timerRef.current = null;
+    anchorLiveRef.current = false; // the song may move while nothing follows it
     genRef.current++; // invalidate any beat callbacks already queued ahead
     // cancel any click/count already scheduled on the audio clock but not yet
     // sounded (or still sounding) so no stray beat leaks out after stop/pause
@@ -567,9 +596,9 @@ export function Metronome({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, sync, canSync, playing, song?.id]);
 
-  // Re-phase on tempo / speed change while running.
+  // Re-phase on tempo / speed change while running — from where the song is now.
   useEffect(() => {
-    if (sync && canSync && playing && runningRef.current) anchorSync();
+    if (sync && canSync && playing && runningRef.current) anchorSync(livePos());
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [bpm, speed]);
 
@@ -621,8 +650,9 @@ export function Metronome({
   // Free-run: set the grid origin to "now". Tap this on the song's downbeat.
   function setBeatOne() {
     const beats = beatTimesRef.current;
+    const now = livePos(); // the tap is "1": the song's position at it, not 250 ms ago
     if (beatLockActive() && beats) {
-      const pos = transportRef.current.position;
+      const pos = now;
       let best = 0;
       let bestD = Infinity;
       for (let i = 0; i < beats.length; i++) {
@@ -635,8 +665,8 @@ export function Metronome({
       beatOriginRef.current = best;
       return;
     }
-    gridBaseRef.current = transportRef.current.position;
-    if (runningRef.current) anchorSync();
+    gridBaseRef.current = now;
+    if (runningRef.current) anchorSync(now);
   }
 
   // ÷2 / ×2 octave fixups. Beat-locked: re-derive the working beat grid (thin /
@@ -651,7 +681,7 @@ export function Metronome({
       beatOriginRef.current = 0;
       setHasBeats(working.length > 0);
       if (detectedBpmRef.current > 0) setBpm(clampBpm(detectedBpmRef.current * next));
-      if (runningRef.current) anchorSync();
+      if (runningRef.current) anchorSync(livePos());
     } else {
       setBpm((b) => clampBpm(b * factor));
     }
@@ -674,7 +704,7 @@ export function Metronome({
         beatOriginRef.current = 0;
         setBpm(clampBpm(res.bpm));
         setHasBeats(true);
-        if (runningRef.current) anchorSync();
+        if (runningRef.current) anchorSync(livePos());
         toast.success(`ล็อกจังหวะเพลงแล้ว ~${clampBpm(res.bpm)} BPM`, {
           description: "เมโทรนอมจะเกาะจังหวะจริงของเพลง • ถี่/ห่างไปกด ÷2 หรือ ×2 • “ตั้งบีตแรก” จัดเลข 1",
         });
@@ -686,7 +716,7 @@ export function Metronome({
         octaveRef.current = 1;
         setHasBeats(false);
         setBpm(clampBpm(res.bpm));
-        if (runningRef.current) anchorSync();
+        if (runningRef.current) anchorSync(livePos());
         toast.success(`ตรวจจับได้ ~${clampBpm(res.bpm)} BPM`, {
           description: "ล็อกบีตไม่ชัด ใช้จังหวะคงที่แทน • ถ้าเร็ว/ช้าไปเท่าตัวกด ÷2 หรือ ×2",
         });
@@ -711,7 +741,13 @@ export function Metronome({
       .eq("id", song.id)
       .select("id");
     if (error) {
-      toast.error("บันทึก BPM ไม่สำเร็จ", { description: error.message });
+      // The Thai sentence the rest of the practice room uses, never the raw
+      // PostgREST text ("permission denied for table songs" in a Thai toast).
+      const live = await hasLiveSession();
+      console.error("[CueIQ] metronome bpm save failed:", error.code ?? "-", error.message ?? "-");
+      toast.error("บันทึก BPM ไม่สำเร็จ", {
+        description: writeFailureMessage(error.code, error.message, live),
+      });
       return;
     }
     // 0 rows = the update reached the server and changed nothing (anon-key

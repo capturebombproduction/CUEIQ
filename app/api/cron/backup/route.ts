@@ -6,6 +6,7 @@ import {
 } from "@aws-sdk/client-s3";
 import { createAdminClient, hasServiceRole } from "@/lib/supabase/admin";
 import { r2Client, r2Configured, R2_BUCKET } from "@/lib/r2";
+import { PARTIAL_BACKUP_PREFIX as PARTIAL_PREFIX } from "@/lib/backup-keys";
 import { cronSecretMatches, reportCronFailure } from "@/lib/cron-report";
 
 // Daily snapshots are tiny (~few hundred rows of JSON) but unbounded growth is
@@ -152,8 +153,14 @@ export async function GET(req: Request) {
     errors,
     data,
   };
+  // A night where a table failed (a Supabase outage, a rotated service key: then
+  // EVERY table fails and `data` is {}) is kept apart under backups/partial/: it
+  // used to count as one of the RETAIN, pushing the oldest GOOD snapshot out, and
+  // became the "latest" the admin download hands out. Thirty such nights left
+  // nothing restorable. lib/r2.ts listBackups() skips the partial/ folder.
+  const failedTables = Object.keys(errors);
   // Colon/dot-free key so it's a clean filename on any OS when downloaded.
-  const key = `backups/cueiq-snapshot-${generatedAt.replace(/[:.]/g, "-")}.json`;
+  const key = `${failedTables.length > 0 ? PARTIAL_PREFIX : "backups/"}cueiq-snapshot-${generatedAt.replace(/[:.]/g, "-")}.json`;
 
   try {
     await r2Client().send(
@@ -175,12 +182,20 @@ export async function GET(req: Request) {
   // pruning failure must never fail the backup we just wrote.
   let pruned = 0;
   try {
+    // Only a complete snapshot moves the window, and a partial one only prunes partials.
+    const folder = failedTables.length > 0 ? PARTIAL_PREFIX : "backups/";
     const listed = await r2Client().send(
-      new ListObjectsV2Command({ Bucket: R2_BUCKET, Prefix: "backups/" })
+      new ListObjectsV2Command({ Bucket: R2_BUCKET, Prefix: folder })
     );
     const keys = (listed.Contents ?? [])
       .map((o) => o.Key)
-      .filter((k): k is string => !!k && k.endsWith(".json"))
+      .filter(
+        (k): k is string =>
+          !!k &&
+          k.endsWith(".json") &&
+          k.startsWith(folder) &&
+          (folder === PARTIAL_PREFIX || !k.startsWith(PARTIAL_PREFIX))
+      )
       .sort();
     const stale = keys.slice(0, Math.max(0, keys.length - RETAIN));
     if (stale.length > 0) {
@@ -200,7 +215,6 @@ export async function GET(req: Request) {
   // healthy ok:true buried under a JSON nobody reads — surface it the same way
   // an outright upload failure already is, so platform-level monitoring (and the
   // Dev Inbox) both see it, and name which tables are missing from this snapshot.
-  const failedTables = Object.keys(errors);
   if (failedTables.length > 0) {
     await reportCronFailure(
       "backup",

@@ -98,7 +98,9 @@ export function ChangePasswordDialog({
       if (vErr) throw new Error("รหัสผ่านปัจจุบันไม่ถูกต้อง");
       const { error: uErr } = await supabase.auth.updateUser({ password: next });
       if (uErr) throw new Error(uErr.message);
-      toast.success("เปลี่ยนรหัสผ่านแล้ว — ครั้งต่อไปใช้รหัสใหม่");
+      toast.success("เปลี่ยนรหัสผ่านแล้ว — ครั้งต่อไปใช้รหัสใหม่", {
+        description: "เครื่องอื่นที่ใช้บัญชีนี้จะต้องล็อกอินใหม่ด้วยรหัสใหม่",
+      });
       clear();
       setOpen(false);
     } catch (e) {
@@ -123,7 +125,8 @@ export function ChangePasswordDialog({
           <DialogHeader>
             <DialogTitle>เปลี่ยนรหัสผ่าน</DialogTitle>
             <DialogDescription>
-              ยืนยันรหัสผ่านปัจจุบัน แล้วตั้งรหัสผ่านใหม่
+              ยืนยันรหัสผ่านปัจจุบัน แล้วตั้งรหัสผ่านใหม่ — เครื่องอื่นที่ล็อกอินบัญชีนี้อยู่
+              (เช่น โน้ตบุ๊กหน้าเวที) จะถูกออกจากระบบ และต้องใช้รหัสใหม่ล็อกอินอีกครั้ง
             </DialogDescription>
           </DialogHeader>
 

@@ -33,17 +33,30 @@ export function mapsSearchUrl(query: string): string {
   )}`;
 }
 
-/** Best-effort match of a typed venue name against the presets. */
+/** Shortest typed start of a preset name that counts as that preset ("Lot " yes, "T" no). */
+const MIN_PREFIX = 4;
+
+/**
+ * Best-effort match of a typed venue name against the presets: the typed text
+ * names the preset ("Lot of Live", "Lot of Live (Bangkok) ชั้น 5") or is the start
+ * of it, at least MIN_PREFIX characters long. Not "the preset contains what was
+ * typed": the event form calls this on every key, and the first key of ANY venue
+ * ("T" of "The Street") is inside "Lot of Live (Bangkok)" - its map link was filled
+ * into shows at other venues.
+ */
 export function findVenuePreset(
   name: string | null | undefined
 ): VenuePreset | undefined {
   if (!name) return undefined;
   const n = name.trim().toLowerCase();
   if (!n) return undefined;
-  return VENUE_PRESETS.find(
-    (v) =>
-      v.name.toLowerCase() === n ||
-      v.name.toLowerCase().includes(n) ||
-      n.includes(v.name.toLowerCase())
-  );
+  return VENUE_PRESETS.find((v) => {
+    const full = v.name.toLowerCase();
+    const core = full.replace(/\s*\(.*\)\s*$/, ""); // "lot of live"
+    return (
+      n.includes(full) ||
+      n.includes(core) ||
+      (n.length >= MIN_PREFIX && full.startsWith(n))
+    );
+  });
 }
