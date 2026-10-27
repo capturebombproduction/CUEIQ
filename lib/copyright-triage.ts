@@ -42,7 +42,10 @@ export type TriageSong = {
 };
 
 /** What the row holds now, for the page to show. */
-export type TriageRow = Pick<TriageSong, "copyright_status" | "title"> & { audio_path?: string | null };
+export type TriageRow = Pick<TriageSong, "copyright_status" | "title"> & {
+  audio_path?: string | null;
+  audio_name?: string | null;
+};
 
 export type TriageOutcome =
   /** This write landed: tell the band. */
@@ -57,7 +60,30 @@ export type TriageOutcome =
 const knownLabel = (s: CopyrightStatus) =>
   (COPYRIGHT_META[s] ?? COPYRIGHT_META.pending).label;
 
+// Songs with a triage write in flight. A second press on the same song before the first
+// answers (อนุมัติ, then a quick ปฏิเสธ) read the FIRST press's optimistic status as what the
+// page showed, so its filter matched nothing and it said "changed" or "not saved" while the
+// first one landed (ตาที่ 3 on hunt 8). The callers ignore a press while its song is here.
+const inFlight = new Set<string>();
+
+export function triageInFlight(songId: string): boolean {
+  return inFlight.has(songId);
+}
+
 export async function setCopyrightStatus(
+  supabase: Client,
+  song: TriageSong,
+  status: CopyrightStatus
+): Promise<TriageOutcome> {
+  inFlight.add(song.id);
+  try {
+    return await writeCopyrightStatus(supabase, song, status);
+  } finally {
+    inFlight.delete(song.id);
+  }
+}
+
+async function writeCopyrightStatus(
   supabase: Client,
   song: TriageSong,
   status: CopyrightStatus
@@ -77,10 +103,13 @@ export async function setCopyrightStatus(
   // 0 rows, no error: the song moved on - or the write went out as anon / without the right.
   const { data: row } = await supabase
     .from("songs")
-    .select("copyright_status, title, audio_path")
+    .select("copyright_status, title, audio_path, audio_name")
     .eq("id", song.id)
     .maybeSingle();
-  const now = row as { copyright_status: CopyrightStatus; title: string; audio_path: string | null } | null;
+  // audio_name too: the Library shows the file by it, and a swapped take must not keep the old name
+  const now = row as
+    | { copyright_status: CopyrightStatus; title: string; audio_path: string | null; audio_name: string | null }
+    | null;
   if (!now) return { kind: "failed", description: await noRowsMessage() };
   const sameSong = now.title === song.title && (!hasPath || now.audio_path === song.audio_path);
   if (sameSong && now.copyright_status === status) return { kind: "already" };

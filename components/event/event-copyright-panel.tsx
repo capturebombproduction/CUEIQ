@@ -5,7 +5,7 @@ import { ShieldCheck, Check, Ban } from "lucide-react";
 import { toast } from "sonner";
 import { createClient } from "@/lib/supabase/client";
 import { notify } from "@/lib/notify-client";
-import { setCopyrightStatus } from "@/lib/copyright-triage";
+import { setCopyrightStatus, triageInFlight } from "@/lib/copyright-triage";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { MetaIcon } from "@/components/status-icon";
@@ -35,7 +35,7 @@ export function EventCopyrightPanel({
   if (songs.length === 0) return null;
 
   async function setStatus(song: CopyrightSong, status: CopyrightStatus) {
-    if (status === song.copyright_status) return;
+    if (status === song.copyright_status || triageInFlight(song.id)) return;
     setSongs((prev) =>
       prev.map((s) => (s.id === song.id ? { ...s, copyright_status: status } : s))
     );

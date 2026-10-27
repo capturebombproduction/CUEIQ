@@ -3,7 +3,7 @@
 // strength of the old recording - 0047's back-to-review only fires for a reviewed song.
 import { describe, expect, it, vi } from "vitest";
 vi.mock("@/lib/auth-session", () => ({ hasLiveSession: async () => true }));
-import { friendlySongError, setCopyrightStatus } from "./copyright-triage";
+import { friendlySongError, setCopyrightStatus, triageInFlight } from "./copyright-triage";
 
 function fake(write: { data: unknown[] | null; error: unknown }, row: Record<string, unknown> | null) {
   const eqs: [string, unknown][] = [];
@@ -81,5 +81,38 @@ describe("setCopyrightStatus", () => {
   it("friendlySongError passes unknown text through", () => {
     expect(friendlySongError("boom")).toBe("boom");
     expect(friendlySongError(undefined)).toBeUndefined();
+  });
+
+  // ตาที่ 3 on hunt 8: a second press before the first answered read the first press's
+  // optimistic status as the page's and was refused ("changed" / "not saved") while the
+  // first one landed. The song is in flight from the call until its answer.
+  it("a song is in flight from the press until its answer", async () => {
+    let answer!: (v: unknown) => void;
+    const slow = {
+      from: () => {
+        const b: Record<string, unknown> = {
+          update: () => b,
+          eq: () => b,
+          is: () => b,
+          select: () => new Promise((r) => (answer = r)),
+        };
+        return b;
+      },
+    };
+    const p = setCopyrightStatus(slow as never, SONG, "cleared");
+    expect(triageInFlight("s1")).toBe(true);
+    expect(triageInFlight("s2")).toBe(false);
+    answer({ data: [{ id: "s1" }], error: null });
+    expect(await p).toEqual({ kind: "done" });
+    expect(triageInFlight("s1")).toBe(false);
+  });
+
+  it("a song moved on: the re-read brings its file name too", async () => {
+    const { client } = fake(
+      { data: [], error: null },
+      { copyright_status: "pending", title: "Kakumei", audio_path: "t/g/s1/new.wav", audio_name: "new.wav" }
+    );
+    const out = await setCopyrightStatus(client, SONG, "cleared");
+    expect(out.kind === "moved" && out.now.audio_name).toBe("new.wav");
   });
 });

@@ -366,7 +366,9 @@ export function UserManager({
           </span>{" "}
           บัญชี
         </span>
-        <Button onClick={openCreate}>
+        {/* not while an edit is reading its user: that read would land over this dialog
+            (ตาที่ 3 on hunt 8) */}
+        <Button onClick={openCreate} disabled={opening !== null}>
           <UserPlus aria-hidden /> สร้างบัญชีใหม่
         </Button>
       </div>

@@ -62,7 +62,7 @@ import {
 } from "@/lib/mgmt-write";
 import { formatDuration, parseDurationToSeconds } from "@/lib/time";
 import { wroteNothing, noRowsMessage } from "@/lib/write-guard";
-import { friendlySongError as friendlyError, setCopyrightStatus } from "@/lib/copyright-triage";
+import { friendlySongError as friendlyError, setCopyrightStatus, triageInFlight } from "@/lib/copyright-triage";
 import { hasLiveSession } from "@/lib/auth-session";
 import {
   fetchServerNowMs,
@@ -1025,7 +1025,7 @@ export function SongLibrary({
 
   // Quick copyright triage inline in the table — no need to open the edit dialog.
   async function updateCopyright(song: Song, status: CopyrightStatus) {
-    if (status === song.copyright_status) return;
+    if (status === song.copyright_status || triageInFlight(song.id)) return;
     setSongs((prev) =>
       prev.map((s) => (s.id === song.id ? { ...s, copyright_status: status } : s))
     );
