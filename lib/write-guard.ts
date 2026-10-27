@@ -26,6 +26,26 @@ export function wroteNothing(rows: unknown[] | null | undefined): boolean {
 }
 
 /**
+ * The text for a failed write's toast. An UPDATE that RLS refuses touches no row
+ * (above), but an INSERT - or an UPDATE's WITH CHECK - is refused out loud with
+ * 42501 and Postgres' English: `new row violates row-level security policy for
+ * table "schedule_items"`. 2026-10-27 (hunt 7): that is exactly what a member sees
+ * after their band role was changed while the workspace stayed open (and, as 42501
+ * "permission denied", what an anon-fallback request gets), so say it in the user's
+ * terms. Everything else keeps its own message. Matched on the message too, because
+ * an error re-thrown through a queue can arrive with the code stripped.
+ */
+export function writeErrorText(
+  error: { code?: string | null; message?: string | null } | null | undefined
+): string | undefined {
+  if (!error) return undefined;
+  if (error.code === "42501" || /row-level security policy/i.test(error.message ?? "")) {
+    return "ไม่มีสิทธิ์บันทึกรายการนี้ (สิทธิ์ในวงอาจถูกเปลี่ยน หรือเซสชันหมดอายุ) — โหลดหน้าใหม่แล้วลองอีกครั้ง";
+  }
+  return error.message ?? undefined;
+}
+
+/**
  * Why did it touch no row? Only two answers are possible once the request
  * demonstrably reached the server, and they need different actions from the user,
  * so don't guess: ask whether we still hold a session.

@@ -62,7 +62,7 @@ import {
 } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
 import { liveTopic, privateChannel } from "@/lib/realtime";
-import { noRowsMessage, wroteNothing } from "@/lib/write-guard";
+import { noRowsMessage, wroteNothing, writeErrorText } from "@/lib/write-guard";
 import { SaveStatus, useSaveSignal } from "@/components/event/save-status";
 import {
   SETLIST_KIND_LABELS,
@@ -891,7 +891,7 @@ export function SetlistBuilder({
         return;
       }
       save.end(false);
-      toast.error("บันทึกไม่สำเร็จ", { description: error.message });
+      toast.error("บันทึกไม่สำเร็จ", { description: writeErrorText(error) });
       return;
     }
     // No error and no row = the write reached the server and changed nothing
@@ -1097,7 +1097,7 @@ export function SetlistBuilder({
           setItems((prev) => [...prev, local]);
           return true;
         }
-        toast.error("เพิ่มไม่สำเร็จ", { description: error?.message });
+        toast.error("เพิ่มไม่สำเร็จ", { description: writeErrorText(error) });
         return false;
       }
       ackedRef.current = [...ackedRef.current, data as SetlistItem];
@@ -1254,7 +1254,7 @@ export function SetlistBuilder({
         // legacy per-item R2 audio can't be deleted offline; benign orphan at worst
         return;
       }
-      toast.error("ลบไม่สำเร็จ", { description: error.message });
+      toast.error("ลบไม่สำเร็จ", { description: writeErrorText(error) });
       setItems(snapshot);
       return;
     }

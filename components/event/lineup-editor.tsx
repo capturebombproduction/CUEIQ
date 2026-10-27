@@ -10,7 +10,7 @@ import {
   tryQueueBehindPendingChildList,
   tryQueueChildList,
 } from "@/lib/mgmt-write";
-import { noRowsMessage, wroteNothing } from "@/lib/write-guard";
+import { noRowsMessage, wroteNothing, writeErrorText } from "@/lib/write-guard";
 import { hasLiveSession } from "@/lib/auth-session";
 import { Button } from "@/components/ui/button";
 import { useConfirm } from "@/components/ui/confirm-dialog";
@@ -115,7 +115,7 @@ export function LineupEditor({
       return;
     }
     save.end(false);
-    toast.error(failTitle, { description: error.message });
+    toast.error(failTitle, { description: writeErrorText(error) });
     commit(new Set(rollback));
   }
 

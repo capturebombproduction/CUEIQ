@@ -63,6 +63,7 @@ import {
   type AuthorityRow,
 } from "@/lib/show-authority";
 import { noRowsMessage, wroteNothing } from "@/lib/write-guard";
+import { notify } from "@/lib/notify-client";
 import {
   buildSongAudioPath,
   uploadEventAudio,
@@ -109,7 +110,7 @@ import { fadeLevel, nextFadeFrame } from "@/lib/fade";
 import { crowdedOut, LiveLayers, PAD_FADE_MS, PAD_MAX_SOUNDING, PAD_SETTLE_MS, type Layer } from "@/lib/live-layers";
 import { fileElapsed, type PadMode, type PadSound } from "@/lib/pad-view";
 import type { PadsView } from "@/components/live/set-mixer";
-import { unplayableAudio } from "@/lib/audio";
+import { audioOpenProblem, unplayableAudio } from "@/lib/audio";
 
 // How long a viewer (and the frame before Auto's own advance) holds 0:00 for the next row
 // before the card calls it overtime (handingOver).
@@ -412,6 +413,12 @@ export function LiveMode({
   // device's reload, which a broadcast id does not) and when it was last heard.
   const followingRunRef = useRef<number | null>(null);
   const followedHeardAtRef = useRef(0);
+  // …and the PAGE that last spoke for it (its broadcast id). That page saying "no show"
+  // has reset it: a page running a show never broadcasts begun:false (only reset() and a
+  // page before its START do), and the reset's own message, sent once, is lost to a viewer
+  // off Wi-Fi or asleep at that moment - which then stayed a viewer of a run nobody ran,
+  // START gone and Reset disabled, until a reload (2026-10-27, hunt 7).
+  const followingSenderRef = useRef<string | null>(null);
   // the row the device running the show stands on, by id (a viewer follows the song)
   const followItemIdRef = useRef<string | null>(null);
   // set for the one broadcast that resets a run, so the viewers watching it are freed
@@ -1946,9 +1953,13 @@ export function LiveMode({
         if (!theirBegun) {
           // No show on the other side. Only the RESET of the watched run frees this page
           // (START comes back, as if it had just opened); a page that merely opened, or
-          // a reset of some other run, changes nothing here.
-          if (!fromController || payload.resetRun == null || payload.resetRun !== followingRunRef.current) return;
+          // a reset of some other run, changes nothing here. The page that ran it saying
+          // "no show" is that reset too, heard late (followingSenderRef).
+          const resetOurs = payload.resetRun != null && payload.resetRun === followingRunRef.current;
+          const itsPageStopped = !!sender && sender === followingSenderRef.current;
+          if (!fromController || !(resetOurs || itsPageStopped)) return;
           followingRunRef.current = null;
+          followingSenderRef.current = null;
           controllerSinceRef.current = null;
           isControllerRef.current = true;
           setIsController(true);
@@ -1981,6 +1992,7 @@ export function LiveMode({
       }
       if (!isControllerRef.current && theirBegun) {
         if (theirRun != null) followingRunRef.current = theirRun;
+        followingSenderRef.current = sender || null;
         followedHeardAtRef.current = Date.now();
       }
       // A viewer takes the levels of the device running the show as a whole: one that
@@ -2890,13 +2902,25 @@ export function LiveMode({
     e.target.value = "";
     if (!canEdit || watchingOnly()) return;
     if (!file || !itemId) return;
-    const item = itemsRef.current.find((it) => it.id === itemId);
-    if (!item) return;
+    if (!itemsRef.current.some((it) => it.id === itemId)) return;
     const why = unplayableAudio(file); // a file this player cannot open is not attached
     if (why) {
       toast.error("ใช้ไฟล์นี้ไม่ได้", { description: why });
       return;
     }
+    // …and one the player itself refuses (.wma, .amr, an ALAC .m4a): attached, it went up as
+    // the row's master and the row was silent on every device (2026-10-27, hunt 7). Asked
+    // before anything is held, uploaded or linked - the row keeps what it had - and only of
+    // this new file: nothing sounding waits on it. No answer in 3 s is not a refusal.
+    const cannotOpen = await audioOpenProblem(file, 3_000);
+    if (cannotOpen) {
+      toast.error("ใช้ไฟล์นี้ไม่ได้", { description: cannotOpen });
+      return;
+    }
+    // read again after the wait: the row may be gone, or this device a viewer now
+    if (!canEdit || watchingOnly()) return;
+    const item = itemsRef.current.find((it) => it.id === itemId);
+    if (!item) return;
 
     // instant local playback - the old URL may still be sounding (see retireUrl)
     if (audioUrls[itemId]) retireUrl(itemId, audioUrls[itemId]);
@@ -2976,11 +3000,20 @@ export function LiveMode({
       // this one links nothing, saves nothing, tells nobody. Its temporary song is left
       // unlinked for the library's purge (lib/temp-song-purge.ts) (2026-10-27, hunt 6).
       if (!newest()) return;
-      const { error: linkErr } = await supabase
+      // Checked for rows too, like the path write above: a token that expired during the
+      // upload answered this one with 0 rows and no error, the pick reported success, and
+      // every other device still played the row's old master (2026-10-27, hunt 7).
+      const { data: linkRows, error: linkErr } = await supabase
         .from("setlist_items")
         .update({ song_id: songId })
-        .eq("id", itemId);
+        .eq("id", itemId)
+        .select("id");
       if (linkErr) throw linkErr;
+      if (wroteNothing(linkRows)) throw new Error(await noRowsMessage());
+      // The temporary song is copyright 'pending' (made so above): the approvers are told it
+      // waits, as a song added in the library does - the route says nothing to an approver's
+      // own pick. Fire-and-forget; notify() never throws (hunt 7).
+      notify("song_pending", { songId });
       // The song was made with the ROW's length; the file has its own, and Live draws the
       // waveform on it (lib/song-file-facts.ts). In the background and best-effort.
       void writeSongFileFacts(supabase, { id: songId, duration_seconds: item.duration_seconds, bpm: null }, path, file);
@@ -4679,6 +4712,14 @@ export function LiveMode({
   // so Auto-mode locks and bounds still apply.
   const keyActionRef = useRef<(e: KeyboardEvent) => void>(() => {});
   keyActionRef.current = (e: KeyboardEvent) => {
+    // A held Enter on a focused button: Chromium clicks it again on every auto-repeat, so
+    // NEXT walked the setlist and RUN/PAUSE flipped ~30×/s, like held Space did (2026-10-27,
+    // hunt 7). The first Enter clicks as always; a dialog's (the tools sheet's) is its own.
+    if (e.key === "Enter" && e.repeat) {
+      const btn = e.target as HTMLElement | null;
+      if (btn?.tagName === "BUTTON" && !btn.closest('[role="dialog"]')) e.preventDefault();
+      return;
+    }
     if (!isControllerRef.current) return;
     if (e.ctrlKey || e.metaKey || e.altKey) return;
     const el = e.target as HTMLElement | null;

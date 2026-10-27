@@ -1283,6 +1283,14 @@ export function MyShow() {
   // keyboard: Space start/run-pause · →/N next · ← back (Manual)
   const keyRef = useRef<(e: KeyboardEvent) => void>(() => {});
   keyRef.current = (e: KeyboardEvent) => {
+    // A held Enter on a focused button: Chromium clicks it again on every auto-repeat, so
+    // NEXT walked the setlist and RUN/PAUSE flipped ~30×/s, like held Space did (2026-10-27,
+    // hunt 7). The first Enter clicks as always; a dialog's is its own. Same as Live Mode's.
+    if (e.key === "Enter" && e.repeat) {
+      const btn = e.target as HTMLElement | null;
+      if (btn?.tagName === "BUTTON" && !btn.closest('[role="dialog"]')) e.preventDefault();
+      return;
+    }
     if (e.ctrlKey || e.metaKey || e.altKey) return;
     const el = e.target as HTMLElement | null;
     const tag = el?.tagName;

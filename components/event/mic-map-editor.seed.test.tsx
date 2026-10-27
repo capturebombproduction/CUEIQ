@@ -247,7 +247,10 @@ describe("MicMapEditor · a write that did not happen leaves the standing mics s
     const { container } = mount();
     fireEvent.click(screen.getByRole("button", { name: ADD }));
     await waitFor(() =>
-      expect(toast.error).toHaveBeenCalledWith("เพิ่มไมค์ไม่สำเร็จ", { description: "permission denied" })
+      // 42501 in the user's words since 2026-10-27 (hunt 7, lib/write-guard.ts writeErrorText)
+      expect(toast.error).toHaveBeenCalledWith("เพิ่มไมค์ไม่สำเร็จ", {
+        description: expect.stringContaining("ไม่มีสิทธิ์บันทึก"),
+      })
     );
     expect(micInputs()).toEqual([]);
     expect(standingTiles(container)).toHaveLength(3);

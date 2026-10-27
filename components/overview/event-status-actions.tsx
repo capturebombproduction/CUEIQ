@@ -5,7 +5,7 @@ import { Check, X, Loader2, ChevronDown } from "lucide-react";
 import { toast } from "sonner";
 import { createClient } from "@/lib/supabase/client";
 import { notify } from "@/lib/notify-client";
-import { wroteNothing, noRowsMessage } from "@/lib/write-guard";
+import { wroteNothing, noRowsMessage, writeErrorText } from "@/lib/write-guard";
 import { StatusBadge, StatusIcon } from "@/components/status-badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -92,7 +92,7 @@ export function EventStatusActions({
       cutRef.current = next;
       setStatus(prev);
     } else if (error) {
-      toast.error("เปลี่ยนสถานะไม่สำเร็จ", { description: error.message });
+      toast.error("เปลี่ยนสถานะไม่สำเร็จ", { description: writeErrorText(error) });
       setStatus(prev);
     } else if (wroteNothing(data)) {
       // 0 rows with no error = the write never landed — don't tell the band it did.

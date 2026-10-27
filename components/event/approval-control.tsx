@@ -6,7 +6,7 @@ import { Send, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { createClient } from "@/lib/supabase/client";
 import { notify } from "@/lib/notify-client";
-import { wroteNothing, noRowsMessage } from "@/lib/write-guard";
+import { wroteNothing, noRowsMessage, writeErrorText } from "@/lib/write-guard";
 import { Button } from "@/components/ui/button";
 import { STATUS_META, type GroupStatus } from "@/lib/types";
 
@@ -47,7 +47,7 @@ export function ApprovalControl({
       .select("id");
     if (error) {
       setBusy(false);
-      toast.error("เปลี่ยนสถานะไม่สำเร็จ", { description: error.message });
+      toast.error("เปลี่ยนสถานะไม่สำเร็จ", { description: writeErrorText(error) });
       return;
     }
     if (wroteNothing(data)) {

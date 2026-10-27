@@ -1050,11 +1050,20 @@ function BottomPanel({
 function Fader({ value, onChange }: { value: number; onChange: ((v: number) => void) | null }) {
   const railRef = useRef<HTMLDivElement>(null);
   const CAP = 26;
-  const fromY = (clientY: number) => {
+  // A press never moves the level, a drag does - from where it was, by how far the finger
+  // went, as SET MIXER's tile fader (set-mixer.tsx, 2026-10-25). Pressed where it landed,
+  // the cap jumped: a tap 5 px under its middle took the SOUNDING track from 100 to ~85
+  // at once (2026-10-27, hunt 7).
+  const dragRef = useRef<{ y: number; from: number; moved: boolean } | null>(null);
+  const DEAD_PX = 3;
+  const dragTo = (clientY: number): number | null => {
+    const d = dragRef.current;
     const r = railRef.current?.getBoundingClientRect();
-    if (!r || r.height <= CAP) return value;
-    const pos = 1 - (clientY - r.top - CAP / 2) / (r.height - CAP);
-    return Math.round(Math.min(1, Math.max(0, pos)) * 100);
+    if (!d || !r || r.height <= CAP) return null;
+    const dy = clientY - d.y;
+    if (!d.moved && Math.abs(dy) < DEAD_PX) return null;
+    d.moved = true;
+    return Math.round(Math.min(100, Math.max(0, d.from - (dy / (r.height - CAP)) * 100)));
   };
   const db = volumeToDb(value);
   const dbText = Number.isFinite(db) ? `${signedDb(db)} dB` : "−∞ dB";
@@ -1076,13 +1085,18 @@ function Fader({ value, onChange }: { value: number; onChange: ((v: number) => v
         onPointerDown={(e) => {
           if (!onChange) return;
           e.currentTarget.setPointerCapture?.(e.pointerId);
-          const v = fromY(e.clientY);
-          if (v !== value) onChange(v);
+          dragRef.current = { y: e.clientY, from: value, moved: false };
         }}
         onPointerMove={(e) => {
           if (!onChange || !e.currentTarget.hasPointerCapture?.(e.pointerId)) return;
-          const v = fromY(e.clientY);
-          if (v !== value) onChange(v);
+          const v = dragTo(e.clientY);
+          if (v != null && v !== value) onChange(v);
+        }}
+        onPointerUp={() => {
+          dragRef.current = null;
+        }}
+        onPointerCancel={() => {
+          dragRef.current = null;
         }}
         onKeyDown={(e) => {
           if (!onChange) return;

@@ -295,9 +295,25 @@ async function pickAudioFile() {
   if (r.canceled || r.filePaths.length === 0) return null;
   const filePath = r.filePaths[0];
   writeLastAudioDir(path.dirname(filePath));
-  const bytes = new Uint8Array(fs.readFileSync(filePath));
+  // Size first, then an ASYNC read (2026-10-27, hunt 7). This was a readFileSync of
+  // whatever was picked - and the dialog offers "All Files": a big file, or any file on
+  // a slow USB stick / network share, froze the main process (window, menus, the audio
+  // IPC) for the whole read; past 2 GB it threw; and a file of a gigabyte or so was then
+  // cloned across IPC into the renderer that may be running the show, which can take it
+  // down (render-process-gone → reload). A real master is 27-88 MB.
+  const st = await fs.promises.stat(filePath);
+  if (st.size > PICK_AUDIO_MAX_BYTES) {
+    throw new Error(
+      `ไฟล์ใหญ่เกินไป (${Math.round(st.size / 1024 / 1024)} MB) — รับไฟล์เสียงไม่เกิน ${Math.round(PICK_AUDIO_MAX_BYTES / 1024 / 1024)} MB`
+    );
+  }
+  const bytes = new Uint8Array(await fs.promises.readFile(filePath));
   return { name: path.basename(filePath), bytes };
 }
+
+/** The largest file the picker hands the renderer. Five times the biggest master the label
+ *  has (88 MB), well short of what the renderer can hold beside a running show. */
+const PICK_AUDIO_MAX_BYTES = 500 * 1024 * 1024;
 
 // The PA machine is the one thing at a venue nobody is looking at during a long
 // no-audio gap (MC talk, set change) — Windows will happily sleep the display or

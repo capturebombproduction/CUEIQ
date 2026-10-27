@@ -127,7 +127,8 @@ describe("LineupEditor · turning on a member another device already turned on",
     await settled();
     expect(toast.error).toHaveBeenCalledWith(
       "บันทึกไม่สำเร็จ",
-      expect.objectContaining({ description: expect.stringContaining("row-level security") })
+      // the reason, in the user's words since 2026-10-27 (hunt 7, lib/write-guard.ts writeErrorText)
+      expect.objectContaining({ description: expect.stringContaining("ไม่มีสิทธิ์บันทึก") })
     );
     expect(pressed("นิค3")).toBe("false");
     expect(unsavedWork().failed).toBe(1);

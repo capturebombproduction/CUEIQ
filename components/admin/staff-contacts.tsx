@@ -4,7 +4,7 @@ import { useState, type KeyboardEvent } from "react";
 import { toast } from "sonner";
 import { Check, ChevronUp, ChevronDown, Pencil, Phone, Plus, Trash2 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
-import { noRowsMessage, wroteNothing } from "@/lib/write-guard";
+import { noRowsMessage, wroteNothing, writeErrorText } from "@/lib/write-guard";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useConfirm } from "@/components/ui/confirm-dialog";
@@ -62,7 +62,7 @@ export function StaffContactsManager({
       .eq("id", id)
       .select("id");
     if (error) {
-      toast.error("บันทึกไม่สำเร็จ", { description: error.message });
+      toast.error("บันทึกไม่สำเร็จ", { description: writeErrorText(error) });
       return;
     }
     // No error and no row = the write reached the server and changed nothing (sent
@@ -88,7 +88,7 @@ export function StaffContactsManager({
       .single();
     setBusy(false);
     if (error || !data) {
-      toast.error("เพิ่มไม่สำเร็จ", { description: error?.message });
+      toast.error("เพิ่มไม่สำเร็จ", { description: writeErrorText(error) });
       return;
     }
     setRows((prev) => [...prev, data as StaffContact]);
@@ -142,7 +142,7 @@ export function StaffContactsManager({
     // and kept printing in the Overview's "บันทึกเป็นรูป" contacts (2026-10-27)
     const { data, error } = await supabase.from("staff_contacts").delete().eq("id", id).select("id");
     if (error || wroteNothing(data)) {
-      toast.error("ลบไม่สำเร็จ", { description: error?.message ?? (await noRowsMessage()) });
+      toast.error("ลบไม่สำเร็จ", { description: writeErrorText(error) ?? (await noRowsMessage()) });
       setRows(snap);
     }
   }

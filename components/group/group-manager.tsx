@@ -75,19 +75,31 @@ export function GroupManager({
       .sort((a, b) => a.sort_order - b.sort_order);
 
   // ---- group operations ----------------------------------------------------
+  // One band add at a time (2026-10-27, hunt 7): Enter in "ชื่อวงใหม่" called addGroup()
+  // past the button's disabled={busy}, so a second Enter (or a held key repeating) while
+  // the first insert was in flight created the band twice.
+  const addingGroup = useRef(false);
   async function addGroup() {
+    if (addingGroup.current) return;
     const name = newGroup.trim();
     if (!name) {
       toast.error("ใส่ชื่อวงก่อน");
       return;
     }
+    addingGroup.current = true;
     setBusy(true);
-    const { data, error } = await supabase
-      .from("groups")
-      .insert({ tenant_id: tenantId, name, color: "#7c3aed" })
-      .select("*")
-      .single();
-    setBusy(false);
+    let res;
+    try {
+      res = await supabase
+        .from("groups")
+        .insert({ tenant_id: tenantId, name, color: "#7c3aed" })
+        .select("*")
+        .single();
+    } finally {
+      addingGroup.current = false;
+      setBusy(false);
+    }
+    const { data, error } = res;
     if (error || !data) {
       toast.error("เพิ่มวงไม่สำเร็จ", { description: error?.message });
       return;
@@ -296,9 +308,34 @@ export function GroupManager({
 
   async function deleteMember(id: string) {
     const m = members.find((x) => x.id === id);
+    // What else this delete takes (2026-10-27, hunt 7): event_members and
+    // practice_attendance are ON DELETE CASCADE on members, so a member who graduated
+    // vanished from the lineup of every show they ever played - past run sheets and the
+    // share page included - and from the practice attendance history, under a prompt
+    // that said only "จะถูกลบออกจากวง". Count first and say it, like the song delete
+    // (song-library onDelete). A failed count is not "used nowhere": say so.
+    const [shows, attendance] = await Promise.all([
+      supabase.from("event_members").select("id", { count: "exact", head: true }).eq("member_id", id),
+      supabase.from("practice_attendance").select("id", { count: "exact", head: true }).eq("member_id", id),
+    ]).catch(() => [null, null] as const);
+    const unknown = !shows || !attendance || !!shows.error || !!attendance.error;
+    const showCount = unknown ? 0 : shows!.count ?? 0;
+    const attendanceCount = unknown ? 0 : attendance!.count ?? 0;
+    const who = m?.name ? `“${m.name}”` : "สมาชิกคนนี้";
+    const lost = [
+      showCount > 0 ? `ชื่อจะหายจากไลน์อัปของ ${showCount} งาน (รวมงานที่จบไปแล้ว)` : null,
+      attendanceCount > 0 ? `ประวัติเช็คชื่อซ้อม ${attendanceCount} ครั้งจะหายด้วย` : null,
+    ].filter(Boolean);
     const ok = await confirm({
       title: "ลบสมาชิกคนนี้?",
-      description: m?.name ? `“${m.name}” จะถูกลบออกจากวง` : "สมาชิกคนนี้จะถูกลบออกจากวง",
+      description: unknown
+        ? `${who} จะถูกลบออกจากวง — ตรวจไม่ได้ว่าอยู่ในไลน์อัปงานไหนบ้าง (เน็ตขัดข้อง) ถ้ามี ชื่อจะหายจากไลน์อัปงานพวกนั้นและประวัติเช็คชื่อซ้อมด้วย กู้คืนไม่ได้`
+        : lost.length
+          ? `${who} จะถูกลบออกจากวง — ${lost.join(" และ")} กู้คืนไม่ได้`
+          : `${who} จะถูกลบออกจากวง`,
+      ...(unknown || lost.length
+        ? { confirmText: "ลบสมาชิก", requireTyped: m?.name?.trim() || "ลบ" }
+        : {}),
     });
     if (!ok) return;
     const snap = members;

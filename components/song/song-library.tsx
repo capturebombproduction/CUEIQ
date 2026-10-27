@@ -30,9 +30,17 @@ import {
 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { notify } from "@/lib/notify-client";
-import { detectAudioDuration, unplayableAudio } from "@/lib/audio";
+import {
+  audioOpenProblem,
+  detectAudioDuration,
+  isUnopenableAudioError,
+  nativeErrorMessage,
+  UNOPENABLE_AUDIO_MESSAGE,
+  unplayableAudio,
+} from "@/lib/audio";
 import { makeCoverDataUrl } from "@/lib/song-cover";
 import { STALE_FILE_FACTS, writeSongFileFacts } from "@/lib/song-file-facts";
+import { SONG_SHOW_COLUMNS } from "@/lib/song-columns";
 import {
   buildSongAudioPath,
   uploadEventAudio,
@@ -108,6 +116,8 @@ import { useLibraryPreview } from "@/components/song/use-library-preview";
 import { LibraryMiniPlayer } from "@/components/song/library-mini-player";
 
 const NONE = "__none__";
+/** How long past the PUT uploadSongAudio still waits for the player's "can't open" (ms). */
+const OPEN_CHECK_GRACE_MS = 300;
 const COPYRIGHT_KEYS = Object.keys(COPYRIGHT_META) as CopyrightStatus[];
 
 /**
@@ -337,9 +347,31 @@ export function SongLibrary({
   pendingUploadsRef.current = pendingUploads;
   useEffect(() => {
     let alive = true;
+    let seen: Set<string> | null = null;
+    // A take that LEFT the queue has normally just landed (desktop/src/data/mgmt-outbox.ts:
+    // audio_path written, the override cleared). Only the badge used to follow: the row kept
+    // the path it was read with - "ไม่มีไฟล์เสียง" on a song that now has a master, a "ไฟล์ใน
+    // เครื่องนี้" for an override that is gone - and the next edit's cache sweep ran on that old
+    // path and threw the freshly cached take away (2026-10-27, hunt 7). Re-read those rows.
+    const reread = async (ids: string[]) => {
+      if (native) listLocalSourceIds().then((l) => alive && setLocalIds(l)).catch(() => {});
+      try {
+        const { data, error } = await supabase.from("songs").select(SONG_SHOW_COLUMNS).in("id", ids);
+        // an empty answer may be anon (lib/write-guard.ts): keep what is shown, never blank it
+        if (!alive || error || !data || data.length === 0) return;
+        const byId = new Map((data as unknown as Song[]).map((r) => [r.id, r]));
+        setSongs((prev) => prev.map((s) => (byId.has(s.id) ? { ...s, ...byId.get(s.id) } : s)));
+      } catch {
+        /* best-effort: the page's own refresh still reads everything */
+      }
+    };
     const refresh = () => {
       listPendingAudioUploads().then((s) => {
-        if (alive) setPendingUploads(s);
+        if (!alive) return;
+        const left = seen ? [...seen].filter((id) => !s.has(id)) : [];
+        seen = s;
+        setPendingUploads(s);
+        if (left.length > 0) void reread(left);
       });
     };
     refresh();
@@ -350,6 +382,8 @@ export function SongLibrary({
       alive = false;
       window.removeEventListener(MGMT_OUTBOX_EVENT, refresh);
     };
+    // mount-once on purpose: `supabase` / `native` are the page's fixed client and bridge
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Preview playback — one song at a time, and it stops the moment this page goes
@@ -769,6 +803,7 @@ export function SongLibrary({
       toast.error("ใช้ไฟล์นี้ไม่ได้", { description: why });
       return;
     }
+    const nameBefore = form.file_name;
     setPickedFile(file); // keep the File — uploaded to R2 on save
     setForm((f) => ({ ...f, file_name: file.name }));
     setDetecting(true);
@@ -779,6 +814,16 @@ export function SongLibrary({
         description: "จะอัปโหลดไฟล์ขึ้นคลาวด์เมื่อกดบันทึก",
       });
     } catch (e) {
+      // The player could not OPEN it (not merely read its length): it stayed picked and บันทึก
+      // made it the master - the old take deleted, every device silent on it (2026-10-27,
+      // hunt 7). Drop the pick (unless a newer one replaced it meanwhile).
+      if (isUnopenableAudioError(e)) {
+        setPickedFile((cur) => (cur === file ? null : cur));
+        setForm((f) => (f.file_name === file.name ? { ...f, file_name: nameBefore } : f));
+        if (fileRef.current) fileRef.current.value = "";
+        toast.error("ใช้ไฟล์นี้ไม่ได้", { description: UNOPENABLE_AUDIO_MESSAGE });
+        return;
+      }
       toast.error("ตรวจความยาวไม่สำเร็จ", {
         description: e instanceof Error ? e.message : String(e),
       });
@@ -817,6 +862,15 @@ export function SongLibrary({
     ) {
       toast.error("ย้ายวงไม่ได้ ขณะเพลงนี้มีไฟล์เสียง", {
         description: "ไฟล์ถูกเก็บไว้ใต้วงเดิม สมาชิกวงใหม่จะเปิดไม่ได้ — ลบไฟล์เสียงก่อน ย้ายวง แล้วอัปไฟล์ใหม่",
+      });
+      return;
+    }
+    // A file of this song is already on its way from the row's ⬆: two uploads raced, and the
+    // one that FINISHED last became the master - the big take picked first overwrote the one
+    // picked here (2026-10-27, hunt 7). Nothing is written; the dialog stays open.
+    if (pickedFile && current && audioBusy[current.id] === "up") {
+      toast.error("ยังเปลี่ยนไฟล์ไม่ได้ — ไฟล์ก่อนหน้ากำลังอัปอยู่", {
+        description: "รอให้อัปไฟล์เดิมเสร็จก่อน แล้วค่อยกดบันทึกอีกครั้ง",
       });
       return;
     }
@@ -919,17 +973,30 @@ export function SongLibrary({
   async function onDelete(song: Song) {
     // Warn if this song is linked into any setlist — those rows lose their file.
     // A failed read is not "used nowhere": say so instead of the plain prompt.
-    const { count, error: usageError } = await supabase
-      .from("setlist_items")
-      .select("id", { count: "exact", head: true })
-      .eq("song_id", song.id);
-    const used = count ?? 0;
+    // Practice rooms too: practice_songs goes with the song (ON DELETE CASCADE), and the prompt
+    // said nothing about a song that sat in a room's set and in no show (2026-10-27, hunt 7).
+    const [usage, practice] = await Promise.all([
+      supabase
+        .from("setlist_items")
+        .select("id", { count: "exact", head: true })
+        .eq("song_id", song.id),
+      supabase.from("practice_songs").select("event_id").eq("song_id", song.id),
+    ]);
+    const usageError = usage.error || practice.error;
+    const used = usage.count ?? 0;
+    const rooms = new Set(
+      ((practice.data ?? []) as { event_id?: string | null }[]).map((r) => r.event_id ?? "")
+    ).size;
+    const usedParts = [
+      used > 0 ? `${used} รายการของงาน` : null,
+      rooms > 0 ? `ห้องซ้อม ${rooms} ห้อง` : null,
+    ].filter(Boolean);
     const ok = await confirm({
       title: `ลบเพลง “${song.title}” ออกจากคลัง?`,
       description: usageError
-        ? "ตรวจไม่ได้ว่าเพลงนี้ถูกใช้ในงานไหนอยู่บ้าง (เน็ตขัดข้อง) — ถ้าใช้อยู่ งานพวกนั้นจะไม่มีไฟล์เพลงนี้"
-        : used > 0
-          ? `เพลงนี้ถูกใช้อยู่ใน ${used} รายการของงาน — ลบแล้วงานพวกนั้นจะไม่มีไฟล์เพลงนี้`
+        ? "ตรวจไม่ได้ว่าเพลงนี้ถูกใช้ในงานหรือห้องซ้อมไหนอยู่บ้าง (เน็ตขัดข้อง) — ถ้าใช้อยู่ งานพวกนั้นจะไม่มีไฟล์เพลงนี้ และเพลงจะหายจากห้องซ้อม"
+        : usedParts.length > 0
+          ? `เพลงนี้ถูกใช้อยู่ใน ${usedParts.join(" และ ")} — ลบแล้ว${used > 0 ? "งานพวกนั้นจะไม่มีไฟล์เพลงนี้" : ""}${used > 0 && rooms > 0 ? " และ" : ""}${rooms > 0 ? "เพลงจะหายจากห้องซ้อม" : ""}`
           : undefined,
       confirmText: "ลบเพลง",
     });
@@ -1089,9 +1156,23 @@ export function SongLibrary({
     const prevPath = song.audio_path ?? null;
     const path = buildSongAudioPath(song.tenant_id, song.group_id, song.id, file.name);
     let uploaded = false; // R2 PUT landed — cleanup target if the DB update then fails
+    // Can this device's player open the file at all? A .wma / ALAC .m4a went up as the master
+    // and every device was silent on it (2026-10-27, hunt 7; lib/audio.ts audioOpenProblem).
+    // Asked BESIDE the PUT, so a real upload waits for nothing: the answer is in long before
+    // the bytes are. Past the PUT it gets OPEN_CHECK_GRACE_MS more; no answer = allowed.
+    const opened = audioOpenProblem(file);
+    const openVerdict = () =>
+      Promise.race([opened, new Promise<null>((r) => setTimeout(() => r(null), OPEN_CHECK_GRACE_MS))]);
     try {
       await uploadEventAudio(path, file, file.type);
       uploaded = true;
+      const cannotOpen = await openVerdict();
+      if (cannotOpen) {
+        // nothing points at the fresh key yet: take it back, the song keeps its old take
+        removeEventAudio(path).catch(() => {});
+        toast.error("ใช้ไฟล์นี้ไม่ได้", { description: cannotOpen });
+        return null;
+      }
       // the old file's loudness/waveform/beat go with it (lib/song-file-facts.ts)
       const { data, error, status: writeStatus } = await supabase
         .from("songs")
@@ -1149,6 +1230,15 @@ export function SongLibrary({
       // presign / R2 (httpError) and the row write above carry the HTTP status: a 5xx or
       // 429 is worth queueing whatever its text says (isQueueableWriteError).
       const status = (e as { status?: unknown } | null)?.status;
+      // A PUT that failed before the open check was asked about: a file no player here opens
+      // is not worth queueing either - it would land as the master the moment the net is back.
+      if (!uploaded) {
+        const cannotOpen = await openVerdict();
+        if (cannotOpen) {
+          toast.error("ใช้ไฟล์นี้ไม่ได้", { description: cannotOpen });
+          return null;
+        }
+      }
       // ⭐#1 step 6 — offline (desktop): don't lose the bytes. They become this
       // song's local source, so this machine plays them straight away, and an
       // audio.upload op remembers to make them the master when the net is back.
@@ -1301,15 +1391,21 @@ export function SongLibrary({
       const blob = new Blob([picked.bytes.buffer as ArrayBuffer], {
         type: guessAudioType(picked.name),
       });
+      // A file this machine's player cannot open became the override and played silence here
+      // at showtime - only AIFF was refused by name (2026-10-27, hunt 7; lib/audio.ts).
+      const cannotOpen = await audioOpenProblem(blob);
+      if (cannotOpen) {
+        toast.error("ใช้ไฟล์นี้ไม่ได้", { description: cannotOpen });
+        return;
+      }
       await setLocalSource(song.id, blob, picked.name);
       setLocalIds((prev) => new Set(prev).add(song.id));
       toast.success("ใช้ไฟล์ในเครื่องนี้เป็นแหล่งเล่นแล้ว", {
         description: `${picked.name} — เฉพาะเครื่องนี้`,
       });
     } catch (e) {
-      toast.error("ตั้งไฟล์ในเครื่องไม่สำเร็จ", {
-        description: e instanceof Error ? e.message : String(e),
-      });
+      // the main process's own Thai reason, without Electron's IPC prefix
+      toast.error("ตั้งไฟล์ในเครื่องไม่สำเร็จ", { description: nativeErrorMessage(e) });
     } finally {
       setLocalBusy((b) => {
         const n = { ...b };

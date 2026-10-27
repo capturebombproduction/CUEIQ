@@ -29,7 +29,7 @@ import {
   tryQueueBehindPendingChildList,
   tryQueueChildList,
 } from "@/lib/mgmt-write";
-import { noRowsMessage, wroteNothing } from "@/lib/write-guard";
+import { noRowsMessage, wroteNothing, writeErrorText } from "@/lib/write-guard";
 import { shortClock } from "@/lib/time";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -295,7 +295,7 @@ export function ScheduleEditor({
       save.end(false);
       if (error.code === "23505")
         toast.error(DUP_PHOTO.title, { description: DUP_PHOTO.description });
-      else toast.error("Save failed", { description: error.message });
+      else toast.error("Save failed", { description: writeErrorText(error) });
       return;
     }
     // No error and no row = the write reached the server and changed nothing (sent
@@ -373,7 +373,7 @@ export function ScheduleEditor({
       }
       if (error?.code === "23505")
         toast.error(DUP_PHOTO.title, { description: DUP_PHOTO.description });
-      else toast.error("Failed to add item", { description: error?.message });
+      else toast.error("Failed to add item", { description: writeErrorText(error) });
       return;
     }
     ackedRef.current = [...ackedRef.current, data as ScheduleItem];
@@ -399,7 +399,7 @@ export function ScheduleEditor({
       .select("id");
     if (error) {
       if (await queueOffline(next, error.message, status)) return;
-      toast.error("Delete failed", { description: error.message });
+      toast.error("Delete failed", { description: writeErrorText(error) });
       setItems(snapshot);
       return;
     }

@@ -15,6 +15,7 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import type { SetlistItem } from "@/lib/types";
+import { writeErrorText } from "@/lib/write-guard";
 
 // Snapshot of one setlist row (no id/audio_path — restore re-creates fresh rows).
 // song_id IS kept: it's the library link that resolves the row's audio. It stays
@@ -125,7 +126,7 @@ export function SetlistVersions({
     });
     setBusy(false);
     if (error) {
-      toast.error("บันทึกเวอร์ชันไม่สำเร็จ", { description: error.message });
+      toast.error("บันทึกเวอร์ชันไม่สำเร็จ", { description: writeErrorText(error) });
       return;
     }
     setLabel("");

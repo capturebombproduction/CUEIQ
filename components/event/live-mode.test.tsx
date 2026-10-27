@@ -38,6 +38,8 @@ vi.mock("@/lib/supabase/client", () => ({ createClient: () => h.supa }));
 // into `audioUrls` without a network fetch, and the viewer-follow test needs one
 // track to be holdable. fake-indexeddb could carry it, but seeding a real store
 // makes the URL appear on an unpredictable tick; this makes it one awaited flush.
+// jsdom's <audio> never answers: the pick's open check (audioOpenProblem) would wait out its 3 s
+vi.mock("@/lib/audio", async (orig) => ({ ...(await orig<typeof import("@/lib/audio")>()), audioOpenProblem: vi.fn(async () => null) }));
 vi.mock("@/lib/audio-store", () => ({
   saveAudio: vi.fn(async () => {}),
   loadAudioForEvent: vi.fn(async () => h.saved),

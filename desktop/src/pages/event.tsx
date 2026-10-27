@@ -32,6 +32,28 @@ import { QuickShowLink } from "~/components/quick-show-link";
 import { onRouterRefresh } from "~/shims/next-navigation";
 import { useWorkspace } from "~/data/workspace-context";
 
+/** How long the band's live-queue read (run_sequence) may wait before the cached order is
+ *  shown - the same budget as the event read (EVENT_BUNDLE_TIMEOUT_MS). It had none, so on
+ *  venue wifi that is joined but answers nothing the read never settled, the fallback never
+ *  ran and the card stayed away with its order sitting on disk (2026-10-27, hunt 7). */
+export const RUNSEQ_CARD_TIMEOUT_MS = 8000;
+/** …and the "was that empty answer really empty?" session probe after it (as
+ *  EVENT_BUNDLE_SESSION_TIMEOUT_MS): getSession() can try a refresh over the same dead link. */
+export const RUNSEQ_CARD_SESSION_TIMEOUT_MS = 2000;
+
+/** `p`, or null once `ms` has passed - the late answer is dropped (~/data/event-bundle.ts). */
+function withTimeout<T>(p: PromiseLike<T>, ms: number): Promise<T | null> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  return Promise.race<T | null>([
+    p,
+    new Promise<null>((resolve) => {
+      timer = setTimeout(() => resolve(null), ms);
+    }),
+  ]).finally(() => {
+    if (timer !== undefined) clearTimeout(timer);
+  });
+}
+
 /** Shown when the load came back with NOTHING because the server could not be
  *  reached — as opposed to because the show is gone or is not this account's.
  *
@@ -175,8 +197,14 @@ export function EventPage() {
           .eq("event_name", seqName)
           .order("sort_order", { ascending: true });
         q = seqDate ? q.eq("event_date", seqDate) : q.is("event_date", null);
-        const { data, error } = await q;
+        const res = await withTimeout(q, RUNSEQ_CARD_TIMEOUT_MS);
         if (!alive) return;
+        // A read that never answered is a read that failed: the cached order.
+        if (!res) {
+          fallback();
+          return;
+        }
+        const { data, error } = res;
         // postgrest reports a dead network as { data: null, error } instead of
         // throwing — caching that would wipe a good cached order with an empty one.
         if (error || !data) {
@@ -188,7 +216,10 @@ export function EventPage() {
         // refresh that failed a moment ago — see hasLiveSession), which RLS
         // returns as no rows and no error. Keep the cached order rather than
         // overwrite it with a blank one we can't vouch for.
-        if (rows.length === 0 && !(await hasLiveSession())) {
+        if (
+          rows.length === 0 &&
+          (await withTimeout(hasLiveSession(), RUNSEQ_CARD_SESSION_TIMEOUT_MS)) !== true
+        ) {
           fallback();
           return;
         }

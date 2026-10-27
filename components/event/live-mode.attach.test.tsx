@@ -25,6 +25,8 @@ vi.mock("@/lib/audio-remote", async (orig) => ({
 vi.mock("@/lib/audio", async (orig) => ({
   ...(await orig<typeof import("@/lib/audio")>()),
   detectAudioDuration: async () => 312,
+  // jsdom's <audio> never answers: the pick's open check would wait out its 3 s
+  audioOpenProblem: async () => null,
 }));
 vi.mock("@/lib/song-analysis-browser", () => ({ analyzeAudioFile: async () => null }));
 

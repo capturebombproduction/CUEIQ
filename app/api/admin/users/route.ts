@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient, hasServiceRole } from "@/lib/supabase/admin";
-import { isValidLoginId, loginIdToEmail } from "@/lib/username";
+import { displayLoginId, isValidLoginId, loginIdToEmail } from "@/lib/username";
 import { isMasterAdminEmail } from "@/lib/master-admin";
 import type { GroupRole, Role } from "@/lib/types";
 
@@ -292,6 +292,20 @@ export async function POST(req: Request) {
     email_confirm: true,
     user_metadata: { full_name: fullName || email.split("@")[0] },
   });
+  // A login ID already in use (2026-10-27, hunt 7): GoTrue's English "A user with this
+  // email address has already been registered" went straight into the console's toast
+  // while an admin was setting up a new band's accounts.
+  if (
+    createErr &&
+    (createErr.code === "email_exists" ||
+      createErr.code === "user_already_exists" ||
+      /already (been )?registered|already exists/i.test(createErr.message ?? ""))
+  ) {
+    return NextResponse.json(
+      { error: `ชื่อผู้ใช้ "${displayLoginId(email) || loginId}" มีอยู่แล้ว — ใช้ชื่ออื่น` },
+      { status: 409 }
+    );
+  }
   if (createErr || !created?.user) {
     return NextResponse.json(
       { error: createErr?.message ?? "สร้างบัญชีไม่สำเร็จ" },

@@ -249,6 +249,12 @@ export function PracticePlayer({
 
   const [editMarkers, setEditMarkers] = useState(false);
   const [customLabel, setCustomLabel] = useState("");
+  // A mark on its way to the server (addMarker): the next one waits for it. A double tap on
+  // "+ Intro", or Enter twice in the label box, filed the same section twice - same label,
+  // same place, same sort_order (2026-10-27, hunt 7). The ref holds the second tap off; the
+  // state greys the keys.
+  const addingMarkerRef = useRef(false);
+  const [addingMarker, setAddingMarker] = useState(false);
 
   const [loopA, setLoopA] = useState<number | null>(null);
   const [loopB, setLoopB] = useState<number | null>(null);
@@ -912,20 +918,30 @@ export function PracticePlayer({
   async function addMarker(label: string) {
     const engine = engineRef.current;
     if (!current || !engine) return;
+    if (addingMarkerRef.current) return; // the same press again (see addingMarkerRef)
+    addingMarkerRef.current = true;
+    setAddingMarker(true);
     const pos = engine.currentTime;
     const supabase = createClient();
-    const { data, error } = await supabase
-      .from("song_markers")
-      .insert({
-        tenant_id: current.tenant_id,
-        group_id: current.group_id,
-        song_id: current.id,
-        label,
-        position_seconds: pos,
-        sort_order: curMarkers.length,
-      })
-      .select("*")
-      .single();
+    let res;
+    try {
+      res = await supabase
+        .from("song_markers")
+        .insert({
+          tenant_id: current.tenant_id,
+          group_id: current.group_id,
+          song_id: current.id,
+          label,
+          position_seconds: pos,
+          sort_order: curMarkers.length,
+        })
+        .select("*")
+        .single();
+    } finally {
+      addingMarkerRef.current = false;
+      setAddingMarker(false);
+    }
+    const { data, error } = res;
     if (error || !data) {
       toast.error("เพิ่มมาร์คไม่สำเร็จ", { description: await writeFailureNote(error) });
       return;
@@ -1581,7 +1597,8 @@ export function PracticePlayer({
                           key={p}
                           type="button"
                           onClick={() => addMarker(p)}
-                          className="chip chip-lg chip-neutral en hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+                          disabled={addingMarker}
+                          className="chip chip-lg chip-neutral en hover:text-foreground disabled:opacity-60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
                         >
                           <Plus aria-hidden />
                           {p}
@@ -1601,7 +1618,7 @@ export function PracticePlayer({
                       />
                       <Button
                         variant="secondary"
-                        disabled={!customLabel.trim()}
+                        disabled={!customLabel.trim() || addingMarker}
                         onClick={() => addMarker(customLabel.trim())}
                       >
                         <Plus className="h-4 w-4" /> เพิ่ม

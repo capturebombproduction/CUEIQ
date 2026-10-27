@@ -69,6 +69,7 @@ import { EVENTS_LIST_SESSION_TIMEOUT_MS, EVENTS_LIST_TIMEOUT_MS } from "./events
 import { RUN_ORDER_TIMEOUT_MS } from "./run-order";
 import { SONG_LIBRARY_TIMEOUT_MS } from "./song-library";
 import { WORKSPACE_AUTH_TIMEOUT_MS, WORKSPACE_READ_TIMEOUT_MS } from "./workspace";
+import { RUNSEQ_CARD_SESSION_TIMEOUT_MS, RUNSEQ_CARD_TIMEOUT_MS } from "../pages/event";
 
 // ── ceilings, by kind of wait ─────────────────────────────────────────────────
 
@@ -186,6 +187,25 @@ const BUDGETS: readonly Budget[] = [
       "A secondary probe that runs only when the event row came back empty, to tell a real " +
       "deletion from an anon RLS refusal. A timeout already takes the safe branch, so length " +
       "here buys nothing and is paid on the show screen.",
+  },
+  {
+    name: "RUNSEQ_CARD_TIMEOUT_MS",
+    ms: RUNSEQ_CARD_TIMEOUT_MS,
+    ceilingMs: SINGLE_READ_CEILING_MS,
+    ceilingName: "SINGLE_READ_CEILING_MS",
+    why:
+      "One select for the band's live-queue card on the event page, beside the event read and " +
+      "with the same budget. Expiring shows the cached order from disk, so a longer wait buys " +
+      "nothing on a black-holed network (2026-10-27, hunt 7).",
+  },
+  {
+    name: "RUNSEQ_CARD_SESSION_TIMEOUT_MS",
+    ms: RUNSEQ_CARD_SESSION_TIMEOUT_MS,
+    ceilingMs: SESSION_PROBE_CEILING_MS,
+    ceilingName: "SESSION_PROBE_CEILING_MS",
+    why:
+      "The empty-answer session probe after that read, as EVENT_BUNDLE_SESSION_TIMEOUT_MS: a " +
+      "timeout takes the safe branch (the cached order), so length here buys nothing.",
   },
   {
     name: "RUN_ORDER_TIMEOUT_MS",

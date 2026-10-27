@@ -12,6 +12,7 @@
 import { useEffect, useMemo, useState } from "react";
 // Absolute path so the desktop build's "@/lib/supabase/client" alias applies.
 import { createClient } from "@/lib/supabase/client";
+import { hasLiveSession } from "@/lib/auth-session";
 
 import type { LiveMarker } from "@/lib/song-signal";
 export type { LiveMarker };
@@ -97,11 +98,17 @@ export function useSongMarkers(ids: readonly (string | null | undefined)[]): Rec
         .in("song_id", missing)
         .order("position_seconds")
         .then(
-          ({ data, error }) => {
-            if (error || !data) {
-              missing.forEach((id) => asking.delete(id));
-              return; // offline / not visible: keep what the device remembers
-            }
+          async ({ data, error }) => {
+            // Asked once per visit, not once per app run (2026-10-27, hunt 7): the ids
+            // stayed in `asking` after an answer, so the desktop - open all day - never
+            // read a marker set in the practice room that afternoon until it restarted.
+            missing.forEach((id) => asking.delete(id));
+            if (error || !data) return; // offline / not visible: keep what the device remembers
+            // An EMPTY answer may be a read sent as anon (a token refresh that just failed):
+            // RLS answers that with no rows and no error. Taken at its word it wrote [] over
+            // every song asked and saved it, so the venue had no section labels once the wifi
+            // went (2026-10-27, hunt 7). Same rule as the other read-caches: prove it first.
+            if (data.length === 0 && (await hasLiveSession().catch(() => false)) !== true) return;
             const fresh = new Map<string, LiveMarker[]>(missing.map((id) => [id, []]));
             for (const r of data as { song_id: string; label: string; position_seconds: number }[]) {
               if (r.label?.trim() && Number.isFinite(r.position_seconds)) {

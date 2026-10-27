@@ -12,7 +12,7 @@ import { makeSession, makeSupabaseFake, type SupabaseFake } from "@/test/fakes/s
 const h = vi.hoisted(() => ({ supa: null as unknown }));
 vi.mock("@/lib/supabase/client", () => ({ createClient: () => h.supa }));
 
-import { noRowsMessage, wroteNothing } from "@/lib/write-guard";
+import { noRowsMessage, writeErrorText, wroteNothing } from "@/lib/write-guard";
 
 let supa: SupabaseFake;
 beforeEach(() => {
@@ -79,5 +79,22 @@ describe("noRowsMessage", () => {
   it("an unanswerable session check falls back to the sign-in-again message", async () => {
     supa.auth.getSession.mockRejectedValueOnce(new Error("storage is not available"));
     expect(await noRowsMessage()).toContain("เข้าสู่ระบบใหม่");
+  });
+});
+
+// 2026-10-27 (hunt 7): a member whose band role was changed while the workspace
+// stayed open added a row and got Postgres English in the toast. An INSERT is
+// refused out loud (42501), not with zero rows, so it needs its own wording.
+describe("writeErrorText", () => {
+  it("says an RLS refusal in Thai, by code or by message", () => {
+    expect(writeErrorText({ code: "42501", message: "x" })).toContain("ไม่มีสิทธิ์");
+    expect(
+      writeErrorText({ message: "new row violates row-level security policy for table \"schedule_items\"" })
+    ).toContain("ไม่มีสิทธิ์");
+  });
+  it("keeps every other message, and no error stays no text", () => {
+    expect(writeErrorText({ code: "23505", message: "duplicate key" })).toBe("duplicate key");
+    expect(writeErrorText(null)).toBeUndefined();
+    expect(writeErrorText({ code: "PGRST", message: null })).toBeUndefined();
   });
 });

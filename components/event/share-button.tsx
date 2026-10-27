@@ -4,7 +4,7 @@ import { useState } from "react";
 import { Share2, Copy, Check, Link2Off, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { createClient } from "@/lib/supabase/client";
-import { wroteNothing, noRowsMessage } from "@/lib/write-guard";
+import { wroteNothing, noRowsMessage, writeErrorText } from "@/lib/write-guard";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -106,7 +106,7 @@ export function ShareButton({
       .select("id");
     setBusy(false);
     if (error) {
-      toast.error("ทำรายการไม่สำเร็จ", { description: error.message });
+      toast.error("ทำรายการไม่สำเร็จ", { description: writeErrorText(error) });
       return;
     }
     // A revoke that only LOOKS successful is the dangerous direction here: the
@@ -136,7 +136,7 @@ export function ShareButton({
       .select("id");
     setBusy(false);
     if (error) {
-      toast.error("ตั้งวันหมดอายุไม่สำเร็จ", { description: error.message });
+      toast.error("ตั้งวันหมดอายุไม่สำเร็จ", { description: writeErrorText(error) });
       return;
     }
     if (wroteNothing(data)) {

@@ -21,6 +21,10 @@ vi.mock("@/lib/supabase/client", () => ({
   }),
 }));
 
+// A signed-in device: an empty answer is believed only with a proven session (hunt 7,
+// see song-markers-live.anon-empty.dom.test.ts for the other side).
+vi.mock("@/lib/auth-session", () => ({ hasLiveSession: async () => true }));
+
 import { useSongMarkers, resetSongMarkerCache } from "./song-markers-live";
 
 beforeEach(() => {

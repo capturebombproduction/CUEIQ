@@ -18,7 +18,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { createClient } from "@/lib/supabase/client";
-import { noRowsMessage, wroteNothing } from "@/lib/write-guard";
+import { noRowsMessage, wroteNothing, writeErrorText } from "@/lib/write-guard";
 import { notify } from "@/lib/notify-client";
 import { removeEventAudio } from "@/lib/audio-remote";
 import { isOwnFeedbackImage } from "@/lib/presign-authz";
@@ -187,7 +187,7 @@ export function DevInbox({
     if (error || wroteNothing(data)) {
       setFb((p) => p.map((r) => (r.id === id ? { ...r, status } : r)));
       toast.error("เปลี่ยนสถานะไม่สำเร็จ", {
-        description: error?.message ?? (await noRowsMessage()),
+        description: writeErrorText(error) ?? (await noRowsMessage()),
       });
     }
   }
@@ -262,7 +262,7 @@ export function DevInbox({
     const { data, error } = await createClient().from("feedback").delete().eq("id", id).select("id");
     if (error || wroteNothing(data)) {
       setFb(snapshot);
-      toast.error("ลบไม่สำเร็จ", { description: error?.message ?? (await noRowsMessage()) });
+      toast.error("ลบไม่สำเร็จ", { description: writeErrorText(error) ?? (await noRowsMessage()) });
       return;
     }
     await Promise.allSettled(keys.map((k) => removeEventAudio(k)));
@@ -274,7 +274,7 @@ export function DevInbox({
     const { data, error } = await createClient().from("client_errors").delete().in("id", ids).select("id");
     if (error || wroteNothing(data)) {
       setErrs(snapshot);
-      toast.error("ลบไม่สำเร็จ", { description: error?.message ?? (await noRowsMessage()) });
+      toast.error("ลบไม่สำเร็จ", { description: writeErrorText(error) ?? (await noRowsMessage()) });
     }
   }
   async function clearNoise() {
@@ -296,7 +296,7 @@ export function DevInbox({
       : { data: null, error: tenantErr ?? { message: "อ่านข้อมูลค่ายไม่สำเร็จ" } };
     if (error || (snapshot.length > 0 && wroteNothing(data))) {
       setErrs(snapshot);
-      toast.error("ลบไม่สำเร็จ", { description: error?.message ?? (await noRowsMessage()) });
+      toast.error("ลบไม่สำเร็จ", { description: writeErrorText(error) ?? (await noRowsMessage()) });
     }
   }
 

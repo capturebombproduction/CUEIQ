@@ -11,7 +11,7 @@ import {
   tryQueueBehindPendingChildList,
   tryQueueChildList,
 } from "@/lib/mgmt-write";
-import { noRowsMessage, wroteNothing } from "@/lib/write-guard";
+import { noRowsMessage, wroteNothing, writeErrorText } from "@/lib/write-guard";
 import { SaveStatus, useSaveSignal } from "@/components/event/save-status";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -212,7 +212,7 @@ export function MicMapEditor({
           return;
         }
         save.end(false);
-        toast.error("บันทึกไม่สำเร็จ", { description: error.message });
+        toast.error("บันทึกไม่สำเร็จ", { description: writeErrorText(error) });
         return;
       }
       // No error and no row = the write reached the server and changed nothing (sent
@@ -288,7 +288,7 @@ export function MicMapEditor({
         setMics((prev) => [...prev, ...locals]);
         return;
       }
-      toast.error("เพิ่มไมค์ไม่สำเร็จ", { description: error?.message });
+      toast.error("เพิ่มไมค์ไม่สำเร็จ", { description: writeErrorText(error) });
       return;
     }
     if (wroteNothing(data)) {
@@ -335,7 +335,7 @@ export function MicMapEditor({
           setMics((prev) => [...prev, local]);
           return;
         }
-        toast.error("เพิ่มไมค์ไม่สำเร็จ", { description: error?.message });
+        toast.error("เพิ่มไมค์ไม่สำเร็จ", { description: writeErrorText(error) });
         return;
       }
       ack((rows) => [...rows, data as MicAssignment]);
@@ -381,7 +381,7 @@ export function MicMapEditor({
           setMics((prev) => [...prev, local]);
           return;
         }
-        toast.error("เพิ่มคนไม่สำเร็จ", { description: error?.message });
+        toast.error("เพิ่มคนไม่สำเร็จ", { description: writeErrorText(error) });
         return;
       }
       ack((rows) => [...rows, data as MicAssignment]);
@@ -412,7 +412,7 @@ export function MicMapEditor({
       .select("id");
     if (error) {
       if (await queueOffline(next, error.message, status)) return;
-      toast.error("ลบไม่สำเร็จ", { description: error.message });
+      toast.error("ลบไม่สำเร็จ", { description: writeErrorText(error) });
       setMics(snapshot);
       return;
     }
@@ -445,7 +445,7 @@ export function MicMapEditor({
       .select("id");
     if (error) {
       if (await queueOffline(next, error.message, status)) return;
-      toast.error("ลบไม่สำเร็จ", { description: error.message });
+      toast.error("ลบไม่สำเร็จ", { description: writeErrorText(error) });
       setMics(snapshot);
       return;
     }
@@ -488,7 +488,7 @@ export function MicMapEditor({
         .select("id");
       if (error) {
         if (await queueOffline(next, error.message, status)) return;
-        toast.error("เปลี่ยนเบอร์ไมค์ไม่สำเร็จ", { description: error.message });
+        toast.error("เปลี่ยนเบอร์ไมค์ไม่สำเร็จ", { description: writeErrorText(error) });
         // real rejection — put only these rows back on oldNum (re-keys the input)
         setMics((prev) =>
           prev.map((m) =>

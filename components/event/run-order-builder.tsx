@@ -13,6 +13,7 @@ import { privateChannel, runOrderTopic } from "@/lib/realtime";
 import { compareRunOrder, hasRunOrderTie } from "@/lib/run-order-sort";
 import { parseClockToSeconds } from "@/lib/time";
 import { cn } from "@/lib/utils";
+import { writeErrorText } from "@/lib/write-guard";
 
 export type RunSequence = {
   id: string;
@@ -323,7 +324,7 @@ export function RunOrderBuilder({
       supabase.from("run_sequence").update(partial).eq("id", id).select("id")
     );
     if (error || (data?.length ?? 0) === 0) {
-      toast.error("บันทึกไม่สำเร็จ", { description: error?.message ?? NO_ROW_HINT });
+      toast.error("บันทึกไม่สำเร็จ", { description: writeErrorText(error) ?? NO_ROW_HINT });
       await scheduleRollback(snap); // never broadcast an edit the DB doesn't have
       return;
     }
@@ -375,7 +376,7 @@ export function RunOrderBuilder({
     );
     setBusy(false);
     if (error || !data) {
-      toast.error("เพิ่มไม่สำเร็จ", { description: error?.message });
+      toast.error("เพิ่มไม่สำเร็จ", { description: writeErrorText(error) });
       return;
     }
     setRows((prev) => [...prev, data as RunSequence]);
@@ -397,7 +398,7 @@ export function RunOrderBuilder({
       supabase.from("run_sequence").delete().eq("id", id).select("id")
     );
     if (error || (data?.length ?? 0) === 0) {
-      toast.error("ลบไม่สำเร็จ", { description: error?.message ?? NO_ROW_HINT });
+      toast.error("ลบไม่สำเร็จ", { description: writeErrorText(error) ?? NO_ROW_HINT });
       await scheduleRollback(snap);
     } else {
       bcast();
