@@ -8,6 +8,7 @@ import { describe, it, expect, vi, afterEach } from "vitest";
 import { render, screen, fireEvent, cleanup, waitFor, within } from "@testing-library/react";
 import {
   fail,
+  makeSession,
   makeSupabaseFake,
   ok,
   type RecordedCall,
@@ -70,14 +71,34 @@ afterEach(() => {
 });
 
 describe("Artists: a delete that touched no row", () => {
-  it("a member delete sent as anon keeps the member on screen and says so", async () => {
-    const db = makeSupabaseFake({ script: { members: (c) => (c.verb === "delete" ? matchedNothing(c) : ok([])) } });
+  it("a member removal sent as anon keeps the member on screen and says so", async () => {
+    // as anon the history counts prove nothing, so the row's button offers ออกจากวง (0054) -
+    // and that write, matching no row, must not look saved either
+    const db = makeSupabaseFake({
+      script: { members: (c) => (c.verb === "update" || c.verb === "delete" ? matchedNothing(c) : ok([])) },
+    });
     mount(db);
     fireEvent.click(screen.getByRole("button", { name: "ลบสมาชิก" }));
-    // as anon the usage counts prove nothing, so the prompt asks for the name (hunt 7)
     const dialog = await screen.findByRole("dialog");
-    fireEvent.change(within(dialog).getByLabelText("พิมพ์ Yuki เพื่อยืนยัน"), { target: { value: "Yuki" } });
-    fireEvent.click(within(dialog).getByRole("button", { name: "ลบสมาชิก" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "ออกจากวง" }));
+    await waitFor(() => expect(toast.error).toHaveBeenCalled());
+    expect(db.callsTo("members", "update")[0].selectAfterWrite).toBe(true);
+    expect(toast.error.mock.calls[0][0]).toBe("บันทึกไม่สำเร็จ");
+    expect(screen.getAllByLabelText("ชื่อ")).toHaveLength(1);
+  });
+
+  it("a member delete matching no row keeps the member on screen and says so", async () => {
+    const db = makeSupabaseFake({
+      session: makeSession(),
+      script: {
+        event_members: ok([], { count: 0 }),
+        practice_attendance: ok([], { count: 0 }),
+        members: (c) => (c.verb === "delete" ? matchedNothing(c) : ok([])),
+      },
+    });
+    mount(db);
+    fireEvent.click(screen.getByRole("button", { name: "ลบสมาชิก" }));
+    fireEvent.click(await screen.findByRole("button", { name: /^ลบ$/ }));
     await waitFor(() => expect(toast.error).toHaveBeenCalled());
     expect(db.callsTo("members", "delete")[0].selectAfterWrite).toBe(true);
     expect(toast.error.mock.calls[0][0]).toBe("ลบไม่สำเร็จ");

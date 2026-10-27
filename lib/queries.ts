@@ -14,6 +14,7 @@ import type {
 import { makePerms, type GroupRoleRow, type Perms } from "@/lib/permissions";
 import { assertReadsSucceeded, readFailure } from "@/lib/read-guard";
 import { SONG_SHOW_COLUMNS } from "@/lib/song-columns";
+import { membersForShow } from "@/lib/member-status";
 
 export interface Workspace {
   user: { id: string; email: string | null; name: string | null } | null;
@@ -535,6 +536,7 @@ export const getEventBundle = cache(async (
   });
   if (childFailure) throw logBundleFailure(childFailure, "getEventBundle");
 
+  const lineupIds = ((lineup.data ?? []) as { member_id: string }[]).map((r) => r.member_id);
   return {
     event,
     // The `?? []` below are now only satisfying the types: past the guard above
@@ -543,9 +545,18 @@ export const getEventBundle = cache(async (
     schedule: (schedule.data ?? []) as ScheduleItem[],
     setlist: (setlist.data ?? []) as SetlistItem[],
     micMap: (micMap.data ?? []) as MicAssignment[],
-    members: (members.data ?? []) as Member[],
+    // the band as it stood for THIS show: a member who left after it is still in it, one
+    // who left before it is not (0054, lib/member-status.ts) - the gate, the sheets, the
+    // all of pickers and Live read this one list. A practice room keeps everyone: its journal
+    // still names a member who left, and its pickers take today's roster themselves.
+    members: (event as { is_practice?: boolean }).is_practice
+      ? ((members.data ?? []) as Member[])
+      : membersForShow((members.data ?? []) as Member[], {
+          eventDate: (event as { event_date?: string | null }).event_date,
+          lineup: lineupIds,
+        }),
     songs: (songs.data ?? []) as Song[],
-    lineup: ((lineup.data ?? []) as { member_id: string }[]).map((r) => r.member_id),
+    lineup: lineupIds,
   };
 });
 

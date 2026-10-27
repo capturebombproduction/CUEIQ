@@ -14,6 +14,7 @@ import { hasCache, isOffline, readCache, readCacheKeys, writeCache } from "~/dat
 import { hasLiveSession } from "@/lib/auth-session";
 import { listMgmtConflicts, pendingMgmtOps } from "~/data/mgmt-outbox";
 import type { WorkspaceData } from "~/data/workspace";
+import { membersForShow } from "@/lib/member-status";
 import type {
   EventRow,
   Group,
@@ -321,7 +322,14 @@ export async function loadEventBundleStatus(eventId: string): Promise<EventBundl
     schedule: (schedule.data ?? []) as ScheduleItem[],
     setlist: (setlist.data ?? []) as SetlistItem[],
     micMap: (micMap.data ?? []) as MicAssignment[],
-    members: (members.data ?? []) as Member[],
+    // the band as it stood for THIS show (0054, lib/member-status.ts) - as getEventBundle,
+    // a practice room included (everyone; its pickers filter)
+    members: (event as { is_practice?: boolean }).is_practice
+      ? ((members.data ?? []) as Member[])
+      : membersForShow((members.data ?? []) as Member[], {
+          eventDate: (event as { event_date?: string | null }).event_date,
+          lineup: ((lineup.data ?? []) as { member_id: string }[]).map((r) => r.member_id),
+        }),
     songs: (songs.data ?? []) as Song[],
     lineup: ((lineup.data ?? []) as { member_id: string }[]).map((r) => r.member_id),
     role: (membershipRes.data?.role as Role) ?? null,

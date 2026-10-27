@@ -294,6 +294,8 @@ export interface Member {
   color: string | null;
   sort_order: number;
   created_at: string;
+  /** When the member left the band (0054); null/absent = in the band. lib/member-status.ts */
+  left_at?: string | null;
 }
 
 export interface EventRow {

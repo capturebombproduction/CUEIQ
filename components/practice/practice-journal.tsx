@@ -33,6 +33,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { useConfirm } from "@/components/ui/confirm-dialog";
 import { MetaIcon } from "@/components/status-icon";
 import { cn } from "@/lib/utils";
+import { hasLeft } from "@/lib/member-status";
 import {
   PRACTICE_CATEGORY_META,
   type Member,
@@ -540,7 +541,8 @@ export function PracticeJournal({
               className={cn(FIELD, "h-11 min-w-0 max-w-full px-3 text-base sm:text-sm")}
             >
               <option value="">เกี่ยวกับใคร (ไม่ระบุ)</option>
-              {members.map((m) => (
+              {/* today's roster - a member who left (0054) is not someone to write about now */}
+              {members.filter((m) => !hasLeft(m) || m.id === targetMember).map((m) => (
                 <option key={m.id} value={m.id}>
                   {m.nickname || m.name}
                 </option>
@@ -676,13 +678,14 @@ export function PracticeJournal({
 
       {/* attendance (Ar only): member chips, each with the member's colour as a
           ring and a check inside it when they are here */}
-      {canManage && members.length > 0 && (
+      {canManage && members.some((m) => !hasLeft(m)) && (
         <section aria-label="Attendance" className="slab p-4">
           <h3 className="mb-2 flex items-center gap-1.5 text-[15px] font-semibold">
             <Users className="h-4 w-4" aria-hidden /> เช็คชื่อวันนี้
           </h3>
           <div className="flex flex-wrap gap-1.5">
-            {members.map((m) => {
+            {/* today's roster (0054); a left member already checked in today stays to be undone */}
+            {members.filter((m) => !hasLeft(m) || presentOf(m.id)).map((m) => {
               const here = presentOf(m.id);
               return (
                 <button

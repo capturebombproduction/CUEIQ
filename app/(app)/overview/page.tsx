@@ -21,6 +21,7 @@ import {
   performersHaveMics,
   type CompletenessSetlistItem,
 } from "@/lib/completeness";
+import { hasLeft, membersForShow } from "@/lib/member-status";
 import { assertReadsSucceeded } from "@/lib/read-guard";
 import { bkkTodayKey } from "@/lib/time";
 import { photoRoundsOf } from "@/lib/photo-rounds";
@@ -413,8 +414,12 @@ export default async function OverviewPage() {
       })) as CompletenessSetlistItem[],
       micCount: micByEvent.get(e.id) ?? 0,
       hasSongMics: songMicByEvent.get(e.id) ?? false,
+      // the band as it stood for this show (0054): a member who left before it doesn't count
       memberMics: performersHaveMics(
-        membersByGroup.get(e.group_id) ?? [],
+        membersForShow(membersByGroup.get(e.group_id) ?? [], {
+          eventDate: e.event_date,
+          lineup: lineupByEvent.get(e.id),
+        }),
         lineupByEvent.get(e.id) ?? []
       ),
     });
@@ -482,7 +487,7 @@ export default async function OverviewPage() {
     contact_name: g.contact_name,
     contact_phone: g.contact_phone,
     members: members
-      .filter((m) => m.group_id === g.id)
+      .filter((m) => m.group_id === g.id && !hasLeft(m)) // today's roster (0054)
       .map((m) => ({
         id: m.id,
         label: m.nickname || m.name,

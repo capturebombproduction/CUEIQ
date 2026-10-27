@@ -420,6 +420,45 @@ describe("loadEventBundleStatus — the two answers that used to be one null", (
   });
 });
 
+// ── a member who left the band (0054) ─────────────────────────────────────────
+describe("loadEventBundle — the band as it stood for THIS show", () => {
+  const roster = [
+    { id: "mem1", group_id: GROUP_ID, name: "Vo", left_at: null },
+    // left 2026-09-01 (Bangkok); eventRow() is dated 2026-08-09
+    { id: "mem2", group_id: GROUP_ID, name: "Gt", left_at: "2026-09-01T03:00:00Z" },
+    // left before the show
+    { id: "mem3", group_id: GROUP_ID, name: "Ba", left_at: "2026-08-01T03:00:00Z" },
+  ];
+  const load = (extra: Record<string, unknown> = {}, lineup: { member_id: string }[] = []) => {
+    supa.setScript({
+      events: ok([{ ...eventRow(), ...extra }]),
+      tenant_members: ok([{ role: "artist_manager" }]),
+      schedule_items: ok([]),
+      setlist_items: ok([]),
+      mic_assignments: ok([]),
+      members: ok(roster),
+      songs: ok([]),
+      event_members: ok(lineup),
+    });
+    return loadEventBundleStatus(EVENT_ID);
+  };
+
+  it("keeps a member who left after the show, drops one who left before it", async () => {
+    const { bundle } = await load();
+    expect(bundle?.members.map((m) => m.id)).toEqual(["mem1", "mem2"]);
+  });
+
+  it("keeps a member who left before it when the show's lineup holds them", async () => {
+    const { bundle } = await load({}, [{ member_id: "mem3" }]);
+    expect(bundle?.members.map((m) => m.id)).toEqual(["mem1", "mem2", "mem3"]);
+  });
+
+  it("a practice room keeps everyone (its journal names them; its pickers filter)", async () => {
+    const { bundle } = await load({ is_practice: true, event_date: null });
+    expect(bundle?.members.map((m) => m.id)).toEqual(["mem1", "mem2", "mem3"]);
+  });
+});
+
 // ── the third answer: a delete THIS DEVICE queued ─────────────────────────────
 //
 // Once "we could not reach it" was split off from "it is gone", the offline branch

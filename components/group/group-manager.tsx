@@ -2,12 +2,13 @@
 
 import { useRef, useState, type CSSProperties } from "react";
 import { toast } from "sonner";
-import { Mic, Plus, Trash2, Users } from "lucide-react";
+import { Mic, Plus, Trash2, Undo2, Users } from "lucide-react";
 import { BulkAddMembers } from "@/components/group/bulk-add-members";
 import { createClient } from "@/lib/supabase/client";
 import { removeEventAudio } from "@/lib/audio-remote";
-import { noRowsMessage, wroteNothing } from "@/lib/write-guard";
+import { noRowsMessage, writeErrorText, wroteNothing } from "@/lib/write-guard";
 import { hasLiveSession } from "@/lib/auth-session";
+import { hasLeft, leftOnKey } from "@/lib/member-status";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
@@ -70,10 +71,14 @@ export function GroupManager({
   const admin = isAdmin(perms);
   const canEditRoster = (groupId: string) => canEditGroup(perms, groupId);
 
+  // Everyone the band has had, left members included (sort_order counts them too)…
   const membersOf = (gid: string) =>
     members
       .filter((m) => m.group_id === gid)
       .sort((a, b) => a.sort_order - b.sort_order);
+  // …the band today, and those who have left it (0054, lib/member-status.ts)
+  const currentOf = (gid: string) => membersOf(gid).filter((m) => !hasLeft(m));
+  const leftOf = (gid: string) => membersOf(gid).filter(hasLeft);
 
   // ---- group operations ----------------------------------------------------
   // One band add at a time (2026-10-27, hunt 7): Enter in "ชื่อวงใหม่" called addGroup()
@@ -307,14 +312,10 @@ export function GroupManager({
     }
   }
 
-  async function deleteMember(id: string) {
-    const m = members.find((x) => x.id === id);
-    // What else this delete takes (2026-10-27, hunt 7): event_members and
-    // practice_attendance are ON DELETE CASCADE on members, so a member who graduated
-    // vanished from the lineup of every show they ever played - past run sheets and the
-    // share page included - and from the practice attendance history, under a prompt
-    // that said only "จะถูกลบออกจากวง". Count first and say it, like the song delete
-    // (song-library onDelete). A failed count is not "used nowhere": say so.
+  /** What a member's row carries: the shows whose lineup holds them and their practice
+   *  check-ins - both go with a delete (ON DELETE CASCADE on members). */
+  async function memberHistory(id: string) {
+    // A failed count is not "used nowhere": say so (hunt 7, as the song delete does).
     const [shows, attendance] = await Promise.all([
       supabase.from("event_members").select("id", { count: "exact", head: true }).eq("member_id", id),
       supabase.from("practice_attendance").select("id", { count: "exact", head: true }).eq("member_id", id),
@@ -323,25 +324,82 @@ export function GroupManager({
     // Nothing found is only nothing with a session behind the read: sent as anon (a refresh
     // that just failed), RLS counts 0 with no error (ตาที่ 3 on hunt 7; lib/write-guard.ts).
     if (!unknown && !shows!.count && !attendance!.count && (await hasLiveSession()) !== true) unknown = true;
-    const showCount = unknown ? 0 : shows!.count ?? 0;
-    const attendanceCount = unknown ? 0 : attendance!.count ?? 0;
+    return {
+      unknown,
+      showCount: unknown ? 0 : shows!.count ?? 0,
+      attendanceCount: unknown ? 0 : attendance!.count ?? 0,
+    };
+  }
+
+  /** The roster row's button. A member with no history (a row added by mistake) is deleted
+   *  as before; one with any - or whose history could not be read - LEAVES the band instead
+   *  (2026-10-27, พี่: "ทำสถานะ ออกจากวงแล้ว ให้สมาชิกแทนการลบ"): kept in every past
+   *  lineup and the attendance history, gone from new shows' pickers, and reversible. */
+  async function removeMember(id: string) {
+    const m = members.find((x) => x.id === id);
+    const h = await memberHistory(id);
+    const who = m?.name ? `“${m.name}”` : "สมาชิกคนนี้";
+    if (!h.unknown && h.showCount === 0 && h.attendanceCount === 0) {
+      const ok = await confirm({ title: "ลบสมาชิกคนนี้?", description: `${who} จะถูกลบออกจากวง` });
+      if (ok) await dropMember(id);
+      return;
+    }
+    const kept = h.unknown
+      ? "ชื่อยังอยู่ในไลน์อัปของงานที่ผ่านมาและประวัติเช็คชื่อซ้อม"
+      : [
+          h.showCount > 0 ? `ชื่อยังอยู่ในไลน์อัปของ ${h.showCount} งานที่ผ่านมา` : null,
+          h.attendanceCount > 0 ? `ประวัติเช็คชื่อซ้อม ${h.attendanceCount} ครั้งยังอยู่` : null,
+        ]
+          .filter(Boolean)
+          .join(" และ");
+    const ok = await confirm({
+      title: `ให้ ${who} ออกจากวง?`,
+      description: `${kept} — แต่จะไม่ขึ้นให้เลือกในงานใหม่ ห้องซ้อม และหน้าภาพรวม กดกลับเข้าวงได้ทุกเมื่อที่ "ออกจากวงแล้ว" ด้านล่าง`,
+      confirmText: "ออกจากวง",
+    });
+    if (ok) await setLeft(id, new Date().toISOString());
+  }
+
+  /** Out of the band (an ISO time) or back in it (null). */
+  async function setLeft(id: string, leftAt: string | null) {
+    const snap = members.find((x) => x.id === id)?.left_at ?? null;
+    setMemberLocal(id, { left_at: leftAt });
+    const { data, error } = await supabase
+      .from("members")
+      .update({ left_at: leftAt })
+      .eq("id", id)
+      .select("id");
+    if (error || wroteNothing(data)) {
+      toast.error("บันทึกไม่สำเร็จ", { description: writeErrorText(error) ?? (await noRowsMessage()) });
+      setMemberLocal(id, { left_at: snap });
+      return;
+    }
+    toast.success(leftAt ? "ย้ายไปที่ ออกจากวงแล้ว" : "กลับเข้าวงแล้ว");
+  }
+
+  /** Permanent delete, from the "ออกจากวงแล้ว" list: says what goes and asks for the name. */
+  async function deleteMemberForever(id: string) {
+    const m = members.find((x) => x.id === id);
+    const h = await memberHistory(id);
     const who = m?.name ? `“${m.name}”` : "สมาชิกคนนี้";
     const lost = [
-      showCount > 0 ? `ชื่อจะหายจากไลน์อัปของ ${showCount} งาน (รวมงานที่จบไปแล้ว)` : null,
-      attendanceCount > 0 ? `ประวัติเช็คชื่อซ้อม ${attendanceCount} ครั้งจะหายด้วย` : null,
+      h.showCount > 0 ? `ชื่อจะหายจากไลน์อัปของ ${h.showCount} งาน (รวมงานที่จบไปแล้ว)` : null,
+      h.attendanceCount > 0 ? `ประวัติเช็คชื่อซ้อม ${h.attendanceCount} ครั้งจะหายด้วย` : null,
     ].filter(Boolean);
     const ok = await confirm({
-      title: "ลบสมาชิกคนนี้?",
-      description: unknown
-        ? `${who} จะถูกลบออกจากวง — ตรวจไม่ได้ว่าอยู่ในไลน์อัปงานไหนบ้าง (เน็ตขัดข้อง) ถ้ามี ชื่อจะหายจากไลน์อัปงานพวกนั้นและประวัติเช็คชื่อซ้อมด้วย กู้คืนไม่ได้`
+      title: "ลบถาวร?",
+      description: h.unknown
+        ? `${who} จะถูกลบถาวร — ตรวจไม่ได้ว่าอยู่ในไลน์อัปงานไหนบ้าง (เน็ตขัดข้อง) ถ้ามี ชื่อจะหายจากไลน์อัปงานพวกนั้นและประวัติเช็คชื่อซ้อมด้วย กู้คืนไม่ได้`
         : lost.length
-          ? `${who} จะถูกลบออกจากวง — ${lost.join(" และ")} กู้คืนไม่ได้`
-          : `${who} จะถูกลบออกจากวง`,
-      ...(unknown || lost.length
-        ? { confirmText: "ลบสมาชิก", requireTyped: m?.name?.trim() || "ลบ" }
-        : {}),
+          ? `${who} จะถูกลบถาวร — ${lost.join(" และ")} กู้คืนไม่ได้`
+          : `${who} จะถูกลบถาวร กู้คืนไม่ได้`,
+      confirmText: "ลบถาวร",
+      requireTyped: m?.name?.trim() || "ลบ",
     });
-    if (!ok) return;
+    if (ok) await dropMember(id);
+  }
+
+  async function dropMember(id: string) {
     const snap = members;
     setMembers((prev) => prev.filter((x) => x.id !== id));
     // Asks for its row back like the roster's other writes (lib/write-guard.ts): sent as
@@ -392,7 +450,8 @@ export function GroupManager({
       ) : (
         <div className="space-y-3">
           {ordered.map((g) => {
-            const gm = membersOf(g.id);
+            const gm = currentOf(g.id);
+            const gone = leftOf(g.id);
             const hero = g.id === ownId;
             const editable = canEditRoster(g.id);
             return (
@@ -611,8 +670,9 @@ export function GroupManager({
                             variant="ghost"
                             size="icon"
                             className="text-destructive hover:text-destructive"
-                            onClick={() => deleteMember(m.id)}
+                            onClick={() => removeMember(m.id)}
                             aria-label="ลบสมาชิก"
+                            title="เอาออก (มีประวัติ = ออกจากวง เก็บชื่อในงานเก่าไว้)"
                           >
                             <Trash2 aria-hidden />
                           </Button>
@@ -629,6 +689,40 @@ export function GroupManager({
                       ))}
                     </ul>
                   )
+                )}
+
+                {editable && gone.length > 0 && (
+                  // Left the band (0054): kept for history, out of today's roster.
+                  <details className="rounded-[2px] bg-muted p-2" aria-label="ออกจากวงแล้ว">
+                    <summary className="cursor-pointer select-none px-1 py-1.5 text-[13px] font-semibold text-muted-foreground">
+                      ออกจากวงแล้ว <span className="num">{gone.length}</span> คน
+                    </summary>
+                    <ul className="stack mt-1">
+                      {gone.map((m) => (
+                        <li key={m.id} className="flex flex-wrap items-center gap-2 rounded-[2px] bg-card p-2">
+                          <div className="min-w-0 flex-1">
+                            <p className="truncate text-[15px] font-semibold">
+                              {m.nickname?.trim() || m.name.trim() || "—"}
+                            </p>
+                            <p className="text-[12.5px] text-muted-foreground">
+                              ออกเมื่อ <span className="num">{leftOnKey(m)}</span>
+                            </p>
+                          </div>
+                          <Button variant="secondary" size="sm" onClick={() => setLeft(m.id, null)}>
+                            <Undo2 aria-hidden /> กลับเข้าวง
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="text-destructive hover:text-destructive"
+                            onClick={() => deleteMemberForever(m.id)}
+                          >
+                            <Trash2 aria-hidden /> ลบถาวร
+                          </Button>
+                        </li>
+                      ))}
+                    </ul>
+                  </details>
                 )}
 
                 {(editable || admin) && (

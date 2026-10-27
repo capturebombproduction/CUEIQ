@@ -7,6 +7,7 @@ import { createClient } from "@/lib/supabase/client";
 import { Button } from "@/components/ui/button";
 import type { ExportData } from "@/lib/export-excel";
 import type { Member, MicAssignment, ScheduleItem, SetlistItem } from "@/lib/types";
+import { membersForShow } from "@/lib/member-status";
 
 export function ExportButton({
   eventId,
@@ -128,7 +129,11 @@ export function ExportButton({
         schedule: schRes.data as ScheduleItem[],
         setlist: setRes.data as SetlistItem[],
         micMap: micRes.data as MicAssignment[],
-        members: memRes.data as Member[],
+        // the band as it stood for this show (0054, lib/member-status.ts)
+        members: membersForShow(memRes.data as Member[], {
+          eventDate: (evRes.data as { event_date?: string | null }).event_date,
+          lineup: (lineRes.data as { member_id: string }[]).map((r) => r.member_id),
+        }),
         lineup: (lineRes.data as { member_id: string }[]).map((r) => r.member_id),
       });
     } catch (e) {
