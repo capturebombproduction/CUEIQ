@@ -15,6 +15,7 @@
 import { useEffect, useMemo, useState } from "react";
 // Absolute path so the desktop build's "@/lib/supabase/client" alias applies.
 import { createClient } from "@/lib/supabase/client";
+import { hasLiveSession } from "@/lib/auth-session";
 
 const known = new Map<string, string | null>();
 const asking = new Set<string>();
@@ -64,9 +65,14 @@ export function useSongCovers(ids: readonly (string | null | undefined)[]): Reco
         .select("id, cover")
         .in("id", missing)
         .then(
-          ({ data, error }) => {
+          async ({ data, error }) => {
             done();
             if (error || !data) return; // not known: a later visit may ask again
+            // An EMPTY answer may be a read sent as anon (a laptop that just woke, its token
+            // refresh not through yet): RLS answers that with no rows and no error. Taken at
+            // its word, every song asked was "no cover" until a reload - days, for a page left
+            // open (2026-10-27, hunt 9). Same rule as song-markers-live: prove the session first.
+            if (data.length === 0 && (await hasLiveSession().catch(() => false)) !== true) return;
             const got = new Map((data as { id: string; cover: string | null }[]).map((r) => [r.id, r.cover]));
             for (const id of missing) known.set(id, got.get(id) ?? null);
             listeners.forEach((l) => l());

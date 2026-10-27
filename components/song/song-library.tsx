@@ -204,6 +204,33 @@ function FilterChip({
 // friendlyError (the songs guard in Thai) lives in lib/copyright-triage.ts since 2026-10-27
 // (hunt 8), shared with the event page's triage panel.
 
+/**
+ * Why this song may not change band right now, or null when it may. A song in a show's
+ * setlist stays with that show's band (2026-10-27, hunt 9): moved, it left the show's own
+ * page - the event page reads only its band's songs, so the approver's copyright panel and the
+ * band's rejected-song warning lost it - while Overview's Rights tile still counted it. The
+ * same rule as a show's own band move (event-form.tsx bandMoveBlocker): a count we could not
+ * read blocks, and so does an empty one with no session behind it (as anon RLS reads 0 rows
+ * with no error - lib/write-guard.ts).
+ */
+async function songBandMoveBlocker(
+  supabase: ReturnType<typeof createClient>,
+  songId: string
+): Promise<string | null> {
+  const unknown = "ตรวจไม่ได้ว่าเพลงนี้อยู่ในเซ็ตลิสต์ของงานไหนบ้าง — ลองย้ายวงอีกครั้งเมื่อเน็ตดี";
+  const read = Promise.resolve(
+    supabase.from("setlist_items").select("event_id").eq("song_id", songId)
+  ).then((r) => (r.error || !r.data ? null : (r.data as { event_id: string | null }[])));
+  const rows = await Promise.race([
+    read.catch(() => null),
+    new Promise<null>((resolve) => setTimeout(() => resolve(null), 4000)),
+  ]);
+  if (!rows) return unknown;
+  if (rows.length === 0) return (await hasLiveSession()) === true ? null : unknown;
+  const shows = new Set(rows.map((r) => r.event_id ?? "")).size;
+  return `เพลงนี้อยู่ในเซ็ตลิสต์ของ ${shows} งานของวงเดิม ถ้าย้ายวง งานพวกนั้นจะหาเพลงนี้ไม่เจอ — เอาเพลงออกจากเซ็ตลิสต์ก่อน หรือเพิ่มเป็นเพลงใหม่ในวงที่ถูก`;
+}
+
 /** The file name to show for a song: the file it plays now (audio_name), else the
  *  name it was created with. Every replace path writes only audio_name, so showing
  *  file_name named the OLD take after a swap. */
@@ -870,6 +897,16 @@ export function SongLibrary({
     const seq = ++saveSeqRef.current;
     const stillMine = () => saveSeqRef.current === seq;
     setSaving(true);
+    // ...nor while a show's setlist holds it (hunt 9, songBandMoveBlocker). Read with the
+    // save button already busy, so a second click cannot slip past the read.
+    if (current && form.group_id !== current.group_id) {
+      const blocker = await songBandMoveBlocker(supabase, current.id);
+      if (blocker) {
+        if (stillMine()) setSaving(false);
+        toast.error("ย้ายวงไม่ได้ ขณะเพลงนี้อยู่ในเซ็ตลิสต์", { description: blocker });
+        return;
+      }
+    }
     // ลิขสิทธิ์ is sent CONDITIONALLY (guard 0034): the DB refuses a non-approver
     // changing copyright_status, and it compares against the CURRENT row — so a value
     // that only LOOKS changed because an approver triaged the song from another screen

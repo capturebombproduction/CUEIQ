@@ -17,21 +17,39 @@ const TONE: Record<DeadlineTone, string> = {
 };
 const ICON = { overdue: OctagonAlert, urgent: Hourglass, soon: Hourglass, ok: AlarmClock } as const;
 
-/** Nothing for a band exempt from deadlines, or a show without one. `deadlineInfo`
- *  reads the clock at render, as each of the three copies it replaces did. */
+/**
+ * The deadline as the app says it, or null when there is nothing to say: a band exempt from
+ * deadlines, a show without one, or an APPROVED show - its setlist is done, so the deadline
+ * is met (2026-10-27, hunt 9): an approved show whose deadline had passed wore the red
+ * "เลยกำหนดแล้ว" on its page, the dashboard and Overview, while the reminder cron
+ * (app/api/cron/reminders) already left approved shows alone. The one rule for the chip below
+ * and Overview's own cell.
+ */
+export function shownDeadline(
+  deadline: string | null | undefined,
+  show: { exempt?: boolean | null; status: string | null | undefined }
+): ReturnType<typeof deadlineInfo> {
+  if (show.exempt || show.status === "approved") return null;
+  return deadlineInfo(deadline);
+}
+
+/** `status` is required on purpose: a call site that forgets it would bring the alarm back
+ *  on approved shows. `deadlineInfo` reads the clock at render, as each of the three copies
+ *  it replaces did. */
 export function DeadlineChip({
   deadline,
   exempt,
+  status,
   note,
   className,
 }: {
   deadline: string | null | undefined;
   exempt?: boolean | null;
+  status: string | null | undefined;
   note?: string | null;
   className?: string;
 }) {
-  if (exempt) return null;
-  const dl = deadlineInfo(deadline);
+  const dl = shownDeadline(deadline, { exempt, status });
   if (!dl) return null;
   const Icon = ICON[dl.tone] ?? AlarmClock;
   return (

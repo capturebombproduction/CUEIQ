@@ -221,7 +221,9 @@ function EventStub({
           </div>
         )}
         <div className="mt-1 flex flex-wrap items-center gap-1.5 empty:hidden">
-          {!onTicket && <DeadlineChip deadline={ev.deadline} exempt={ev.groups?.exempt_from_deadline} />}
+          {!onTicket && (
+            <DeadlineChip deadline={ev.deadline} exempt={ev.groups?.exempt_from_deadline} status={ev.status} />
+          )}
           {readiness && <OfflineReadyBadge r={readiness} />}
         </div>
         {ev.last_run_seconds != null && (
@@ -741,6 +743,7 @@ export function EventsList({
             <DeadlineChip
               deadline={nextShow.deadline}
               exempt={nextShow.groups?.exempt_from_deadline}
+              status={nextShow.status}
               className="mt-1.5"
             />
             {/* "นัด 11:20 · ขึ้นเวที 13:20" said once, whole, for a screen reader —

@@ -106,6 +106,48 @@ describe("cloneEvent: members who have left the band", () => {
     expect(holdersOf(inserted)).toEqual(["Aya"]);
   });
 
+  // 2026-10-27, hunt 9: the lineup and Mic Map lost them, but each song's "ไมค์ + สมาชิก"
+  // (setlist_items.mic_slots, names) was copied as it was - "MIC 2 Bell" on every song of the
+  // copy, on Live, the summary and the Excel.
+  describe("each song's mic slots", () => {
+    const withSetlist = (members: Row[] = MEMBERS): Record<string, Row[]> => ({
+      ...source(members),
+      setlist_items: [
+        { id: "s1", event_id: "src", tenant_id: "t1", kind: "song", title: "Song A", sort_order: 1,
+          mic_slots: [{ mic: "1", member: "Aya" }, { mic: "2", member: " Bell " }] },
+        { id: "s2", event_id: "src", tenant_id: "t1", kind: "mc", title: "MC", sort_order: 2,
+          notes: "talk", loop_audio: true, mic_slots: [{ mic: "2", member: "Bell" }] },
+        { id: "s3", event_id: "src", tenant_id: "t1", kind: "song", title: "Song B", sort_order: 3,
+          mic_slots: null },
+      ],
+    });
+    const slotsOf = (inserted: Record<string, Row[]>) =>
+      (inserted.setlist_items ?? []).map((r) =>
+        Array.isArray(r.mic_slots) ? (r.mic_slots as { member: string }[]).map((s) => s.member) : r.mic_slots
+      );
+
+    it("a copy dated after the leaving day drops their slot and keeps the rest of the row", async () => {
+      const { client, inserted } = fakeDb(withSetlist());
+      await cloneEvent(client, { sourceId: "src", sourceLabel: "งานต้นฉบับ", buildEvent: copyDated("2026-11-03") });
+      expect(slotsOf(inserted)).toEqual([["Aya"], [], null]);
+      const mc = inserted.setlist_items![1];
+      expect([mc.kind, mc.title, mc.notes, mc.loop_audio]).toEqual(["mc", "MC", "talk", true]);
+    });
+
+    it("a copy dated on or before the leaving day keeps their slot", async () => {
+      const { client, inserted } = fakeDb(withSetlist());
+      await cloneEvent(client, { sourceId: "src", sourceLabel: "งานต้นฉบับ", buildEvent: copyDated("2026-10-27") });
+      expect(slotsOf(inserted)).toEqual([["Aya", " Bell "], ["Bell"], null]);
+    });
+
+    it("keeps a slot whose name a member still in the band answers to", async () => {
+      const members = [{ ...MEMBERS[0], nickname: "Bell" }, MEMBERS[1]];
+      const { client, inserted } = fakeDb(withSetlist(members));
+      await cloneEvent(client, { sourceId: "src", sourceLabel: "งานต้นฉบับ", buildEvent: copyDated("2026-11-03") });
+      expect(slotsOf(inserted)).toEqual([["Aya", " Bell "], ["Bell"], null]);
+    });
+  });
+
   it("a members read that failed creates nothing, like every other read", async () => {
     const { client, inserted } = fakeDb(source(), { failRead: ["members"] });
     await expect(

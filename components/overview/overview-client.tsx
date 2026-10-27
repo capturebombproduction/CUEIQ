@@ -39,7 +39,8 @@ import { Button } from "@/components/ui/button";
 import { FIELD } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { bandTriplet } from "@/lib/band-triplet";
-import { shortClock, deadlineInfo, bkkTodayKey } from "@/lib/time";
+import { shortClock, bkkTodayKey } from "@/lib/time";
+import { shownDeadline } from "@/components/event/deadline-chip";
 import { captureElementToImage } from "@/lib/export-image";
 import type { GroupStatus, StaffContact } from "@/lib/types";
 
@@ -482,7 +483,8 @@ function PhotoCell({ ev }: { ev: OverviewEvent }) {
 }
 
 function DeadlineCell({ ev }: { ev: OverviewEvent }) {
-  const dl = ev.exempt_from_deadline ? null : deadlineInfo(ev.deadline);
+  // the chip's rule (shownDeadline): nothing for an exempt band or an approved show (hunt 9)
+  const dl = shownDeadline(ev.deadline, { exempt: ev.exempt_from_deadline, status: ev.status });
   if (!dl) return null;
   const { cls, Icon } = DEADLINE_CHIP[dl.tone] ?? DEADLINE_CHIP.ok;
   return (

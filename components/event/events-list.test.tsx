@@ -304,8 +304,9 @@ describe("EventsList — between shows", () => {
 // repeated the ticket's deadline chip on a line of its own — 123 px of stub that
 // pushed the first row under a member's tab bar (bottom 731.5, target ≤ 705).
 describe("EventsList — the ticket's own stub does not repeat its deadline", () => {
-  const next = { ...ev("up", "โชว์ที่จะถึง", "2026-10-05"), deadline: "2026-09-30T05:00:00Z" };
-  const later = { ...ev("later", "โชว์ถัดไปอีก", "2026-10-20"), deadline: "2026-10-15T05:00:00Z" };
+  // not approved yet: an approved show has met its deadline and shows no chip (hunt 9)
+  const next = { ...ev("up", "โชว์ที่จะถึง", "2026-10-05"), status: "draft" as const, deadline: "2026-09-30T05:00:00Z" };
+  const later = { ...ev("later", "โชว์ถัดไปอีก", "2026-10-20"), status: "draft" as const, deadline: "2026-10-15T05:00:00Z" };
   const stubOf = (container: HTMLElement, id: string) =>
     container.querySelector<HTMLAnchorElement>(`a.stub[href="/events/${id}"]`)!;
 

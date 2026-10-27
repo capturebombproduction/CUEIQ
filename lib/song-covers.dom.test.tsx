@@ -12,6 +12,8 @@ const h = vi.hoisted(() => ({
   mode: "ok" as "ok" | "error" | "hang",
   release: [] as (() => void)[],
 }));
+// A signed-in session: an empty answer is believed (an anon one is not - hunt 9).
+vi.mock("@/lib/auth-session", () => ({ hasLiveSession: async () => true }));
 vi.mock("@/lib/supabase/client", () => ({
   createClient: () => ({
     from: (table: string) => {

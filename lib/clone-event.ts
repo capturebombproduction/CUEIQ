@@ -176,6 +176,19 @@ export async function cloneEvent(
         r.rows = r.rows.filter((row) => !goneIds.has(row.member_id as string));
       } else if (r.part.table === "mic_assignments") {
         r.rows = r.rows.filter((row) => !goneNames.has(String(row.holder_name ?? "").trim()));
+      } else if (r.part.table === "setlist_items") {
+        // ...and their seat in each song's "ไมค์ + สมาชิก" (mic_slots, a name too). 2026-10-27,
+        // hunt 9: the Mic Map lost them but every song of the copy still said "MIC 2 Bell" -
+        // on Live's now/next mic line, the summary, the Mic Map's per-song list and the Excel.
+        // Only the slot goes; the row (an MC's notes, a loop) is copied as it was.
+        r.rows = r.rows.map((row) => {
+          const slots = row.mic_slots;
+          if (!Array.isArray(slots)) return row;
+          const kept = slots.filter(
+            (s) => !goneNames.has(String((s as { member?: unknown } | null)?.member ?? "").trim())
+          );
+          return kept.length === slots.length ? row : { ...row, mic_slots: kept };
+        });
       }
     }
   }

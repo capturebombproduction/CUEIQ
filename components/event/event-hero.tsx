@@ -135,6 +135,7 @@ export function EventHero({
       <DeadlineChip
         deadline={event.deadline}
         exempt={event.group?.exempt_from_deadline}
+        status={event.status}
         note={event.deadline_note}
         className="mt-2"
       />
