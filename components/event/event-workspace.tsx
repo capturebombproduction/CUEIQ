@@ -306,6 +306,13 @@ export function EventWorkspace({
   const missedWhileActive = useRef<Set<string>>(new Set());
   const wantsReseed = useRef<Set<string>>(new Set());
   const rekeyOnNextData = useRef<Set<string>>(new Set());
+  // Armed tabs opened again before their read landed (Argon on hunt 6, 2026-10-27).
+  // That read is still out and predates whatever the tab saves now: left again before
+  // it lands, the tab was re-seeded from it - and re-arming it for a new read changes
+  // nothing, the old answer still lands first. So it waits here, out of reach of any
+  // arming, until an answer lands; then it wants a re-seed again, and one more read is
+  // sent for it if it is hidden.
+  const reopenedWhileArmed = useRef<Set<string>>(new Set());
   const lastSeeds = useRef(seeds);
   useEffect(() => {
     const stale: string[] = [];
@@ -313,6 +320,12 @@ export function EventWorkspace({
     // new data, not just a tab change or a panel opening
     const freshData = seeds !== lastSeeds.current;
     lastSeeds.current = seeds;
+    if (freshData && reopenedWhileArmed.current.size > 0) {
+      for (const tab of reopenedWhileArmed.current) wantsReseed.current.add(tab);
+      reopenedWhileArmed.current.clear();
+      // after this effect: armed now, it would be re-seeded from THIS answer below
+      queueMicrotask(() => void reseedOnceSavedRef.current());
+    }
     if (cachedCopy) {
       // The desktop's stored copy, not a server read (see the prop). A MOUNTED editor
       // keeps what it holds and the fingerprint it was seeded with - a server read
@@ -404,6 +417,9 @@ export function EventWorkspace({
     const repeat = v !== view && viewRef.current === v;
     viewRef.current = v;
     const online = !repeat && (typeof navigator === "undefined" || navigator.onLine);
+    // Opening a tab whose read is still out: that read no longer speaks for it (see
+    // reopenedWhileArmed).
+    if (v !== view && rekeyOnNextData.current.delete(v)) reopenedWhileArmed.current.add(v);
     let read = false;
     // Leaving a tab whose server data changed while it was the active one - or one
     // still waiting for the read that re-seeds it: read again, and let THAT answer
@@ -476,6 +492,9 @@ export function EventWorkspace({
   }
 
   const reseedWaiting = useRef(false);
+  // the seeds effect above calls it from a microtask: always this render's copy
+  const reseedOnceSavedRef = useRef(reseedOnceSaved);
+  reseedOnceSavedRef.current = reseedOnceSaved;
   async function reseedOnceSaved() {
     if (reseedWaiting.current) return;
     reseedWaiting.current = true;

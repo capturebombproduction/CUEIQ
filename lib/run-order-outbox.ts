@@ -770,9 +770,12 @@ async function parkRunSeq(ops: RunSeqOp[]): Promise<void> {
           const stored = get.result as RunSeqOp | undefined;
           // A newer press that REPLACED a parked op under this key (mergeOp) is not the
           // op this flush judged: it waits for its own replay (2026-10-27, hunt 6).
-          if (stored && !descendsFrom(stored, o)) return;
-          const cur = stored ?? o;
-          store.put({ ...cur, conflict: true }, o.rowId);
+          // Nor is a record that is GONE: every op parked here came from the store when
+          // this flush began, so a missing one was thrown away (ทิ้ง, during the flush's
+          // network read) or landed by another tab. Writing the snapshot back put a press
+          // the operator had just discarded on the red panel again (Argon on ee63ea6).
+          if (!stored || !descendsFrom(stored, o)) return;
+          store.put({ ...stored, conflict: true }, o.rowId);
         };
       });
       tx.oncomplete = () => {

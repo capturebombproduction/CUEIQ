@@ -217,3 +217,42 @@ describe("EventWorkspace · web: the leave-tab read whose wait for the last save
     expect(serverLabel).toBe("C");
   }, 10000);
 });
+
+// Argon on hunt 6: leave the tab (its read goes out, armed), open it again before that
+// read lands, save an edit, leave again. The read still out predates the edit, and it
+// lands first - it re-seeded the tab with the value from before the edit (asking for
+// another read on the second leave would not help: the old answer still lands first).
+describe("EventWorkspace · a tab opened again before its read landed", () => {
+  it("is not re-seeded by that read - one more read, sent after it landed, re-seeds it", async () => {
+    const user = userEvent.setup();
+    const { rerender } = render(tree([row("A")]));
+    await user.click(tab("Schedule"));
+    await waitFor(() => expect(label()).toBeTruthy());
+    await saveLabel("B");
+    rerender(tree([row("B")])); // a read lands while Schedule is active: it missed it
+
+    router.refresh.mockClear();
+    await user.click(tab("Lineup")); // leaving reads again: read #1 goes out, armed
+    expect(router.refresh).toHaveBeenCalledTimes(1);
+    await user.click(tab("Schedule")); // back before read #1 lands
+    await waitFor(() => expect(label()).toBeTruthy());
+    await saveLabel("C");
+    await user.click(tab("Lineup")); // and off again, still before it lands
+
+    rerender(tree([row("B")])); // read #1 lands - sent before C
+    await new Promise((r) => setTimeout(r, 20));
+    expect(label().value, "the hidden panel keeps the C it saved").toBe("C");
+    // …and one more read goes out for it, now that the old one is in
+    await waitFor(() => expect(router.refresh).toHaveBeenCalledTimes(2));
+    rerender(tree([row("C", "ฮอลล์ 2")])); // its answer: C + another device's location
+
+    await user.click(tab("Schedule"));
+    await waitFor(() => expect(label()).toBeTruthy());
+    expect(label().value).toBe("C");
+    expect(location().value, "the other device's change reached the panel").toBe("ฮอลล์ 2");
+    fireEvent.focus(label());
+    fireEvent.blur(label());
+    await new Promise((r) => setTimeout(r, 20));
+    expect(serverLabel).toBe("C");
+  });
+});

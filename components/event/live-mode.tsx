@@ -468,12 +468,15 @@ export function LiveMode({
   // session - linked to another song in the setlist builder it played the pick under that
   // song's title, and a newer master uploaded by the band never reached it (2026-10-27,
   // hunt 6). A different version is newer than the pick: it loads, and the pick is over.
-  const pickedRef = useRef<Map<string, { url: string; version: string | null }>>(new Map());
+  // A SET: an older pick's link landing while a newer pick waits is older than it too, and
+  // replacing the one version with it let a download of the master still on its way through.
+  const pickedRef = useRef<Map<string, { url: string; versions: Set<string | null> }>>(new Map());
   /** The row's own pick, still waiting for its link, holds this version off. */
-  const pickHolds = (itemId: string, version: string | null) => {
-    const p = pickedRef.current.get(itemId);
-    return !!p && p.version === version;
-  };
+  const pickHolds = (itemId: string, version: string | null) =>
+    !!pickedRef.current.get(itemId)?.versions.has(version);
+  // Per row, which pick is the newest: two picks on one row raced, and the OLDER one's slow
+  // upload, finishing last, linked the row back to its song on every device (hunt 6).
+  const pickSeqRef = useRef<Record<string, number>>({});
   const [audioBusy, setAudioBusy] = useState<Record<string, "up" | "down">>({});
   // which download-effect run set an item's busy flag — so a superseded run can
   // still clear its own flag without clobbering a newer run's active download
@@ -1346,12 +1349,17 @@ export function LiveMode({
   const withHeldLocals = (ids: ReadonlySet<string>) => new Set([...ids, ...heldLocalRef.current.keys()]);
   useEffect(() => {
     let alive = true;
-    let readSeq = 0;
+    // One read at a time, each applied in order and none dropped: the drop above is a
+    // TRANSITION between two reads, and an older read thrown away (the take seen local and
+    // queued, then flushed before it settled) was a transition never seen - nothing held.
+    let chain: Promise<void> = Promise.resolve();
     const refresh = () => {
-      const mine = ++readSeq; // an older read landing late must not undo a newer one
+      chain = chain.then(() => read());
+    };
+    const read = () =>
       Promise.all([listLocalSourceIds(), listPendingAudioUploads()])
         .then(([ids, pending]) => {
-          if (!alive || mine !== readSeq) return;
+          if (!alive) return;
           let ask = false;
           for (const id of realLocalRef.current) {
             if (ids.has(id) || heldLocalRef.current.has(id) || !queuedLocalRef.current.has(id)) continue;
@@ -1369,7 +1377,6 @@ export function LiveMode({
         .catch(() => {
           if (alive) setLocalsRead(true); // no local sources ≠ never start
         });
-    };
     refresh();
     window.addEventListener(MGMT_OUTBOX_EVENT, refresh);
     return () => {
@@ -1475,7 +1482,9 @@ export function LiveMode({
           // reorder, an unrelated upload — leave a member behind, so the next
           // track change bumped the retry and re-ran the whole loop for nothing,
           // which on venue wifi means restarting an in-flight master download.
-          if (cachedPathRef.current[it.id] !== version) {
+          // (nor one whose own pick holds that version off: deferred, every track change
+          // re-ran the loop for it - hunt 6)
+          if (cachedPathRef.current[it.id] !== version && !pickHolds(it.id, version)) {
             deferredOnAirRef.current.add(it.id);
           }
           continue;
@@ -1560,6 +1569,12 @@ export function LiveMode({
           // for next time, but an object URL minted now would outlive the unmount
           // revoke-all above and never be freed.
           if (unmountedRef.current) return;
+          // Picked in Live while this was on its way: the pick wins (see pickedRef) - before
+          // the on-air deferral below, which would re-run the loop for it at every track change.
+          if (pickWins) {
+            if (cancelled) return;
+            continue;
+          }
           // The on-air lock above was read BEFORE the awaits: START, a NEXT or a Loop bed
           // can put this row on air while its new master is on the way (a newer upload
           // than the copy restored at open lands mid-song). Swapping now revoked the URL
@@ -1570,11 +1585,6 @@ export function LiveMode({
             deferredOnAirRef.current.add(it.id);
             // a superseded run stops here, as the swap below does - walking on, it
             // downloaded the rest of the set alongside the newer run (2026-10-27)
-            if (cancelled) return;
-            continue;
-          }
-          // Picked in Live while this was on its way: the pick wins (see pickedRef).
-          if (pickWins) {
             if (cancelled) return;
             continue;
           }
@@ -2894,7 +2904,16 @@ export function LiveMode({
     // minted itself over it and revoked the pick (2026-10-27) - see pickedRef. The version it
     // holds off is the one the row wants now: the master the pick replaces.
     const url = URL.createObjectURL(file);
-    pickedRef.current.set(itemId, { url, version: audioVersionOf(item) });
+    const before = pickedRef.current.get(itemId);
+    const versions = new Set<string | null>(before?.versions ?? []); // an earlier pick's still apply
+    versions.add(audioVersionOf(item));
+    pickedRef.current.set(itemId, { url, versions });
+    const mySeq = (pickSeqRef.current[itemId] ?? 0) + 1;
+    pickSeqRef.current[itemId] = mySeq;
+    const newest = () => pickSeqRef.current[itemId] === mySeq;
+    // The row holds a pick now, not the version it held: a stale entry let "already holding
+    // this exact version" skip a re-linked song's file (hunt 6). The link sets it again.
+    delete cachedPathRef.current[itemId];
     setAudioUrls((prev) => ({ ...prev, [itemId]: url }));
     setAudioNames((prev) => ({ ...prev, [itemId]: file.name }));
 
@@ -2953,6 +2972,10 @@ export function LiveMode({
         .select("id");
       if (pathErr) throw pathErr;
       if (wroteNothing(pathRows)) throw new Error(await noRowsMessage());
+      // A newer pick on this row came in while this one uploaded: it is the row's file, so
+      // this one links nothing, saves nothing, tells nobody. Its temporary song is left
+      // unlinked for the library's purge (lib/temp-song-purge.ts) (2026-10-27, hunt 6).
+      if (!newest()) return;
       const { error: linkErr } = await supabase
         .from("setlist_items")
         .update({ song_id: songId })
@@ -2967,8 +2990,9 @@ export function LiveMode({
         cachedPathRef.current[itemId] = path;
         pickedRef.current.delete(itemId); // linked: this IS the row's master now
       } else if (pick) {
-        // a later pick on this row still waits: this link is older than it, held off too
-        pick.version = path;
+        // a later pick on this row came in during the link write and still waits: this link
+        // is older than it, held off too - beside the versions it already holds off
+        pick.versions.add(path);
       }
       // (no pick left: a newer master of the old song landed during the upload and ended
       // it - the row now names this link, and fetches its file like any new version)
@@ -2989,6 +3013,9 @@ export function LiveMode({
         "อัปขึ้นคลังเป็นเพลงชั่วคราว — จะถูกลบก็ต่อเมื่อไม่มีงานที่ยังไม่จบใช้อยู่ และมีคนกดยืนยันเท่านั้น · กดรูปกุญแจในคลังเพลงเพื่อเก็บถาวร"
       );
     } catch (err) {
+      // A newer pick took the row meanwhile: this one's failure is nobody's news, and its
+      // bytes saved here would replace the newer pick's own record (hunt 6).
+      if (!newest()) return;
       // online upload failed — still keep a local-only copy so THIS device can play
       if (cached) saveAudio(eventId, itemId, cached, file.name).catch(() => {});
       toast.error("อัปโหลดออนไลน์ไม่สำเร็จ — ไฟล์ยังเล่นได้เฉพาะเครื่องนี้", {
@@ -2996,11 +3023,14 @@ export function LiveMode({
         description: (err as { message?: string } | null)?.message || undefined,
       });
     } finally {
-      setAudioBusy((prev) => {
-        const n = { ...prev };
-        delete n[itemId];
-        return n;
-      });
+      // the row's spinner is the newest pick's: an older one finishing first leaves it on
+      if (newest()) {
+        setAudioBusy((prev) => {
+          const n = { ...prev };
+          delete n[itemId];
+          return n;
+        });
+      }
     }
   }
 
