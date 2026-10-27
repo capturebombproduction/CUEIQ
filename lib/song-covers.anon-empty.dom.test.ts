@@ -10,6 +10,7 @@ import { renderHook, waitFor } from "@testing-library/react";
 let answer: { data: unknown; error: unknown } = { data: [], error: null };
 let calls = 0;
 let live = false;
+let gate: Promise<boolean> | null = null;
 vi.mock("@/lib/supabase/client", () => ({
   createClient: () => ({
     from: () => ({
@@ -22,7 +23,7 @@ vi.mock("@/lib/supabase/client", () => ({
     }),
   }),
 }));
-vi.mock("@/lib/auth-session", () => ({ hasLiveSession: async () => live }));
+vi.mock("@/lib/auth-session", () => ({ hasLiveSession: () => gate ?? Promise.resolve(live) }));
 
 import { useSongCovers, resetSongCoverCache } from "./song-covers";
 
@@ -32,6 +33,7 @@ beforeEach(() => {
   resetSongCoverCache();
   calls = 0;
   live = false;
+  gate = null;
   answer = { data: [], error: null };
 });
 
@@ -57,5 +59,20 @@ describe("useSongCovers - an empty answer", () => {
     const again = renderHook(() => useSongCovers(["a"]));
     expect(again.result.current).toEqual({ a: null });
     expect(calls).toBe(1);
+  });
+
+  // ตาที่ 3 on hunt 9: the songs were let go of ("asking") BEFORE the session check, so a
+  // second screen mounting meanwhile sent a second read for the same songs.
+  it("keeps the songs 'asked' across the session check, so a screen mounting meanwhile sends no second read", async () => {
+    let release: (v: boolean) => void = () => {};
+    gate = new Promise<boolean>((r) => (release = r));
+    const first = renderHook(() => useSongCovers(["a"]));
+    await waitFor(() => expect(calls).toBe(1));
+    const second = renderHook(() => useSongCovers(["a"]));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(calls).toBe(1);
+    release(true);
+    await waitFor(() => expect(second.result.current).toEqual({ a: null }));
+    expect(first.result.current).toEqual({ a: null });
   });
 });

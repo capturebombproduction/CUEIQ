@@ -218,15 +218,22 @@ async function songBandMoveBlocker(
   songId: string
 ): Promise<string | null> {
   const unknown = "ตรวจไม่ได้ว่าเพลงนี้อยู่ในเซ็ตลิสต์ของงานไหนบ้าง — ลองย้ายวงอีกครั้งเมื่อเน็ตดี";
+  // The session check rides inside the same 4 s bound as the read (ตาที่ 3 on hunt 9): a
+  // getSession() stuck behind a token refresh left the save button busy for good.
   const read = Promise.resolve(
     supabase.from("setlist_items").select("event_id").eq("song_id", songId)
-  ).then((r) => (r.error || !r.data ? null : (r.data as { event_id: string | null }[])));
+  ).then(async (r) => {
+    if (r.error || !r.data) return null;
+    const rows = r.data as { event_id: string | null }[];
+    if (rows.length === 0 && (await hasLiveSession()) !== true) return null;
+    return rows;
+  });
   const rows = await Promise.race([
     read.catch(() => null),
     new Promise<null>((resolve) => setTimeout(() => resolve(null), 4000)),
   ]);
   if (!rows) return unknown;
-  if (rows.length === 0) return (await hasLiveSession()) === true ? null : unknown;
+  if (rows.length === 0) return null;
   const shows = new Set(rows.map((r) => r.event_id ?? "")).size;
   return `เพลงนี้อยู่ในเซ็ตลิสต์ของ ${shows} งานของวงเดิม ถ้าย้ายวง งานพวกนั้นจะหาเพลงนี้ไม่เจอ — เอาเพลงออกจากเซ็ตลิสต์ก่อน หรือเพิ่มเป็นเพลงใหม่ในวงที่ถูก`;
 }
@@ -903,7 +910,8 @@ export function SongLibrary({
       const blocker = await songBandMoveBlocker(supabase, current.id);
       if (blocker) {
         if (stillMine()) setSaving(false);
-        toast.error("ย้ายวงไม่ได้ ขณะเพลงนี้อยู่ในเซ็ตลิสต์", { description: blocker });
+        // a plain title: the blocker may only say the check could not be made (ตาที่ 3)
+        toast.error("ย้ายวงไม่ได้", { description: blocker });
         return;
       }
     }

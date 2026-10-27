@@ -15,7 +15,7 @@ const h = vi.hoisted(() => ({
   writes: [] as { values: Record<string, unknown> }[],
   usage: { data: [] as { event_id: string }[] | null, error: null as { message: string } | null },
   usageReads: [] as unknown[],
-  session: true as boolean | null,
+  session: true as boolean | null | "hang",
   toast: { error: vi.fn(), info: vi.fn(), success: vi.fn() },
 }));
 
@@ -76,7 +76,7 @@ vi.mock("@/lib/realtime", async (orig) => ({
 vi.mock("@/lib/notify-client", () => ({ notify: () => {} }));
 vi.mock("@/lib/auth-session", async (orig) => ({
   ...(await orig<typeof import("@/lib/auth-session")>()),
-  hasLiveSession: async () => h.session,
+  hasLiveSession: () => (h.session === "hang" ? new Promise<boolean>(() => {}) : Promise.resolve(h.session)),
 }));
 vi.mock("@/lib/supabase/client", () => ({
   createClient: () => ({
@@ -160,7 +160,7 @@ describe("SongLibrary — moving a song a show's setlist holds", () => {
     h.usage = { data: [{ event_id: "e1" }, { event_id: "e1" }, { event_id: "e2" }], error: null };
     await moveToOtherBand();
     await waitFor(() => expect(h.toast.error).toHaveBeenCalled());
-    expect(h.toast.error.mock.calls[0][0]).toBe("ย้ายวงไม่ได้ ขณะเพลงนี้อยู่ในเซ็ตลิสต์");
+    expect(h.toast.error.mock.calls[0][0]).toBe("ย้ายวงไม่ได้");
     expect(h.toast.error.mock.calls[0][1].description).toContain("2 งาน");
     expect(h.usageReads).toContain("s1");
     expect(h.writes).toHaveLength(0);
@@ -170,9 +170,22 @@ describe("SongLibrary — moving a song a show's setlist holds", () => {
     h.usage = { data: null, error: { message: "network" } };
     await moveToOtherBand();
     await waitFor(() => expect(h.toast.error).toHaveBeenCalled());
-    expect(h.toast.error.mock.calls[0][0]).toBe("ย้ายวงไม่ได้ ขณะเพลงนี้อยู่ในเซ็ตลิสต์");
+    // not "it is in a setlist": we only know we could not check (ตาที่ 3 on hunt 9)
+    expect(h.toast.error.mock.calls[0][0]).toBe("ย้ายวงไม่ได้");
+    expect(h.toast.error.mock.calls[0][1].description).toContain("ตรวจไม่ได้");
     expect(h.writes).toHaveLength(0);
   });
+
+  // The session check used to sit outside the 4 s bound: a getSession() stuck behind a token
+  // refresh kept the save button busy for good (ตาที่ 3 on hunt 9, 2026-10-27).
+  it("gives up after 4 s when the session check never answers, and frees the save button", async () => {
+    h.session = "hang";
+    await moveToOtherBand();
+    await waitFor(() => expect(h.toast.error).toHaveBeenCalled(), { timeout: 6000 });
+    expect(h.writes).toHaveLength(0);
+    const dialog = screen.getByRole("dialog", { name: "Edit Song" });
+    await waitFor(() => expect(within(dialog).getByRole("button", { name: "บันทึก" })).not.toBeDisabled());
+  }, 10000);
 
   it("is refused when 'used nowhere' came back with no session behind it", async () => {
     h.session = false;
