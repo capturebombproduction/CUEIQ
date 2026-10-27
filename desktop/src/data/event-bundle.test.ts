@@ -937,3 +937,38 @@ describe("cachedCallTimes — the call time from bundles already on the device",
     });
   });
 });
+
+// ── a show created offline takes today's roster ──────────────────────────────
+// 2026-10-27, hunt 8: a show created offline takes its members from any cached bundle of
+// the same band. That can be the band's practice room, which keeps EVERYONE (its journal
+// names members who left), so the new show's Lineup offered a member who had left - and
+// เลือกทั้งหมด wrote them onto it, where the lineup-holds rule then kept them.
+describe("loadEventBundleStatus — a show created offline", () => {
+  it("starts with the band as it is today, not the practice room's everyone", async () => {
+    setOnline(false);
+    window.localStorage.setItem(
+      rawKey(OTHER_EVENT_ID),
+      JSON.stringify({
+        ...cachedBundle(OTHER_EVENT_ID),
+        event: { ...cachedBundle(OTHER_EVENT_ID).event, is_practice: true },
+        members: [
+          { id: "mem1", group_id: GROUP_ID, name: "Vo", left_at: null },
+          { id: "mem2", group_id: GROUP_ID, name: "Gt", left_at: "2026-09-01T03:00:00Z" },
+        ],
+      })
+    );
+    h.ops = [
+      {
+        kind: "event.create",
+        id: EVENT_ID,
+        values: { tenant_id: TENANT_ID, group_id: GROUP_ID, name: "new show", event_date: "2026-11-03" },
+        base: 0,
+        seq: 1,
+      } as unknown as MgmtOp,
+    ];
+
+    const { bundle } = await loadEventBundleStatus(EVENT_ID);
+    expect(bundle?.event.name).toBe("new show");
+    expect(bundle?.members.map((m) => m.id)).toEqual(["mem1"]);
+  });
+});

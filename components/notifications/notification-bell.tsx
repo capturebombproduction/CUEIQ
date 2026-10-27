@@ -278,8 +278,10 @@ export function NotificationBell({
         try {
           await supabase.from("push_subscriptions").delete().eq("endpoint", sub.endpoint);
         } catch {
-          // best-effort — if the row survives, the server prunes it as "gone"
-          // on its next send attempt (lib/push.ts treats the rotation's 403 as gone)
+          // best-effort — if the row survives, the server prunes it as "gone" on its
+          // next send: the subscription was dropped just above, so its endpoint answers
+          // 404/410. Not because of the old key's 403 - lib/push.ts never prunes on a 403
+          // (2026-10-27, hunt 8: this comment used to say it did).
         }
         setPushState("default");
         return;
@@ -490,12 +492,18 @@ export function NotificationBell({
     // error but touched no row did not happen — so put the list back ourselves and
     // still call load() to pick up the server's answer when it is trustworthy.
     const before = items;
-    setItems((prev) => prev.map((x) => (x.read_at ? x : { ...x, read_at: now })));
+    // Only the unread rows this list SHOWS (2026-10-27, hunt 8): `.is("read_at", null)`
+    // also cleared a row that arrived since the last 45s poll - an approval or a reply the
+    // user never saw went straight to read on every device, without ever lighting the badge.
+    const shownUnread = items.filter((x) => !x.read_at).map((x) => x.id);
+    const marking = new Set(shownUnread);
+    setItems((prev) => prev.map((x) => (marking.has(x.id) ? { ...x, read_at: now } : x)));
     // No toast here on purpose: a second tab (or the phone in a pocket) legitimately
     // marks these read first, and a scary red message for that is worse than silence.
     const { data, error } = await supabase
       .from("notifications")
       .update({ read_at: now })
+      .in("id", shownUnread)
       .is("read_at", null)
       .select("id");
     if (error || wroteNothing(data)) {

@@ -119,7 +119,8 @@ export type PushEnableResult =
  * PREVIOUS user of that device — RLS then blocks the conflict-update and the upsert
  * fails for a reason that has nothing to do with this user. Dropping the browser
  * subscription mints a fresh endpoint, and the orphaned row is pruned server-side
- * on the next send (lib/push.ts treats its 403/410 as "gone").
+ * on the next send: the dropped endpoint answers 404/410, which lib/push.ts treats as
+ * "gone" (a 403 never is - it can be provider-wide, see sendPush; 2026-10-27, hunt 8).
  */
 export async function enablePush(args: {
   supabase: SupabaseClient;

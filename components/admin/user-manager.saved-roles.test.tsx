@@ -69,9 +69,15 @@ const USERS: ManagedUser[] = [
 type Patch = { user_id: string; tenantRole: string; groupRoles: { group_id: string; role: string }[] };
 const patches: Patch[] = [];
 let reread: () => Promise<Response> = async () => new Response("{}", { status: 503 });
+// GETs answered in order before `reread` takes over: "แก้ไขสิทธิ์" reads the user
+// afresh before its dialog opens (2026-10-27, hunt 8).
+let gets: (() => Promise<Response>)[] = [];
+const listOf = (users: ManagedUser[]) => async () =>
+  new Response(JSON.stringify({ users }), { status: 200 });
 
 beforeEach(() => {
   patches.length = 0;
+  gets = [];
   t.success.mockClear();
   t.error.mockClear();
   vi.stubGlobal(
@@ -89,7 +95,7 @@ beforeEach(() => {
           { status: 200 }
         );
       }
-      return reread();
+      return (gets.shift() ?? reread)();
     })
   );
 });
@@ -115,31 +121,37 @@ function mount() {
 }
 
 describe("the user console keeps what it saved", () => {
-  it("a save whose re-read fails: the next edit opens from what was stored, and keeps it", async () => {
+  // Since hunt 8 the edit reads the user afresh and opens nothing when that read fails,
+  // so a failed re-read can no longer hand the old roles to the next save at all.
+  it("a save whose re-read fails: the next edit opens nothing rather than send the old roles back", async () => {
     reread = async () =>
       new Response(JSON.stringify({ error: "อ่านข้อมูลผู้ใช้ไม่สำเร็จ ลองใหม่อีกครั้ง" }), { status: 503 });
+    // the mount's re-read fails; the first edit's own read succeeds
+    gets = [reread, listOf(USERS)];
     mount();
 
     fireEvent.click(row("Seishin Member").getByRole("button", { name: "แก้ไขสิทธิ์" }));
+    await screen.findByRole("dialog");
     fireEvent.change(bandSelect(1), { target: { value: "artist_manager" } });
     save();
     await waitFor(() => expect(patches).toHaveLength(1));
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
 
     fireEvent.click(row("Seishin Member").getByRole("button", { name: "แก้ไขสิทธิ์" }));
-    expect(bandSelect(1).value).toBe("artist_manager");
-    save();
-    await waitFor(() => expect(patches).toHaveLength(2));
-    expect(patches[1].groupRoles).toContainEqual({ group_id: "g2", role: "artist_manager" });
+    await waitFor(() => expect(t.error).toHaveBeenCalledWith("อ่านสิทธิ์ล่าสุดของผู้ใช้นี้ไม่สำเร็จ", expect.anything()));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(patches).toHaveLength(1);
   });
 
   it("a re-read that throws after a good save is not a red toast", async () => {
     reread = async () => {
       throw new TypeError("Failed to fetch");
     };
+    gets = [reread, listOf(USERS)];
     mount();
 
     fireEvent.click(row("Seishin Member").getByRole("button", { name: "แก้ไขสิทธิ์" }));
+    await screen.findByRole("dialog");
     fireEvent.change(bandSelect(1), { target: { value: "member" } });
     save();
     await waitFor(() => expect(t.success).toHaveBeenCalledWith("อัปเดตสิทธิ์แล้ว"));

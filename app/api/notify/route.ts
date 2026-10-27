@@ -37,6 +37,14 @@ const FEEDBACK_KINDS = new Set<Kind>(["feedback_replied"]);
 // Who may announce each transition (step 3c): the right that can make it.
 const APPROVER_KINDS = new Set<Kind>(["event_approved", "event_rejected", "song_rejected", "song_cleared"]);
 const EDITOR_KINDS = new Set<Kind>(["event_submitted", "song_pending", "song_resubmitted"]);
+// The verdicts that contradict each other about one subject: the dedupe (step 4b) reads
+// each against the whole family, not its own kind alone.
+const EVENT_VERDICTS: Kind[] = ["event_approved", "event_rejected"];
+const SONG_VERDICTS: Kind[] = ["song_rejected", "song_cleared"];
+const VERDICT_FAMILY = new Map<Kind, Kind[]>([
+  ...EVENT_VERDICTS.map((k) => [k, EVENT_VERDICTS] as [Kind, Kind[]]),
+  ...SONG_VERDICTS.map((k) => [k, SONG_VERDICTS] as [Kind, Kind[]]),
+]);
 
 // CORS — the WEB app calls this same-origin (these headers are inert there). The
 // DESKTOP app calls it cross-origin with a Bearer token (no cookies), and the
@@ -434,15 +442,30 @@ export async function POST(req: Request) {
           ? meta.feedback_id
           : meta.event_id
   );
-  const { data: already, error: alreadyErr } = await admin
+  // A verdict is read against its OPPOSITE too (2026-10-27, hunt 8): approve → reject →
+  // approve inside the window skipped the third one for an Ar who still had the first ✅
+  // unread, so the newest row in their bell - and the last push - said "↩️ งานถูกตีกลับ" on
+  // an approved show. For these kinds only the recipient's NEWEST row of the family counts:
+  // it holds them back only when it already says this same thing.
+  const family = VERDICT_FAMILY.get(kind);
+  let dedupeQ = admin
     .from("notifications")
-    .select("user_id, read_at")
-    .eq("type", kind)
+    .select("user_id, read_at, type, created_at")
     .eq(subjectCol, subjectId)
     .gt("created_at", dedupeSince);
+  dedupeQ = family ? dedupeQ.in("type", family) : dedupeQ.eq("type", kind);
+  const { data: already, error: alreadyErr } = await dedupeQ;
   // unknown is not "nobody was told yet": that answer told everyone again
   if (alreadyErr) return readFailed(req, "notifications", alreadyErr);
-  const recent = already ?? [];
+  let recent = (already ?? []) as { user_id: string; read_at: string | null; type: string; created_at: string }[];
+  if (family) {
+    const newest = new Map<string, (typeof recent)[number]>();
+    for (const r of recent) {
+      const seen = newest.get(r.user_id);
+      if (!seen || Date.parse(r.created_at) > Date.parse(seen.created_at)) newest.set(r.user_id, r);
+    }
+    recent = Array.from(newest.values()).filter((r) => r.type === kind);
+  }
   const stillUnread = new Set(
     recent.filter((r) => !r.read_at).map((r) => r.user_id as string)
   );

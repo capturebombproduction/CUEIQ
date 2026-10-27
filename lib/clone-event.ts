@@ -2,6 +2,7 @@ import type { createClient } from "@/lib/supabase/client";
 import { hasLiveSession } from "@/lib/auth-session";
 import { formatClockOfDay, parseClockToSeconds } from "@/lib/time";
 import { aroundTheClock, stageAnchorSeconds } from "@/lib/day-order";
+import { hasLeft, leftOnKey } from "@/lib/member-status";
 
 type Client = ReturnType<typeof createClient>;
 type Row = Record<string, unknown>;
@@ -112,12 +113,23 @@ export async function cloneEvent(
       return { part, error, rows: ((data as Row[] | null) ?? []) as Row[] };
     })
   );
+  // The band's members, to leave out of the copy anyone who has left it (0054). 2026-10-27,
+  // hunt 8: the copy took the source's lineup as it was, so duplicating last week's show
+  // put a member who left in between onto the new one - and a lineup that holds a member
+  // keeps them on that show (lib/member-status.ts), on its sheets, Live and share page.
+  // Read with the rest, so a failure here also creates nothing.
+  const groupId = (src as Row).group_id as string | null | undefined;
+  const memberRead = groupId
+    ? await supabase.from("members").select("id, name, nickname, left_at").eq("group_id", groupId)
+    : { data: [], error: null };
+
   const readErrors = reads.filter((r) => r.error);
-  if (readErrors.length) {
+  if (readErrors.length || memberRead.error) {
     throw new Error(
-      `โหลดข้อมูล${sourceLabel}ไม่สำเร็จ (${readErrors
-        .map((r) => r.part.label)
-        .join(", ")}) — ยังไม่ได้สร้างงานใหม่`
+      `โหลดข้อมูล${sourceLabel}ไม่สำเร็จ (${[
+        ...readErrors.map((r) => r.part.label),
+        ...(memberRead.error ? ["สมาชิกวง"] : []),
+      ].join(", ")}) — ยังไม่ได้สร้างงานใหม่`
     );
   }
   // A real show or template has SOMETHING in it, so every list empty at once is
@@ -141,6 +153,33 @@ export async function cloneEvent(
   }
 
   const eventRow = buildEvent(src as Row);
+
+  // Leave out of the copy a member who left before its date - or at all, when the copy has
+  // no date yet (a template's, or one left blank): the same rule as membersForShow. Their
+  // Mic Map rows go too; those hold a name, not an id, so only a name no one still in the
+  // band answers to.
+  type Mem = { id: string; name: string | null; nickname: string | null; left_at?: string | null };
+  const roster = ((memberRead.data as Mem[] | null) ?? []) as Mem[];
+  const newDate = (eventRow.event_date as string | null | undefined) ?? null;
+  const gone = roster.filter((m) => {
+    if (!hasLeft(m)) return false;
+    const left = leftOnKey(m);
+    return !(newDate && left && newDate <= left);
+  });
+  if (gone.length) {
+    const goneIds = new Set(gone.map((m) => m.id));
+    const labels = (m: Mem) => [m.nickname?.trim(), m.name?.trim()].filter((s): s is string => !!s);
+    const stillHere = new Set(roster.filter((m) => !goneIds.has(m.id)).flatMap(labels));
+    const goneNames = new Set(gone.flatMap(labels).filter((s) => !stillHere.has(s)));
+    for (const r of reads) {
+      if (r.part.table === "event_members") {
+        r.rows = r.rows.filter((row) => !goneIds.has(row.member_id as string));
+      } else if (r.part.table === "mic_assignments") {
+        r.rows = r.rows.filter((row) => !goneNames.has(String(row.holder_name ?? "").trim()));
+      }
+    }
+  }
+
   if (shiftedBy) {
     for (const k of ["show_start_time", "hard_out_time"]) {
       if (k in eventRow) eventRow[k] = shiftClock(eventRow[k], shiftedBy);

@@ -62,6 +62,7 @@ import {
 } from "@/lib/mgmt-write";
 import { formatDuration, parseDurationToSeconds } from "@/lib/time";
 import { wroteNothing, noRowsMessage } from "@/lib/write-guard";
+import { friendlySongError as friendlyError, setCopyrightStatus } from "@/lib/copyright-triage";
 import { hasLiveSession } from "@/lib/auth-session";
 import {
   fetchServerNowMs,
@@ -200,19 +201,8 @@ function FilterChip({
   );
 }
 
-/** The songs guard (0018/0034) speaks English — say it in Thai, and say what to do. */
-function friendlyError(message?: string): string | undefined {
-  if (!message) return message;
-  if (message.includes("only an approver may change copyright_status"))
-    return "สถานะลิขสิทธิ์ของเพลงนี้ถูกเปลี่ยนจากหน้าอื่นแล้ว — โหลดหน้านี้ใหม่แล้วลองอีกครั้ง (เปลี่ยนสถานะได้เฉพาะทีมค่าย/แอดมิน)";
-  if (message.includes("only an editor may change song details"))
-    return "แก้ข้อมูลเพลงได้เฉพาะแอดมิน/Ar ของวงนี้";
-  // 0053: the band moved (on another device) and this file's key names the old band, or
-  // a band move met a file attached elsewhere since this list loaded
-  if (message.includes("song audio belongs to another band"))
-    return "ไฟล์เสียงกับวงของเพลงนี้ไม่ตรงกัน (อาจมีคนย้ายวงหรือแนบไฟล์จากเครื่องอื่น) — โหลดหน้านี้ใหม่ ลบไฟล์เสียงก่อนย้ายวง แล้วอัปไฟล์ใหม่";
-  return message;
-}
+// friendlyError (the songs guard in Thai) lives in lib/copyright-triage.ts since 2026-10-27
+// (hunt 8), shared with the event page's triage panel.
 
 /** The file name to show for a song: the file it plays now (audio_name), else the
  *  name it was created with. Every replace path writes only audio_name, so showing
@@ -1039,21 +1029,21 @@ export function SongLibrary({
     setSongs((prev) =>
       prev.map((s) => (s.id === song.id ? { ...s, copyright_status: status } : s))
     );
-    const { data, error } = await supabase
-      .from("songs")
-      .update({ copyright_status: status })
-      .eq("id", song.id)
-      .select("id");
-    if (error || wroteNothing(data)) {
-      toast.error(
-        "เปลี่ยนสถานะไม่สำเร็จ",
-        { description: error ? error.message : await noRowsMessage() }
-      );
+    // Only on the song as this list showed it - status, title and file (2026-10-27, hunt 8):
+    // see lib/copyright-triage.ts.
+    const out = await setCopyrightStatus(supabase, song, status);
+    if (out.kind === "moved") {
+      toast.error(out.title, { description: out.description });
+      setSongs((prev) => prev.map((s) => (s.id === song.id ? { ...s, ...out.now } : s)));
+    } else if (out.kind === "failed") {
+      toast.error("เปลี่ยนสถานะไม่สำเร็จ", { description: out.description });
       setSongs((prev) =>
         prev.map((s) =>
           s.id === song.id ? { ...s, copyright_status: song.copyright_status } : s
         )
       );
+    } else if (out.kind === "already") {
+      // another approver got there first and told the band - not twice
     } else if (status === "rejected") {
       notify("song_rejected", { songId: song.id });
     } else if (status === "cleared") {

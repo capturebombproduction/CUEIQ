@@ -151,7 +151,40 @@ export function UserManager({
     setOpen(true);
   }
 
-  function openEdit(u: ManagedUser) {
+  // The user whose roles are being read before their edit dialog opens.
+  const [opening, setOpening] = useState<string | null>(null);
+
+  /**
+   * Open the edit from the roles the user has NOW (2026-10-27, hunt 8). The list is read
+   * once, when the console opens, and the save replaces a user's band roles wholesale -
+   * so a console left open since the morning sent back the bands it had loaded, and a band
+   * another admin had given that user in between was taken away under "อัปเดตสิทธิ์แล้ว".
+   * A re-read that fails opens nothing: the stale list is exactly what must not be saved.
+   */
+  async function openEdit(listed: ManagedUser) {
+    if (opening) return;
+    setOpening(listed.user_id);
+    const seq = savedSeq.current;
+    let list: ManagedUser[] | null = null;
+    try {
+      const res = await fetch("/api/admin/users");
+      if (res.ok) list = ((await res.json()) as { users?: ManagedUser[] }).users ?? null;
+    } catch {
+      /* said below */
+    }
+    setOpening(null);
+    if (!list) {
+      toast.error("อ่านสิทธิ์ล่าสุดของผู้ใช้นี้ไม่สำเร็จ", {
+        description: "ยังไม่ได้เปิดหน้าแก้ไข — ลองกดแก้ไขอีกครั้ง",
+      });
+      return;
+    }
+    if (seq === savedSeq.current) setUsers(list);
+    const u = list.find((x) => x.user_id === listed.user_id);
+    if (!u) {
+      toast.error("ไม่พบผู้ใช้นี้แล้ว", { description: "อาจถูกลบจากเครื่องอื่น" });
+      return;
+    }
     setEditing(u);
     const bandRoles: Record<string, BandRole> = {};
     for (const gr of u.groupRoles) bandRoles[gr.group_id] = gr.role;
@@ -419,9 +452,10 @@ export function UserManager({
                         size="icon"
                         title="แก้ไขสิทธิ์"
                         aria-label="แก้ไขสิทธิ์"
+                        disabled={opening !== null}
                         onClick={() => openEdit(u)}
                       >
-                        <Pencil aria-hidden />
+                        {opening === u.user_id ? <Loader2 className="animate-spin" aria-hidden /> : <Pencil aria-hidden />}
                       </Button>
                     )}
                     {(!isMaster || u.user_id === currentUserId) && (

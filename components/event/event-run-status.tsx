@@ -155,7 +155,12 @@ export function EventRunStatusCard({
   const lastDone = doneRows.length ? doneRows[doneRows.length - 1] : null;
   const drift = liveRow?.offset_min ?? lastDone?.offset_min ?? 0;
   const started = ordered.some((r) => r.status !== "pending");
-  const allDone = started && !liveRow;
+  // The show is over only when nothing is left to play: between acts (one ended with the
+  // board's end-only "จบ" before a planned gap, or an act still waiting ABOVE the one that
+  // ended) the card said "จบงานแล้ว" to every band still to go on (2026-10-27, hunt 8).
+  const firstPending = ordered.find((r) => r.status === "pending") ?? null;
+  const allDone = started && !liveRow && !firstPending;
+  const betweenActs = started && !liveRow && firstPending != null;
 
   // This band's own slot(s) in the festival order — EVERY row linked to this event.
   // run_sequence has no unique index on linked_event_id, and a band booked for two
@@ -363,6 +368,21 @@ export function EventRunStatusCard({
           <span className="inline-flex items-center gap-1.5">
             <CheckCircle2 aria-hidden className="h-4 w-4 text-success-ink" />
             จบงานแล้ว
+          </span>
+        ) : betweenActs ? (
+          <span data-cueiq-between>
+            ถัดไป:{" "}
+            <span className="font-medium text-foreground">
+              {firstPending!.title || "(ไม่มีชื่อ)"}
+            </span>
+            {projectedStartSec(firstPending!) != null && (
+              <>
+                {" · คาดเริ่ม "}
+                <b className="num text-foreground">
+                  {formatClockOfDay(projectedStartSec(firstPending!)!)}
+                </b>
+              </>
+            )}
           </span>
         ) : liveRow ? (
           <>

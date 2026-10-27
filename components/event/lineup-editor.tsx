@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
-import { Users, CheckCheck, X } from "lucide-react";
+import { Users, CheckCheck, LogOut, X } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import {
   OFFLINE_QUEUED_MESSAGE,
@@ -13,6 +13,8 @@ import {
 import { noRowsMessage, wroteNothing, writeErrorText } from "@/lib/write-guard";
 import { hasLiveSession } from "@/lib/auth-session";
 import { Button } from "@/components/ui/button";
+import { badgeVariants } from "@/components/ui/badge";
+import { hasLeft } from "@/lib/member-status";
 import { useConfirm } from "@/components/ui/confirm-dialog";
 import { cn } from "@/lib/utils";
 import { SaveStatus, useSaveSignal } from "@/components/event/save-status";
@@ -350,7 +352,17 @@ export function LineupEditor({
                 {m.mic_number ?? "—"}
               </span>
               <span className="min-w-0 flex-1">
-                <span className="block truncate text-[15px] font-semibold">{m.nickname || m.name}</span>
+                <span className="flex min-w-0 items-center gap-2">
+                  <span className="block truncate text-[15px] font-semibold">{m.nickname || m.name}</span>
+                  {/* 2026-10-27, hunt 8: a member who left stays on a lineup that holds them
+                      (a farewell show) and on shows dated before they left - but nothing here
+                      said so, and a show still to come kept a leaver nobody noticed */}
+                  {hasLeft(m) && (
+                    <span className={cn(badgeVariants({ variant: "secondary" }), "flex-none")}>
+                      <LogOut aria-hidden /> ออกจากวงแล้ว
+                    </span>
+                  )}
+                </span>
                 {m.nickname && (
                   <span className="block truncate text-[12px] text-muted-foreground">{m.name}</span>
                 )}

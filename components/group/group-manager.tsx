@@ -9,6 +9,7 @@ import { removeEventAudio } from "@/lib/audio-remote";
 import { noRowsMessage, writeErrorText, wroteNothing } from "@/lib/write-guard";
 import { hasLiveSession } from "@/lib/auth-session";
 import { hasLeft, leftOnKey } from "@/lib/member-status";
+import { bkkTodayKey } from "@/lib/time";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
@@ -316,17 +317,38 @@ export function GroupManager({
    *  check-ins - both go with a delete (ON DELETE CASCADE on members). */
   async function memberHistory(id: string) {
     // A failed count is not "used nowhere": say so (hunt 7, as the song delete does).
+    // The shows come with their date and name (2026-10-27, hunt 8): leaving keeps a member on
+    // every lineup that already holds them, upcoming shows too (a farewell show is real), and
+    // the dialog called all of them "งานที่ผ่านมา" - next Saturday's show still had them on
+    // its lineup, run sheet and share page with nobody told.
     const [shows, attendance] = await Promise.all([
-      supabase.from("event_members").select("id", { count: "exact", head: true }).eq("member_id", id),
+      supabase
+        .from("event_members")
+        .select("event_id, events(name, event_date)", { count: "exact" })
+        .eq("member_id", id),
       supabase.from("practice_attendance").select("id", { count: "exact", head: true }).eq("member_id", id),
     ]).catch(() => [null, null] as const);
     let unknown = !shows || !attendance || !!shows.error || !!attendance.error;
     // Nothing found is only nothing with a session behind the read: sent as anon (a refresh
     // that just failed), RLS counts 0 with no error (ตาที่ 3 on hunt 7; lib/write-guard.ts).
     if (!unknown && !shows!.count && !attendance!.count && (await hasLiveSession()) !== true) unknown = true;
+    type ShowRow = { events: { name: string | null; event_date: string | null } | null };
+    const rows = unknown ? [] : ((shows!.data ?? []) as unknown as ShowRow[]);
+    const today = bkkTodayKey();
+    // upcoming = after today (Bangkok) or not dated yet; a show we can't see the date of is
+    // counted with the past ones
+    const upcoming = rows
+      .filter((r) => r.events && (!r.events.event_date || r.events.event_date > today))
+      .map((r) => r.events!);
+    const showCount = unknown ? 0 : shows!.count ?? rows.length;
     return {
       unknown,
-      showCount: unknown ? 0 : shows!.count ?? 0,
+      showCount,
+      pastShowCount: Math.max(0, showCount - upcoming.length),
+      upcomingShowCount: upcoming.length,
+      upcomingNames: upcoming
+        .sort((a, b) => (a.event_date ?? "9999").localeCompare(b.event_date ?? "9999"))
+        .map((e) => e.name?.trim() || "ไม่มีชื่องาน"),
       attendanceCount: unknown ? 0 : attendance!.count ?? 0,
     };
   }
@@ -347,14 +369,22 @@ export function GroupManager({
     const kept = h.unknown
       ? "ชื่อยังอยู่ในไลน์อัปของงานที่ผ่านมาและประวัติเช็คชื่อซ้อม"
       : [
-          h.showCount > 0 ? `ชื่อยังอยู่ในไลน์อัปของ ${h.showCount} งานที่ผ่านมา` : null,
+          h.pastShowCount > 0 ? `ชื่อยังอยู่ในไลน์อัปของ ${h.pastShowCount} งานที่ผ่านมา` : null,
           h.attendanceCount > 0 ? `ประวัติเช็คชื่อซ้อม ${h.attendanceCount} ครั้งยังอยู่` : null,
         ]
           .filter(Boolean)
           .join(" และ");
+    // the shows still to come that hold them stay as they are (a farewell show is real) -
+    // say which, so a lineup they won't play is taken off by hand, not found on show day
+    const shown = h.upcomingNames.slice(0, 3).join(", ");
+    const more = h.upcomingShowCount > 3 ? ` และอีก ${h.upcomingShowCount - 3} งาน` : "";
+    const upcoming =
+      !h.unknown && h.upcomingShowCount > 0
+        ? ` ยังอยู่ในไลน์อัปของ ${h.upcomingShowCount} งานที่จะถึง (${shown}${more}) — ถ้าไม่ขึ้นแล้ว เอาออกที่แท็บไลน์อัปของงานนั้น`
+        : "";
     const ok = await confirm({
       title: `ให้ ${who} ออกจากวง?`,
-      description: `${kept} — แต่จะไม่ขึ้นให้เลือกในงานใหม่ ห้องซ้อม และหน้าภาพรวม กดกลับเข้าวงได้ทุกเมื่อที่ "ออกจากวงแล้ว" ด้านล่าง`,
+      description: `${kept ? `${kept} —` : ""}${upcoming}${upcoming ? " —" : ""} แต่จะไม่ขึ้นให้เลือกในงานใหม่ ห้องซ้อม และหน้าภาพรวม กดกลับเข้าวงได้ทุกเมื่อที่ "ออกจากวงแล้ว" ด้านล่าง`.trim(),
       confirmText: "ออกจากวง",
     });
     if (ok) await setLeft(id, new Date().toISOString());
@@ -407,7 +437,7 @@ export function GroupManager({
     // the next load - and in the Lineup and the Mic Map (2026-10-27).
     const { data, error } = await supabase.from("members").delete().eq("id", id).select("id");
     if (error || wroteNothing(data)) {
-      toast.error("ลบไม่สำเร็จ", { description: error?.message ?? (await noRowsMessage()) });
+      toast.error("ลบไม่สำเร็จ", { description: writeErrorText(error) ?? (await noRowsMessage()) });
       setMembers(snap);
     }
   }

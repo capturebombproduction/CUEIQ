@@ -5,7 +5,7 @@ import { ShieldCheck, Check, Ban } from "lucide-react";
 import { toast } from "sonner";
 import { createClient } from "@/lib/supabase/client";
 import { notify } from "@/lib/notify-client";
-import { wroteNothing, noRowsMessage } from "@/lib/write-guard";
+import { setCopyrightStatus } from "@/lib/copyright-triage";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { MetaIcon } from "@/components/status-icon";
@@ -39,19 +39,21 @@ export function EventCopyrightPanel({
     setSongs((prev) =>
       prev.map((s) => (s.id === song.id ? { ...s, copyright_status: status } : s))
     );
-    const { data, error } = await supabase
-      .from("songs")
-      .update({ copyright_status: status })
-      .eq("id", song.id)
-      .select("id");
-    // No error and no row = the flip never landed (anon after a failed token
-    // refresh, or the song was already re-triaged elsewhere) — notify() would then
-    // tell the band a status that never actually changed. See lib/write-guard.ts.
-    if (error || wroteNothing(data)) {
-      toast.error(
-        "เปลี่ยนสถานะไม่สำเร็จ",
-        { description: error ? error.message : await noRowsMessage() }
+    // Only on the song as this panel showed it (2026-10-27, hunt 8): see lib/copyright-triage.ts.
+    const out = await setCopyrightStatus(supabase, song, status);
+    if (out.kind === "moved") {
+      toast.error(out.title, { description: out.description });
+      setSongs((prev) =>
+        prev.map((s) =>
+          s.id === song.id
+            ? { ...s, copyright_status: out.now.copyright_status, title: out.now.title }
+            : s
+        )
       );
+      return;
+    }
+    if (out.kind === "failed") {
+      toast.error("เปลี่ยนสถานะไม่สำเร็จ", { description: out.description });
       setSongs((prev) =>
         prev.map((s) =>
           s.id === song.id ? { ...s, copyright_status: song.copyright_status } : s
@@ -59,6 +61,8 @@ export function EventCopyrightPanel({
       );
       return;
     }
+    // "already": another approver got there first and told the band - not twice
+    if (out.kind !== "done") return;
     if (status === "rejected") notify("song_rejected", { songId: song.id });
     else if (status === "cleared") notify("song_cleared", { songId: song.id });
   }

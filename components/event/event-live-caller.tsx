@@ -1040,8 +1040,23 @@ export function EventLiveCaller({
   // End the live row (logs its actual_end + its start-offset as late/early) and start
   // the next pending one at the same instant, recomputing drift from the real clock.
   function next() {
+    advance(true);
+  }
+
+  // "จบ" alone (2026-10-27, hunt 8): end the live act and start NOTHING - for a planned gap.
+  // Every real run order has them (12:50 → 14:00, 16:20 → 16:40, 18:15 → 19:00), and with
+  // "จบ + ต่อไป" as the only key the caller had two wrong choices: press at 12:50 and put
+  // the 14:00 act on stage 70 min early (drift "เร็ว 70 น." on every device, the band's own
+  // page "กำลังเล่น"), or wait and leave the act that left the stage live and "เกิน" for
+  // 70 min, logged as an overrun. The next act then goes on with "เริ่มลำดับถัดไป" (start()),
+  // its drift read from the real clock. The same write as next()'s first one, same path.
+  function endOnly() {
+    advance(false);
+  }
+
+  function advance(startNext: boolean) {
     if (!liveRow) {
-      start();
+      if (startNext) start();
       return;
     }
     if (inFlightRef.current) return;
@@ -1057,7 +1072,7 @@ export function EventLiveCaller({
         expect: { status: "live" },
       },
     ];
-    if (nextPending) {
+    if (startNext && nextPending) {
       const p = parseClockToSeconds(nextPending.planned_start);
       const d =
         p != null
@@ -1348,6 +1363,18 @@ export function EventLiveCaller({
   // count down 40 min, not read "ถึงคิวแล้ว" a day early.
   const nextCountdown =
     nextProjSec != null ? normSec(nextProjSec - secOfDay(nowDate)) : null;
+
+  // A planned gap after the live act: the next act is planned to start later than this one
+  // is planned to end (folded, so a 23:50 end and a 00:10 start are a gap). Only then is
+  // the end-only "จบ" key offered beside "จบ + ต่อไป" - see endOnly().
+  const liveEndSec = liveRow ? parseClockToSeconds(liveRow.planned_end) : null;
+  const nextStartSec = nextPending ? parseClockToSeconds(nextPending.planned_start) : null;
+  const plannedGap =
+    liveEndSec != null && nextStartSec != null && normSec(nextStartSec - liveEndSec) > 0;
+  // Between acts (one ended with "จบ", or an act still waits ABOVE the one that ended):
+  // the show is not over while any row is still pending (2026-10-27, hunt 8).
+  const betweenActs = started && !liveRow && firstPending != null;
+  const firstPendingProjSec = firstPending ? projectedStartSec(firstPending) : null;
 
   const driftTone =
     drift === 0 ? "ok" : drift > 0 ? "late" : "early";
@@ -1658,7 +1685,19 @@ export function EventLiveCaller({
                 </>
               ) : (
                 <p className="flex items-center justify-center gap-2 py-10 text-[15px] text-muted-foreground">
-                  {started ? (
+                  {betweenActs ? (
+                    <span data-cueiq-between>
+                      ถัดไป: {firstPending!.title || "(ไม่มีชื่อ)"}
+                      {firstPendingProjSec != null && (
+                        <>
+                          {" · คาดเริ่ม "}
+                          <b className="num text-[17px] text-foreground">
+                            {formatClockOfDay(firstPendingProjSec)}
+                          </b>
+                        </>
+                      )}
+                    </span>
+                  ) : started ? (
                     <>
                       <CheckCircle2 className="h-5 w-5 text-success-ink" aria-hidden />
                       จบงานแล้ว
@@ -1711,7 +1750,8 @@ export function EventLiveCaller({
                   </Button>
                 </div>
                 <p className="text-[12.5px] leading-relaxed text-muted-foreground">
-                  “จบ + ต่อไป” = ปิดลำดับนี้ (บันทึกเวลาจริง) แล้วเริ่มลำดับถัดไปทันที · ±นาที =
+                  “จบ + ต่อไป” = ปิดลำดับนี้ (บันทึกเวลาจริง) แล้วเริ่มลำดับถัดไปทันที ·{" "}
+                  {liveRow && plannedGap && "“จบ” = ปิดลำดับนี้อย่างเดียว ถ้ามีช่วงพักก่อนลำดับถัดไป · "}±นาที =
                   เลื่อนคิวข้างหน้า · ดึง buffer = ร่นเวลาให้ทันเมื่อช้า
                 </p>
               </section>
@@ -1993,6 +2033,23 @@ export function EventLiveCaller({
               <span className="th text-[11px] font-medium">นาที</span>
             </Button>
             {/* min-w-0: the subtitle truncates instead of pushing +1 off a 390 px screen */}
+            {/* "จบ" alone - only before a planned gap (see endOnly()). A secondary dock key
+                beside "จบ + ต่อไป", which stays exactly where it was. A held Enter on it
+                clicks once: Chromium re-clicks a focused button on every auto-repeat. */}
+            {liveRow && plannedGap && (
+              <Button
+                variant="dock"
+                aria-label={`จบ ${liveRow.title || "(ไม่มีชื่อ)"} (ยังไม่เริ่มลำดับถัดไป)`}
+                onClick={endOnly}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && e.repeat) e.preventDefault();
+                }}
+                disabled={busy}
+              >
+                <Flag aria-hidden className="h-5 w-5" />
+                <span className="th text-[11px] font-medium">จบ</span>
+              </Button>
+            )}
             {liveRow ? (
               <Button variant="next" className="min-w-0 flex-1" onClick={next} disabled={busy}>
                 <span className="min-w-0 text-left leading-none">

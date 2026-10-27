@@ -14,7 +14,7 @@ import { hasCache, isOffline, readCache, readCacheKeys, writeCache } from "~/dat
 import { hasLiveSession } from "@/lib/auth-session";
 import { listMgmtConflicts, pendingMgmtOps } from "~/data/mgmt-outbox";
 import type { WorkspaceData } from "~/data/workspace";
-import { membersForShow } from "@/lib/member-status";
+import { currentMembers, membersForShow } from "@/lib/member-status";
 import type {
   EventRow,
   Group,
@@ -150,7 +150,10 @@ async function withPendingOverlay(
       schedule: [],
       setlist: [],
       micMap: [],
-      members: sibling?.members ?? [],
+      // today's roster (2026-10-27, hunt 8): the sibling can be the band's practice room, which
+      // keeps everyone (its journal names them), or an older show that still holds a member
+      // who has left since - a show made now starts with the band as it is now
+      members: currentMembers(sibling?.members ?? []),
       songs: sibling?.songs ?? [],
       lineup: [],
       role: ws?.membership?.role ?? null,
