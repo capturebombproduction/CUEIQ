@@ -141,6 +141,25 @@ describe("a file this device's player cannot open", () => {
     expect(pointedAtNewFile()).toBe(false);
   });
 
+  // ตาที่ 3: a good file picked first, then an unopenable one - the dialog showed the good one
+  // again (name, length) but the pick had been dropped to nothing, so บันทึก uploaded no file.
+  it("picked after a good file, it gives the good one back: บันทึก uploads the good file", async () => {
+    renderLib();
+    const dialog = await openEditDialog();
+    const picker = dialog.querySelector('input[type="file"]') as HTMLInputElement;
+    fireEvent.change(picker, { target: { files: [new File(["wav"], "take-2.wav", { type: "audio/wav" })] } });
+    await waitFor(() => expect(h.toast.success).toHaveBeenCalled());
+    h.detect = () =>
+      Promise.reject(Object.assign(new Error("เปิดไฟล์เสียงไม่สำเร็จ — ฟอร์แมตอาจไม่รองรับ"), { cueiqUnopenable: true }));
+    fireEvent.change(picker, { target: { files: [new File(["wma"], "take-3.wma", { type: "audio/x-ms-wma" })] } });
+    await waitFor(() =>
+      expect(h.toast.error).toHaveBeenCalledWith("ใช้ไฟล์นี้ไม่ได้", { description: UNOPENABLE_AUDIO_MESSAGE })
+    );
+    fireEvent.click(within(dialog).getByRole("button", { name: "บันทึก" }));
+    await waitFor(() => expect(h.uploads).toHaveLength(1));
+    expect(h.uploads[0]).toMatch(/.wav$/);
+  });
+
   it("is refused by the row upload: the song keeps its take and the fresh object is taken back", async () => {
     h.open = async () => UNOPENABLE_AUDIO_MESSAGE;
     const { container } = renderLib();

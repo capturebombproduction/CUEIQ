@@ -484,6 +484,11 @@ export function LiveMode({
   // Per row, which pick is the newest: two picks on one row raced, and the OLDER one's slow
   // upload, finishing last, linked the row back to its song on every device (hunt 6).
   const pickSeqRef = useRef<Record<string, number>>({});
+  // …and which pick is the newest to ASK the player (audioOpenProblem, before pickSeqRef is
+  // stamped): a slow answer for an earlier file landing after a quick one for a later file
+  // would otherwise take the row over (2026-10-27, hunt 7, ตาที่ 3). Kept apart from pickSeqRef
+  // so a REFUSED file never outranks an earlier good pick still uploading.
+  const pickAskSeqRef = useRef<Record<string, number>>({});
   const [audioBusy, setAudioBusy] = useState<Record<string, "up" | "down">>({});
   // which download-effect run set an item's busy flag — so a superseded run can
   // still clear its own flag without clobbering a newer run's active download
@@ -2912,7 +2917,11 @@ export function LiveMode({
     // the row's master and the row was silent on every device (2026-10-27, hunt 7). Asked
     // before anything is held, uploaded or linked - the row keeps what it had - and only of
     // this new file: nothing sounding waits on it. No answer in 3 s is not a refusal.
+    const ask = (pickAskSeqRef.current[itemId] ?? 0) + 1;
+    pickAskSeqRef.current[itemId] = ask;
     const cannotOpen = await audioOpenProblem(file, 3_000);
+    // a later file picked for this row while this one was being asked about is the pick
+    if (pickAskSeqRef.current[itemId] !== ask) return;
     if (cannotOpen) {
       toast.error("ใช้ไฟล์นี้ไม่ได้", { description: cannotOpen });
       return;
@@ -2922,8 +2931,10 @@ export function LiveMode({
     const item = itemsRef.current.find((it) => it.id === itemId);
     if (!item) return;
 
-    // instant local playback - the old URL may still be sounding (see retireUrl)
-    if (audioUrls[itemId]) retireUrl(itemId, audioUrls[itemId]);
+    // instant local playback - the old URL may still be sounding (see retireUrl). Read from
+    // the ref: a download that landed during the wait above is not in this render's closure.
+    const shownUrl = audioUrlsRef.current[itemId];
+    if (shownUrl) retireUrl(itemId, shownUrl);
     // before the URL exists: a download of the row's OLD master landing after this pick
     // minted itself over it and revoked the pick (2026-10-27) - see pickedRef. The version it
     // holds off is the one the row wants now: the master the pick replaces.

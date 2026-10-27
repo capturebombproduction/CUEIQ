@@ -153,7 +153,10 @@ describe("LiveMode · a viewer that missed its run's reset (hunt 7)", () => {
 });
 
 describe("LiveMode · a file picked in Live links its row for real (hunt 7)", () => {
-  async function pick(linkAnswer: (c: RecordedCall) => ReturnType<typeof ok>) {
+  async function pick(
+    linkAnswer: (c: RecordedCall) => ReturnType<typeof ok>,
+    files: File[] = [new File(["x"], "mine.wav", { type: "audio/wav" })]
+  ) {
     supa = makeSupabaseFake({
       session: makeSession(),
       script: {
@@ -184,9 +187,11 @@ describe("LiveMode · a file picked in Live links its row for real (hunt 7)", ()
       fireEvent.click(screen.getAllByTitle("โหลดไฟล์เพลง (อัปโหลดขึ้นคลาวด์)")[0]);
     });
     const input = document.querySelector('input[type="file"]') as HTMLInputElement;
-    await act(async () => {
-      fireEvent.change(input, { target: { files: [new File(["x"], "mine.wav", { type: "audio/wav" })] } });
-    });
+    for (const f of files) {
+      await act(async () => {
+        fireEvent.change(input, { target: { files: [f] } });
+      });
+    }
     await flush();
     const said = (spy: typeof success) => spy.mock.calls.map((c) => String(c[0]));
     return { success: said(success), error: said(error), errorCalls: error.mock.calls };
@@ -207,6 +212,28 @@ describe("LiveMode · a file picked in Live links its row for real (hunt 7)", ()
     const wrote = supa.calls.filter((c) => c.verb !== "select").map((c) => `${c.table}.${c.verb}`);
     expect(wrote.filter((w) => w.startsWith("songs.") || w.startsWith("setlist_items."))).toEqual([]);
     expect(URL.createObjectURL).not.toHaveBeenCalled(); // the row keeps what it had
+  });
+
+  // ตาที่ 3 on hunt 7: the open check is an await BEFORE the pick is stamped, so a slow answer
+  // for the first file, landing after a quick one for the second, took the row back.
+  it("two files picked for one row: a slow answer for the first does not outrank the second", async () => {
+    let answerFirst: (v: string | null) => void = () => {};
+    vi.mocked(audioOpenProblem)
+      .mockImplementationOnce(() => new Promise((r) => (answerFirst = r)))
+      .mockResolvedValueOnce(null);
+    await pick(() => ok([{ id: "item-1" }]), [
+      new File(["a"], "first.wav", { type: "audio/wav" }),
+      new File(["b"], "second.wav", { type: "audio/wav" }),
+    ]);
+    await act(async () => {
+      answerFirst(null);
+    });
+    await flush();
+    // only the second file is ever held (the play URL and the cache copy are both its)
+    const held = vi.mocked(URL.createObjectURL).mock.calls.map((c) => (c[0] as File).name);
+    expect(held.length).toBeGreaterThan(0);
+    expect(held.every((n) => n === "second.wav")).toBe(true);
+    expect(supa.calls.filter((c) => c.table === "songs" && c.verb === "insert")).toHaveLength(1);
   });
 
   it("a link that landed tells the approvers the temporary song waits", async () => {

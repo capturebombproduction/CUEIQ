@@ -74,7 +74,10 @@ describe("Artists: a delete that touched no row", () => {
     const db = makeSupabaseFake({ script: { members: (c) => (c.verb === "delete" ? matchedNothing(c) : ok([])) } });
     mount(db);
     fireEvent.click(screen.getByRole("button", { name: "ลบสมาชิก" }));
-    fireEvent.click(await screen.findByRole("button", { name: /^ลบ$/ }));
+    // as anon the usage counts prove nothing, so the prompt asks for the name (hunt 7)
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.change(within(dialog).getByLabelText("พิมพ์ Yuki เพื่อยืนยัน"), { target: { value: "Yuki" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "ลบสมาชิก" }));
     await waitFor(() => expect(toast.error).toHaveBeenCalled());
     expect(db.callsTo("members", "delete")[0].selectAfterWrite).toBe(true);
     expect(toast.error.mock.calls[0][0]).toBe("ลบไม่สำเร็จ");

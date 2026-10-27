@@ -1,14 +1,14 @@
-// Deleting a roster member, and what goes with her (2026-10-27, hunt 7).
+// Deleting a roster member, and what goes with them (2026-10-27, hunt 7).
 //
 // event_members and practice_attendance are ON DELETE CASCADE on members (prod
-// pg_constraint), so deleting a member who graduated took her out of the lineup of every
-// show she ever played - past run sheets and the share page too - and out of the practice
+// pg_constraint), so deleting a member who graduated took them out of the lineup of every
+// show they ever played - past run sheets and the share page too - and out of the practice
 // attendance history. The prompt said only "“Yuki” จะถูกลบออกจากวง", one tap, no count.
-// It now counts both first, says what goes, and asks for her name typed when anything
+// It now counts both first, says what goes, and asks for their name typed when anything
 // does; a count that failed says it could not check (as the song delete does).
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { render, screen, fireEvent, cleanup, within } from "@testing-library/react";
-import { fail, makeSupabaseFake, ok, type SupabaseFake } from "@/test/fakes/supabase";
+import { fail, makeSession, makeSupabaseFake, ok, type SupabaseFake } from "@/test/fakes/supabase";
 import { makePerms } from "@/lib/permissions";
 import type { Group, Member } from "@/lib/types";
 
@@ -79,7 +79,9 @@ describe("Artists: deleting a member says what goes with her", () => {
   });
 
   it("a member in no show and no check-in keeps the plain one-tap prompt", async () => {
+    // zero is believed only with a session behind the reads (ตาที่ 3): this one has it
     const db = makeSupabaseFake({
+      session: makeSession(),
       script: {
         event_members: ok([], { count: 0 }),
         practice_attendance: ok([], { count: 0 }),
@@ -91,5 +93,21 @@ describe("Artists: deleting a member says what goes with her", () => {
     const dialog = await screen.findByRole("dialog");
     expect(within(dialog).getByText("“Yuki” จะถูกลบออกจากวง")).toBeTruthy();
     expect(within(dialog).queryByLabelText("พิมพ์ Yuki เพื่อยืนยัน")).toBeNull();
+  });
+
+  it("zero counts read without a session are not believed: it says it could not check", async () => {
+    // ตาที่ 3 on hunt 7: as anon RLS counts 0 with no error, and that read as "in no show"
+    const db = makeSupabaseFake({
+      script: {
+        event_members: ok([], { count: 0 }),
+        practice_attendance: ok([], { count: 0 }),
+        members: ok([{ id: "m1" }]),
+      },
+    });
+    mount(db);
+    fireEvent.click(screen.getByRole("button", { name: "ลบสมาชิก" }));
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText(/ตรวจไม่ได้ว่าอยู่ในไลน์อัปงานไหนบ้าง/)).toBeTruthy();
+    expect(within(dialog).getByLabelText("พิมพ์ Yuki เพื่อยืนยัน")).toBeTruthy();
   });
 });

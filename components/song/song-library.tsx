@@ -804,6 +804,7 @@ export function SongLibrary({
       return;
     }
     const nameBefore = form.file_name;
+    const fileBefore = pickedFile; // a good file picked earlier in this dialog comes back with its name
     setPickedFile(file); // keep the File — uploaded to R2 on save
     setForm((f) => ({ ...f, file_name: file.name }));
     setDetecting(true);
@@ -816,9 +817,11 @@ export function SongLibrary({
     } catch (e) {
       // The player could not OPEN it (not merely read its length): it stayed picked and บันทึก
       // made it the master - the old take deleted, every device silent on it (2026-10-27,
-      // hunt 7). Drop the pick (unless a newer one replaced it meanwhile).
+      // hunt 7). Drop the pick (unless a newer one replaced it meanwhile) and give back the one
+      // before it: dropped to null, the dialog showed the earlier file's name and length and
+      // บันทึก saved them with no file at all (ตาที่ 3).
       if (isUnopenableAudioError(e)) {
-        setPickedFile((cur) => (cur === file ? null : cur));
+        setPickedFile((cur) => (cur === file ? fileBefore : cur));
         setForm((f) => (f.file_name === file.name ? { ...f, file_name: nameBefore } : f));
         if (fileRef.current) fileRef.current.value = "";
         toast.error("ใช้ไฟล์นี้ไม่ได้", { description: UNOPENABLE_AUDIO_MESSAGE });
@@ -982,7 +985,12 @@ export function SongLibrary({
         .eq("song_id", song.id),
       supabase.from("practice_songs").select("event_id").eq("song_id", song.id),
     ]);
-    const usageError = usage.error || practice.error;
+    let usageError: unknown = usage.error || practice.error;
+    // used nowhere is only true with a session behind the reads: as anon, RLS counts 0 with
+    // no error and the prompt said nothing (ตาที่ 3 on hunt 7; lib/write-guard.ts)
+    if (!usageError && !usage.count && !(practice.data ?? []).length && (await hasLiveSession()) !== true) {
+      usageError = true;
+    }
     const used = usage.count ?? 0;
     const rooms = new Set(
       ((practice.data ?? []) as { event_id?: string | null }[]).map((r) => r.event_id ?? "")

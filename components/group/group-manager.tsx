@@ -7,6 +7,7 @@ import { BulkAddMembers } from "@/components/group/bulk-add-members";
 import { createClient } from "@/lib/supabase/client";
 import { removeEventAudio } from "@/lib/audio-remote";
 import { noRowsMessage, wroteNothing } from "@/lib/write-guard";
+import { hasLiveSession } from "@/lib/auth-session";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
@@ -318,7 +319,10 @@ export function GroupManager({
       supabase.from("event_members").select("id", { count: "exact", head: true }).eq("member_id", id),
       supabase.from("practice_attendance").select("id", { count: "exact", head: true }).eq("member_id", id),
     ]).catch(() => [null, null] as const);
-    const unknown = !shows || !attendance || !!shows.error || !!attendance.error;
+    let unknown = !shows || !attendance || !!shows.error || !!attendance.error;
+    // Nothing found is only nothing with a session behind the read: sent as anon (a refresh
+    // that just failed), RLS counts 0 with no error (ตาที่ 3 on hunt 7; lib/write-guard.ts).
+    if (!unknown && !shows!.count && !attendance!.count && (await hasLiveSession()) !== true) unknown = true;
     const showCount = unknown ? 0 : shows!.count ?? 0;
     const attendanceCount = unknown ? 0 : attendance!.count ?? 0;
     const who = m?.name ? `“${m.name}”` : "สมาชิกคนนี้";
