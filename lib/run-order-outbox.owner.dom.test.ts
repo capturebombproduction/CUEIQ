@@ -22,6 +22,7 @@ import {
   flushRunSeqOutbox,
   listRunSeqOps,
   mergeOp,
+  unitOwner,
   type RunSeqOp,
 } from "@/lib/run-order-outbox";
 
@@ -231,5 +232,86 @@ describe("mergeOp and the owner", () => {
 
   it("a press replacing a parked op takes the new press's owner", () => {
     expect(mergeOp(base({ owner: A, conflict: true, rev: 3 }), base({ owner: B })).owner).toBe(B);
+  });
+});
+
+// A press joined to another account's press is one unit that belongs to no one
+// (2026-10-30, Argon on 7874bf0). mergeOp keeps the union of press ids, and units are
+// joined through them: A's "จบ + ต่อไป" (r1 → r2) and then B's "จบ + ต่อไป" on the act A
+// started (r2 → r3) is ONE unit {r1: A, r2: no owner, r3: B}. Judged op by op it waited
+// for A under B and for B under A - it never replayed for anyone. Judged by the unit's
+// one owner (none here) it replays whole, as before owners existed.
+describe("a unit's owner is the one EVERY op in it carries", () => {
+  async function aThenBOnTheActAStarted() {
+    signIn(A);
+    await pressEndAndNext("r1", "r2", "p-A"); // r1 live → done, r2 → live
+    server.find((x) => x.id === "r3")!.status = "pending";
+    signIn(B);
+    await pressEndAndNext("r2", "r3", "p-B"); // r2 → done (folds into A's r2), r3 → live
+    const ops = await listRunSeqOps();
+    expect(ops.find((o) => o.rowId === "r1")?.owner).toBe(A);
+    expect(ops.find((o) => o.rowId === "r2")?.owner).toBeUndefined();
+    expect(ops.find((o) => o.rowId === "r3")?.owner).toBe(B);
+  }
+
+  function expectAllThreeLanded() {
+    expect(server.find((x) => x.id === "r1")?.status).toBe("done");
+    expect(server.find((x) => x.id === "r2")?.status).toBe("done");
+    expect(server.find((x) => x.id === "r3")?.status).toBe("live");
+  }
+
+  it("the three-row unit mixing A and B lands whole under B", async () => {
+    await aThenBOnTheActAStarted();
+    bMayWrite = true;
+    const r = await flushRunSeqOutbox();
+    expect(r).toEqual({ flushed: 3, conflicts: 0, remaining: 0 });
+    expectAllThreeLanded();
+  });
+
+  it("...and lands whole under A - B's row, replayed last, is not held back (never split)", async () => {
+    await aThenBOnTheActAStarted();
+    signIn(A);
+    supa.auth.setSession(makeSession({ user: { id: A } as never }));
+    const r = await flushRunSeqOutbox();
+    expect(r).toEqual({ flushed: 3, conflicts: 0, remaining: 0 });
+    expectAllThreeLanded();
+  });
+
+  it("a unit of A's row and a row with no owner flushes under B (B's own press does not wait for A)", async () => {
+    signIn(A);
+    await pressEndAndNext("r1", "r2", "p-A");
+    signIn(B);
+    bMayWrite = true;
+    await enqueueRunSeq({
+      rowId: "r2",
+      festival: "Ichiban",
+      patch: { offset_min: 3 },
+      expect: {},
+      label: "+3",
+      queuedAt: Date.now(),
+      presses: ["p-B"],
+    });
+    const r = await flushRunSeqOutbox();
+    expect(r).toEqual({ flushed: 2, conflicts: 0, remaining: 0 });
+    expect(server.find((x) => x.id === "r2")).toMatchObject({ status: "live", offset_min: 3 });
+  });
+
+  it("a unit that is A's alone still waits whole under B", async () => {
+    signIn(A);
+    await pressEndAndNext("r1", "r2", "p-A");
+    signIn(B);
+    bMayWrite = true;
+    await flushRunSeqOutbox();
+    expect(supa.callsTo("run_sequence")).toHaveLength(0);
+    expect((await listRunSeqOps()).map((o) => o.rowId).sort()).toEqual(["r1", "r2"]);
+  });
+
+  it("unitOwner: one shared owner, else none", () => {
+    const op = (owner?: string) => ({ owner }) as RunSeqOp;
+    expect(unitOwner([op(A), op(A)])).toBe(A);
+    expect(unitOwner([op(A), op(undefined)])).toBeUndefined();
+    expect(unitOwner([op(undefined), op(A)])).toBeUndefined();
+    expect(unitOwner([op(A), op(B)])).toBeUndefined();
+    expect(unitOwner([])).toBeUndefined();
   });
 });

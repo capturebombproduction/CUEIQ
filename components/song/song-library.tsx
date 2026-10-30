@@ -387,6 +387,9 @@ export function SongLibrary({
   // dropped that dialog's picked file, unsaved (2026-10-27). Opening a dialog starts a
   // new sequence; an older save's tail leaves it alone.
   const saveSeqRef = useRef(0);
+  // The save (its seq) that has not written anything yet - still in its reads before the first
+  // write, when a close cancels it instead of letting it run on (requestCloseDialog). null otherwise.
+  const preWriteSeqRef = useRef<number | null>(null);
   const [detecting, setDetecting] = useState(false);
   // file picked in the add/edit dialog — uploaded to R2 on save (one-step add+upload)
   const [pickedFile, setPickedFile] = useState<File | null>(null);
@@ -868,13 +871,27 @@ export function SongLibrary({
    * Close the add/edit dialog - asking first when it holds work: a field changed since it
    * opened, or a file picked. A tap on the dimmed page, Esc or ยกเลิก dropped all of it with no
    * word (2026-10-30, hunt 10; the in-app feedback of 2026-08-13 asked for "ยังไม่ได้บันทึก"
-   * before leaving). Not while a save runs: that save goes on whatever the dialog does.
+   * before leaving). Once a save has started writing, it goes on whatever the dialog does.
+   * Before that - while บันทึก still reads (songBandMoveBlocker, the replace prompt's usage read)
+   * - a close CANCELS the save (ตาที่ 3 on hunt 10): it closed with no question while `saving`,
+   * and then a refused move or a declined replace had saved nothing, form and file gone; or the
+   * "แทนที่ไฟล์เสียง…?" prompt came up over a dialog already closed, and its yes uploaded.
    */
   async function requestCloseDialog() {
+    if (preWriteSeqRef.current !== null && preWriteSeqRef.current === saveSeqRef.current) {
+      // the save stops where it stands (its stillMine() is false from here): it asks and writes
+      // nothing more, and the dialog is idle again - then the ordinary rule below
+      saveSeqRef.current++;
+      preWriteSeqRef.current = null;
+      setSaving(false);
+    } else if (saving) {
+      setOpen(false);
+      return;
+    }
     const base = dialogBaselineRef.current;
     const changed =
       !!pickedFile || (!!base && (Object.keys(base) as (keyof FormState)[]).some((k) => form[k] !== base[k]));
-    if (saving || !changed) {
+    if (!changed) {
       setOpen(false);
       return;
     }
@@ -974,12 +991,20 @@ export function SongLibrary({
     const seq = ++saveSeqRef.current;
     const stillMine = () => saveSeqRef.current === seq;
     setSaving(true);
+    // Nothing written yet: a close from here until the first write cancels this save
+    // (requestCloseDialog), and every await below checks stillMine() before going on.
+    preWriteSeqRef.current = seq;
+    const endPreWrite = () => {
+      if (preWriteSeqRef.current === seq) preWriteSeqRef.current = null;
+    };
     // ...nor while a show's setlist holds it (hunt 9, songBandMoveBlocker). Read with the
     // save button already busy, so a second click cannot slip past the read.
     if (current && form.group_id !== current.group_id) {
       const blocker = await songBandMoveBlocker(supabase, current.id);
+      if (!stillMine()) return; // closed meanwhile: the save is off, nothing more to say
       if (blocker) {
-        if (stillMine()) setSaving(false);
+        endPreWrite();
+        setSaving(false);
         // a plain title: the blocker may only say the check could not be made (ตาที่ 3)
         toast.error("ย้ายวงไม่ได้", { description: blocker });
         return;
@@ -987,10 +1012,17 @@ export function SongLibrary({
     }
     // A file picked here REPLACES the song's take, which goes for good (confirmReplaceFile,
     // hunt 10). Asked before anything is written; ยกเลิก leaves the dialog and its pick as they are.
-    if (pickedFile && current && !(await confirmReplaceFile(current, pickedFile))) {
-      if (stillMine()) setSaving(false);
+    // Not asked at all once the dialog was closed during its usage read (stillMine).
+    if (pickedFile && current && !(await confirmReplaceFile(current, pickedFile, stillMine))) {
+      if (stillMine()) {
+        endPreWrite();
+        setSaving(false);
+      }
       return;
     }
+    if (!stillMine()) return;
+    // The first write starts now: from here a close lets the save go on (requestCloseDialog).
+    endPreWrite();
     // ลิขสิทธิ์ is sent CONDITIONALLY (guard 0034): the DB refuses a non-approver
     // changing copyright_status, and it compares against the CURRENT row — so a value
     // that only LOOKS changed because an approver triaged the song from another screen
@@ -1407,9 +1439,11 @@ export function SongLibrary({
    * picked for a song that already had one took the master with no question asked
    * (2026-10-30, hunt 10). Asked only when the song HAS a file: a first upload replaces nothing.
    */
-  async function confirmReplaceFile(song: Song, file: File): Promise<boolean> {
+  async function confirmReplaceFile(song: Song, file: File, stillWanted?: () => boolean): Promise<boolean> {
     if (!song.audio_path) return true;
     const u = await songUsage(supabase, song.id);
+    // the edit dialog was closed during the read: its save is off, so no prompt over nothing
+    if (stillWanted && !stillWanted()) return false;
     const where = u.unknown
       ? "\nตรวจไม่ได้ว่าเพลงนี้ใช้อยู่ในงานหรือห้องซ้อมไหนบ้าง (เน็ตขัดข้อง)"
       : u.parts.length > 0

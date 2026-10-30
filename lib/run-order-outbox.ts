@@ -171,10 +171,11 @@ export interface RunSeqOp {
   /**
    * The account signed in on this device when the press was queued (2026-10-30, hunt 10;
    * read synchronously at enqueue - lib/show-run-outbox.ts storedSessionUserId). A flush
-   * signed in as someone else leaves the op, and every op of its press, untouched: under
-   * that account a press it may not write parked as a conflict. Absent when it could not
-   * be read at once, on older records, and on a row two accounts both pressed (mergeOp) -
-   * all of which replay for whoever is signed in, as before.
+   * signed in as someone else leaves a press whose every op is that account's (unitOwner)
+   * untouched: under that account a press it may not write parked as a conflict. Absent
+   * when it could not be read at once, on older records, and on a row two accounts both
+   * pressed (mergeOp) - all of which replay for whoever is signed in, as before; so does
+   * a press joined to another account's (unitOwner).
    */
   owner?: string;
 }
@@ -379,6 +380,20 @@ export function groupRunSeqPresses(ops: RunSeqOp[]): RunSeqOp[][] {
       )
       .map((i) => ops[i])
   );
+}
+
+/**
+ * The one account a whole unit belongs to: the owner EVERY op in it carries, or undefined
+ * - and undefined replays for whoever is signed in, as before RunSeqOp.owner existed. The
+ * row rule of mergeOp, one level up: a unit that mixes accounts, or holds an op with no
+ * owner, was pressed partly on top of the other's presses (that is what joined it), so it
+ * only makes sense whole. Read per op instead, it waited for every owner in it at once -
+ * A's end, then B's "จบ + ต่อไป" on the act A started, is one unit that neither A nor B
+ * could ever replay (2026-10-30, Argon on hunt 10's 7874bf0).
+ */
+export function unitOwner(unit: RunSeqOp[]): string | undefined {
+  const first = unit[0]?.owner;
+  return first && unit.every((o) => o.owner === first) ? first : undefined;
 }
 
 /**
@@ -997,9 +1012,11 @@ async function doFlush(): Promise<RunSeqFlushResult> {
   // the show's first start landed from the queue: the events whose label is told (announceLive)
   const goneLive = new Set<string>();
 
-  /** Replay one op. "wait" = could not find out (network, no session): leave it queued. */
+  /** Replay one op. "wait" = could not find out (network, no session): leave it queued.
+   *  `owner` is its whole unit's (unitOwner), never the op's own. */
   const replayOne = async (
-    snapshot: RunSeqOp
+    snapshot: RunSeqOp,
+    owner: string | undefined
   ): Promise<"done" | "dropped" | "conflict" | "wait"> => {
     try {
       // Re-read the op as it stands NOW, not as the snapshot at the top of this
@@ -1009,7 +1026,7 @@ async function doFlush(): Promise<RunSeqFlushResult> {
       // precondition this write is about to consume.
       const op = (await getRunSeqOp(snapshot.rowId)) ?? snapshot;
       // the account changed under a running flush: leave the rest for its owner
-      if (queuedByAnotherAccount(op.owner)) return "wait";
+      if (queuedByAnotherAccount(owner)) return "wait";
       if (op.conflict) return "conflict"; // parked while we were working
       // A start whose drift was worked out against a plan staff have moved since (see
       // RunSeqOp.planBasis): read the plan the row holds and write the drift moved onto
@@ -1125,8 +1142,12 @@ async function doFlush(): Promise<RunSeqFlushResult> {
   for (const unit of groupRunSeqPresses(queue)) {
     // Another account's press (2026-10-30, hunt 10, RunSeqOp.owner): the WHOLE unit is
     // left as it is - not sent, not prechecked, not parked, not rebased - until its owner
-    // signs in here. Asked per unit: an account can change during a long flush.
-    if (unit.some((o) => queuedByAnotherAccount(o.owner))) continue;
+    // signs in here. Asked per unit: an account can change during a long flush. Judged
+    // by the UNIT's owner (unitOwner), never op by op: a unit that mixes accounts held
+    // a row of each, so it waited for both and never replayed for anyone (Argon on
+    // 7874bf0), and an op-by-op check inside it would send half a press.
+    const owner = unitOwner(unit);
+    if (queuedByAnotherAccount(owner)) continue;
     const members = unit.filter((o) => !o.conflict);
     if (members.length === 0) continue;
     // The units were cut from the queue as it stood when this flush began. A press made
@@ -1151,7 +1172,7 @@ async function doFlush(): Promise<RunSeqFlushResult> {
       }
     }
     for (let i = 0; i < members.length; i++) {
-      const outcome = await replayOne(members[i]);
+      const outcome = await replayOne(members[i], owner);
       if (outcome === "conflict") {
         // this row, and the rest of its press unsent - what already landed stays
         parked.push(...members.slice(i));

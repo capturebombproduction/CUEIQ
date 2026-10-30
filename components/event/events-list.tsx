@@ -549,7 +549,9 @@ export function EventsList({
           if (behind.length === 0) return;
           setReadiness((cur) => {
             const next = { ...cur };
-            for (const id of behind) if (next[id]) next[id] = { ...next[id], data: false };
+            // still behind NOW: a prepare/open that landed during the refresh loop cleared it
+            // (ตาที่ 3 on hunt 10)
+            for (const id of behind) if (next[id] && !cache.isCached(id)) next[id] = { ...next[id], data: false };
             return next;
           });
         });
