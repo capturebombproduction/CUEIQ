@@ -28,11 +28,13 @@ import { dateParts } from "@/components/event/date-parts";
 // The band colour as the triplet `.date-tile` reads; a missing or garbled colour
 // (a cached row) falls back to muted ink instead of crashing the list.
 import { bandTriplet } from "@/lib/band-triplet";
+import { toast } from "sonner";
 import { createClient } from "@/lib/supabase/client";
 import { hasLiveSession } from "@/lib/auth-session";
 import {
   getReadiness,
   prefetchEventAudio,
+  prefetchFailureText,
   type Readiness,
   type PrefetchTarget,
 } from "@/lib/audio-prefetch";
@@ -595,6 +597,8 @@ export function EventsList({
     }, 0);
     setBulk({ done: 0, total: grandTotal });
     let done = 0;
+    let failed = 0;
+    let noRoom = false;
     for (const id of all) {
       const r = readiness[id];
       // Data first: it's tiny next to the audio, and an event whose run sheet is
@@ -606,10 +610,16 @@ export function EventsList({
         setBulk({ done, total: grandTotal });
       }
       if (!todoSet.has(id)) continue;
-      await prefetchEventAudio(id, targetsByEvent[id] ?? [], {
+      const res = await prefetchEventAudio(id, targetsByEvent[id] ?? [], {
         onProgress: (p) => setBulk({ done: done + p.done, total: grandTotal }),
       });
+      failed += res.failed;
+      noRoom ||= res.noRoom;
       done += r ? r.total - r.ready : 0;
+    }
+    if (failed > 0) {
+      const { title, description } = prefetchFailureText(failed, noRoom);
+      toast.error(title, { description });
     }
     setBulk(null);
     computeReadiness();

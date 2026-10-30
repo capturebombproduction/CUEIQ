@@ -149,6 +149,17 @@ describe("AuthCookieKeeper", () => {
     expect(JSON.parse(localStorage.getItem(KEPT_KEY)!).exp).toBe(v1 + 3600);
   });
 
+  // Hunt 12 (2026-10-30): a password change re-saves the same token by script after the
+  // re-auth's keep went out; nothing asked again, so the cookie stayed capped at 7 days.
+  it("a password change re-saves the token: asked again, dropping the keep still out for it", () => {
+    const exp = inAnHour();
+    emit("SIGNED_IN", { expires_at: exp });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    emit("USER_UPDATED", { expires_at: exp });
+    expect(pending[0].signal.aborted).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
   it("a sign-in with a different token than the keep still out replaces it too", () => {
     const v1 = inAnHour();
     emit("INITIAL_SESSION", { expires_at: v1 });

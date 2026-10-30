@@ -5,7 +5,7 @@ import { LogOut } from "lucide-react";
 import { toast } from "sonner";
 import { createClient } from "@/lib/supabase/client";
 import { cleanupPushOnSignOut } from "@/components/notifications/push-cleanup";
-import { isLiveShowActive } from "@/lib/live-guard";
+import { isLiveShowActive, liveShowBeaconIsFresh } from "@/lib/live-guard";
 import { duringDeliberateSignOut } from "@/lib/sign-out-intent";
 import { countQueuedShowRunWork } from "@/lib/show-run-outbox";
 import {
@@ -110,8 +110,10 @@ export function useSignOut(): () => Promise<void> {
     // Sign-out navigates programmatically, so Live Mode's <a>/beforeunload exit
     // guard can't intercept it — confirm here too so a mid-show tap can't drop
     // the operator to /login and cut a running show without warning.
+    // liveShowBeaconIsFresh: the show may be running in another tab of this browser - the
+    // session they share goes with this tab's sign-out (2026-10-30, hunt 12).
     if (
-      isLiveShowActive() &&
+      (isLiveShowActive() || liveShowBeaconIsFresh()) &&
       !window.confirm(
         "กำลังรันโชว์อยู่ — ออกจากระบบตอนนี้จะหยุดเสียงและออกจากโชว์ ยืนยันไหม?"
       )

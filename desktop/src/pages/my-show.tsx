@@ -101,6 +101,10 @@ const INITIAL: ShowState = {
 };
 
 const LIVE_SNAPSHOT_KEY = "cueiq:solo:live";
+/** A tick this late means the machine was not running (the 500 ms clock; see onClockGapRef). */
+const CLOCK_GAP_MS = 3000;
+/** A row's clock this close to its file is left alone: nothing to say. */
+const CLOCK_DRIFT_MS = 1000;
 
 // A row's own length. Its "เข้าหลังเพลงก่อนหน้า" is against the row BEFORE it, so none of it
 // is this row's: a wait is the previous row's (waitOf, in runBlock), as in Live Mode. The
@@ -234,6 +238,15 @@ export function MyShow() {
   // ล้าง's question, asked in the record itself (clearLastRun) - dropped by a new record
   const [askClear, setAskClear] = useState(false);
   useEffect(() => setAskClear(false), [lastRun]);
+  // The focus: on the safe key when the question opens, back on ล้าง when it closes (2026-10-30,
+  // hunt 12; Live Mode's LastRunRecord). Not after ล้างเลย: the record is gone.
+  const clearKeyRef = useRef<HTMLButtonElement>(null);
+  const clearFocusBackRef = useRef(false);
+  useEffect(() => {
+    if (askClear || !clearFocusBackRef.current) return;
+    clearFocusBackRef.current = false;
+    if (document.activeElement === document.body) clearKeyRef.current?.focus();
+  }, [askClear]);
   // songs whose legacy source file is gone (see boot migration) — need a re-pick
   const [brokenIds, setBrokenIds] = useState<Set<string>>(new Set());
 
@@ -352,9 +365,18 @@ export function MyShow() {
     sinkLoadedRef.current = true;
   }, []);
 
-  // ticking clock (same cadence as Live Mode)
+  // ticking clock (same cadence as Live Mode), which also sees a clock that jumped before the
+  // render that would read the jump as a row run out (onClockGapRef, by Auto's advance)
+  const lastTickRef = useRef(Date.now());
+  const onClockGapRef = useRef<(gapMs: number) => void>(() => {});
   useEffect(() => {
-    const id = setInterval(() => setNow(Date.now()), 500);
+    const id = setInterval(() => {
+      const t = Date.now();
+      const gap = t - lastTickRef.current;
+      lastTickRef.current = t;
+      if (gap > CLOCK_GAP_MS) onClockGapRef.current(gap);
+      setNow(t);
+    }, 500);
     return () => clearInterval(id);
   }, []);
 
@@ -363,10 +385,16 @@ export function MyShow() {
   // same file); cleared once the show moves on to another track. Port of
   // live-mode's reportAudioFault.
   const audioFaultRef = useRef<string | null>(null);
-  function reportAudioFault(itemId: string | null) {
+  function reportAudioFault(itemId: string | null, device = false) {
     if (!itemId || audioFaultRef.current === itemId) return;
     audioFaultRef.current = itemId;
     const title = itemsRef.current.find((it) => it.id === itemId)?.title || "รายการนี้";
+    if (device) {
+      toast.error(`เสียงหลุดกลางเพลง: ${title}`, {
+        description: "อุปกรณ์เสียงหลุด ไฟล์เพลงไม่ได้เสีย — เช็กสาย แล้วแตะ “เล่นเสียงต่อ”",
+      });
+      return;
+    }
     toast.error(`เล่นไฟล์เสียงไม่สำเร็จ: ${title}`, {
       description: "เครื่องนี้จะไม่มีเสียงในรายการนี้ (โชว์ยังเดินต่อ) — ลองเลือกไฟล์ใหม่",
     });
@@ -422,7 +450,10 @@ export function MyShow() {
         // bytes, missing codec). Only the element that's meant to be SOUNDING
         // counts — an idle one being reloaded or cleared isn't a fault.
         if (a !== audioRef.current || !playingIdRef.current) return;
-        reportAudioFaultRef.current(playingIdRef.current);
+        reportAudioFaultRef.current(playingIdRef.current, /AUDIO_RENDERER/i.test(a.error?.message ?? ""));
+        // Dead, whatever it says (a failed element keeps paused=false): the rescue tap comes up,
+        // and it and RUN load the file again - as Live Mode (2026-10-30, hunt 12).
+        setAudioPlaying(false);
       });
       a.addEventListener("timeupdate", () => {
         if (a !== audioRef.current) return;
@@ -437,7 +468,11 @@ export function MyShow() {
       // rescue can appear for anything that stops the audio without going
       // through us.
       a.addEventListener("playing", () => {
-        if (a === audioRef.current) setAudioPlaying(true);
+        if (a === audioRef.current) {
+          setAudioPlaying(true);
+          // the track that failed sounds again: a later failure of it is news again
+          if (audioFaultRef.current === playingIdRef.current) audioFaultRef.current = null;
+        }
       });
       a.addEventListener("pause", () => {
         // Every app-initiated stop passes through here too — playItemAudio
@@ -484,9 +519,11 @@ export function MyShow() {
         | (HTMLAudioElement & { setSinkId?: (id: string) => Promise<void> })
         | null;
       if (!el?.setSinkId) return;
-      el.setSinkId(sinkId).catch(() => el.setSinkId!("").catch(() => {}));
+      return el.setSinkId(sinkId).catch(() => el.setSinkId!("").catch(() => {}));
     };
-    route(audioRef.current);
+    // a route landed on an element the old device's loss killed: back at the show's position,
+    // by itself, after the route (Live Mode's reviveDeadPrimary; 2026-10-30, hunt 12)
+    route(audioRef.current)?.finally(() => reviveDeadPrimaryRef.current());
     route(audioRef2.current);
   }, [sinkId]);
 
@@ -756,13 +793,17 @@ export function MyShow() {
     const url = urls[it.id];
     if (it.kind === "song" && url) {
       endedItemIdRef.current = null;
-      if (playingId === it.id && !audio.paused) {
+      // (a dead element keeps paused=false: not "already playing", and it comes back at the
+      // show's position, not from the top - hunt 12)
+      const dead = playingId === it.id && !!audio.error;
+      if (playingId === it.id && !audio.paused && !dead) {
         setAudioPlaying(true);
         return;
       }
       audio.pause();
       audio.src = url;
-      audio.currentTime = 0;
+      audio.currentTime =
+        dead && stateRef.current.itemStartedAt ? Math.max(0, (Date.now() - stateRef.current.itemStartedAt) / 1000) : 0;
       audio.play().catch((err) => onPlayRejected(it.id, err));
       setPlayingId(it.id);
       setAudioPlaying(true);
@@ -982,7 +1023,8 @@ export function MyShow() {
       });
       if (cur && audio) {
         const url = urls[cur.id];
-        if (playingId === cur.id) {
+        // (a dead element - a media error, hunt 12 - resumes nothing: the branch below loads it)
+        if (playingId === cur.id && !(audio.error && cur.kind === "song" && url)) {
           if (url) {
             audio.play().catch((err) => onPlayRejected(cur.id, err));
             setAudioPlaying(true);
@@ -1072,7 +1114,7 @@ export function MyShow() {
       const idx = soundIdx >= 0 ? soundIdx : state.currentIndex;
       const cur = items[idx];
       const offset =
-        soundIdx >= 0 && audio
+        soundIdx >= 0 && audio && !audio.error
           ? audio.currentTime
           : state.running
             ? state.itemStartedAt
@@ -1090,7 +1132,7 @@ export function MyShow() {
       });
       const url = cur ? urls[cur.id] : undefined;
       if (cur && cur.kind === "song" && url && audio) {
-        if (playingId !== cur.id) {
+        if (playingId !== cur.id || audio.error) {
           audio.src = url;
           audio.currentTime = Math.max(0, offset);
           setPlayingId(cur.id);
@@ -1174,10 +1216,41 @@ export function MyShow() {
     // confirm before every delete). Asked in the record (askClear), never with window.confirm:
     // the key is there while the show runs, and a modal stops the JS thread - the Auto
     // countdown below and every fade waited on the answer (2026-10-30, hunt 11).
+    clearFocusBackRef.current = false;
     setAskClear(false);
     setLastRun(null);
     setSoloLastRun(null).catch(() => {});
   }
+
+  // The clock jumped under a running show: the lid closed, Windows slept. The file came back
+  // where it was and the row's clock did not: AUTO cut the song by the sleep, or - a long one -
+  // started the next song the moment the lid opened (2026-10-30, hunt 12; as Live Mode's). A
+  // file sounding is the truth (a loop goes round: it is not one); with none, the row's time
+  // shifts by the gap, on a visible page only. The show's total stays on real time.
+  onClockGapRef.current = (gapMs) => {
+    const s = stateRef.current;
+    if (!s.begun || !s.running || s.itemStartedAt == null || showEndedRef.current) return;
+    const cur = itemsRef.current[s.currentIndex];
+    if (!cur) return;
+    const a = audioRef.current;
+    const visible = document.visibilityState === "visible";
+    const fileSounds = !cur.loop && !!a && playingIdRef.current === cur.id && !a.paused && !a.ended && !a.error;
+    let itemStartedAt: number;
+    if (fileSounds) {
+      itemStartedAt = Date.now() - a.currentTime * 1000;
+      if (Math.abs(itemStartedAt - s.itemStartedAt) < CLOCK_DRIFT_MS) return;
+    } else {
+      if (!visible) return;
+      itemStartedAt = s.itemStartedAt + gapMs;
+    }
+    const lost = Math.round(Math.abs(itemStartedAt - s.itemStartedAt) / 1000);
+    setState({ ...s, itemStartedAt });
+    if (visible) {
+      toast.warning(`เครื่องหยุดไป ${lost} วินาที`, {
+        description: fileSounds ? "เวลารายการเดินตามเพลงต่อ" : "เวลารายการนี้ไม่นับช่วงที่เครื่องหยุด",
+      });
+    }
+  };
 
   // Auto: advance when the countdown reaches 0 (never when the file ends)
   useEffect(() => {
@@ -1279,7 +1352,8 @@ export function MyShow() {
     const url = cur ? urls[cur.id] : undefined;
     if (!audio || !cur || !url) return;
     const pos = state.itemStartedAt ? (Date.now() - state.itemStartedAt) / 1000 : 0;
-    if (playingId !== cur.id) audio.src = url;
+    // (a dead element - a media error, hunt 12 - is loaded again too)
+    if (playingId !== cur.id || audio.error) audio.src = url;
     audio.currentTime = Math.max(0, pos);
     setPlayingId(cur.id);
     audio
@@ -1287,6 +1361,25 @@ export function MyShow() {
       .then(() => setAudioPlaying(true))
       .catch((err) => onPlayRejected(cur.id, err));
   }
+
+  /** The primary died with a media error while it sounded: load it again where the show stands.
+   *  Only ever an element with an error, and one the operator has not paused. */
+  function reviveDeadPrimary() {
+    const a = audioRef.current;
+    const s = stateRef.current;
+    const cur = itemsRef.current[s.currentIndex];
+    if (!a?.error || a.paused || !cur || playingIdRef.current !== cur.id) return;
+    if (!s.begun || !s.running || !s.itemStartedAt) return;
+    const url = urlsRef.current[cur.id];
+    if (!url) return;
+    a.src = url;
+    a.currentTime = Math.max(0, (Date.now() - s.itemStartedAt) / 1000);
+    a.play()
+      .then(() => setAudioPlaying(true))
+      .catch((err) => onPlayRejected(cur.id, err));
+  }
+  const reviveDeadPrimaryRef = useRef(reviveDeadPrimary);
+  reviveDeadPrimaryRef.current = reviveDeadPrimary;
 
   // keyboard: Space start/run-pause · →/N next · ← back (Manual)
   const keyRef = useRef<(e: KeyboardEvent) => void>(() => {});
@@ -1302,6 +1395,9 @@ export function MyShow() {
     if (e.ctrlKey || e.metaKey || e.altKey) return;
     const el = e.target as HTMLElement | null;
     const tag = el?.tagName;
+    // A question on screen (จบการแสดงเลยไหม, ล้าง's): Space on its button is that button. Taken
+    // here it answered nothing and paused the show instead (2026-10-30, hunt 12).
+    if (el?.closest?.('[role="dialog"]')) return;
     /* 🎚️ A slider is not a text field. Chromium/Electron FOCUSES the volume/scrub
        <input type="range"> on a mouse drag, and guarding it like a text box left Space
        and → dead until someone clicked elsewhere (→ nudged the slider instead): trim the
@@ -1312,6 +1408,10 @@ export function MyShow() {
     if (!slider && (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || el?.isContentEditable))
       return;
     if (slider && (e.key === "ArrowRight" || e.key === "ArrowLeft")) e.preventDefault();
+    // ...nor Home / End / a page (2026-10-30, hunt 12): on a focused slider Chromium takes them to
+    // 0, full or 10% away (measured on Electron 45), so a finger hunting for → in the dark
+    // silenced the song or sent it back to its top. CONSOLE's own fader has the same rule.
+    if (slider && (e.key === "Home" || e.key === "End" || e.key === "PageUp" || e.key === "PageDown")) e.preventDefault();
     const s = stateRef.current;
     const n = itemsRef.current.length;
     /* 🔒 A HELD KEY IS ONE INTENTION, NOT FIFTY — same rule and same PLACEMENT as Live
@@ -1326,7 +1426,9 @@ export function MyShow() {
       if (!s.begun) {
         if (n > 0) start(); // same guard as the START SHOW button — never begin empty
       } else toggleShowRun();
-    } else if (e.key === "ArrowRight" || e.key === "n" || e.key === "N") {
+    } else if (e.key === "ArrowRight" || e.key === "n" || e.key === "N" || e.code === "KeyN") {
+      // N by its place on the keyboard too: with the Thai layout on it gives "ื" (2026-10-30,
+      // hunt 12; Live Mode has had this since 2026-10-25)
       if (s.begun && s.mode === "manual" && s.currentIndex < n - 1) {
         e.preventDefault();
         if (e.repeat) return;
@@ -2301,19 +2403,25 @@ export function MyShow() {
                   </p>
                 </div>
                 {askClear ? (
-                  <div className="flex shrink-0 items-center gap-1.5">
-                    <Button variant="ghost" size="sm" onClick={() => setAskClear(false)}>
-                      ไม่ล้าง
-                    </Button>
+                  // ไม่ล้าง on the right, where ล้าง was: a double-click on ล้าง lands on the safe key
+                  // (2026-10-30, hunt 12). A dialog for the show's keys: Space here answers the question.
+                  <div role="dialog" aria-label="ล้างเวลาโชว์ล่าสุด?" className="flex shrink-0 items-center gap-1.5">
                     <Button variant="destructive-outline" size="sm" onClick={clearLastRun}>
                       ล้างเลย
+                    </Button>
+                    <Button autoFocus variant="ghost" size="sm" onClick={() => setAskClear(false)}>
+                      ไม่ล้าง
                     </Button>
                   </div>
                 ) : (
                   <Button
+                    ref={clearKeyRef}
                     variant="ghost"
                     size="sm"
-                    onClick={() => setAskClear(true)}
+                    onClick={() => {
+                      clearFocusBackRef.current = true;
+                      setAskClear(true);
+                    }}
                     className="shrink-0 text-muted-foreground"
                   >
                     ล้าง

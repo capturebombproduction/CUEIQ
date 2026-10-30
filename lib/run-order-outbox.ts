@@ -698,27 +698,27 @@ export async function listRunSeqOps(): Promise<RunSeqOp[]> {
   }
 }
 
-/** The op currently stored for a row, or undefined. */
+/**
+ * The op stored for this row NOW. undefined means it is GONE from the store, and only that:
+ * a read that failed REJECTS (2026-10-30, hunt 12). The flush used to hear both as undefined
+ * and fall back to the copy in its old list - see replayOne.
+ */
 async function getRunSeqOp(rowId: string): Promise<RunSeqOp | undefined> {
-  try {
-    const db = await openDB();
-    return await new Promise<RunSeqOp | undefined>((resolve, reject) => {
-      const tx = db.transaction(STORE, "readonly");
-      const req = tx.objectStore(STORE).get(rowId);
-      req.onsuccess = () => resolve(req.result as RunSeqOp | undefined);
-      tx.onerror = () => {
-        db.close();
-        reject(tx.error);
-      };
-      tx.oncomplete = () => db.close();
-      settleOnAbort(tx, () => {
-        db.close();
-        reject(tx.error);
-      });
+  const db = await openDB();
+  return await new Promise<RunSeqOp | undefined>((resolve, reject) => {
+    const tx = db.transaction(STORE, "readonly");
+    const req = tx.objectStore(STORE).get(rowId);
+    req.onsuccess = () => resolve(req.result as RunSeqOp | undefined);
+    tx.onerror = () => {
+      db.close();
+      reject(tx.error);
+    };
+    tx.oncomplete = () => db.close();
+    settleOnAbort(tx, () => {
+      db.close();
+      reject(tx.error);
     });
-  } catch {
-    return undefined;
-  }
+  });
 }
 
 /**
@@ -981,8 +981,17 @@ async function precheckPress(
   supabase: ReturnType<typeof createClient>,
   members: RunSeqOp[]
 ): Promise<"go" | "park" | "wait"> {
-  // as they stand NOW - a press made during the flush may have merged in
-  const ops = await Promise.all(members.map(async (m) => (await getRunSeqOp(m.rowId)) ?? m));
+  // as they stand NOW - a press made during the flush may have merged in. One that has LEFT
+  // the store was settled elsewhere (replayOne) and has no say: its row may have moved on
+  // since, which would park the rest of a press that is fine. A failed read: find out later.
+  let ops: RunSeqOp[];
+  try {
+    const now = await Promise.all(members.map((m) => getRunSeqOp(m.rowId)));
+    ops = now.filter((o): o is RunSeqOp => !!o);
+  } catch {
+    return "wait";
+  }
+  if (ops.length === 0) return "go"; // nothing left of it: replayOne skips every row
   if (ops.some((o) => o.conflict)) return "park";
   const ids = ops.map((o) => o.rowId);
   const { data, error } = await supabase
@@ -1030,18 +1039,28 @@ async function doFlush(): Promise<RunSeqFlushResult> {
   const goneLive = new Set<string>();
 
   /** Replay one op. "wait" = could not find out (network, no session): leave it queued.
+   *  "gone" = it has left the store since this pass listed it: nothing to send.
    *  `owner` is its whole unit's (unitOwner), never the op's own. */
   const replayOne = async (
     snapshot: RunSeqOp,
     owner: string | undefined
-  ): Promise<"done" | "dropped" | "conflict" | "wait"> => {
+  ): Promise<"done" | "dropped" | "conflict" | "wait" | "gone"> => {
     try {
       // Re-read the op as it stands NOW, not as the snapshot at the top of this
       // flush saw it. The operator keeps pressing while a flush is working
       // through a queue on venue wifi, and every press merges into the row's
       // record — sending the stale one would leave the merged press holding a
       // precondition this write is about to consume.
-      const op = (await getRunSeqOp(snapshot.rowId)) ?? snapshot;
+      //
+      // ...and an op no longer stored is NOT sent from that snapshot (2026-10-30, hunt 12).
+      // Every web tab runs its own pass over this one queue, each from the list it made when
+      // it began. Another tab landed this press and removed it, the operator took it back
+      // online (a -5 after the +5, an undo), the row held the precondition again - and this
+      // pass, slow or stuck on an earlier row, sent the old press and it landed: an undo
+      // silently reversed. Gone means settled elsewhere (landed, or thrown away by ทิ้ง),
+      // and that tab has told the board. A failed read throws, to the "wait" at the end.
+      const op = await getRunSeqOp(snapshot.rowId);
+      if (!op) return "gone";
       // the account changed under a running flush: leave the rest for its owner
       if (queuedByAnotherAccount(owner)) return "wait";
       if (op.conflict) return "conflict"; // parked while we were working
@@ -1172,7 +1191,12 @@ async function doFlush(): Promise<RunSeqFlushResult> {
     // ("จบ + ต่อไป" on a row that only held a drift): replaying this unit now would land
     // that press's first half alone. Leave it for the next flush, which groups it whole.
     const known = new Set(unit.flatMap((o) => o.presses ?? []));
-    const fresh = await Promise.all(members.map((m) => getRunSeqOp(m.rowId)));
+    let fresh: (RunSeqOp | undefined)[];
+    try {
+      fresh = await Promise.all(members.map((m) => getRunSeqOp(m.rowId)));
+    } catch {
+      continue; // could not read the queue: this unit waits for the next flush
+    }
     if (fresh.some((o) => (o?.presses ?? []).some((p) => !known.has(p)))) continue;
     // A press these were built on has already parked: replaying them now is exactly
     // the half-a-press this grouping exists to stop.

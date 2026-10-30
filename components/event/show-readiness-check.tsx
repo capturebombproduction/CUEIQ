@@ -17,10 +17,11 @@ import {
   WifiOff,
   ListChecks,
 } from "lucide-react";
+import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { loadAudioSink } from "@/components/event/audio-output-picker";
-import { prefetchEventAudio, type PrefetchTarget } from "@/lib/audio-prefetch";
+import { prefetchEventAudio, prefetchFailureText, type PrefetchTarget } from "@/lib/audio-prefetch";
 import { listLocalSourceIds } from "@/lib/local-source";
 import { MGMT_OUTBOX_EVENT } from "@/lib/mgmt-outbox";
 import type { LocalOnlyCandidate } from "@/lib/audio-targets";
@@ -341,11 +342,15 @@ export function ShowReadinessCheck({
     abortRef.current = ac;
     setBusy(true);
     try {
-      await prefetchEventAudio(eventId, targets, {
+      const res = await prefetchEventAudio(eventId, targets, {
         onProgress: (p) => setProgress({ done: p.done, total: p.total }),
         isCancelled: () => ac.signal.aborted,
         signal: ac.signal,
       });
+      if (res.failed > 0) {
+        const { title, description } = prefetchFailureText(res.failed, res.noRoom);
+        toast.error(title, { description });
+      }
     } finally {
       // Leave the busy state however the prepare ended (cancel, timeout, throw):
       // a spinner that never clears dead-locks "เตรียม" — and with it the only way

@@ -57,9 +57,15 @@ export function useShowOutput(sinkId: string, enabled: boolean, showRunning: boo
     const picked =
       prevSink.current !== sinkId &&
       (prevSink.current === "" || devices.some((d) => d.deviceId === prevSink.current));
-    if (prev.current && prev.current !== label && showRunning && !picked) {
-      setChanged({ from: prev.current, to: label, toKind: classifyOutput(label) });
-    }
+    const from = prev.current;
+    const moved = !!from && from !== label && showRunning && !picked;
+    // Back on the device the alarm says was left: the alarm is over. "ตอนนี้ออก ลำโพง" stayed up
+    // after the re-seated interface had the sound again, until someone pressed ปิด, and an
+    // operator could go and re-patch what was already fine (2026-10-30, hunt 12).
+    setChanged((c) => {
+      if (c && c.from === label) return null;
+      return moved ? { from: from!, to: label, toKind: classifyOutput(label) } : c;
+    });
     prev.current = label;
     prevSink.current = sinkId;
   }, [label, sinkId, devices, showRunning, enabled]);

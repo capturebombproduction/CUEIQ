@@ -15,6 +15,8 @@ import { createClient } from "@/lib/supabase/client";
  *
  * When it asks:
  *  • TOKEN_REFRESHED - the page has just written a new token by script: always.
+ *  • USER_UPDATED - a password change re-saves the SAME token by script, so a keep already
+ *    out for it may have read the cookie before that write: sent again (2026-10-30, hunt 12).
  *  • SIGNED_IN / INITIAL_SESSION - auth-js says SIGNED_IN on EVERY load and every
  *    return to the foreground (it recovers the stored session), so these ask only for a
  *    token this device has not had kept yet (a real sign-in, a refresh another tab
@@ -68,8 +70,8 @@ export function AuthCookieKeeper() {
     /** The keep still out, and the token (its expiry) it carries. */
     let inFlight: { ctl: AbortController; exp: number } | null = null;
 
-    const keep = (exp: number) => {
-      if (inFlight?.exp === exp) return; // this token is already on its way
+    const keep = (exp: number, rewritten = false) => {
+      if (inFlight?.exp === exp && !rewritten) return; // this token is already on its way
       inFlight?.ctl.abort(); // an older token's keep: its late answer must not land
       const ctl = new AbortController();
       const mine = { ctl, exp };
@@ -105,6 +107,10 @@ export function AuthCookieKeeper() {
       if (!fresh(session)) return;
       if (event === "TOKEN_REFRESHED") {
         keep(session.expires_at);
+        return;
+      }
+      if (event === "USER_UPDATED") {
+        keep(session.expires_at, true);
         return;
       }
       if (event === "SIGNED_IN" || event === "INITIAL_SESSION") {

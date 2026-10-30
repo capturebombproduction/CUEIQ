@@ -52,7 +52,7 @@ import { getLocalSource, listLocalSourceIds } from "@/lib/local-source";
 import { listPendingAudioUploads } from "@/lib/mgmt-write";
 import { MGMT_CHILD_LANDED_EVENT, MGMT_OUTBOX_EVENT } from "@/lib/mgmt-outbox";
 import { persistLastRun } from "@/lib/show-run-outbox";
-import { setLiveShowActive } from "@/lib/live-guard";
+import { setLiveShowActive, writeLiveShowBeacon } from "@/lib/live-guard";
 import { getDeviceId, deviceLabel } from "@/lib/device-id";
 import {
   claimAuthority,
@@ -115,6 +115,12 @@ import { audioOpenProblem, unplayableAudio } from "@/lib/audio";
 // How long a viewer (and the frame before Auto's own advance) holds 0:00 for the next row
 // before the card calls it overtime (handingOver).
 const AUTO_HANDOVER_SEC = 2;
+/** How often a page with a network looks at the setlist on its own (see the effect that uses it). */
+const LIST_REREAD_MS = 60_000;
+/** A tick this late means the machine was not running (the 500 ms clock; see onClockGapRef). */
+const CLOCK_GAP_MS = 3000;
+/** A row's clock this close to its file is left alone: a normal stretch of playback, nothing to say. */
+const CLOCK_DRIFT_MS = 1000;
 
 type ShowMode = "manual" | "auto";
 
@@ -269,6 +275,12 @@ function fmtTime(sec: number) {
  *  under the scrim — START, or Run/Pause mid-show — and the next Space pressed it.
  *  Every other Tab is left to the browser. "Shown" is read from computed style, so a
  *  control a breakpoint hides (the landscape-phone fade keys) is never a wrap target. */
+/** What Chromium does to a focused <input type="range"> on these: Home = 0, End = full, a page =
+ *  10% (measured on Electron 45). A slider keeps the focus after a mouse drag, so a finger hunting
+ *  for → in the dark silenced the song or sent it back to its top (2026-10-30, hunt 12). The same
+ *  rule as CONSOLE's own fader: no one key to a far level mid-show. ↑ ↓ still move it by a step. */
+const RANGE_JUMP_KEYS = new Set(["Home", "End", "PageUp", "PageDown"]);
+
 function wrapTabInside(e: React.KeyboardEvent, panel: HTMLElement | null) {
   if (!panel) return;
   const shown = (el: HTMLElement) => {
@@ -368,6 +380,13 @@ export function LiveMode({
   );
   const itemsRef = useRef(items);
   itemsRef.current = items;
+  // The show's day, start and Hard Out, as the props brought them and re-read since
+  // (readShowTimes): a Hard Out cut on a phone used to reach an open Live only by a reload,
+  // which nobody does mid-show. Only the Hard Out reading reads these - never the audio.
+  const [showTimes, setShowTimes] = useState({ eventDate, showStartTime, hardOutTime });
+  // Rows gone from the server that this page keeps in its list until the show has moved
+  // off them (refetchItems).
+  const heldGoneRef = useRef<Set<string>>(new Set());
   // song_id → audio (seeded from the bundle; refreshed on setlist-changed). The
   // resolver reads this so library-linked items play the library song's file.
   const songAudioRef = useRef<SongAudioMap>(songAudio);
@@ -423,6 +442,11 @@ export function LiveMode({
   const followItemIdRef = useRef<string | null>(null);
   // set for the one broadcast that resets a run, so the viewers watching it are freed
   const resetRunRef = useRef<number | null>(null);
+  // Every run this page itself started or came back with (null: one with no claim), and
+  // whether its snapshot has been on disk at all - writeLiveSnapshot, whose key is shared
+  // by this browser's tabs.
+  const ownRunsRef = useRef<Set<number | null>>(new Set());
+  const snapshotSeenRef = useRef(false);
   // when this page opened (the same run on two tabs stays with the first - see settleControl)
   const openedAtRef = useRef(Date.now());
   const meId = useRef<string>(
@@ -506,7 +530,9 @@ export function LiveMode({
   // the "แตะเพื่อเล่นเสียงต่อ" banner already handles. Kept on screen because the
   // alternative is pure silence with the countdown still running and nothing saying
   // why. Purely informational: it never touches the show clock or the advance logic.
-  const [audioFault, setAudioFault] = useState<{ id: string; title: string } | null>(null);
+  // `device`: the sound device went away under the file, the file itself is fine
+  const noRoomToldRef = useRef(false); // "the disk is full" said once a page, not per song
+  const [audioFault, setAudioFault] = useState<{ id: string; title: string; device?: boolean } | null>(null);
   const audioFaultRef = useRef<string | null>(null); // itemId already reported (dedupe)
   const [audioCurrent, setAudioCurrent] = useState(0);
   const [audioDuration, setAudioDuration] = useState(0);
@@ -568,6 +594,8 @@ export function LiveMode({
   }>({ last: 0, timer: null, pending: new Map() });
   // tracks which item already triggered an auto-advance (no-audio items)
   const autoAdvanceForRef = useRef<string | null>(null);
+  // The last row, once it has run out in Auto with nothing after it (see Auto's advance).
+  const ranOutLastRef = useRef<string | null>(null);
   // The item the show has COMMITTED to sound out + when it started (controller clock).
   // Distinct from currentIndex: in Manual you can cue/browse another row while THIS
   // keeps playing. Broadcast so a remote (file-less) controller can still tell the
@@ -588,9 +616,22 @@ export function LiveMode({
 
   // ticking clock — 500ms is plenty for a whole-second countdown and halves the
   // re-render rate of this (large) component vs 250ms.
+  // Every tick goes through here so that a clock that jumped (the lid closed, Windows asleep)
+  // is seen BEFORE the render that would read the jump as a row run out: the re-anchor and the
+  // new `now` land in one render (onClockGapRef, by Auto's advance).
+  const lastTickRef = useRef(Date.now());
+  const onClockGapRef = useRef<(gapMs: number) => void>(() => {});
+  function tickClock() {
+    const t = Date.now();
+    const gap = t - lastTickRef.current;
+    lastTickRef.current = t;
+    if (gap > CLOCK_GAP_MS) onClockGapRef.current(gap);
+    setNow(t);
+  }
   useEffect(() => {
-    const id = setInterval(() => setNow(Date.now()), 500);
+    const id = setInterval(tickClock, 500);
     return () => clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- tickClock reads refs and a setter only
   }, []);
 
   // TWO RUNS AT ONCE (lib/live-arbitration.ts "conflict"): another device runs a
@@ -608,6 +649,7 @@ export function LiveMode({
 
   // Live tools sheet (presentation only): open/closed + where focus goes.
   const [toolsOpen, setToolsOpen] = useState(false);
+  const toolsPanelRef = useRef<HTMLDivElement>(null);
   const toolsBtnRef = useRef<HTMLButtonElement>(null);
   const toolsCloseRef = useRef<HTMLButtonElement>(null);
   // the key that opened the sheet (⋯, or CONSOLE's เปลี่ยน) — focus goes back to it
@@ -760,12 +802,23 @@ export function LiveMode({
           if (typeof snap.endedId === "string" && snap.endedId === committedRef.current.id) {
             endedItemRef.current = snap.endedId;
           }
-          setState(restored);
+          // By the row it stood on, not its number: a row added or taken out above it while this
+          // page was gone put the NOW card on another row than the one the sound comes back
+          // on (2026-10-30, hunt 12). An older snapshot, or that row gone: the number, in range.
+          const list = itemsRef.current;
+          const byId =
+            typeof snap.currentItemId === "string" ? list.findIndex((it) => it.id === snap.currentItemId) : -1;
+          setState({
+            ...restored,
+            currentIndex: byId >= 0 ? byId : Math.min(restored.currentIndex, Math.max(0, list.length - 1)),
+          });
           // The claim comes back with the show: it is the run's identity, so the first
           // device is the same run again after a reload.
           if (typeof snap.controllerSince === "number") {
             controllerSinceRef.current = snap.controllerSince;
           }
+          ownRunsRef.current.add(typeof snap.controllerSince === "number" ? snap.controllerSince : null);
+          snapshotSeenRef.current = true;
           // Restore "the show already ended" too. จบโชว์ leaves begun:true, so a
           // device that reloads afterwards used to come back believing the show
           // was still on — and since `ended` now travels between devices, it
@@ -819,11 +872,45 @@ export function LiveMode({
       // by this browser's tabs - a viewer tab clearing it left the tab running the show
       // with nothing to come back to after a crash.
       if (!isControllerRef.current) return;
+      // ONE key per browser, and two tabs can hold two different runs (2026-10-30, hunt 12). A
+      // tab left on the afternoon's ended rehearsal re-wrote it every 30 s - over the snapshot
+      // of the show running in another tab, whose crash then came back as the rehearsal - and
+      // put it back after a reset elsewhere, so รีเซ็ต did not stick. An idle tab that never
+      // heard the run cleared it on every hide. So look first. A failed read: as before.
+      const key = `cueiq:live:${eventId}`;
+      let onDisk: { controllerSince?: unknown; savedAt?: unknown } | null = null;
+      let diskKnown = true;
+      try {
+        onDisk = JSON.parse(localStorage.getItem(key) ?? "null");
+      } catch {
+        diskKnown = false;
+      }
+      if (diskKnown) {
+        const diskRun = onDisk?.controllerSince;
+        if (s.begun) {
+          // A show that is over or held keeps its copy fresh only while the copy is its own:
+          // never over another run, and never back after someone cleared it. The first write
+          // still goes (จบโชว์ inside the first debounce). A running page always writes.
+          if (restoreHeldRef.current || showEndedRef.current) {
+            if (!onDisk && snapshotSeenRef.current) return;
+            if (typeof diskRun === "number" && diskRun !== controllerSinceRef.current) return;
+          }
+        } else if (onDisk) {
+          // No show here: only a run this page ran or reset is its to clear - or one past the
+          // restore's own age limit, which belongs to nobody.
+          const mine =
+            typeof diskRun === "number" ? ownRunsRef.current.has(diskRun) : ownRunsRef.current.size > 0;
+          const abandoned =
+            typeof onDisk.savedAt !== "number" || Date.now() - onDisk.savedAt >= 6 * 60 * 60 * 1000;
+          if (!mine && !abandoned) return;
+        }
+      }
       if (s.begun) {
         localStorage.setItem(
-          `cueiq:live:${eventId}`,
+          key,
           JSON.stringify({
             state: s,
+            currentItemId: itemsRef.current[s.currentIndex]?.id ?? undefined,
             committed: committedRef.current,
             // the committed row whose sound is over (NOW's own pad faded it): a reload offered
             // "แตะเพื่อเล่นเสียงต่อ" and the tap brought it back mid-song (2026-10-25 hunt)
@@ -853,8 +940,9 @@ export function LiveMode({
             savedAt: Date.now(),
           })
         );
+        snapshotSeenRef.current = true;
       } else {
-        localStorage.removeItem(`cueiq:live:${eventId}`);
+        localStorage.removeItem(key);
       }
     } catch {}
   }
@@ -936,11 +1024,17 @@ export function LiveMode({
   // Tell the operator WHICH track died and that this device is now silent. Reported
   // once per track (the media "error" event and the play() rejection normally both
   // fire for the same file); cleared when the show moves on to another track.
-  function reportAudioFault(itemId: string | null) {
+  function reportAudioFault(itemId: string | null, device = false) {
     if (!itemId || audioFaultRef.current === itemId) return;
     audioFaultRef.current = itemId;
     const title = itemsRef.current.find((it) => it.id === itemId)?.title || "รายการนี้";
-    setAudioFault({ id: itemId, title });
+    setAudioFault({ id: itemId, title, device });
+    if (device) {
+      toast.error(`เสียงหลุดกลางเพลง: ${title}`, {
+        description: "อุปกรณ์เสียงหลุด ไฟล์เพลงไม่ได้เสีย — เช็กสาย แล้วแตะ “เล่นเสียงต่อ”",
+      });
+      return;
+    }
     toast.error(`เล่นไฟล์เสียงไม่สำเร็จ: ${title}`, {
       description: "เครื่องนี้จะไม่มีเสียงในรายการนี้ (โชว์ยังเดินต่อ) — ลองโหลดไฟล์เพลงใหม่",
     });
@@ -1018,7 +1112,12 @@ export function LiveMode({
       // missing codec). Only the element that's meant to be SOUNDING counts — an
       // idle one being reloaded or cleared (src="" on unmount) isn't a fault.
       if (!playingIdRef.current) return;
-      reportAudioFaultRef.current(playingIdRef.current);
+      reportAudioFaultRef.current(playingIdRef.current, /AUDIO_RENDERER/i.test(a.error?.message ?? ""));
+      // Dead, whatever it says: a failed element keeps paused=false, so audioPlaying stayed true,
+      // the rescue banner never came, and the Stalled alarm over it sent the operator to a PAUSE
+      // and RUN that played the same dead element (2026-10-30, hunt 12: the picked USB interface
+      // pulled mid-song - plugged back in, the PA stayed silent until the next row).
+      setAudioPlaying(false);
     });
     a.addEventListener("timeupdate", () => {
       if (a !== audioRef.current) return;
@@ -1037,7 +1136,14 @@ export function LiveMode({
     a.addEventListener("playing", () => {
       // (the unlocking silence is no sound: a player NOW's own pad stood up was primed in that
       // tap and its silence said "playing" over a row whose sound had just ended)
-      if (a === audioRef.current && a.src !== SILENT_WAV) setAudioPlaying(true);
+      if (a === audioRef.current && a.src !== SILENT_WAV) {
+        setAudioPlaying(true);
+        // the track that failed is sounding again (a dead element reloaded): the banner is over
+        if (audioFaultRef.current && audioFaultRef.current === playingIdRef.current) {
+          audioFaultRef.current = null;
+          setAudioFault(null);
+        }
+      }
     });
     a.addEventListener("pause", () => {
       // Every app-initiated stop passes through here too — playItemAudio pauses
@@ -1135,9 +1241,15 @@ export function LiveMode({
         | (HTMLAudioElement & { setSinkId?: (id: string) => Promise<void> })
         | null;
       if (!el?.setSinkId) return;
-      el.setSinkId(sinkId).catch(() => el.setSinkId!("").catch(() => {}));
+      return el.setSinkId(sinkId).catch(() => el.setSinkId!("").catch(() => {}));
     };
-    for (const el of playersRef.current) route(el);
+    for (const el of playersRef.current) {
+      const routed = route(el);
+      // A route landed on an element the old device's loss had killed (the cable back in, or
+      // the picker's fall to the default): it comes back at the show's position, by itself -
+      // after the route, so its first moments are not on the wrong device (2026-10-30, hunt 12).
+      if (el === audioRef.current) routed?.finally(() => reviveDeadPrimaryRef.current());
+    }
     // an output chosen mid-show: the pads' elements are made now too, not at a press
     if (stateRef.current.begun) warmRoutedPool();
     // eslint-disable-next-line react-hooks/exhaustive-deps -- warmRoutedPool reads refs only
@@ -1561,7 +1673,17 @@ export function LiveMode({
           // NULL too for a local OVERRIDE of a row that has a master: filed under the R2
           // key, the record vouched for those bytes AS that master, and after
           // "กลับไปใช้ต้นฉบับ" the next open played the discarded take (2026-10-27).
-          if (!pickWins) saveAudio(eventId, it.id, blob, name, local?.blob ? null : path).catch(() => {});
+          // A full disk must not stop the show, and it must not pass unsaid either: the row says
+          // "พร้อม" on bytes held in memory only, gone at the next offline start (2026-10-30, hunt 12).
+          if (!pickWins) {
+            saveAudio(eventId, it.id, blob, name, local?.blob ? null : path).catch((e) => {
+              if ((e as { name?: string } | null)?.name !== "QuotaExceededError" || noRoomToldRef.current) return;
+              noRoomToldRef.current = true;
+              toast.warning("พื้นที่ในเครื่องเต็ม เก็บไฟล์เพลงลงเครื่องไม่ได้", {
+                description: "รอบนี้ยังเล่นได้ แต่ปิดแอปแล้วต้องโหลดใหม่ — ล้างโชว์เก่าที่ “พื้นที่ในเครื่อง”",
+              });
+            });
+          }
           /* …and tell the SHARED library cache too, but only about bytes that BELONG in it:
              · `fromNetwork` — a cache hit is already filed, and a per-device local override
                has no `path` to file it under (that null is how audio-store marks "the only
@@ -1762,7 +1884,10 @@ export function LiveMode({
   if (!deviceIdRef.current) deviceIdRef.current = getDeviceId();
   // claims show_main again for this device - set while it is the begun controller
   const reclaimMainRef = useRef<(() => void) | null>(null);
+  // this page is giving way as a COPY of the run another tab of this browser keeps
+  const yieldedAsCopyRef = useRef(false);
   useEffect(() => {
+    yieldedAsCopyRef.current = false; // read by the cleanup of the pass before this one
     // A show ENDED longer ago than the encore hold (endedLong) holds no MAIN either: a page
     // left open since the rehearsal kept the claim and its heartbeat until a reset, and
     // refused the PA's START at night. Playing on claims it again.
@@ -1796,11 +1921,28 @@ export function LiveMode({
       current = false;
       reclaimMainRef.current = null;
       clearInterval(hb);
+      // A copy of the run on a second tab has the SAME device id as the tab that keeps the
+      // show: this delete took the running tab's row, and for up to 30 s (its next heartbeat)
+      // the MAIN chip was gone and START elsewhere not refused (2026-10-30, hunt 12).
+      if (yieldedAsCopyRef.current) return;
       // only deletes if WE still hold it — a hand-off that already moved the row to
       // the new main is left intact (releaseAuthority matches on our device_id).
       releaseAuthority(eventId, "show_main", did);
     };
   }, [isController, state.begun, eventId, restoreHeld, endedLong]);
+
+  // The sign-out in ANOTHER tab of this browser asks too (lib/live-guard.ts, 2026-10-30, hunt
+  // 12): the session is shared, and the flag isLiveShowActive reads is one per tab. Only while
+  // this page runs a show - not one that is over or held. Touches nothing but its own key.
+  useEffect(() => {
+    if (!(isController && state.begun) || showEnded || restoreHeld) return;
+    writeLiveShowBeacon(true);
+    const id = setInterval(() => writeLiveShowBeacon(true), 20_000);
+    return () => {
+      clearInterval(id);
+      writeLiveShowBeacon(false);
+    };
+  }, [isController, state.begun, showEnded, restoreHeld]);
 
   // A VIEWER NEVER SOUNDS (SINGLE AUDIO SOURCE, พี่ 2026-10-04: the device that started
   // the show is the only one that plays it). Viewers used to follow the controller's
@@ -1936,6 +2078,7 @@ export function LiveMode({
           return;
         }
         // yield: this page was idle, or it ran the same show as a copy (two tabs)
+        yieldedAsCopyRef.current = theirRun != null && theirRun === controllerSinceRef.current;
         isControllerRef.current = false;
         setIsController(false);
         // the viewer effects pause it and turn its sound off for this show (a verdict,
@@ -2338,6 +2481,30 @@ export function LiveMode({
   // loop_audio=false back, the element's loop flag followed, and the MC's bed ran out
   // to silence. Cleared when a toggle with a network writes it, or the server agrees.
   const pendingLoopRef = useRef<Record<string, boolean>>({});
+  // Its own read, outside the list's: a slow answer here never holds the rows back. A failed
+  // or empty answer keeps what is on screen; only the latest asked may land.
+  const showTimesSeqRef = useRef(0);
+  async function readShowTimes() {
+    const seq = ++showTimesSeqRef.current;
+    try {
+      const { data } = await createClient()
+        .from("events")
+        .select("event_date, show_start_time, hard_out_time")
+        .eq("id", eventId)
+        .maybeSingle();
+      const row = data as { event_date?: string | null; show_start_time?: string | null; hard_out_time?: string | null } | null;
+      if (seq !== showTimesSeqRef.current || !row || !("hard_out_time" in row)) return;
+      setShowTimes((prev) =>
+        prev.eventDate === row.event_date &&
+        prev.showStartTime === row.show_start_time &&
+        prev.hardOutTime === row.hard_out_time
+          ? prev
+          : { eventDate: row.event_date, showStartTime: row.show_start_time, hardOutTime: row.hard_out_time }
+      );
+    } catch {
+      /* the old times stand */
+    }
+  }
   // `depth` only bounds the self-replay below; every other caller omits it.
   async function refetchItems(depth = 0): Promise<void> {
     if (writesInFlightRef.current > 0) {
@@ -2348,6 +2515,7 @@ export function LiveMode({
     const seq = ++refetchSeqRef.current;
     const epoch = writeEpochRef.current;
     missedRefetchRef.current = false;
+    void readShowTimes();
     const supabase = createClient();
     // refresh songs too, so a library file uploaded on another device resolves
     const [itemsRes, songsRes] = await Promise.all([
@@ -2399,6 +2567,18 @@ export function LiveMode({
       // a newer refetch overtook us while we were asking — let it apply instead
       if (seq !== refetchSeqRef.current) return;
     }
+    // A real empty list (the event deleted on a phone) under a show that has begun: applied,
+    // it swapped the whole board for the "no rows" page, PAUSE and Auto Mute gone with it,
+    // while the audio - which lives outside the page - played on with no way to stop it
+    // (2026-10-30, hunt 12). The show goes on with the list it has, and says so.
+    if (wouldEmptyItems && stateRef.current.begun) {
+      toast.warning("เซ็ตลิสต์ของงานนี้บนเซิร์ฟเวอร์ว่างแล้ว (งานอาจถูกลบ)", {
+        id: "live-list-empty",
+        description: "โชว์เดินต่อตามลิสต์ในเครื่องนี้ — ปุ่มทุกปุ่มยังใช้ได้",
+        duration: Infinity,
+      });
+      return;
+    }
     if (songsRes.data) {
       const map: SongAudioMap = {};
       for (const s of songsRes.data as {
@@ -2435,8 +2615,39 @@ export function LiveMode({
       });
     }
     const s = stateRef.current;
-    const curId = itemsRef.current[s.currentIndex]?.id;
-    setItems(newItems);
+    const prevItems = itemsRef.current;
+    const curId = prevItems[s.currentIndex]?.id;
+    // A row deleted elsewhere while it SOUNDS here (2026-10-30, hunt 12). The phone's on-air lock
+    // only knows what it has heard: a PA off the Wi-Fi tells nobody, and it read the delete when
+    // it came back. The row after it then slid under the running clock: NOW showed a song the PA
+    // was not playing, part of its time gone, and Auto moved on from it at that clock's end -
+    // that song never played. The sound is the truth: the row stays in this list until the show
+    // has moved off it, and Auto goes on to the right next row. A viewer keeps the row its
+    // device is running on the same way, or its index would mean another row than the PA's.
+    const serverIds = new Set(newItems.map((it) => it.id));
+    const held = new Set<string>();
+    prevItems.forEach((it, i) => {
+      if (serverIds.has(it.id)) return;
+      const keep = isControllerRef.current
+        ? soundsHere(it.id)
+        : s.begun && s.running && it.id === curId && it.id === followItemIdRef.current;
+      if (!keep) return;
+      newItems.splice(Math.min(i, newItems.length), 0, it);
+      held.add(it.id);
+      if (!heldGoneRef.current.has(it.id)) {
+        toast.warning(`“${it.title || "แถวนี้"}” ถูกลบจากเครื่องอื่น`, {
+          description: "เล่นต่อจนจบแถวนี้ แล้วค่อยเอาออกจากลิสต์",
+        });
+      }
+    });
+    heldGoneRef.current = held;
+    // A re-read that brought nothing new changes nothing: the same array, so no memo and no
+    // effect keyed on the rows runs because of it (the 60 s look below depends on this).
+    const changed = JSON.stringify(newItems) !== JSON.stringify(prevItems);
+    if (changed) {
+      itemsRef.current = newItems; // apply() below speaks of these rows, before their render
+      setItems(newItems);
+    }
     // A landed take held local (heldLocalRef) lets go once a read issued AFTER it left -
     // songs included - is the one applied here: the row goes from the take straight to its
     // new path, in this same render, never through the master it replaced.
@@ -2455,11 +2666,18 @@ export function LiveMode({
     if (newIdx >= 0 && newIdx !== s.currentIndex) {
       setState((prev) => ({ ...prev, currentIndex: newIdx }));
     } else if (newIdx < 0) {
-      // the item we were browsing was removed — clamp into range, keep timers
-      setState((prev) => ({
-        ...prev,
-        currentIndex: Math.min(prev.currentIndex, Math.max(0, newItems.length - 1)),
-      }));
+      const at = Math.min(s.currentIndex, Math.max(0, newItems.length - 1));
+      if (isControllerRef.current && s.begun && !showEndedRef.current) {
+        // The row the show stood on is gone and nothing of it sounds (a talk with no file, a
+        // paused song, a cued row). Its clock is no other row's (see above): the next row waits
+        // as a cue, frozen, for RUN - told to every device, as any cue is.
+        if (committedRef.current.id === curId) committedRef.current = { id: null, anchor: null };
+        apply({ ...s, currentIndex: at, running: false, itemStartedAt: null, itemElapsedAtPause: 0 });
+        toast.warning("แถวที่โชว์อยู่ถูกลบจากเครื่องอื่น", { description: "หยุดรอที่แถวถัดไป — กด RUN เมื่อพร้อม" });
+      } else {
+        // the item we were browsing was removed — clamp into range, keep timers
+        setState((prev) => ({ ...prev, currentIndex: at }));
+      }
     }
   }
   // ref so the realtime subscription (registered once) always calls the latest
@@ -2501,6 +2719,20 @@ export function LiveMode({
     };
     document.addEventListener("visibilitychange", onVis);
     return () => document.removeEventListener("visibilitychange", onVis);
+  }, []);
+
+  // The other triggers all need something to happen to THIS page. A "setlist-changed" lost on
+  // the way (the phone's socket half dead after a wake) left a PA that stays visible, on a
+  // healthy socket, on the old list for the rest of the show (2026-10-30, hunt 12). So it looks
+  // once a minute, with a network. A read, not a write: the warning below is about unbounded
+  // WRITES on a schedule. Nothing waits on it (a newer read drops a hung one), it stands back
+  // while a write of this page's is out, and on an unchanged list it changes nothing at all.
+  useEffect(() => {
+    const id = setInterval(() => {
+      if (typeof navigator !== "undefined" && navigator.onLine === false) return;
+      refetchRef.current();
+    }, LIST_REREAD_MS);
+    return () => clearInterval(id);
   }, []);
 
   // Send an offline reorder once the network is back — the toast told the operator
@@ -3280,7 +3512,8 @@ export function LiveMode({
         const url = audioUrls[cur.id];
         // the row's file was replaced while it sat paused: load the new one at the
         // show's position (the branch below) instead of resuming the old bytes
-        const replaced = playingId === cur.id && !!url && audio.paused && !holdsFile(audio, url);
+        // ...and a dead element (a media error, hunt 12) resumes nothing: it loads again too
+        const replaced = playingId === cur.id && !!url && (!!audio.error || (audio.paused && !holdsFile(audio, url)));
         if (playingId === cur.id && !replaced) {
           // resuming the same (paused) track — continue from where it stopped
           if (url) {
@@ -3551,7 +3784,7 @@ export function LiveMode({
   // after จบโชว์ (begun stays true): "ย่อหรือตัดรายการท้ายโชว์" grew on every screen of a
   // show already over, until someone pressed Reset
   const hardOut = state.begun && !showEnded
-    ? hardOutReading({ eventDate, showStartTime, hardOutTime, projectedEndMs: now + showRemaining * 1000, nowMs: now })
+    ? hardOutReading({ ...showTimes, projectedEndMs: now + showRemaining * 1000, nowMs: now })
     : null;
   const itemEndClock = nowClock(new Date(now + Math.max(0, remaining) * 1000));
   // the dock strip's playhead: where the show is in its PLAN, not wall-clock time
@@ -3595,6 +3828,31 @@ export function LiveMode({
     back?.focus();
     if (document.activeElement !== back) toolsBtnRef.current?.focus();
   };
+  // The sheet's own key guard (its onKeyDown) sees only keys aimed inside it, and a key in it can
+  // take the focus away with it: ล้าง swaps for its question, รีเซ็ต goes, จบโชว์ turns disabled,
+  // and Chromium hands the focus to <body> (measured on Electron 45) with the sheet still open.
+  // The next key then reached the window: Enter, the natural yes to ล้าง's question, fired GO
+  // behind the modal, Space paused the show or STARTed it after a reset, and Esc did nothing
+  // (2026-10-30, hunt 12). In the capture phase, so SET MIXER's Enter on the window never sees it.
+  // A key aimed inside the sheet, or a dialog portalled from it (Feedback), is theirs. Nothing
+  // here touches the show.
+  useEffect(() => {
+    if (!toolsOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      const t = e.target;
+      if (t instanceof Element && (toolsPanelRef.current?.contains(t) || t.closest('[role="dialog"]'))) return;
+      const portalled = document.querySelector('[role="dialog"][data-state="open"]');
+      if (e.key === "Escape" && portalled) return; // Radix closes that one, not the sheet under it
+      e.stopPropagation();
+      if (portalled) return; // its focus trap takes the focus back; never fight it
+      if (e.key === "Escape") closeTools();
+      else toolsPanelRef.current?.focus(); // back in: a Tab goes on from here to the sheet's first key
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+    // closeTools reads refs and a state setter only
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [toolsOpen]);
   // The sheet is aria-modal, so the page under it must not move: a wheel or a drag
   // on its scrim used to scroll the document and leave NOW's timer off-screen after
   // the sheet closed. Open: freeze the document's scroll (and remember where it
@@ -3631,14 +3889,17 @@ export function LiveMode({
     if (url) {
       endedItemRef.current = null;
       // already playing this exact item (e.g. started early via negative buffer) — don't restart
-      if (playingIdRef.current === itemId && !audio.paused) {
+      // (a dead element keeps paused=false: it is not "already playing", and it comes back at
+      // the show's position, not from the top - hunt 12)
+      const dead = playingIdRef.current === itemId && !!audio.error;
+      if (playingIdRef.current === itemId && !audio.paused && !dead) {
         setAudioPlaying(true);
         return;
       }
       rowTakesPrimary(itemId);
       audio.pause();
       audio.src = url;
-      audio.currentTime = 0;
+      audio.currentTime = dead ? filePos(itemId, committedPos(itemId)) : 0;
       levelOnto(audio, itemId);
       audio.play().catch((err) => onPlayRejected(itemId, err));
       setPlayingId(itemId);
@@ -3746,6 +4007,35 @@ export function LiveMode({
       (it.song_id ? songSignal?.[it.song_id]?.duration : null);
     return len && len > 0 ? s % len : s;
   }
+
+  /** How far into a row the show stands, by the committed clock - seconds; 0 if it is not the committed one. */
+  function committedPos(itemId: string): number {
+    const c = committedRef.current;
+    if (c.id !== itemId || c.anchor == null) return 0;
+    return ((c.pausedAt ?? Date.now()) - c.anchor) / 1000;
+  }
+
+  /** The primary died with a media error while it sounded (see the error listener), on the device
+   *  running the show: load it again where the show stands. Only ever an element with an error -
+   *  a healthy one is never touched - and one the operator has not paused: RUN brings that back. */
+  function reviveDeadPrimary() {
+    const a = audioRef.current;
+    const id = playingIdRef.current;
+    if (!a?.error || a.paused || !id || !isControllerRef.current) return;
+    const s = stateRef.current;
+    if (!s.begun || showEndedRef.current || committedRef.current.id !== id) return;
+    const url = audioUrlsRef.current[id];
+    if (!url) return;
+    rowTakesPrimary(id);
+    a.src = url;
+    levelOnto(a, id);
+    a.currentTime = filePos(id, committedPos(id));
+    a.play()
+      .then(() => setAudioPlaying(true))
+      .catch((err) => onPlayRejected(id, err));
+  }
+  const reviveDeadPrimaryRef = useRef(reviveDeadPrimary);
+  reviveDeadPrimaryRef.current = reviveDeadPrimary;
 
   // "เล่นซ้อน" (พี่ 2026-10-17 "A จบตอน B เข้า"): the row comes in over the end of the sounding
   // song. It starts from its top on the spare element and takes the screen (its countdown
@@ -3869,6 +4159,32 @@ export function LiveMode({
     const tail = tailRef.current;
     return !!tail && tail.itemId === id && !idleEl(tail.el);
   }
+  /** A row's file is really coming out of this device now (a paused NOW is on air, not sounding). */
+  function soundsHere(id: string): boolean {
+    if (!onAirRow(id)) return false;
+    if (id !== playingIdRef.current) return true;
+    const a = audioRef.current;
+    return !!a && !a.paused && !a.ended && !a.error;
+  }
+  // A row kept after its delete (refetchItems) goes once the show stands elsewhere and it has
+  // stopped sounding here. Looked at on the clock: a layer or a tail ends with no state change.
+  useEffect(() => {
+    const held = heldGoneRef.current;
+    if (held.size === 0) return;
+    const cur = items[state.currentIndex]?.id;
+    const done = [...held].filter((id) => id !== cur && !(isControllerRef.current && soundsHere(id)));
+    if (done.length === 0) return;
+    for (const id of done) {
+      held.delete(id);
+      deferredOnAirRef.current.delete(id); // no loop will ever reach it to clear it
+    }
+    const list = items.filter((it) => !done.includes(it.id));
+    itemsRef.current = list;
+    setItems(list);
+    const at = list.findIndex((it) => it.id === cur);
+    if (at >= 0 && at !== state.currentIndex) setState((prev) => ({ ...prev, currentIndex: at }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- soundsHere reads refs
+  }, [now, items, state.currentIndex, playingId, padLayers]);
   // A row whose new file the on-air lock deferred is stuck: its signature already
   // changed, so nothing re-triggers the download. Once that row stops sounding (NOW
   // moved on, its layer ended), ask for the loop again — this is the only path that
@@ -4259,7 +4575,8 @@ export function LiveMode({
     const anchor = committedRef.current.anchor ?? state.itemStartedAt;
     const pos = anchor ? (Date.now() - anchor) / 1000 : 0;
     // not a file replaced while paused (a sounding element is never swapped here)
-    const held = playingId === sid && (!audio.paused || holdsFile(audio, url));
+    // ...nor a dead one (a media error, hunt 12): the file is loaded again
+    const held = playingId === sid && !audio.error && (!audio.paused || holdsFile(audio, url));
     if (!held) {
       rowTakesPrimary(sid);
       audio.src = url;
@@ -4358,6 +4675,7 @@ export function LiveMode({
     const ts = Date.now();
     startLandedAtRef.current = ts;
     controllerSinceRef.current = ts; // this device began the show → it is the controller as of now
+    ownRunsRef.current.add(ts);
     // Read through the refs, not the render closure: start() now awaits the
     // authority probe first, so a mode change or a setlist refetch can have landed
     // in between.
@@ -4411,7 +4729,7 @@ export function LiveMode({
       const soundIdx = soundingId
         ? items.findIndex((it) => it.id === soundingId)
         : -1;
-      const haveLocalAudio = !!playingId && !!audio && !audio.paused;
+      const haveLocalAudio = !!playingId && !!audio && !audio.paused && !audio.error;
       const idx = soundIdx >= 0 ? soundIdx : state.currentIndex;
       const cur = items[idx];
       // A Loop's file goes round inside its slot: where the FILE is says nothing of how long the
@@ -4444,7 +4762,8 @@ export function LiveMode({
       });
       const url = cur ? audioUrls[cur.id] : undefined;
       if (cur && url && audio) {
-        if (playingId !== cur.id || (!haveLocalAudio && !holdsFile(audio, url))) {
+        // (a dead element too - a media error, hunt 12: playing it again plays nothing)
+        if (playingId !== cur.id || !!audio.error || (!haveLocalAudio && !holdsFile(audio, url))) {
           // a different track is loaded (or this row's file was replaced while it
           // sat paused) — switch to the anchor track and seek
           rowTakesPrimary(cur.id);
@@ -4586,7 +4905,7 @@ export function LiveMode({
     const remMs = runBlock(items, state.currentIndex) * 1000 - (Date.now() - state.itemStartedAt);
     if (!(remMs > 0)) return;
     // +5 ms: the render then reads the moment as reached, never a hair before it
-    const id = setTimeout(() => setNow(Date.now()), remMs + 5);
+    const id = setTimeout(tickClock, remMs + 5);
     return () => clearTimeout(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state.mode, state.running, state.itemStartedAt, state.currentIndex, items, now]);
@@ -4601,10 +4920,46 @@ export function LiveMode({
     const rem = runBlock(items, state.currentIndex) - (Date.now() - state.itemStartedAt) / 1000;
     if (!(rem > 0) || rem > ENTRY_COUNT_SEC + 1) return;
     const toBeat = rem - Math.floor(rem) || 1; // to the next whole second of `remaining`
-    const id = setTimeout(() => setNow(Date.now()), toBeat * 1000 + 5);
+    const id = setTimeout(tickClock, toBeat * 1000 + 5);
     return () => clearTimeout(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state.mode, state.running, state.itemStartedAt, state.currentIndex, items, now]);
+
+  // The clock jumped under a running show: the lid closed, Windows slept (a prevent-display-sleep
+  // blocker stops neither). The row's clock is wall time and the file is not: 30 s asleep at 1:00
+  // of a 4:00 song, the file came back at 1:00 and AUTO cut it 30 s before its end; 5 min asleep,
+  // the next song started by itself the moment the lid opened (2026-10-30, hunt 12).
+  // · A file sounding is the truth, hidden or not. A loop goes round, so it is not one.
+  // · With no such file, the row's time is shifted by the gap - only on a visible page: a hidden
+  //   web tab's ticks are throttled, and its wall clock is still right.
+  // Only the device running the show moves it; viewers follow the state it sends. The show's
+  // total and Hard Out stay on real time (startedAt, `now`).
+  onClockGapRef.current = (gapMs) => {
+    if (!isControllerRef.current || restoreHeldRef.current || showEndedRef.current) return;
+    const s = stateRef.current;
+    if (!s.begun || !s.running || s.itemStartedAt == null) return;
+    const cur = itemsRef.current[s.currentIndex];
+    if (!cur) return;
+    const a = audioRef.current;
+    const visible = document.visibilityState === "visible";
+    const fileSounds =
+      !cur.loop_audio && !!a && playingIdRef.current === cur.id && !a.paused && !a.ended && !a.error;
+    let itemStartedAt: number;
+    if (fileSounds) {
+      itemStartedAt = Date.now() - a.currentTime * 1000;
+      if (Math.abs(itemStartedAt - s.itemStartedAt) < CLOCK_DRIFT_MS) return;
+    } else {
+      if (!visible) return;
+      itemStartedAt = s.itemStartedAt + gapMs;
+    }
+    const lost = Math.round(Math.abs(itemStartedAt - s.itemStartedAt) / 1000);
+    apply({ ...s, itemStartedAt });
+    if (visible) {
+      toast.warning(`เครื่องหยุดไป ${lost} วินาที`, {
+        description: fileSounds ? "เวลารายการเดินตามเพลงต่อ" : "เวลารายการนี้ไม่นับช่วงที่เครื่องหยุด",
+      });
+    }
+  };
 
   // in Auto mode, advance to the next item when the countdown (duration + buffers)
   // reaches 0 — NOT when the audio file ends. Respects the set buffer time.
@@ -4616,8 +4971,21 @@ export function LiveMode({
     if (!isControllerRef.current) return;
     const cur = items[state.currentIndex];
     if (!cur) return;
-    if (state.currentIndex >= items.length - 1) return;
-    if (remaining > 0) return;
+    if (ranOutLastRef.current !== cur.id) ranOutLastRef.current = null;
+    // The last row runs on past its slot (an MC's closing bed, until Auto Mute). A row added
+    // after it then made it "out of time with a next row": Auto cut the sound on the spot and
+    // landed on whatever had just been added, usually an empty 0:00 (2026-10-30, hunt 12). It ran
+    // out with nothing after it, so it waits for the operator; a row that had a next one
+    // when it ran out moves on as ever.
+    if (remaining > 0) {
+      ranOutLastRef.current = null;
+      return;
+    }
+    if (state.currentIndex >= items.length - 1) {
+      ranOutLastRef.current = cur.id;
+      return;
+    }
+    if (ranOutLastRef.current === cur.id) return;
     if (autoAdvanceForRef.current === cur.id) return;
     autoAdvanceForRef.current = cur.id;
     goto(state.currentIndex + 1, true);
@@ -4741,6 +5109,10 @@ export function LiveMode({
     if (e.ctrlKey || e.metaKey || e.altKey) return;
     const el = e.target as HTMLElement | null;
     const tag = el?.tagName;
+    // A question on screen (จบการแสดงเลยไหม, ล้าง's): Space on its button is that button. Taken
+    // here it answered nothing and paused the show instead (2026-10-30, hunt 12; Enter already
+    // had this rule, set-mixer.tsx).
+    if (el?.closest?.('[role="dialog"]')) return;
     // A level slider is not a text field: Chromium (the desktop app) focuses an
     // <input type="range"> on a mouse drag, and after one ride of STAGE's level
     // Space / N / → did nothing (→ moved the level instead) - dead air in Manual.
@@ -4748,7 +5120,7 @@ export function LiveMode({
     const isRange = tag === "INPUT" && (el as HTMLInputElement).type === "range";
     if (isRange) {
       if (e.code === "Space" || e.code === "KeyN" || e.key === "n" || e.key === "N" ||
-          e.key === "ArrowRight" || e.key === "ArrowLeft")
+          e.key === "ArrowRight" || e.key === "ArrowLeft" || RANGE_JUMP_KEYS.has(e.key))
         e.preventDefault();
     } else if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || el?.isContentEditable)
       return;
@@ -5386,7 +5758,9 @@ export function LiveMode({
           <span className="flex min-w-0 items-center gap-1.5">
             <VolumeX aria-hidden className="size-4 shrink-0" />
             <span className="min-w-0">
-              เล่นไฟล์เสียงไม่สำเร็จ: “{audioFault.title}” — เครื่องนี้ไม่มีเสียง (โชว์ยังเดินต่อ) · ลองโหลดไฟล์เพลงใหม่
+              {audioFault.device
+                ? `เสียงหลุดกลางเพลง: “${audioFault.title}” — อุปกรณ์เสียงหลุด ไฟล์เพลงไม่ได้เสีย · เช็กสาย แล้วแตะเล่นเสียงต่อ`
+                : `เล่นไฟล์เสียงไม่สำเร็จ: “${audioFault.title}” — เครื่องนี้ไม่มีเสียง (โชว์ยังเดินต่อ) · ลองโหลดไฟล์เพลงใหม่`}
             </span>
           </span>
           <button
@@ -6143,6 +6517,8 @@ export function LiveMode({
           if (e.key === "Tab" && e.currentTarget.contains(e.target as Node)) {
             wrapTabInside(e, e.currentTarget.querySelector<HTMLElement>('[role="dialog"]'));
           }
+          // the scrubber and the levels in here: see RANGE_JUMP_KEYS
+          if (RANGE_JUMP_KEYS.has(e.key) && (e.target as HTMLInputElement).type === "range") e.preventDefault();
           // Every other key stays in the modal. The window's Live shortcuts would
           // otherwise fire behind it: Space on the focused ปิด would START the show
           // (or pause it mid-show) and N / → / ← would walk the setlist. React's
@@ -6158,6 +6534,7 @@ export function LiveMode({
           onClick={closeTools}
         />
         <div
+          ref={toolsPanelRef}
           role="dialog"
           aria-modal="true"
           aria-label="Live tools"
@@ -6601,6 +6978,16 @@ function LastRunRecord({
   const [asking, setAsking] = useState(false);
   const canClear = !!onClear;
   useEffect(() => setAsking(false), [seconds, at, canClear]);
+  // The focus: on the safe key when the question opens (it took the place of the key that had
+  // it, and a focus left on <body> sent the next Enter to GO), back on ล้าง when it closes
+  // (2026-10-30, hunt 12). Not after ล้างเลย: the record is gone.
+  const clearKeyRef = useRef<HTMLButtonElement>(null);
+  const focusBackRef = useRef(false);
+  useEffect(() => {
+    if (asking || !focusBackRef.current) return;
+    focusBackRef.current = false;
+    if (document.activeElement === document.body) clearKeyRef.current?.focus();
+  }, [asking]);
   return (
     <div
       className={cn(
@@ -6641,13 +7028,14 @@ function LastRunRecord({
       </div>
       {onClear &&
         (asking ? (
-          <div className="flex shrink-0 items-center gap-1.5">
-            <Button variant="ghost" onClick={() => setAsking(false)} className="h-11">
-              ไม่ล้าง
-            </Button>
+          // ไม่ล้าง on the right, where ล้าง was: a double-click on ล้าง lands on the safe key, not
+          // on the wipe it was asking about (2026-10-30, hunt 12). A dialog for the show's keys:
+          // Space and Enter here answer the question.
+          <div role="dialog" aria-label="ล้างเวลาโชว์ล่าสุด?" className="flex shrink-0 items-center gap-1.5">
             <Button
               variant="destructive-outline"
               onClick={() => {
+                focusBackRef.current = false;
                 setAsking(false);
                 onClear();
               }}
@@ -6656,11 +7044,18 @@ function LastRunRecord({
             >
               ล้างเลย
             </Button>
+            <Button autoFocus variant="ghost" onClick={() => setAsking(false)} className="h-11">
+              ไม่ล้าง
+            </Button>
           </div>
         ) : (
           <Button
+            ref={clearKeyRef}
             variant="ghost"
-            onClick={() => setAsking(true)}
+            onClick={() => {
+              focusBackRef.current = true;
+              setAsking(true);
+            }}
             className="h-11 shrink-0 text-muted-foreground"
             title="ล้างเวลาโชว์ล่าสุดที่บันทึกไว้"
           >

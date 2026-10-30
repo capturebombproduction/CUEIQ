@@ -276,7 +276,7 @@ describe("MicMapEditor · a write that did not happen leaves the standing mics s
   });
 
   it("a retry after a failure seeds again from the same standing mics", async () => {
-    supa.setTable("mic_assignments", [fail("boom"), echo]);
+    supa.setTable("mic_assignments", [ok([]), fail("boom"), ok([]), echo]);
     mount();
     fireEvent.click(screen.getByRole("button", { name: ADD }));
     await waitFor(() => expect(toast.error).toHaveBeenCalled());

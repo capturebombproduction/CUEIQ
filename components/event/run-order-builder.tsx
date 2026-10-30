@@ -407,12 +407,48 @@ export function RunOrderBuilder({
     bcast();
   }
 
+  // Is this act on stage now? (2026-10-30, hunt 12) This builder only sends, so its rows say
+  // nothing of the presses made on the board since it opened: the server is asked, in a
+  // bounded read. Deleting the live act left the caller's board with no NOW and offering the
+  // first act still waiting, while that act stood on stage. No answer: not refused - this is
+  // the screen staff fix the order from when the network is poor.
+  async function isOnStage(id: string): Promise<boolean> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const res = await Promise.race([
+        supabase.from("run_sequence").select("status").eq("id", id),
+        new Promise<null>((r) => {
+          timer = setTimeout(() => r(null), 3000);
+        }),
+      ]);
+      const row = (res?.data as { status?: string }[] | null | undefined)?.[0];
+      return row?.status === "live";
+    } catch {
+      return false;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  const refuseOnStage = () =>
+    toast.error("แถวนี้กำลังขึ้นเวทีอยู่ — ยังลบไม่ได้", {
+      description: "กดจบที่บอร์ดคิวก่อน แล้วค่อยลบ",
+    });
+
   async function removeRow(id: string) {
+    if (await isOnStage(id)) {
+      refuseOnStage();
+      return;
+    }
     const ok = await confirm({
       title: "ลบลำดับนี้?",
       description: "แถวนี้จะถูกลบออกจาก running order",
     });
     if (!ok) return;
+    // the question sat open while the show moved on: it may have gone on stage since
+    if (await isOnStage(id)) {
+      refuseOnStage();
+      return;
+    }
     const snap = rows;
     setRows((prev) => prev.filter((r) => r.id !== id));
     // Same 0-row hole as persist(): the delete policy is can_approve(tenant_id) too.

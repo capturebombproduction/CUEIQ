@@ -24,7 +24,8 @@ import { KindTile } from "@/components/event/kind";
 import { TimingInput } from "@/components/event/timing-input";
 import { RunMeter } from "@/components/event/run-meter";
 import { createClient } from "@/lib/supabase/client";
-import { isQueueableWriteError, newLocalRowId } from "@/lib/mgmt-outbox";
+import { isQueueableWriteError, MGMT_CHILD_LANDED_EVENT, newLocalRowId } from "@/lib/mgmt-outbox";
+import { hasLiveSession } from "@/lib/auth-session";
 import { hasRunOrderTie } from "@/lib/run-order-sort";
 import {
   OFFLINE_QUEUED_MESSAGE,
@@ -85,6 +86,51 @@ import {
 } from "@/lib/time";
 
 const KIND_KEYS = Object.keys(SETLIST_KIND_LABELS) as SetlistKind[];
+
+/** How long the re-read waits for a burst of another phone's saves to end (wantReread). */
+const REREAD_DEBOUNCE_MS = 400;
+/** How often a wanted re-read looks again while a field is being typed in or a save is out. */
+const REREAD_RETRY_MS = 1000;
+
+/** Field values as the server holds them: null and undefined are one, mic slots by content. */
+function sameFieldValue(a: unknown, b: unknown): boolean {
+  if ((a ?? null) === (b ?? null)) return true;
+  if (typeof a !== "object" || typeof b !== "object") return false;
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+
+/** Someone is typing or choosing in a field: nothing may be laid over the list now. */
+function fieldInUse(): boolean {
+  const el = typeof document !== "undefined" ? document.activeElement : null;
+  return !!el && el.matches("input, textarea, select, [contenteditable='true']");
+}
+
+/**
+ * The rows that count as on air for a state message (2026-10-30, hunt 12). The cued row, as
+ * ever - and what really SOUNDS, which in Manual is often another one: with row 3 playing and
+ * row 4 cued, phones locked row 4 under "กำลังเล่นอยู่บนเวที" and left row 3 open to a swap or a
+ * delete, the same for a pad sounding under NOW. A row whose sound is over locks nothing.
+ */
+function onAirIds(payload: {
+  begun?: boolean;
+  ended?: boolean;
+  currentItemId?: string | null;
+  audioItemId?: string | null;
+  audioPlaying?: boolean;
+  pads?: { ended?: string | null; layers?: { id?: string }[] } | null;
+}): Set<string> {
+  const ids = new Set<string>();
+  // จบโชว์ keeps `begun` true on purpose (live-mode.tsx statePayload) and says so in
+  // `ended`: an ended show holds no row on air, so restores and the row it stopped
+  // on were refused until someone pressed reset in Live (2026-10-27).
+  if (!payload.begun || payload.ended) return ids;
+  if (payload.currentItemId) ids.add(payload.currentItemId);
+  if (payload.audioPlaying && payload.audioItemId && payload.audioItemId !== payload.pads?.ended) {
+    ids.add(payload.audioItemId);
+  }
+  for (const l of payload.pads?.layers ?? []) if (l?.id) ids.add(l.id);
+  return ids;
+}
 
 /** How long the read-back of an insert whose answer was lost may take (insertLanded). */
 const READ_BACK_TIMEOUT_MS = 4000;
@@ -573,6 +619,10 @@ export function SetlistBuilder({
   // will hold once the flush lands it; without that, the next offline edit after a
   // flush would be based on the list from before it and park).
   const ackedRef = useRef<SetlistItem[]>(items);
+  // The list on screen, for code past an await: what its handler closed over can be a
+  // list another phone's edit has since replaced (wantReread).
+  const itemsRef = useRef(items);
+  itemsRef.current = items;
   function ackRow(id: string, partial: Partial<SetlistItem>) {
     ackedRef.current = ackedRef.current.map((it) => (it.id === id ? { ...it, ...partial } : it));
   }
@@ -591,25 +641,30 @@ export function SetlistBuilder({
   // Live Mode sync: join the show channel so we can (a) tell a running Live Mode to
   // refetch when the setlist changes, and (b) learn which item is on air and lock it.
   const channelRef = useRef<RealtimeChannel | null>(null);
-  const [liveItemId, setLiveItemId] = useState<string | null>(null);
+  const [liveIds, setLiveIds] = useState<ReadonlySet<string>>(() => new Set());
   // The same value for code that AWAITS (the delete's confirm sheet, a restore): what
   // a handler closed over is the state from before the show moved on.
-  const liveItemIdRef = useRef<string | null>(null);
+  const liveIdsRef = useRef<ReadonlySet<string>>(liveIds);
   useEffect(() => {
     const supabase = createClient();
     const ch = privateChannel(supabase, liveTopic(eventId));
     // a running Live Mode broadcasts its state; lock the on-air row (only while begun)
     ch.on("broadcast", { event: "state" }, ({ payload }) => {
       if (!payload) return;
-      // จบโชว์ keeps `begun` true on purpose (live-mode.tsx statePayload) and says so in
-      // `ended`: an ended show holds no row on air, so restores and the row it stopped
-      // on were refused until someone pressed reset in Live (2026-10-27).
-      const onAir = payload.begun && !payload.ended ? (payload.currentItemId ?? null) : null;
-      liveItemIdRef.current = onAir;
-      setLiveItemId(onAir);
+      const onAir = onAirIds(payload);
+      const held = liveIdsRef.current;
+      if (onAir.size === held.size && [...onAir].every((id) => held.has(id))) return;
+      liveIdsRef.current = onAir;
+      setLiveIds(onAir);
     });
+    // Another device saved the setlist (see wantReread).
+    ch.on("broadcast", { event: "setlist-changed" }, () => wantRereadRef.current());
+    let joinedOnce = false;
     ch.subscribe((status) => {
       if (status === "SUBSCRIBED") {
+        // back on the channel: what was said while it was down is gone for good
+        if (joinedOnce) wantRereadRef.current();
+        joinedOnce = true;
         // ask any running Live Mode for its current state (so we lock immediately)
         ch.send({
           type: "broadcast",
@@ -619,11 +674,123 @@ export function SetlistBuilder({
       }
     });
     channelRef.current = ch;
+    // A phone put down for a minute: its socket slept through every save made meanwhile.
+    const onWake = () => {
+      if (document.visibilityState === "visible") wantRereadRef.current();
+    };
+    document.addEventListener("visibilitychange", onWake);
+    // The desktop queue landed this setlist. Its own broadcast is no echo to this device.
+    const onLanded = (e: Event) => {
+      const d = (e as CustomEvent<{ eventId?: string; kind?: string }>).detail;
+      if (d?.eventId === eventId && d.kind === "setlist.upsert") wantRereadRef.current();
+    };
+    window.addEventListener(MGMT_CHILD_LANDED_EVENT, onLanded);
     return () => {
       channelRef.current = null;
+      document.removeEventListener("visibilitychange", onWake);
+      window.removeEventListener(MGMT_CHILD_LANDED_EVENT, onLanded);
+      if (rereadTimerRef.current) clearTimeout(rereadTimerRef.current);
+      rereadTimerRef.current = null;
+      rereadWantedRef.current = false;
       supabase.removeChannel(ch);
     };
   }, [eventId]);
+
+  // ── Another phone's edit reaches this list (2026-10-30, hunt 12) ──
+  // This panel read the setlist once, at mount, and the tab on screen is never re-seeded
+  // (event-workspace.tsx): two phones on the Setlist tab each held their own list for as
+  // long as they stayed there. A tap on a field wrote the old value back over the other's
+  // edit (AUTO then cut on the old length), and a ▲▼ swapped the old sort numbers into a
+  // tie, so Live, A and B each showed a different order. Told nothing.
+  // So "setlist-changed" - which every save already sends - re-reads the list here too.
+  // Debounced, because a reorder is a burst; never while this device's write is out (the
+  // read may predate it) or a field is in use, it looks again a moment later. An edit that
+  // has not reached the server (a failed save still on screen) stays on top: only what this
+  // device has no edit of its own for is taken from the read.
+  const writesInFlightRef = useRef(0);
+  const writeEpochRef = useRef(0);
+  const rereadWantedRef = useRef(false);
+  const rereadTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const rereadSeqRef = useRef(0);
+  function wantReread(delay = REREAD_DEBOUNCE_MS) {
+    rereadWantedRef.current = true;
+    if (rereadTimerRef.current) clearTimeout(rereadTimerRef.current);
+    rereadTimerRef.current = setTimeout(() => {
+      rereadTimerRef.current = null;
+      void rereadRef.current();
+    }, delay);
+  }
+  const wantRereadRef = useRef(wantReread);
+  wantRereadRef.current = wantReread;
+  /** Nothing may be laid over the list right now: a save is out, a field or a drag is in use. */
+  const rereadBlocked = () => writesInFlightRef.current > 0 || fieldInUse() || dragIndex.current != null;
+  async function reread() {
+    if (!rereadWantedRef.current) return;
+    if (rereadBlocked()) {
+      wantReread(REREAD_RETRY_MS);
+      return;
+    }
+    rereadWantedRef.current = false;
+    const seq = ++rereadSeqRef.current;
+    const epoch = writeEpochRef.current;
+    // A snapshot of this setlist still waits in the desktop's queue: the list here is the
+    // one it will write, and the server's is older. Asking is joining it with the list as it
+    // stands - nothing changes - and its landing asks for this read again. (Web: false.)
+    const held = await tryQueueBehindPendingChildList({
+      kind: "setlist.upsert",
+      eventId,
+      tenantId,
+      eventName,
+      rows: itemsRef.current,
+      baseRows: ackedRef.current,
+    });
+    if (held || seq !== rereadSeqRef.current) return;
+    const { data, error } = await supabase
+      .from("setlist_items")
+      .select("*")
+      .eq("event_id", eventId)
+      .order("sort_order", { ascending: true })
+      .order("id", { ascending: true }); // ties read the same as Live (lib/queries.ts)
+    if (seq !== rereadSeqRef.current || error || !data) return;
+    // An empty answer may be anon's (RLS reads 0 rows, no error), not an empty setlist.
+    if (data.length === 0 && itemsRef.current.length > 0 && (await hasLiveSession()) !== true) return;
+    if (seq !== rereadSeqRef.current) return;
+    // Something of this device's began while the read was out: these rows may predate it.
+    if (writeEpochRef.current !== epoch || rereadBlocked()) {
+      wantReread(REREAD_RETRY_MS);
+      return;
+    }
+    const server = data as SetlistItem[];
+    const base = new Map(ackedRef.current.map((it) => [it.id, it]));
+    const mine = new Map(itemsRef.current.map((it) => [it.id, it]));
+    const merged = server.map((row) => {
+      const m = mine.get(row.id);
+      const b = base.get(row.id);
+      if (!m || !b) return row;
+      const out: Record<string, unknown> = { ...row };
+      for (const [k, v] of Object.entries(m)) {
+        if (!sameFieldValue(v, (b as unknown as Record<string, unknown>)[k])) out[k] = v;
+      }
+      return out as unknown as SetlistItem;
+    });
+    ackedRef.current = server;
+    const serverIds = new Set(server.map((it) => it.id));
+    serverIds.forEach((id) => localOnlyIds.current.delete(id));
+    const stillLocal = itemsRef.current.filter((it) => localOnlyIds.current.has(it.id));
+    setItems([...merged, ...stillLocal].sort((a, b) => a.sort_order - b.sort_order));
+  }
+  const rereadRef = useRef(reread);
+  rereadRef.current = reread;
+  /** A write of this device's: no re-read lands on it (see wantReread). */
+  async function writing<T>(run: () => Promise<T>): Promise<T> {
+    writesInFlightRef.current++;
+    writeEpochRef.current++;
+    try {
+      return await run();
+    } finally {
+      writesInFlightRef.current--;
+    }
+  }
 
   // notify a running Live Mode to pull the updated setlist (after a successful write)
   function notifyLive() {
@@ -636,11 +803,14 @@ export function SetlistBuilder({
 
   // Restore a saved snapshot: insert the snapshot rows first (so a failure leaves
   // the current setlist intact), then delete the old rows + their audio.
-  async function restoreSnapshot(snapshot: SnapshotItem[]) {
+  function restoreSnapshot(snapshot: SnapshotItem[]) {
+    return writing(() => restoreSnapshotNow(snapshot));
+  }
+  async function restoreSnapshotNow(snapshot: SnapshotItem[]) {
     // A restore replaces EVERY row with fresh ids - the one on air included, so a
     // running Live Mode would lose the song it is playing. The version list's confirm
     // can sit open while the show moves on, so this is read now, after it.
-    if (liveItemIdRef.current) {
+    if (liveIdsRef.current.size > 0) {
       throw new Error(
         "โชว์กำลังเล่นอยู่ — การกู้คืนจะแทนที่แถวที่กำลังเล่นอยู่บนเวทีด้วย รอให้จบโชว์ก่อนค่อยกู้คืน"
       );
@@ -899,10 +1069,30 @@ export function SetlistBuilder({
     return queued;
   }
 
+  // The fields whose save is on its way: until it answers, what the server holds is unknown.
+  const fieldWritesRef = useRef<Map<string, number>>(new Map());
+  // A field left with what the server already holds is no edit (2026-10-30, hunt 12). Every
+  // blur saved what the box showed, so a tap on a length or a title - no typing - wrote this
+  // screen's copy over whatever another phone had saved since. Judged against ackedRef, not
+  // `items`: a save that failed leaves its edit on screen, and leaving the field again is the
+  // retry. While the same field's own save is out it still writes: the box may be going
+  // back to the old value, and that save would otherwise win.
+  function isNoEdit(id: string, partial: Partial<SetlistItem>): boolean {
+    const row = ackedRef.current.find((it) => it.id === id) as unknown as Record<string, unknown> | undefined;
+    if (!row) return false;
+    return Object.entries(partial).every(
+      ([k, v]) => !fieldWritesRef.current.get(`${id}:${k}`) && sameFieldValue(row[k], v)
+    );
+  }
+
   async function persist(id: string, partial: Partial<SetlistItem>) {
+    if (isNoEdit(id, partial)) return;
+    const keys = Object.keys(partial).map((k) => `${id}:${k}`);
+    const writes = fieldWritesRef.current;
+    for (const k of keys) writes.set(k, (writes.get(k) ?? 0) + 1);
     save.begin();
     try {
-      await persistInner(id, partial);
+      await writing(() => persistInner(id, partial));
     } catch (e) {
       // supabase-js reports nearly everything through `error`, but a fetch that
       // THROWS (offline mid-flight, an aborted request) used to escape here: the
@@ -913,6 +1103,8 @@ export function SetlistBuilder({
       toast.error("บันทึกไม่สำเร็จ", {
         description: e instanceof Error ? e.message : undefined,
       });
+    } finally {
+      for (const k of keys) writes.set(k, (writes.get(k) ?? 1) - 1);
     }
   }
 
@@ -1096,7 +1288,10 @@ export function SetlistBuilder({
   }
 
   /** Returns true when a row was actually added (inserted or queued offline). */
-  async function insertItem(
+  function insertItem(extra: Partial<SetlistItem> & { kind: SetlistKind }): Promise<boolean> {
+    return writing(() => insertItemNow(extra));
+  }
+  async function insertItemNow(
     extra: Partial<SetlistItem> & { kind: SetlistKind }
   ): Promise<boolean> {
     // In-flight guard: a double-click would compute the same max(sort_order)+1
@@ -1207,7 +1402,7 @@ export function SetlistBuilder({
     setReplaceOpen(false);
     if (!it) return;
     // The dialog was open while the show moved on — the row went on air.
-    if (liveItemId === it.id) {
+    if (liveIds.has(it.id)) {
       toast.error("แถวนี้กำลังเล่นอยู่บนเวที — ยังเปลี่ยนเพลงไม่ได้");
       return;
     }
@@ -1237,7 +1432,7 @@ export function SetlistBuilder({
     const picked = attaching;
     setAttachOpen(false);
     if (!picked) return;
-    if (liveItemId === picked.id) {
+    if (liveIds.has(picked.id)) {
       toast.error("แถวนี้กำลังเล่นอยู่บนเวที — ยังเปลี่ยนเพลงไม่ได้");
       return;
     }
@@ -1249,7 +1444,7 @@ export function SetlistBuilder({
     update(it.id, patch);
   }
   function detachSong(it: SetlistItem) {
-    if (liveItemId === it.id) {
+    if (liveIds.has(it.id)) {
       toast.error("แถวนี้กำลังเล่นอยู่บนเวที — ยังเปลี่ยนเพลงไม่ได้");
       return;
     }
@@ -1275,8 +1470,7 @@ export function SetlistBuilder({
   }
 
   async function removeItem(id: string) {
-    const snapshot = items;
-    const removed = snapshot.find((it) => it.id === id);
+    const removed = items.find((it) => it.id === id);
     const ok = await confirm({
       title: "ลบรายการนี้ออกจากเซ็ตลิสต์?",
       description: removed?.title
@@ -1288,11 +1482,17 @@ export function SetlistBuilder({
     // or the operator's NEXT, took it). Deleting it would pull the playing song from
     // under Live Mode, whose refetch then clamps onto the following row - the same
     // re-check เปลี่ยน and ใส่เพลง make after their dialog, read from the ref because
-    // this handler's `liveItemId` is the one from before the sheet opened.
-    if (liveItemIdRef.current === id) {
+    // this handler's `liveIds` is the one from before the sheet opened.
+    if (liveIdsRef.current.has(id)) {
       toast.error("แถวนี้กำลังเล่นอยู่บนเวที — ยังลบไม่ได้");
       return;
     }
+    await writing(() => removeConfirmed(id, removed));
+  }
+  async function removeConfirmed(id: string, removed: SetlistItem | undefined) {
+    // read now, after the sheet: a failed delete puts this list back, and another phone's
+    // edit may have landed while the question was open
+    const snapshot = itemsRef.current;
     const next = snapshot.filter((it) => it.id !== id);
     setItems((prev) => prev.filter((it) => it.id !== id));
     if (await queueBehindPending(next)) {
@@ -1330,7 +1530,10 @@ export function SetlistBuilder({
   }
 
   /** Persist a full renumber: optimistic set, write every changed row, roll back on failure. */
-  async function persistOrder(
+  function persistOrder(prev: SetlistItem[], renumbered: SetlistItem[], failMsg: string) {
+    return writing(() => persistOrderNow(prev, renumbered, failMsg));
+  }
+  async function persistOrderNow(
     prev: SetlistItem[],
     renumbered: SetlistItem[],
     failMsg: string
@@ -1425,7 +1628,10 @@ export function SetlistBuilder({
     notifyLive();
   }
 
-  async function move(index: number, dir: -1 | 1) {
+  function move(index: number, dir: -1 | 1) {
+    return writing(() => moveNow(index, dir));
+  }
+  async function moveNow(index: number, dir: -1 | 1) {
     const target = index + dir;
     if (target < 0 || target >= items.length) return;
     const a = items[index];
@@ -1651,7 +1857,7 @@ export function SetlistBuilder({
                 !editable ||
                 !hasClock ||
                 last.kind === "song" ||
-                liveItemId === last.id
+                liveIds.has(last.id)
               )
                 return null;
               return (
@@ -1698,7 +1904,7 @@ export function SetlistBuilder({
           const t = timing.rows[idx];
           // This row is on air in a running Live Mode → lock its edits (can't change
           // what's playing). Other rows stay editable and sync to Live Mode live.
-          const isLive = liveItemId === it.id;
+          const isLive = liveIds.has(it.id);
           const rowEditable = editable && !isLive;
           // A row that ends past the hard out: the alarm rail (band-independent —
           // never --destructive, which a red band's skin moves off red) and the

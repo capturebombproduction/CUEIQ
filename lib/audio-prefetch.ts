@@ -56,6 +56,17 @@ export async function getReadiness(
   return { total: targets.length, ready, stale, missing };
 }
 
+/** Say that a prepare left files behind. The bar ran to its end and the card still read "not
+ *  ready", with no reason, and pressing again repeated the 88 MB downloads (2026-10-30, hunt 12). */
+export function prefetchFailureText(failed: number, noRoom: boolean): { title: string; description: string } {
+  return {
+    title: `เตรียมเพลงไม่ครบ · ไม่สำเร็จ ${failed} ไฟล์`,
+    description: noRoom
+      ? "พื้นที่ในเครื่องเต็ม — ล้างโชว์เก่าที่ “พื้นที่ในเครื่อง” แล้วกดเตรียมอีกครั้ง"
+      : "เช็กเน็ตหรือพื้นที่ในเครื่อง แล้วกดเตรียมอีกครั้ง",
+  };
+}
+
 export interface PrefetchProgress {
   total: number; // files that need (re)downloading this run
   done: number; // successfully downloaded so far
@@ -69,6 +80,8 @@ export interface PrefetchResult {
   skipped: number; // already fresh
   failed: number;
   removedStale: number; // orphaned cache entries dropped
+  /** a file failed because the disk / storage quota is full: no retry helps until room is made */
+  noRoom: boolean;
 }
 
 /**
@@ -95,7 +108,7 @@ export async function prefetchEventAudio(
   // wipe the event's whole cache. Empty here means "nothing to do" (callers that
   // genuinely have audio always pass a non-empty list), so bail untouched.
   if (targets.length === 0) {
-    return { totalTargets: 0, fetched: 0, skipped: 0, failed: 0, removedStale: 0 };
+    return { totalTargets: 0, fetched: 0, skipped: 0, failed: 0, removedStale: 0, noRoom: false };
   }
 
   let cached: Record<string, CachedEntry> = {};
@@ -143,6 +156,7 @@ export async function prefetchEventAudio(
 
   let fetched = 0;
   let failed = 0;
+  let noRoom = false;
   onProgress?.({ total, done: 0, failed: 0 });
 
   for (const t of need) {
@@ -168,14 +182,15 @@ export async function prefetchEventAudio(
       if (!trustedShared) cacheSongBlob(t.path, blob).catch(() => {}); // best-effort; never fail the prepare over this
       await saveAudio(eventId, t.itemId, blob, t.name, t.path);
       fetched++;
-    } catch {
+    } catch (e) {
       // A cancel aborts the in-flight download: that's the operator stopping, not
       // a failed file, and there's nothing left to try — leave without counting it.
       if (isCancelled?.() || signal?.aborted) break;
       failed++;
+      if ((e as { name?: string } | null)?.name === "QuotaExceededError") noRoom = true;
     }
     onProgress?.({ total, done: fetched, failed, currentName: t.name });
   }
 
-  return { totalTargets: targets.length, fetched, skipped, failed, removedStale };
+  return { totalTargets: targets.length, fetched, skipped, failed, removedStale, noRoom };
 }

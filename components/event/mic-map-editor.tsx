@@ -34,6 +34,31 @@ const MIC_TILE_CLS = "py-2 [&_.num]:text-[28px] [&_.truncate]:text-[14px]";
 const READ_BACK_TIMEOUT_MS = 4000;
 
 /**
+ * The mics the server holds for this show, or null when that could not be learned in time
+ * (offline, a slow answer). See addMic.
+ */
+async function serverMics(
+  supabase: ReturnType<typeof createClient>,
+  eventId: string
+): Promise<MicAssignment[] | null> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const res = await Promise.race([
+      supabase.from("mic_assignments").select("*").eq("event_id", eventId),
+      new Promise<null>((r) => {
+        timer = setTimeout(() => r(null), READ_BACK_TIMEOUT_MS);
+      }),
+    ]);
+    if (!res || res.error || !Array.isArray(res.data)) return null;
+    return (res.data as MicAssignment[]).filter((m) => m.event_id === eventId);
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
  * Did an insert that got NO HTTP answer land anyway? (2026-10-30, hunt 11) The same rule as
  * setlist-builder.tsx's insertLanded: an answer lost on the way back (Wi-Fi to cellular, an
  * AP roam) read as "เพิ่มไมค์ไม่สำเร็จ", and the retap seeded every standing mic a second time
@@ -301,7 +326,7 @@ export function MicMapEditor({
    * still showing the standing mics. The write asks for its rows back and a reply with
    * none is "ยังไม่ได้บันทึก", never a success (lib/write-guard.ts).
    */
-  async function seedFromStanding(onScreen: typeof standing) {
+  async function seedFromStanding(onScreen: typeof standing): Promise<MicAssignment[] | void> {
     const nextNum = Math.max(...onScreen.map((s) => s.num)) + 1;
     const wanted = [
       ...onScreen.flatMap((s) =>
@@ -314,6 +339,19 @@ export function MicMapEditor({
     if (await queueBehindPending([...mics, ...locals])) {
       setMics((prev) => [...prev, ...locals]);
       return;
+    }
+    // This screen shows the standing mics because IT read no rows - at mount, and a tab on
+    // screen is not re-seeded. Two phones on Mics each pressed เพิ่มไมค์, and the second seeded
+    // every standing mic again on top of the first's: "วนไมค์ 2 คน" on every mic of the
+    // Summary, the Excel sheet and the share page (2026-10-30, hunt 12). So the server is
+    // asked first (after the queue above: a snapshot waiting there outranks what it holds).
+    // It has a map: that is taken and said, and the caller adds only the one new mic.
+    const fresh = await serverMics(supabase, eventId);
+    if (fresh && fresh.length > 0) {
+      ackedRef.current = fresh;
+      setMics(fresh);
+      toast.info("มีคนตั้งผังไมค์ของงานนี้ไว้แล้ว — ใช้ผังล่าสุดและเพิ่มไมค์ใหม่ต่อท้าย", { id: "mic-adopted" });
+      return fresh;
     }
     // Sent with the ids minted above (2026-10-30, hunt 11): a lost answer is read back by
     // them (insertLanded), and the offline queue holds the SAME rows.
@@ -363,13 +401,15 @@ export function MicMapEditor({
     insertingRef.current = true;
     setInserting(true);
     try {
+      let have = mics;
       if (standing.length > 0) {
-        await seedFromStanding(standing);
-        return;
+        const adopted = await seedFromStanding(standing);
+        if (!adopted) return;
+        have = adopted; // someone else's map: only the one new mic is added, below
       }
-      const nextNum = groups.length ? Math.max(...groups.map((g) => g.num)) + 1 : 1;
+      const nextNum = have.length ? Math.max(...have.map((m) => m.mic_number)) + 1 : 1;
       const local = mintLocalMic(nextNum, "", 1);
-      if (await queueBehindPending([...mics, local])) {
+      if (await queueBehindPending([...have, local])) {
         setMics((prev) => [...prev, local]);
         return;
       }
@@ -390,7 +430,7 @@ export function MicMapEditor({
       let data = res.data as MicAssignment | null;
       if (error || !data) data = (await insertLanded(supabase, [local.id], error, status))?.[0] ?? null;
       if (!data) {
-        if (await queueOffline([...mics, local], error?.message, status)) {
+        if (await queueOffline([...have, local], error?.message, status)) {
           setMics((prev) => [...prev, local]);
           return;
         }

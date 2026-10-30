@@ -6,6 +6,7 @@ import { toast } from "sonner";
 import { QUEUED_BEHIND_PENDING_MESSAGE, saveEventWrite } from "@/lib/mgmt-write";
 import { useHoldBottomSlot } from "@/lib/bottom-slot";
 import { createClient } from "@/lib/supabase/client";
+import { liveTopic, privateChannel } from "@/lib/realtime";
 import { notify } from "@/lib/notify-client";
 import { useConfirm } from "@/components/ui/confirm-dialog";
 import { useUnsavedDraftGuard } from "@/components/event/use-leave-guard";
@@ -67,6 +68,39 @@ function friendlyError(message?: string): string | undefined {
  *  carries them along (0052 does that for practice rooms only). An empty show - the wrong
  *  band picked a minute ago - still moves. Bounded like the festival read below; a read
  *  that fails or never answers refuses the move, never waves it through. */
+/**
+ * The show's day, start or Hard Out changed: tell a Live Mode that is open on it (2026-10-30,
+ * hunt 12). It read them once when it opened, and a Hard Out cut on a phone left the PA judging
+ * the show against the old one all night. Its own short-lived channel, as the practice room's
+ * note to Live (setlist-run-card.tsx): this form navigates away at once. Best-effort.
+ */
+function tellLiveTimesChanged(eventId: string) {
+  try {
+    const supabase = createClient();
+    const ch = privateChannel(supabase, liveTopic(eventId));
+    let closed = false;
+    const close = () => {
+      if (closed) return;
+      closed = true;
+      void Promise.resolve(supabase.removeChannel(ch)).catch(() => {});
+    };
+    ch.subscribe((status) => {
+      if (status !== "SUBSCRIBED") {
+        close(); // CHANNEL_ERROR / TIMED_OUT / CLOSED
+        return;
+      }
+      void Promise.resolve(
+        ch.send({ type: "broadcast", event: "setlist-changed", payload: { at: Date.now() } })
+      )
+        .catch(() => {})
+        .finally(close);
+    });
+    window.setTimeout(close, 10000); // never left open
+  } catch {
+    /* nothing here may stop a save */
+  }
+}
+
 async function bandMoveBlocker(eventId: string): Promise<string | null> {
   const supabase = createClient();
   const read = Promise.all([
@@ -387,6 +421,9 @@ export function EventForm({
       // corrected an approval made by mistake left the band's last word "อนุมัติงานแล้ว".
       // Only once it is on the server: /api/notify checks the row's real status, and a queued
       // write is not there yet. Draft / In Progress / Overdue have no notice of their own.
+      if (!res.queued && (touched("eventDate", eventDate) || touched("showStart", showStart) || touched("hardOut", hardOut))) {
+        tellLiveTimesChanged(event.id);
+      }
       const sentStatus = statusPatch.status;
       if (!res.queued && sentStatus && sentStatus !== event.status) {
         if (sentStatus === "approved") notify("event_approved", { eventId: event.id });

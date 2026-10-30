@@ -2026,7 +2026,14 @@ export function EventLiveCaller({
           ±1 push keys, and ±5 too at stage width. Every Thai word on a dock key
           carries `.th`: the dock variant sets display caps. */}
       {canControl && (
-        <div className="dock glass glass-bottom fixed inset-x-0 bottom-0 z-40 pb-[max(12px,env(safe-area-inset-bottom))] pl-[max(1rem,env(safe-area-inset-left))] pr-[max(1rem,env(safe-area-inset-right))] pt-3 stage:px-5">
+        <div
+          className="dock glass glass-bottom fixed inset-x-0 bottom-0 z-40 pb-[max(12px,env(safe-area-inset-bottom))] pl-[max(1rem,env(safe-area-inset-left))] pr-[max(1rem,env(safe-area-inset-right))] pt-3 stage:px-5"
+          // A held Enter is one press: its repeats must not walk the board one act per landed write,
+          // and "จบ + ต่อไป" has no undo short of รีเซ็ต (2026-10-30, hunt 12).
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && e.repeat) e.preventDefault();
+          }}
+        >
           <div className="mx-auto flex max-w-[880px] gap-2">
             <Button
               variant="dock"

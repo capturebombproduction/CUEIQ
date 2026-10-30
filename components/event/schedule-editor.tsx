@@ -54,6 +54,13 @@ import {
 
 const KIND_KEYS = Object.keys(SCHEDULE_KIND_LABELS) as ScheduleKind[];
 
+/** Field values as the server holds them: no value is one, a clock to the minute. */
+function sameScheduleValue(key: string, a: unknown, b: unknown): boolean {
+  const norm = (v: unknown) =>
+    (key === "start_time" || key === "end_time") && typeof v === "string" ? v.slice(0, 5) : (v ?? null);
+  return norm(a) === norm(b);
+}
+
 /** How long the read-back of an insert whose answer was lost may take (insertLanded). */
 const READ_BACK_TIMEOUT_MS = 4000;
 
@@ -293,7 +300,25 @@ export function ScheduleEditor({
     description: "มีรอบถ่ายรูปชื่อนี้อยู่แล้ว — ตั้งชื่อให้ต่างกัน เช่น “ชุด 1” / “ชุด 2”",
   };
 
+  // The fields whose save is on its way: until it answers, what the server holds is unknown.
+  const fieldWritesRef = useRef<Map<string, number>>(new Map());
+  // A field left with what the server already holds is no edit (2026-10-30, hunt 12): every
+  // blur saved what the box showed, so a tap on a time on one phone - no typing - wrote its
+  // copy over what another phone had saved since. Judged against ackedRef, as the setlist
+  // builder's isNoEdit: a save that failed stays on screen, and leaving the field retries it.
+  function isNoEdit(id: string, partial: Partial<ScheduleItem>): boolean {
+    const row = ackedRef.current.find((it) => it.id === id) as unknown as Record<string, unknown> | undefined;
+    if (!row) return false;
+    return Object.entries(partial).every(
+      ([k, v]) => !fieldWritesRef.current.get(`${id}:${k}`) && sameScheduleValue(k, row[k], v)
+    );
+  }
+
   async function persist(id: string, partial: Partial<ScheduleItem>) {
+    if (isNoEdit(id, partial)) return;
+    const keys = Object.keys(partial).map((k) => `${id}:${k}`);
+    const writes = fieldWritesRef.current;
+    for (const k of keys) writes.set(k, (writes.get(k) ?? 0) + 1);
     save.begin();
     try {
       await persistInner(id, partial);
@@ -306,6 +331,8 @@ export function ScheduleEditor({
       toast.error("Save failed", {
         description: e instanceof Error ? e.message : undefined,
       });
+    } finally {
+      for (const k of keys) writes.set(k, (writes.get(k) ?? 1) - 1);
     }
   }
 
@@ -347,11 +374,30 @@ export function ScheduleEditor({
     save.end(true);
   }
 
+  // The last number on the SERVER, never only this screen's (2026-10-30, hunt 12; the setlist
+  // builder's lastSortOrder): this copy is not re-seeded while its tab is open, so two phones
+  // adding a row at once numbered both the same. Unreadable: this screen's, as before.
+  async function lastSortOrder(): Promise<number> {
+    const local = items.length ? Math.max(...items.map((i) => i.sort_order)) : 0;
+    try {
+      const { data, error } = await supabase
+        .from("schedule_items")
+        .select("sort_order")
+        .eq("event_id", eventId)
+        .order("sort_order", { ascending: false })
+        .limit(1);
+      const server = !error
+        ? Number((data?.[0] as { sort_order?: unknown } | undefined)?.sort_order)
+        : NaN;
+      return Number.isFinite(server) ? Math.max(local, server) : local;
+    } catch {
+      return local;
+    }
+  }
+
   async function addItem(kind: ScheduleKind = "other") {
     setBusy(true);
-    const sort = items.length
-      ? Math.max(...items.map((i) => i.sort_order)) + 1
-      : 1;
+    const sort = (await lastSortOrder()) + 1;
     // A SECOND photo round arrives already named, because the rule that lets it
     // exist is that it has one (mig 0042) — inserting another blank row would just
     // collide with the first and hand the band a duplicate-name error for a button
