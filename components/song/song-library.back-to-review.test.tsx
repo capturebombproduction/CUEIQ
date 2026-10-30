@@ -119,23 +119,25 @@ beforeEach(() => {
   h.status = "pending";
 });
 
-const replaceFile = () => {
+const replaceFile = async () => {
   fireEvent.click(within(phoneList()).getByText("Neon Lullaby").closest("button[aria-haspopup=dialog]") as HTMLElement);
   fireEvent.click(within(screen.getByRole("dialog")).getByTitle("เปลี่ยนไฟล์เสียง"));
   fireEvent.change(audioInput(), { target: { files: [TAKE_2] } });
+  // 2026-10-30 (hunt 10): a replace asks first (confirmReplaceFile) - answer it
+  fireEvent.click(await screen.findByRole("button", { name: "แทนที่ไฟล์" }));
 };
 
 describe("SongLibrary — a reviewed song given a new file goes back to review", () => {
   it("a cleared song: says it is back to รอตรวจ, and tells the admins", async () => {
     mount(song({ copyright_status: "cleared" }));
-    replaceFile();
+    await replaceFile();
     await waitFor(() => expect(h.notify).toHaveBeenCalledWith("song_resubmitted", { songId: "s1" }));
     expect(h.toast.info).toHaveBeenCalledWith("เพลงนี้กลับไปรอตรวจลิขสิทธิ์", expect.anything());
   });
 
   it("a song already pending: nothing to say", async () => {
     mount(song({ copyright_status: "pending" }));
-    replaceFile();
+    await replaceFile();
     await waitFor(() => expect(h.writes.length).toBeGreaterThan(0));
     await new Promise((r) => setTimeout(r, 20));
     expect(h.notify).not.toHaveBeenCalledWith("song_resubmitted", expect.anything());
@@ -145,7 +147,7 @@ describe("SongLibrary — a reviewed song given a new file goes back to review",
   it("an approver's own new file keeps the verdict (the server left it cleared): nothing to say", async () => {
     h.status = "cleared";
     mount(song({ copyright_status: "cleared" }));
-    replaceFile();
+    await replaceFile();
     await waitFor(() => expect(h.writes.length).toBeGreaterThan(0));
     await new Promise((r) => setTimeout(r, 20));
     expect(h.notify).not.toHaveBeenCalled();

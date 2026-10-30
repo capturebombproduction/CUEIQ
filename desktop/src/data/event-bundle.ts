@@ -337,7 +337,13 @@ export async function loadEventBundleStatus(eventId: string): Promise<EventBundl
     lineup: ((lineup.data ?? []) as { member_id: string }[]).map((r) => r.member_id),
     role: (membershipRes.data?.role as Role) ?? null,
   };
-  writeCache(cacheKey, bundle);
+  // A copy this device holds but could not bring up to date (the cache is full even
+  // after writeCache dropped the old shows) stays on disk - an older set still opens at
+  // a no-wifi venue, where nothing at all would not - but it is no longer "ready"
+  // (isEventBundleCached), so the dashboard stops showing it green. 2026-10-30, hunt 10:
+  // the failed write was swallowed and the held copy kept passing for this one.
+  if (writeCache(cacheKey, bundle)) staleBundles.delete(eventId);
+  else if (hasCache(cacheKey)) staleBundles.add(eventId);
   announceBundleCached();
   // Cache the SERVER truth, then overlay pending local edits on top for display.
   return { bundle: (await withPendingOverlay(bundle, eventId)).bundle, unreachable: false };
@@ -364,9 +370,14 @@ function announceBundleCached(): void {
   }
 }
 
-/** Does THIS device hold `eventId`'s bundle, i.e. can the show be OPENED with no net? */
+/** Held shows whose latest read could not be written (see the loader's writeCache), for
+ *  this session: their older copy is still on disk. Cleared by the next write that lands. */
+const staleBundles = new Set<string>();
+
+/** Does THIS device hold `eventId`'s bundle, i.e. can the show be OPENED with no net -
+ *  and as the server last said it? A copy whose newer read could not be written is not. */
 export function isEventBundleCached(eventId: string): boolean {
-  return hasCache(bundleKey(eventId));
+  return hasCache(bundleKey(eventId)) && !staleBundles.has(eventId);
 }
 
 /**
@@ -439,6 +450,8 @@ export async function hasPendingEventOp(eventId: string): Promise<boolean> {
  * run nor stall it — every await in loadEventBundle is bounded (EVENT_BUNDLE_TIMEOUT_MS
  * for the event read, EVENT_BUNDLE_BATCH_TIMEOUT_MS for the child batch), so the
  * longest one show can hold the loop is the sum of the two.
+ * true = this device now holds the show as the server last said it; false when this
+ * read could not be written over an older copy, too (2026-10-30, hunt 10).
  */
 export async function warmEventBundle(eventId: string): Promise<boolean> {
   try {

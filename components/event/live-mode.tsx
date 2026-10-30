@@ -2833,6 +2833,10 @@ export function LiveMode({
 
   function clearLastRun() {
     if (!canEdit || watchingOnly()) return;
+    // The show's one record of its run time, on every device (persistLastRun) - one tap on
+    // "ล้าง", right under จบโชว์ / รีเซ็ต in Live tools, wiped it with no question (2026-10-30,
+    // hunt 10; the label's rule is a confirm before every delete). Reset's own confirm style.
+    if (!window.confirm("ล้างเวลาโชว์ล่าสุดที่บันทึกไว้? ล้างแล้วกู้คืนไม่ได้")) return;
     setLastRun(null);
     persistLastRun(eventId, null, null).catch(() => {});
     channelRef.current?.send({

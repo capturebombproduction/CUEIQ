@@ -98,7 +98,9 @@ export async function generateMetadata({ params }: { params: Promise<{ token: st
   const supabase = await createClient();
   const { data } = await supabase.rpc("get_shared_event", { p_token: token });
   const name = (data as SharedBundle | null)?.event?.name;
-  return { title: name ? `${name} · Run Sheet` : "Run Sheet · CueIQ" };
+  // Never " · CueIQ" here: the root layout's title template adds it, and a dead link read
+  // "Run Sheet · CueIQ · CueIQ" in the tab and the chat preview (2026-10-30, hunt 10).
+  return { title: name ? `${name} · Run Sheet` : "Run Sheet" };
 }
 
 export default async function SharePage({ params }: { params: Promise<{ token: string }> }) {

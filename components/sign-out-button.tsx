@@ -7,6 +7,7 @@ import { createClient } from "@/lib/supabase/client";
 import { cleanupPushOnSignOut } from "@/components/notifications/push-cleanup";
 import { isLiveShowActive } from "@/lib/live-guard";
 import { duringDeliberateSignOut } from "@/lib/sign-out-intent";
+import { countQueuedShowRunWork } from "@/lib/show-run-outbox";
 import {
   acknowledgeUnsavedWork,
   commitFocusedField,
@@ -137,12 +138,19 @@ export function useSignOut(): () => Promise<void> {
     // ever reached the server. Nothing here is recoverable — ask first, and
     // default to staying signed in. (Web: no outbox → count is 0 → no prompt.)
     const queued = await countQueuedMgmtWork();
-    if (
-      queued > 0 &&
-      !window.confirm(
-        `มีงานค้างซิงค์ ${queued} รายการที่ยังไม่ขึ้นออนไลน์ — ออกจากระบบตอนนี้จะทิ้งทั้งหมดและกู้คืนไม่ได้ (ต่อเน็ตแล้วกดชิป "ค้างซิงค์" ให้ซิงค์ก่อนดีกว่า) ยืนยันไหม?`
-      )
-    ) {
+    // ...and the show-run / running-order queue (lib/show-run-outbox.ts), web and desktop
+    // (2026-10-30, hunt 10). A sign-out never wipes it - it waits on this device for the
+    // account that queued it - but nothing said it was there, so a run time or the cue
+    // presses of an offline show left with the laptop unsent. Said as KEPT, not lost.
+    const showQueued = await countQueuedShowRunWork();
+    const showKept = `เวลาโชว์/การกดคิวที่ค้างซิงค์ ${showQueued} รายการไม่หาย — เก็บไว้ในเครื่องนี้ และส่งขึ้นเมื่อบัญชีเดิมเข้าสู่ระบบอีกครั้งตอนต่อเน็ต`;
+    const ask =
+      queued > 0
+        ? `มีงานค้างซิงค์ ${queued} รายการที่ยังไม่ขึ้นออนไลน์ — ออกจากระบบตอนนี้จะทิ้งทั้งหมดและกู้คืนไม่ได้ (ต่อเน็ตแล้วกดชิป "ค้างซิงค์" ให้ซิงค์ก่อนดีกว่า)${showQueued > 0 ? `\n\n${showKept}\n\n` : " "}ยืนยันไหม?`
+        : showQueued > 0
+          ? `${showKept} — ต่อเน็ตให้ซิงค์ก่อนออกจากระบบจะดีกว่า ยืนยันออกจากระบบไหม?`
+          : null;
+    if (ask && !window.confirm(ask)) {
       return;
     }
     // Release this device's push subscription while the session (RLS) is

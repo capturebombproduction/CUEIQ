@@ -28,10 +28,177 @@ export type ShowRunOp = {
 interface QueuedOp {
   op: ShowRunOp;
   queuedAt: number;
+  /** The account that was signed in on this device when the op was queued (see
+   *  storedSessionUserId). Absent when that could not be read at once, and on records
+   *  queued by older builds: those replay for whoever is signed in, as before. */
+  owner?: string;
 }
 
 function opKey(op: ShowRunOp): string {
   return `${op.kind}:${op.eventId}`;
+}
+
+// ---------------------------------------------------------------------------
+// Whose queue is it? (2026-10-30, hunt 10)
+//
+// This database outlives a sign-out: unlike the desktop's management outbox, nothing
+// here is wiped when a person signs out, and nothing here carried its owner. So the
+// next account to sign in on the same machine replayed the last one's offline work
+// under its own session - and judged it there. A run time queued by a band that the
+// new account cannot see was deleted as "the event is gone" (eventIsGone reads with
+// the new account's RLS), and a running-order press that account may not write was
+// parked as "someone else drove the board", where ทิ้ง is the only way out. Each op
+// now carries its owner, and a flush leaves another account's ops exactly where they
+// are until that account signs in here again.
+// ---------------------------------------------------------------------------
+
+/** The id of the user in a persisted supabase session value, or null. */
+function userIdOfStoredSession(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  let text = raw;
+  // @supabase/ssr (the web client) writes `base64-` + base64url(JSON) by default.
+  if (text.startsWith("base64-")) {
+    const b64 = text.slice("base64-".length).replace(/-/g, "+").replace(/_/g, "/");
+    const bin = atob(b64 + "===".slice((b64.length + 3) % 4));
+    text =
+      typeof TextDecoder !== "undefined"
+        ? new TextDecoder().decode(Uint8Array.from(bin, (c) => c.charCodeAt(0)))
+        : bin;
+  }
+  const s = JSON.parse(text) as { user?: { id?: unknown } } | null;
+  const id = s?.user?.id;
+  return typeof id === "string" && id ? id : null;
+}
+
+/**
+ * The user signed in on this device, read straight from where supabase-js keeps the
+ * session - SYNCHRONOUSLY, because the enqueue that stamps it sits on the show-day
+ * press path. getSession() is not an option there: with an expired token it tries a
+ * refresh over the network, and it waits on the auth lock behind a refresh already
+ * stuck on a dead venue network. The desktop client keeps the session in localStorage
+ * (desktop/src/shims/supabase-client.ts), the web client in cookies that may be split
+ * into `.0`, `.1` chunks (@supabase/ssr). One id across every place = that id;
+ * nothing, two different ids or anything unreadable = null ("unknown"), which every
+ * caller treats exactly as before this existed.
+ */
+export function storedSessionUserId(): string | null {
+  if (typeof window === "undefined") return null;
+  const ids = new Set<string>();
+  const add = (raw: string | null | undefined) => {
+    try {
+      const id = userIdOfStoredSession(raw);
+      if (id) ids.add(id);
+    } catch {
+      /* one unreadable value proves nothing about the others */
+    }
+  };
+  try {
+    const ls = window.localStorage;
+    for (let i = 0; i < ls.length; i++) {
+      const k = ls.key(i);
+      if (k && /^sb-.+-auth-token$/.test(k)) add(ls.getItem(k));
+    }
+  } catch {
+    /* no storage access */
+  }
+  try {
+    const whole = new Map<string, string>();
+    const chunks = new Map<string, Map<number, string>>();
+    for (const part of (typeof document !== "undefined" ? document.cookie : "").split(";")) {
+      const eq = part.indexOf("=");
+      if (eq < 0) continue;
+      const m = /^(sb-.+-auth-token)(?:\.(\d+))?$/.exec(part.slice(0, eq).trim());
+      if (!m) continue;
+      let value = part.slice(eq + 1).trim();
+      try {
+        value = decodeURIComponent(value);
+      } catch {
+        /* kept as written */
+      }
+      if (m[2] === undefined) whole.set(m[1], value);
+      else {
+        const parts = chunks.get(m[1]) ?? new Map<number, string>();
+        parts.set(Number(m[2]), value);
+        chunks.set(m[1], parts);
+      }
+    }
+    for (const value of whole.values()) add(value);
+    for (const [name, parts] of chunks) {
+      if (whole.has(name)) continue;
+      let joined = "";
+      for (let i = 0; parts.has(i); i++) joined += parts.get(i);
+      add(joined);
+    }
+  } catch {
+    /* no cookie access */
+  }
+  return ids.size === 1 ? [...ids][0] : null;
+}
+
+/** Was this op queued by an account other than the one signed in now? Only when BOTH
+ *  are known: an op with no owner (an older build) or an unreadable session is
+ *  treated as before. */
+export function queuedByAnotherAccount(owner: string | null | undefined): boolean {
+  if (!owner) return false;
+  const me = storedSessionUserId();
+  return me != null && me !== owner;
+}
+
+/**
+ * How many show-run writes and running-order presses this device holds unsent (both
+ * stores of this database, every account's). For the "you have queued work" questions
+ * - the sign-out prompt (components/sign-out-button.tsx) and the desktop login screen -
+ * which used to count only the management outbox. A read-only probe like the one in
+ * sign-out-button.tsx: opened WITHOUT a version and aborted on upgrade, so asking can
+ * never create an empty, store-less database that would then break openDB() above.
+ * 0 on any failure: it only decides whether to ask.
+ */
+export function countQueuedShowRunWork(): Promise<number> {
+  return new Promise((resolve) => {
+    try {
+      if (typeof indexedDB === "undefined") return resolve(0);
+      const req = indexedDB.open(DB_NAME);
+      req.onupgradeneeded = () => {
+        try {
+          req.transaction?.abort(); // never create it - this is a read-only probe
+        } catch {
+          /* aborting is best-effort */
+        }
+      };
+      req.onerror = () => resolve(0);
+      req.onblocked = () => resolve(0);
+      req.onsuccess = () => {
+        const db = req.result;
+        const stores = [STORE, "runseq"].filter((s) => db.objectStoreNames.contains(s));
+        if (stores.length === 0) {
+          db.close();
+          return resolve(0);
+        }
+        let total = 0;
+        const tx = db.transaction(stores, "readonly");
+        for (const s of stores) {
+          const c = tx.objectStore(s).count();
+          c.onsuccess = () => {
+            total += c.result;
+          };
+        }
+        tx.oncomplete = () => {
+          db.close();
+          resolve(total);
+        };
+        tx.onerror = () => {
+          db.close();
+          resolve(0);
+        };
+        tx.onabort = () => {
+          db.close();
+          resolve(0);
+        };
+      };
+    } catch {
+      resolve(0);
+    }
+  });
 }
 
 function openDB(): Promise<IDBDatabase> {
@@ -60,10 +227,12 @@ function openDB(): Promise<IDBDatabase> {
 
 /** Queue an op (replacing any pending op for the same datum). Best-effort. */
 export async function enqueue(op: ShowRunOp): Promise<void> {
+  // a synchronous storage read - never a network wait on the จบโชว์ path
+  const owner = storedSessionUserId();
   const db = await openDB();
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE, "readwrite");
-    const rec: QueuedOp = { op, queuedAt: Date.now() };
+    const rec: QueuedOp = { op, queuedAt: Date.now(), ...(owner ? { owner } : {}) };
     tx.objectStore(STORE).put(rec, opKey(op));
     tx.oncomplete = () => {
       db.close();
@@ -286,6 +455,9 @@ export async function flushOutbox(): Promise<{ flushed: number; remaining: numbe
   }
   let flushed = 0;
   for (const { key, rec } of ops) {
+    // Another account's run time (2026-10-30, hunt 10): not sent, and never judged
+    // "gone" through this account's RLS - it waits, untouched, for its owner.
+    if (queuedByAnotherAccount(rec.owner)) continue;
     try {
       await apply(rec.op);
       // Only if what is queued now is still the value just written: a จบโชว์ / ล้าง

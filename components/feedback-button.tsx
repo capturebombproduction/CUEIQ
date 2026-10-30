@@ -22,6 +22,7 @@ import { toast } from "sonner";
 import { createClient } from "@/lib/supabase/client";
 import { APP_VERSION } from "@/lib/app-version";
 import { isQueueableWriteError } from "@/lib/mgmt-outbox";
+import { writeErrorText } from "@/lib/write-guard";
 import {
   FEEDBACK_IMAGE_EXTS,
   buildFeedbackImagePath,
@@ -315,7 +316,17 @@ export function FeedbackButton({
               : null,
         },
       });
-      if (error) throw new Error(error.message);
+      // A refused insert in Thai (2026-10-30, hunt 10): sent as anon - a laptop just woken,
+      // its token refresh not through yet - feedback_insert's check failed and the toast read
+      // 'new row violates row-level security policy for table "feedback"'. Network failures
+      // keep their own message, so the offline toast below still recognises them. Not
+      // writeErrorText's "โหลดหน้าใหม่": a reload wipes the typed text (it lives in memory).
+      if (error)
+        throw new Error(
+          writeErrorText(error) !== error.message
+            ? "เซสชันหมดอายุชั่วคราว ข้อความยังอยู่ — รอสักครู่แล้วกดส่งอีกครั้ง"
+            : error.message
+        );
       if (uploadFailures > 0) {
         toast.warning(`ส่งข้อความแล้ว แต่แนบรูปไม่สำเร็จ ${uploadFailures} รูป`, {
           description: "ลองส่งรูปอีกครั้งเมื่อสัญญาณดีขึ้นได้ครับ",

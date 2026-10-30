@@ -238,6 +238,45 @@ async function songBandMoveBlocker(
   return `เพลงนี้อยู่ในเซ็ตลิสต์ของ ${shows} งานของวงเดิม ถ้าย้ายวง งานพวกนั้นจะหาเพลงนี้ไม่เจอ — เอาเพลงออกจากเซ็ตลิสต์ก่อน หรือเพิ่มเป็นเพลงใหม่ในวงที่ถูก`;
 }
 
+/**
+ * Where a song is used, for the prompts that take its file away: deleting the song (onDelete),
+ * deleting only its file, and replacing its file. Setlist rows (counted) and practice rooms
+ * (practice_songs goes with the song, ON DELETE CASCADE - hunt 7). `unknown`: the reads failed,
+ * or came back empty with no session behind them (anon RLS reads 0 rows with no error -
+ * ตาที่ 3 on hunt 7; lib/write-guard.ts) - not "used nowhere".
+ * One read for all three since 2026-10-30 (hunt 10): "ลบไฟล์เสียง" said only "ข้อมูลเพลงยังอยู่"
+ * and deleted the master that every linked row of tomorrow's show plays.
+ */
+async function songUsage(
+  supabase: ReturnType<typeof createClient>,
+  songId: string
+): Promise<{ unknown: boolean; used: number; rooms: number; parts: string[] }> {
+  const read = await (async () =>
+    Promise.all([
+      supabase
+        .from("setlist_items")
+        .select("id", { count: "exact", head: true })
+        .eq("song_id", songId),
+      supabase.from("practice_songs").select("event_id").eq("song_id", songId),
+    ]))().catch(() => null);
+  // a read that THREW is a failed read too - the prompt says so, it does not just vanish
+  if (!read) return { unknown: true, used: 0, rooms: 0, parts: [] };
+  const [usage, practice] = read;
+  let unknown = !!(usage.error || practice.error);
+  if (!unknown && !usage.count && !(practice.data ?? []).length && (await hasLiveSession()) !== true) {
+    unknown = true;
+  }
+  const used = usage.count ?? 0;
+  const rooms = new Set(
+    ((practice.data ?? []) as { event_id?: string | null }[]).map((r) => r.event_id ?? "")
+  ).size;
+  const parts = [
+    used > 0 ? `${used} รายการของงาน` : null,
+    rooms > 0 ? `ห้องซ้อม ${rooms} ห้อง` : null,
+  ].filter((p): p is string => !!p);
+  return { unknown, used, rooms, parts };
+}
+
 /** The file name to show for a song: the file it plays now (audio_name), else the
  *  name it was created with. Every replace path writes only audio_name, so showing
  *  file_name named the OLD take after a swap. */
@@ -339,6 +378,9 @@ export function SongLibrary({
   // out of the save, so a rename can't write the old take's length back over the one
   // just measured from the new file (measureUploadedSong runs in the background).
   const openedFormRef = useRef<FormState | null>(null);
+  // ...and as it opened for the "ทิ้งที่แก้ไว้?" check on close (requestCloseDialog) - a blank
+  // form for a new song too, where openedFormRef stays null on purpose (everything is sent).
+  const dialogBaselineRef = useRef<FormState | null>(null);
   const [saving, setSaving] = useState(false);
   // Which save the dialog belongs to. A save with a file holds "กำลังบันทึก…" for the
   // whole upload, and ยกเลิก stays live: its tail then closed the NEXT song's dialog and
@@ -793,7 +835,9 @@ export function SongLibrary({
     setSaving(false);
     setPickedFile(null);
     openedFormRef.current = null;
-    setForm(emptyForm(editGroups[0]?.id ?? ""));
+    const blank = emptyForm(editGroups[0]?.id ?? "");
+    dialogBaselineRef.current = blank;
+    setForm(blank);
     setOpen(true);
   }
 
@@ -815,8 +859,34 @@ export function SongLibrary({
       notes: song.notes ?? "",
     };
     openedFormRef.current = opened;
+    dialogBaselineRef.current = opened;
     setForm(opened);
     setOpen(true);
+  }
+
+  /**
+   * Close the add/edit dialog - asking first when it holds work: a field changed since it
+   * opened, or a file picked. A tap on the dimmed page, Esc or ยกเลิก dropped all of it with no
+   * word (2026-10-30, hunt 10; the in-app feedback of 2026-08-13 asked for "ยังไม่ได้บันทึก"
+   * before leaving). Not while a save runs: that save goes on whatever the dialog does.
+   */
+  async function requestCloseDialog() {
+    const base = dialogBaselineRef.current;
+    const changed =
+      !!pickedFile || (!!base && (Object.keys(base) as (keyof FormState)[]).some((k) => form[k] !== base[k]));
+    if (saving || !changed) {
+      setOpen(false);
+      return;
+    }
+    const discard = await confirm({
+      title: "ทิ้งที่แก้ไว้?",
+      description: form.id
+        ? `ที่แก้ในเพลงนี้${pickedFile ? " และไฟล์ที่เลือกไว้" : ""}ยังไม่ได้บันทึก — ปิดแล้วจะหายไป`
+        : `เพลงใหม่นี้ยังไม่ได้เพิ่ม — ปิดแล้วที่กรอกไว้${pickedFile ? "และไฟล์ที่เลือกไว้" : ""}จะหายไป`,
+      confirmText: "ทิ้ง",
+      cancelText: "แก้ต่อ",
+    });
+    if (discard) setOpen(false);
   }
 
   async function onPickFile(file: File | undefined) {
@@ -914,6 +984,12 @@ export function SongLibrary({
         toast.error("ย้ายวงไม่ได้", { description: blocker });
         return;
       }
+    }
+    // A file picked here REPLACES the song's take, which goes for good (confirmReplaceFile,
+    // hunt 10). Asked before anything is written; ยกเลิก leaves the dialog and its pick as they are.
+    if (pickedFile && current && !(await confirmReplaceFile(current, pickedFile))) {
+      if (stillMine()) setSaving(false);
+      return;
     }
     // ลิขสิทธิ์ is sent CONDITIONALLY (guard 0034): the DB refuses a non-approver
     // changing copyright_status, and it compares against the CURRENT row — so a value
@@ -1013,27 +1089,8 @@ export function SongLibrary({
     // A failed read is not "used nowhere": say so instead of the plain prompt.
     // Practice rooms too: practice_songs goes with the song (ON DELETE CASCADE), and the prompt
     // said nothing about a song that sat in a room's set and in no show (2026-10-27, hunt 7).
-    const [usage, practice] = await Promise.all([
-      supabase
-        .from("setlist_items")
-        .select("id", { count: "exact", head: true })
-        .eq("song_id", song.id),
-      supabase.from("practice_songs").select("event_id").eq("song_id", song.id),
-    ]);
-    let usageError: unknown = usage.error || practice.error;
-    // used nowhere is only true with a session behind the reads: as anon, RLS counts 0 with
-    // no error and the prompt said nothing (ตาที่ 3 on hunt 7; lib/write-guard.ts)
-    if (!usageError && !usage.count && !(practice.data ?? []).length && (await hasLiveSession()) !== true) {
-      usageError = true;
-    }
-    const used = usage.count ?? 0;
-    const rooms = new Set(
-      ((practice.data ?? []) as { event_id?: string | null }[]).map((r) => r.event_id ?? "")
-    ).size;
-    const usedParts = [
-      used > 0 ? `${used} รายการของงาน` : null,
-      rooms > 0 ? `ห้องซ้อม ${rooms} ห้อง` : null,
-    ].filter(Boolean);
+    // used nowhere is only true with a session behind the reads (songUsage).
+    const { unknown: usageError, used, rooms, parts: usedParts } = await songUsage(supabase, song.id);
     const ok = await confirm({
       title: `ลบเพลง “${song.title}” ออกจากคลัง?`,
       description: usageError
@@ -1344,18 +1401,48 @@ export function SongLibrary({
     }
   }
 
+  /**
+   * A replace deletes the take it replaces, for good (uploadSongAudio removes prevPath - พี่'s
+   * "เคลียขยะของเก่า", 4767d9d). The file picker went straight to the upload, so a wrong file
+   * picked for a song that already had one took the master with no question asked
+   * (2026-10-30, hunt 10). Asked only when the song HAS a file: a first upload replaces nothing.
+   */
+  async function confirmReplaceFile(song: Song, file: File): Promise<boolean> {
+    if (!song.audio_path) return true;
+    const u = await songUsage(supabase, song.id);
+    const where = u.unknown
+      ? "\nตรวจไม่ได้ว่าเพลงนี้ใช้อยู่ในงานหรือห้องซ้อมไหนบ้าง (เน็ตขัดข้อง)"
+      : u.parts.length > 0
+        ? `\nเพลงนี้ใช้อยู่ใน ${u.parts.join(" และ ")} — ที่นั่นจะเล่นไฟล์ใหม่แทน`
+        : "";
+    return confirm({
+      title: `แทนที่ไฟล์เสียงของ “${song.title}”?`,
+      description: `“${shownFileName(song) ?? "ไฟล์เดิม"}” จะถูกแทนด้วย “${file.name}” — ไฟล์เดิมจะถูกลบถาวร กู้คืนไม่ได้${where}`,
+      confirmText: "แทนที่ไฟล์",
+    });
+  }
+
   async function onPickAudioFile(file: File | undefined) {
     const song = audioTargetRef.current;
     if (audioFileRef.current) audioFileRef.current.value = "";
     if (!file || !song) return;
+    // a file no player opens is refused inside uploadSongAudio - nothing to ask about
+    if (!unplayableAudio(file) && !(await confirmReplaceFile(song, file))) return;
     await uploadSongAudio(song, file);
   }
 
   async function removeSongAudio(song: Song) {
     if (!song.audio_path) return;
+    // Every row that links the song plays its file (setlist_items.audio_path NULL), so this is
+    // the same loss onDelete warns about - it said only "ข้อมูลเพลงยังอยู่" (2026-10-30, hunt 10).
+    const u = await songUsage(supabase, song.id);
     const ok = await confirm({
       title: `ลบไฟล์เสียงของ “${song.title}”?`,
-      description: "ข้อมูลเพลงยังอยู่ — ลบเฉพาะไฟล์เสียง",
+      description: u.unknown
+        ? "ตรวจไม่ได้ว่าเพลงนี้ถูกใช้ในงานหรือห้องซ้อมไหนอยู่บ้าง (เน็ตขัดข้อง) — ถ้าใช้อยู่ ที่นั่นจะไม่มีเสียงเพลงนี้\nไฟล์จะถูกลบถาวร กู้คืนไม่ได้"
+        : u.parts.length > 0
+          ? `เพลงนี้ถูกใช้อยู่ใน ${u.parts.join(" และ ")} — ลบแล้วที่นั่นจะไม่มีเสียงเพลงนี้ จนกว่าจะอัปไฟล์ใหม่\nไฟล์จะถูกลบถาวร กู้คืนไม่ได้`
+          : "ไฟล์จะถูกลบถาวร กู้คืนไม่ได้",
       confirmText: "ลบไฟล์เสียง",
     });
     if (!ok) return;
@@ -2441,7 +2528,13 @@ export function SongLibrary({
         )}
       </Dialog>
 
-      <Dialog open={open} onOpenChange={setOpen}>
+      <Dialog
+        open={open}
+        onOpenChange={(o) => {
+          if (o) setOpen(true);
+          else void requestCloseDialog(); // outside tap, Esc, ✕
+        }}
+      >
         <DialogContent>
           <DialogHeader>
             <DialogTitle>{form.id ? "Edit Song" : "Add Song"}</DialogTitle>
@@ -2621,7 +2714,7 @@ export function SongLibrary({
           </div>
 
           <DialogFooter>
-            <Button variant="outline" onClick={() => setOpen(false)}>
+            <Button variant="outline" onClick={() => void requestCloseDialog()}>
               ยกเลิก
             </Button>
             <Button onClick={onSave} disabled={saving}>

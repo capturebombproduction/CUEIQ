@@ -6,6 +6,7 @@ import { toast } from "sonner";
 import { QUEUED_BEHIND_PENDING_MESSAGE, saveEventWrite } from "@/lib/mgmt-write";
 import { useHoldBottomSlot } from "@/lib/bottom-slot";
 import { createClient } from "@/lib/supabase/client";
+import { notify } from "@/lib/notify-client";
 import { useConfirm } from "@/components/ui/confirm-dialog";
 import { useUnsavedDraftGuard } from "@/components/event/use-leave-guard";
 import {
@@ -369,6 +370,18 @@ export function EventForm({
             : "เซิร์ฟเวอร์ตอบไม่ได้ตอนนี้ — บันทึกไว้ในเครื่องแล้ว จะซิงค์ให้อัตโนมัติ"
         );
       } else toast.success("บันทึกแล้ว");
+      // A status this form CHANGED is told like the Overview's chip and the resubmit button
+      // tell it (EventStatusActions / ApprovalControl). It told nobody (2026-10-30, hunt 10): an
+      // admin who approved or rejected a show here left the band with no ✅ / ↩️, and one who
+      // corrected an approval made by mistake left the band's last word "อนุมัติงานแล้ว".
+      // Only once it is on the server: /api/notify checks the row's real status, and a queued
+      // write is not there yet. Draft / In Progress / Overdue have no notice of their own.
+      const sentStatus = statusPatch.status;
+      if (!res.queued && sentStatus && sentStatus !== event.status) {
+        if (sentStatus === "approved") notify("event_approved", { eventId: event.id });
+        else if (sentStatus === "rejected") notify("event_rejected", { eventId: event.id });
+        else if (sentStatus === "pending_review") notify("event_submitted", { eventId: event.id });
+      }
       /* Nothing happens to the board here, on purpose and in every case — the dialog above
          already told the user it will not follow, and the two attempts to make it follow
          are the reason this file has a tombstone where a mover used to be. */

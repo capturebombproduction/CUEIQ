@@ -87,8 +87,24 @@ export async function fetchSongs(
   if (rows.length === 0 && (await withTimeout(hasLiveSession(), SONG_LIBRARY_TIMEOUT_MS)) !== true) {
     return null;
   }
-  writeCache(songsCacheKey(tenantId, groupIds), rows);
+  writeCache(songsCacheKey(tenantId, groupIds), rows.map(withoutCover));
   return rows;
+}
+
+/** The row as the read-cache keeps it: no `cover`. 2026-10-30, hunt 10: a cover is a
+ *  ~10 K-char data URL, so Seishin's 36 covers were ~360 K of the ~400 K this entry took
+ *  (10x the rest of the rows), re-written on every dashboard open, in the same few-MB
+ *  origin the show bundles, the saved sign-in and Live's crash snapshots live in - and
+ *  it grows 10 K with every song. The caller still gets the covers it read (the online
+ *  Library draws them); the offline Library draws each song's band tile instead, as
+ *  Live and the practice room offline already do (lib/song-covers.ts keeps nothing on
+ *  disk). No write path sends a song's whole row back, so the missing field cannot
+ *  clear a cover on the server (song-library.tsx writes `cover` only in saveCover). */
+function withoutCover(song: Song): Song {
+  if (!("cover" in song)) return song;
+  const out = { ...song };
+  delete out.cover;
+  return out;
 }
 
 /**

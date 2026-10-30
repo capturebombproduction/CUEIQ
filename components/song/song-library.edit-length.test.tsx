@@ -127,6 +127,8 @@ describe("SongLibrary — a rename right after a replace", () => {
     fireEvent.click(within(screen.getByRole("dialog")).getByTitle("เปลี่ยนไฟล์เสียง"));
     const input = document.querySelector('input[type="file"][accept="audio/*"].hidden') as HTMLInputElement;
     fireEvent.change(input, { target: { files: [new File(["wav"], "take-2.wav", { type: "audio/wav" })] } });
+    // 2026-10-30 (hunt 10): a replace asks first (confirmReplaceFile) - answer it
+    fireEvent.click(await screen.findByRole("button", { name: "แทนที่ไฟล์" }));
     await waitFor(() => expect(h.releaseAnalysis).not.toBeNull()); // uploaded; measuring…
 
     // 2. while it is measuring, open แก้ไข to fix the title

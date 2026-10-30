@@ -121,6 +121,8 @@ describe("edit dialog + new file + failed upload", () => {
       expect((within(dialog).getByLabelText("ความยาว (m:ss)") as HTMLInputElement).value).toBe("5:12")
     );
     fireEvent.click(within(dialog).getByRole("button", { name: "บันทึก" }));
+    // 2026-10-30 (hunt 10): a replace asks first (confirmReplaceFile) - answer it
+    fireEvent.click(await screen.findByRole("button", { name: "แทนที่ไฟล์" }));
     await waitFor(() => expect(h.toast.error).toHaveBeenCalled()); // "อัปโหลดไม่สำเร็จ"
 
     // The upload failed: no write ever pointed the song at a new file...

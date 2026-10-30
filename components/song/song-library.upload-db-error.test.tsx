@@ -5,7 +5,7 @@
 //  - the desktop queue classifier (isQueueableWriteError) gets "[object Object]" and
 //    refuses to queue the bytes while navigator.onLine is true.
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { ConfirmProvider } from "@/components/ui/confirm-dialog";
 import { makePerms } from "@/lib/permissions";
 import { isQueueableWriteError } from "@/lib/mgmt-outbox";
@@ -111,6 +111,8 @@ describe("row upload: PUT landed, row update failed on the network", () => {
     fireEvent.click(btn);
     const input = container.querySelector('input[type="file"][accept="audio/*"]') as HTMLInputElement;
     fireEvent.change(input, { target: { files: [new File(["wav"], "take-2.wav", { type: "audio/wav" })] } });
+    // 2026-10-30 (hunt 10): a replace asks first (confirmReplaceFile) - answer it
+    fireEvent.click(await screen.findByRole("button", { name: "แทนที่ไฟล์" }));
 
     await waitFor(() => expect(h.toast.error).toHaveBeenCalled());
     const [, opts] = h.toast.error.mock.calls[0] as [string, { description?: string }];

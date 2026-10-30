@@ -19,7 +19,7 @@ vi.mock("html-to-image", () => ({
   }),
 }));
 
-import { captureElementToImage, safeFileStem } from "@/lib/export-image";
+import { captureElementToImage, capturePixelRatio, safeFileStem } from "@/lib/export-image";
 
 // The JPG's light palette is app/theme.css `.export-light` (every token, knobs zeroed).
 // It used to be a 19-token map set inline here, which every later token — warning,
@@ -84,6 +84,39 @@ describe("captureElementToImage — light palette by class", () => {
     expect(optionsSeen[0].style).toEqual({ margin: "0" });
     // the live node keeps its margin — only the clone is reset
     expect(el.style.marginTop).toBe("16px");
+  });
+});
+
+// 2026-10-30 (hunt 10): every capture ran at pixelRatio 2. iOS Safari refuses a canvas
+// over 16,777,216 px of area and returns "data:,", so a tall board (Overview with
+// "ที่ผ่านมา" open, 820 px wide, ~5,100 px tall at the limit) always failed with
+// "รูปที่ได้ว่างเปล่า ลองใหม่อีกครั้ง" — and so did every retry.
+describe("capturePixelRatio — a tall node stays under iOS's canvas area limit", () => {
+  it("keeps 2× for an ordinary run sheet", () => {
+    expect(capturePixelRatio(600, 1200)).toBe(2);
+  });
+
+  it("lowers the ratio so a 820 × 6000 board fits under 16.7 M px", () => {
+    const r = capturePixelRatio(820, 6000);
+    expect(r).toBeLessThan(2);
+    expect(820 * r * 6000 * r).toBeLessThanOrEqual(16_777_216);
+  });
+
+  it("falls back to 2× for a node that has no height yet", () => {
+    expect(capturePixelRatio(600, 0)).toBe(2);
+  });
+
+  it("passes that ratio to html-to-image", async () => {
+    const el = document.createElement("div");
+    Object.defineProperty(el, "scrollHeight", { configurable: true, value: 6000 });
+    document.body.appendChild(el);
+    vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+    optionsSeen.length = 0;
+    await captureElementToImage(el, { filename: "x.jpg", width: 820 });
+    const r = (optionsSeen[0] as { pixelRatio?: number }).pixelRatio ?? 0;
+    expect(820 * r * 6000 * r).toBeLessThanOrEqual(16_777_216);
+    el.remove();
+    vi.restoreAllMocks();
   });
 });
 

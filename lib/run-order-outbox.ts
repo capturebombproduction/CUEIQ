@@ -50,6 +50,8 @@ import { hasLiveSession } from "@/lib/auth-session";
 import { privateChannel } from "@/lib/realtime";
 import { notify } from "@/lib/notify-client";
 import { parseClockToSeconds } from "@/lib/time";
+// the same database's owner rule (2026-10-30, hunt 10) - see lib/show-run-outbox.ts
+import { queuedByAnotherAccount, storedSessionUserId } from "@/lib/show-run-outbox";
 
 /** Fired after any queue change so chips/panels can re-read (mirrors MGMT_OUTBOX_EVENT). */
 export const RUNSEQ_OUTBOX_EVENT = "cueiq:runseq-outbox-change";
@@ -166,6 +168,15 @@ export interface RunSeqOp {
    * ± nudge merged in after the start is kept (planShiftMin). Optional for older records.
    */
   planBasis?: string | null;
+  /**
+   * The account signed in on this device when the press was queued (2026-10-30, hunt 10;
+   * read synchronously at enqueue - lib/show-run-outbox.ts storedSessionUserId). A flush
+   * signed in as someone else leaves the op, and every op of its press, untouched: under
+   * that account a press it may not write parked as a conflict. Absent when it could not
+   * be read at once, on older records, and on a row two accounts both pressed (mergeOp) -
+   * all of which replay for whoever is signed in, as before.
+   */
+  owner?: string;
 }
 
 /** A fresh id for one press - every row that press writes carries it. */
@@ -230,7 +241,7 @@ export function mergeOp(prev: RunSeqOp | undefined, next: RunSeqOp): RunSeqOp {
     // only the rev carries over: the flush compares it, and it must never repeat
     return { ...next, rev: (prev.rev ?? 0) + 1 };
   }
-  return {
+  const merged: RunSeqOp = {
     ...next,
     // the label + timestamp of the LATEST press describe where the row now is
     patch: { ...prev.patch, ...next.patch },
@@ -253,6 +264,13 @@ export function mergeOp(prev: RunSeqOp | undefined, next: RunSeqOp): RunSeqOp {
     // a later start sets its own, a ± or an end leaves it (planBasis)
     planBasis: next.planBasis !== undefined ? next.planBasis : prev.planBasis,
   };
+  // One record per row, so a press on a row another account's op holds has to fold in
+  // (2026-10-30, hunt 10). It was pressed on the board WITH that op laid over it, so the
+  // two only make sense together - stamped with either account, one account's press
+  // would wait for the other to sign in. The folded op has no owner and replays as
+  // before this field existed.
+  if (prev.owner !== next.owner) delete merged.owner;
+  return merged;
 }
 
 /** Is `rec` the record `op` became - every press folded into `op` still in it? A press that
@@ -588,10 +606,13 @@ export function onRunSeqOutboxChange(cb: () => void): () => void {
  *  caller used to be told nothing and announced "จะซิงค์ให้เมื่อเน็ตกลับ" about a press
  *  that could never sync (a full disk, a broken store; 2026-10-27, hunt 6). */
 export async function enqueueRunSeq(raw: RunSeqOp): Promise<boolean> {
+  // whose press (RunSeqOp.owner): a synchronous storage read, never a network wait
+  const owner = storedSessionUserId();
   const op: RunSeqOp = {
     ...raw,
     patch: compactPatch(raw.patch),
     expect: compactPatch(raw.expect),
+    ...(owner ? { owner } : {}),
   };
   try {
     const db = await openDB();
@@ -987,6 +1008,8 @@ async function doFlush(): Promise<RunSeqFlushResult> {
       // record — sending the stale one would leave the merged press holding a
       // precondition this write is about to consume.
       const op = (await getRunSeqOp(snapshot.rowId)) ?? snapshot;
+      // the account changed under a running flush: leave the rest for its owner
+      if (queuedByAnotherAccount(op.owner)) return "wait";
       if (op.conflict) return "conflict"; // parked while we were working
       // A start whose drift was worked out against a plan staff have moved since (see
       // RunSeqOp.planBasis): read the plan the row holds and write the drift moved onto
@@ -1100,6 +1123,10 @@ async function doFlush(): Promise<RunSeqFlushResult> {
   // independent of the others, so one failure never blocks the rest — the outbox
   // lesson from round 5, where a single rejected upload could freeze the whole queue.
   for (const unit of groupRunSeqPresses(queue)) {
+    // Another account's press (2026-10-30, hunt 10, RunSeqOp.owner): the WHOLE unit is
+    // left as it is - not sent, not prechecked, not parked, not rebased - until its owner
+    // signs in here. Asked per unit: an account can change during a long flush.
+    if (unit.some((o) => queuedByAnotherAccount(o.owner))) continue;
     const members = unit.filter((o) => !o.conflict);
     if (members.length === 0) continue;
     // The units were cut from the queue as it stood when this flush began. A press made

@@ -102,6 +102,8 @@ describe("edit dialog saves a new file while the row is still uploading one", ()
     fireEvent.click(container.querySelector('[aria-label="เปลี่ยนไฟล์เสียง Neon Lullaby"]') as HTMLElement);
     const rowInput = container.querySelector('input[type="file"][accept="audio/*"]') as HTMLInputElement;
     fireEvent.change(rowInput, { target: { files: [new File(["big"], "take-big.wav", { type: "audio/wav" })] } });
+    // 2026-10-30 (hunt 10): a replace asks first (confirmReplaceFile) - answer it
+    fireEvent.click(await screen.findByRole("button", { name: "แทนที่ไฟล์" }));
     await waitFor(() => expect(h.uploads).toHaveLength(1));
 
     const phone = document.querySelector('[class~="md:hidden"].stack') as HTMLElement;

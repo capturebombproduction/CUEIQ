@@ -4,7 +4,7 @@
 // parameter, so isQueueableWriteError("ขอลิงก์ put ไม่สำเร็จ (503)", onLine=true) = false:
 // the desktop does not keep the picked take.
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { ConfirmProvider } from "@/components/ui/confirm-dialog";
 import { makePerms } from "@/lib/permissions";
 import { isQueueableWriteError } from "@/lib/mgmt-outbox";
@@ -82,6 +82,8 @@ describe("row upload: presign answers 503", () => {
     fireEvent.change(container.querySelector('input[type="file"][accept="audio/*"]') as HTMLInputElement, {
       target: { files: [new File(["wav"], "take-2.wav", { type: "audio/wav" })] },
     });
+    // 2026-10-30 (hunt 10): a replace asks first (confirmReplaceFile) - answer it
+    fireEvent.click(await screen.findByRole("button", { name: "แทนที่ไฟล์" }));
     await waitFor(() => expect(h.queued).toHaveLength(1));
     const a = h.queued[0] as { errorMessage?: string | null; errorStatus?: number | null };
     expect(isQueueableWriteError(a.errorMessage ?? null, true, a.errorStatus ?? null)).toBe(true);

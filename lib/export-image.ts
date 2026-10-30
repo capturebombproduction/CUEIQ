@@ -25,6 +25,18 @@ export const EXPORT_LIGHT_CLASS = "export-light";
 export const safeFileStem = (name: string, fallback: string): string =>
   name.replace(/[^\p{L}\p{M}\p{N}_-]+/gu, "_").replace(/^_+|_+$/g, "") || fallback;
 
+/** iOS Safari refuses a canvas over 16,777,216 px of AREA (html-to-image only caps each
+ *  side at 16,384 px) and hands back "data:," - an empty picture. At 2× an 820 px board
+ *  crosses it near 5,100 px tall, which Overview with "ที่ผ่านมา" open already reaches,
+ *  and every "ลองใหม่" failed the same way (hunt 10, 2026-10-30). A tall node is drawn
+ *  sharp as 2× allows and no larger than the limit, with a margin under it. */
+const MAX_CANVAS_AREA = 16_000_000;
+
+export function capturePixelRatio(width: number, height: number): number {
+  if (!(width > 0) || !(height > 0)) return 2;
+  return Math.min(2, Math.sqrt(MAX_CANVAS_AREA / (width * height)));
+}
+
 /**
  * Capture `el` as a JPG and either share it (mobile) or download it (desktop).
  * Returns how it was delivered so the caller can tailor its toast. The caller
@@ -50,7 +62,7 @@ export async function captureElementToImage(
     el.classList.add(EXPORT_LIGHT_CLASS);
     await new Promise((r) => setTimeout(r, 80)); // wait for browser reflow
     const dataUrl = await toJpeg(el, {
-      pixelRatio: 2,
+      pixelRatio: capturePixelRatio(width, el.scrollHeight),
       backgroundColor: "#ffffff",
       cacheBust: true,
       quality: 0.92,

@@ -1167,6 +1167,9 @@ export function MyShow() {
   }
 
   function clearLastRun() {
+    // The saved run time went on one tap of "ล้าง" with no question (2026-10-30, hunt 10; a
+    // confirm before every delete). Reset's own confirm style.
+    if (!window.confirm("ล้างเวลาโชว์ล่าสุดที่บันทึกไว้? ล้างแล้วกู้คืนไม่ได้")) return;
     setLastRun(null);
     setSoloLastRun(null).catch(() => {});
   }

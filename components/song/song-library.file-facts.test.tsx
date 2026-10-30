@@ -120,6 +120,8 @@ describe("SongLibrary — a new file brings its own facts", () => {
     fireEvent.click(within(phoneList()).getByText("Neon Lullaby").closest("button[aria-haspopup=dialog]") as HTMLElement);
     fireEvent.click(within(screen.getByRole("dialog")).getByTitle("เปลี่ยนไฟล์เสียง"));
     fireEvent.change(audioInput(), { target: { files: [TAKE_2] } });
+    // 2026-10-30 (hunt 10): a replace asks first (confirmReplaceFile) - answer it
+    fireEvent.click(await screen.findByRole("button", { name: "แทนที่ไฟล์" }));
 
     await waitFor(() => expect(h.writes).toHaveLength(2));
     const [point, facts] = h.writes;

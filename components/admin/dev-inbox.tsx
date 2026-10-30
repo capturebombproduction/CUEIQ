@@ -124,6 +124,18 @@ function shortUrl(url: string | null): string | null {
   }
 }
 
+/** The longest answer the row keeps (the reply column's cap since 0043). */
+const REPLY_MAX = 4000;
+
+/**
+ * Nothing to send: the box is empty, or still says exactly what the row already says (sent
+ * again it would only mark the answer unread and push the author a second time).
+ */
+function replyUnchanged(r: Pick<FeedbackRow, "id" | "reply">, drafts: Record<string, string>): boolean {
+  const text = (drafts[r.id] ?? "").trim();
+  return !text || text.slice(0, REPLY_MAX) === (r.reply ?? "").trim();
+}
+
 /** A read that failed - said as such, with a retry, never as an empty inbox. */
 function LoadFailed({ onRetry }: { onRetry: () => void }) {
   return (
@@ -201,18 +213,21 @@ export function DevInbox({
    * it is NOT what decides success here — the row write is.
    */
   async function sendReply(id: string) {
-    const text = (drafts[id] ?? "").trim();
+    const row = fb.find((r) => r.id === id);
+    const text = (drafts[id] ?? "").trim().slice(0, REPLY_MAX);
     if (text.length < 2) {
       toast.error("พิมพ์คำตอบสักนิดครับ");
       return;
     }
+    // the answer already on the row: nothing to send (the button is off for it too)
+    if (row && replyUnchanged(row, drafts)) return;
     setSending(id);
     try {
       const now = new Date().toISOString();
       const { data, error } = await createClient()
         .from("feedback")
         .update({
-          reply: text.slice(0, 4000),
+          reply: text,
           replied_at: now,
           // 0043 declares replied_by and the guard trigger protects it; without
           // this nothing ever wrote it, so in a label with several admins every
@@ -227,7 +242,12 @@ export function DevInbox({
       setFb((p) =>
         p.map((r) => (r.id === id ? { ...r, reply: text, replied_at: now } : r))
       );
-      setDrafts((d) => ({ ...d, [id]: "" }));
+      // no draft left: going back into the box brings the answer as it now stands
+      setDrafts((d) => {
+        const next = { ...d };
+        delete next[id];
+        return next;
+      });
       notify("feedback_replied", { feedbackId: id });
       toast.success("ส่งคำตอบแล้ว");
     } catch (e) {
@@ -421,7 +441,18 @@ export function DevInbox({
                 <div className="flex items-end gap-2">
                   <Textarea
                     value={drafts[r.id] ?? ""}
+                    // 2026-10-30, hunt 10: under an answered report this box said "แก้คำตอบ /
+                    // ตอบเพิ่ม…" but stayed EMPTY, and ตอบ writes the whole reply - a follow-up
+                    // typed here replaced the first answer for good, and the author never saw
+                    // it. Going into a blank box now brings the answer already given, so an
+                    // edit is an edit and "more" is added to it; what the admin typed is never
+                    // overwritten, and a box they empty cannot send (replyUnchanged).
+                    onFocus={() => {
+                      if (!r.reply) return;
+                      setDrafts((d) => ((d[r.id] ?? "").trim() ? d : { ...d, [r.id]: r.reply! }));
+                    }}
                     onChange={(e) => setDrafts((d) => ({ ...d, [r.id]: e.target.value }))}
+                    maxLength={REPLY_MAX}
                     rows={2}
                     placeholder={r.reply ? "แก้คำตอบ / ตอบเพิ่ม…" : "ตอบกลับคนที่แจ้งมา…"}
                     aria-label="คำตอบ"
@@ -430,7 +461,7 @@ export function DevInbox({
                   />
                   <Button
                     onClick={() => sendReply(r.id)}
-                    disabled={sending === r.id || !(drafts[r.id] ?? "").trim()}
+                    disabled={sending === r.id || replyUnchanged(r, drafts)}
                   >
                     {sending === r.id ? (
                       <Loader2 className="animate-spin" aria-hidden />

@@ -156,6 +156,8 @@ describe("a file this device's player cannot open", () => {
       expect(h.toast.error).toHaveBeenCalledWith("ใช้ไฟล์นี้ไม่ได้", { description: UNOPENABLE_AUDIO_MESSAGE })
     );
     fireEvent.click(within(dialog).getByRole("button", { name: "บันทึก" }));
+    // 2026-10-30 (hunt 10): a replace asks first (confirmReplaceFile) - answer it
+    fireEvent.click(await screen.findByRole("button", { name: "แทนที่ไฟล์" }));
     await waitFor(() => expect(h.uploads).toHaveLength(1));
     expect(h.uploads[0]).toMatch(/.wav$/);
   });
@@ -166,6 +168,8 @@ describe("a file this device's player cannot open", () => {
     fireEvent.click(container.querySelector('[aria-label="เปลี่ยนไฟล์เสียง Neon Lullaby"]') as HTMLElement);
     const input = container.querySelector('input[type="file"][accept="audio/*"]') as HTMLInputElement;
     fireEvent.change(input, { target: { files: [new File(["m4a"], "take-2.m4a", { type: "audio/mp4" })] } });
+    // 2026-10-30 (hunt 10): a replace asks first (confirmReplaceFile) - answer it
+    fireEvent.click(await screen.findByRole("button", { name: "แทนที่ไฟล์" }));
     await waitFor(() =>
       expect(h.toast.error).toHaveBeenCalledWith("ใช้ไฟล์นี้ไม่ได้", { description: UNOPENABLE_AUDIO_MESSAGE })
     );
@@ -182,6 +186,8 @@ describe("a file this device's player cannot open", () => {
     fireEvent.change(picker, { target: { files: [new File(["wav"], "take-2.wav", { type: "audio/wav" })] } });
     await waitFor(() => expect(h.toast.error).toHaveBeenCalledWith("ตรวจความยาวไม่สำเร็จ", expect.anything()));
     fireEvent.click(within(dialog).getByRole("button", { name: "บันทึก" }));
+    // 2026-10-30 (hunt 10): a replace asks first (confirmReplaceFile) - answer it
+    fireEvent.click(await screen.findByRole("button", { name: "แทนที่ไฟล์" }));
     await waitFor(() => expect(pointedAtNewFile()).toBe(true));
     expect(h.uploads).toHaveLength(1);
   });

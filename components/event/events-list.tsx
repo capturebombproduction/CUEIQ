@@ -315,14 +315,19 @@ const BUNDLE_REFRESH_EVERY_MS = 5 * 60_000;
  * (2026-10-27 hunt). Called only after the readiness reads came back, i.e. online.
  * Sequential and best-effort; each show at most once per BUNDLE_REFRESH_EVERY_MS, since
  * the readiness pass also runs on every return to the window.
+ * Resolves to the shows whose new read could NOT be written over the held copy (a full
+ * cache, 2026-10-30 hunt 10): the badge drawn a moment ago called them ready.
  */
-async function refreshHeldBundles(cache: EventCacheBridge, eventIds: string[]) {
+async function refreshHeldBundles(cache: EventCacheBridge, eventIds: string[]): Promise<string[]> {
   const now = Date.now();
   const due = eventIds.filter(
     (id) => cache.isCached(id) && now - (lastBundleRefresh.get(id) ?? -Infinity) >= BUNDLE_REFRESH_EVERY_MS
   );
   for (const id of due) lastBundleRefresh.set(id, now);
-  for (const id of due) await cache.warm(id).catch(() => {});
+  const behind: string[] = [];
+  // a warm that threw learned nothing: the badge stays as it was
+  for (const id of due) if ((await cache.warm(id).catch(() => true)) === false) behind.push(id);
+  return behind;
 }
 
 export function EventsList({
@@ -539,7 +544,16 @@ export function EventsList({
       );
       setReadiness(out);
       setTargetsByEvent(outTargets);
-      if (cache) void refreshHeldBundles(cache, eventIds);
+      if (cache) {
+        void refreshHeldBundles(cache, eventIds).then((behind) => {
+          if (behind.length === 0) return;
+          setReadiness((cur) => {
+            const next = { ...cur };
+            for (const id of behind) if (next[id]) next[id] = { ...next[id], data: false };
+            return next;
+          });
+        });
+      }
     } catch {
       /* best-effort — no badge on failure */
     }
