@@ -126,8 +126,48 @@ describe("LiveMode · the machine slept under a running show", () => {
     const song = media.first()!;
     await tick(60_000);
     media.set(song, { duration: 240, currentTime: 60 });
+    await tick(500); // a tick has seen the file there: how far it moves across a gap is measured from it
     return { media, song };
   }
+
+  // Argon on hunt 12: the row was set to the file's POSITION, so a song rightly ahead of its row
+  // (started early by a negative buffer) was cut that much early, after a sleep or just a stall.
+  it("a song ahead of its row keeps that lead across a sleep", async () => {
+    const { media, song } = await songAtOneMinute([makeItem(1), makeItem(2)]);
+    media.set(song, { currentTime: 65 });
+    await tick(500);
+    const before = lastState().itemStartedAt;
+    sleep(30_000);
+    await tick(1_000);
+    const moved = lastState().itemStartedAt - before;
+    expect(moved).toBeGreaterThan(29_000);
+    expect(moved).toBeLessThan(31_000);
+  }, 30_000);
+
+  it("a stall with that song playing on moves nothing and says nothing", async () => {
+    const { media, song } = await songAtOneMinute([makeItem(1), makeItem(2)]);
+    media.set(song, { currentTime: 65 });
+    await tick(500);
+    const sends = stateSends().length;
+    sleep(30_000);
+    media.set(song, { currentTime: 95 });
+    await tick(1_000);
+    expect(stateSends().length).toBe(sends);
+    expect(h.toast.warning).not.toHaveBeenCalled();
+  }, 30_000);
+
+  it("in the desktop app a row with no file is shifted even if the first tick after a wake finds it hidden", async () => {
+    vi.stubGlobal("cueiqNative", new Proxy({}, { get: () => async () => undefined }));
+    const set = [makeItem(1, { kind: "mc", duration_seconds: 120 }), makeItem(2)];
+    await mountLive(set);
+    await startShow();
+    await goAuto();
+    await tick(10_000);
+    setVisibility("hidden");
+    sleep(300_000);
+    await tick(1_000);
+    expect(lastState().currentIndex).toBe(0); // used to: the next song started as the lid opened
+  }, 30_000);
 
   it("a 30 s sleep: the song keeps its last 30 s, and AUTO leaves it at its own end", async () => {
     const { media, song } = await songAtOneMinute([makeItem(1), makeItem(2)]);

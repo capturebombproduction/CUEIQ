@@ -88,6 +88,7 @@ describe("Quick Show · the machine slept under a running show", () => {
     const el = media.first()!;
     await tick(60_000);
     media.set(el, { currentTime: 60, duration: 240 });
+    await tick(500); // a tick has seen the file there: how far it moves across a gap is measured from it
     sleep(30_000);
     await tick(1_000);
     expect(toast.warning).toHaveBeenCalledTimes(1);

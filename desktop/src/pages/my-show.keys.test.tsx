@@ -138,6 +138,16 @@ describe("Quick Show · a question's keys are the question's", () => {
   });
 });
 
+describe("Quick Show · the show keys with a question open", () => {
+  // Argon on hunt 12: the rule above took every key, so → and N died on a question's button.
+  it("→ on ไม่ล้าง still moves the show", async () => {
+    await startShow();
+    await mouseClick(key("ล้าง"));
+    const ev = await press("ArrowRight", "ArrowRight");
+    expect(ev.defaultPrevented).toBe(true);
+  });
+});
+
 describe("Quick Show · ล้าง's question", () => {
   it("opens with the focus on ไม่ล้าง, which gives it back to ล้าง", async () => {
     await boot();

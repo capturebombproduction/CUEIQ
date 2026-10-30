@@ -369,12 +369,15 @@ export function MyShow() {
   // render that would read the jump as a row run out (onClockGapRef, by Auto's advance)
   const lastTickRef = useRef(Date.now());
   const onClockGapRef = useRef<(gapMs: number) => void>(() => {});
+  // Where the sounding file stood at the last tick: how far it moved across a gap (onClockGapRef).
+  const lastFileRef = useRef<{ id: string | null; at: number }>({ id: null, at: 0 });
   useEffect(() => {
     const id = setInterval(() => {
       const t = Date.now();
       const gap = t - lastTickRef.current;
       lastTickRef.current = t;
       if (gap > CLOCK_GAP_MS) onClockGapRef.current(gap);
+    lastFileRef.current = { id: playingIdRef.current, at: audioRef.current?.currentTime ?? 0 };
       setNow(t);
     }, 500);
     return () => clearInterval(id);
@@ -1237,11 +1240,16 @@ export function MyShow() {
     const fileSounds = !cur.loop && !!a && playingIdRef.current === cur.id && !a.paused && !a.ended && !a.error;
     let itemStartedAt: number;
     if (fileSounds) {
-      itemStartedAt = Date.now() - a.currentTime * 1000;
-      if (Math.abs(itemStartedAt - s.itemStartedAt) < CLOCK_DRIFT_MS) return;
+      // what the file LOST across the gap, not its position (Live Mode's rule; Argon on hunt 12)
+      const last = lastFileRef.current;
+      const lostMs =
+        last.id === cur.id
+          ? gapMs - (a.currentTime - last.at) * 1000
+          : Date.now() - a.currentTime * 1000 - s.itemStartedAt;
+      if (lostMs < CLOCK_DRIFT_MS) return;
+      itemStartedAt = s.itemStartedAt + lostMs;
     } else {
-      if (!visible) return;
-      itemStartedAt = s.itemStartedAt + gapMs;
+      itemStartedAt = s.itemStartedAt + gapMs; // hidden too: no throttling here while a show runs
     }
     const lost = Math.round(Math.abs(itemStartedAt - s.itemStartedAt) / 1000);
     setState({ ...s, itemStartedAt });
@@ -1372,8 +1380,10 @@ export function MyShow() {
     if (!s.begun || !s.running || !s.itemStartedAt) return;
     const url = urlsRef.current[cur.id];
     if (!url) return;
+    const pos = Math.max(0, (Date.now() - s.itemStartedAt) / 1000);
+    const len = a.duration; // before the src: a new one forgets the file's length
     a.src = url;
-    a.currentTime = Math.max(0, (Date.now() - s.itemStartedAt) / 1000);
+    a.currentTime = cur.loop && len > 0 && Number.isFinite(len) ? pos % len : pos;
     a.play()
       .then(() => setAudioPlaying(true))
       .catch((err) => onPlayRejected(cur.id, err));
@@ -1397,7 +1407,7 @@ export function MyShow() {
     const tag = el?.tagName;
     // A question on screen (จบการแสดงเลยไหม, ล้าง's): Space on its button is that button. Taken
     // here it answered nothing and paused the show instead (2026-10-30, hunt 12).
-    if (el?.closest?.('[role="dialog"]')) return;
+    if (e.code === "Space" && el?.closest?.('[role="dialog"]')) return;
     /* 🎚️ A slider is not a text field. Chromium/Electron FOCUSES the volume/scrub
        <input type="range"> on a mouse drag, and guarding it like a text box left Space
        and → dead until someone clicked elsewhere (→ nudged the slider instead): trim the

@@ -95,6 +95,8 @@ const REREAD_RETRY_MS = 1000;
 /** Field values as the server holds them: null and undefined are one, mic slots by content. */
 function sameFieldValue(a: unknown, b: unknown): boolean {
   if ((a ?? null) === (b ?? null)) return true;
+  // a note is saved trimmed and kept raw on screen: the same note, not an edit of this device's
+  if (typeof a === "string" && typeof b === "string") return a.trim() === b.trim();
   if (typeof a !== "object" || typeof b !== "object") return false;
   return JSON.stringify(a) === JSON.stringify(b);
 }
@@ -777,7 +779,9 @@ export function SetlistBuilder({
     const serverIds = new Set(server.map((it) => it.id));
     serverIds.forEach((id) => localOnlyIds.current.delete(id));
     const stillLocal = itemsRef.current.filter((it) => localOnlyIds.current.has(it.id));
-    setItems([...merged, ...stillLocal].sort((a, b) => a.sort_order - b.sort_order));
+    setItems(
+      [...merged, ...stillLocal].sort((a, b) => a.sort_order - b.sort_order || a.id.localeCompare(b.id))
+    );
   }
   const rereadRef = useRef(reread);
   rereadRef.current = reread;

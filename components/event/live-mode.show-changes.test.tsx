@@ -198,6 +198,38 @@ describe("LiveMode · the row on air is deleted elsewhere", () => {
     expect(lastState().currentItemId).toBe("item-3");
   }, 30_000);
 
+  // Argon on hunt 12: a kept row whose file ended inside its slot read as "nothing sounds" at the
+  // next re-read (the 60 s look finds it soon enough), and the running show froze on a cue.
+  it("a kept row whose file ends inside its slot: a later re-read does not stop the show", async () => {
+    withFiles(server);
+    await start(server);
+    await toAuto();
+    await tick(100_000);
+    server = [makeItem(2), makeItem(3)];
+    await otherDeviceSaved();
+    media.set(sounding("item-1")[0], { ended: true, paused: true });
+    await otherDeviceSaved();
+    expect(lastState().running).not.toBe(false);
+    expect(liveIndex()).toBe("0");
+    await tick(110_000);
+    expect(lastState().currentItemId).toBe("item-2");
+    expect(lastState().running).toBe(true);
+  }, 30_000);
+
+  // Argon on hunt 12: the kept row went back at its old NUMBER, wrong if a row above it went too.
+  it("rows above it deleted in the same read: Auto still goes on to the row that followed it", async () => {
+    server = [makeItem(1), makeItem(2), makeItem(3), makeItem(4)];
+    withFiles(server);
+    await start(server);
+    await toAuto();
+    await tick(201_000);
+    expect(lastState().currentItemId).toBe("item-2");
+    server = [makeItem(3), makeItem(4)];
+    await otherDeviceSaved();
+    await tick(200_000);
+    expect(lastState().currentItemId).toBe("item-3");
+  }, 30_000);
+
   it("the kept row leaves the list once the show has moved off it, and the cue stays on its row", async () => {
     withFiles(server);
     await start(server);
@@ -232,6 +264,23 @@ describe("LiveMode · the row on air is deleted elsewhere", () => {
     await otherDeviceSaved();
     expect(sounding("item-1")).toHaveLength(1);
     expect(lastState().currentItemId).toBe("item-2");
+  });
+});
+
+describe("LiveMode · a cued row is deleted with another row sounding on", () => {
+  it("the cue moves on and the sound plays on, and nobody is told the show stopped", async () => {
+    withFiles(server);
+    await start(server);
+    await act(async () => {
+      fireEvent.keyDown(window, { key: "n" });
+    });
+    await flush();
+    expect(lastState().currentItemId).toBe("item-2");
+    server = [makeItem(1), makeItem(3)];
+    await otherDeviceSaved();
+    expect(sounding("item-1")).toHaveLength(1);
+    expect(lastState().currentItemId).toBe("item-3");
+    expect(h.toastWarning.mock.calls.at(-1)?.[0]).toContain("คิว");
   });
 });
 

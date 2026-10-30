@@ -621,11 +621,14 @@ export function LiveMode({
   // new `now` land in one render (onClockGapRef, by Auto's advance).
   const lastTickRef = useRef(Date.now());
   const onClockGapRef = useRef<(gapMs: number) => void>(() => {});
+  // Where the sounding file stood at the last tick: how far it moved across a gap (onClockGapRef).
+  const lastFileRef = useRef<{ id: string | null; at: number }>({ id: null, at: 0 });
   function tickClock() {
     const t = Date.now();
     const gap = t - lastTickRef.current;
     lastTickRef.current = t;
     if (gap > CLOCK_GAP_MS) onClockGapRef.current(gap);
+    lastFileRef.current = { id: playingIdRef.current, at: audioRef.current?.currentTime ?? 0 };
     setNow(t);
   }
   useEffect(() => {
@@ -2628,11 +2631,16 @@ export function LiveMode({
     const held = new Set<string>();
     prevItems.forEach((it, i) => {
       if (serverIds.has(it.id)) return;
+      // (once kept, it stays while the show stands on it: its file may end inside its slot, and
+      // the next re-read then froze the running show - Argon on hunt 12)
       const keep = isControllerRef.current
-        ? soundsHere(it.id)
+        ? soundsHere(it.id) || (heldGoneRef.current.has(it.id) && it.id === curId && s.begun && s.running)
         : s.begun && s.running && it.id === curId && it.id === followItemIdRef.current;
       if (!keep) return;
-      newItems.splice(Math.min(i, newItems.length), 0, it);
+      // before the next of its old neighbours still here: rows above it may have gone in the
+      // same read, and by its old number the next row in Auto would be the wrong one
+      const after = prevItems.slice(i + 1).find((x) => serverIds.has(x.id));
+      newItems.splice(after ? newItems.findIndex((x) => x.id === after.id) : newItems.length, 0, it);
       held.add(it.id);
       if (!heldGoneRef.current.has(it.id)) {
         toast.warning(`“${it.title || "แถวนี้"}” ถูกลบจากเครื่องอื่น`, {
@@ -2673,7 +2681,13 @@ export function LiveMode({
         // as a cue, frozen, for RUN - told to every device, as any cue is.
         if (committedRef.current.id === curId) committedRef.current = { id: null, anchor: null };
         apply({ ...s, currentIndex: at, running: false, itemStartedAt: null, itemElapsedAtPause: 0 });
-        toast.warning("แถวที่โชว์อยู่ถูกลบจากเครื่องอื่น", { description: "หยุดรอที่แถวถัดไป — กด RUN เมื่อพร้อม" });
+        // (only a cue went, with another row sounding on: the sound is untouched, and "the show stopped" would be a lie)
+        const other = committedRef.current.id;
+        if (other && other !== curId && soundsHere(other)) {
+          toast.warning("แถวที่คิวไว้ถูกลบจากเครื่องอื่น", { description: "คิวย้ายมาแถวถัดไป — เพลงที่เล่นอยู่เล่นต่อ" });
+        } else {
+          toast.warning("แถวที่โชว์อยู่ถูกลบจากเครื่องอื่น", { description: "หยุดรอที่แถวถัดไป — กด RUN เมื่อพร้อม" });
+        }
       } else {
         // the item we were browsing was removed — clamp into range, keep timers
         setState((prev) => ({ ...prev, currentIndex: at }));
@@ -3845,8 +3859,12 @@ export function LiveMode({
       if (e.key === "Escape" && portalled) return; // Radix closes that one, not the sheet under it
       e.stopPropagation();
       if (portalled) return; // its focus trap takes the focus back; never fight it
-      if (e.key === "Escape") closeTools();
-      else toolsPanelRef.current?.focus(); // back in: a Tab goes on from here to the sheet's first key
+      if (e.key === "Escape") {
+        closeTools();
+      } else {
+        if (e.key !== "Tab") e.preventDefault(); // (a Space on <body> would scroll the page behind)
+        toolsPanelRef.current?.focus(); // back in: a Tab goes on from here to the sheet's first key
+      }
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
@@ -4023,13 +4041,14 @@ export function LiveMode({
     const id = playingIdRef.current;
     if (!a?.error || a.paused || !id || !isControllerRef.current) return;
     const s = stateRef.current;
-    if (!s.begun || showEndedRef.current || committedRef.current.id !== id) return;
+    if (!s.begun || showEndedRef.current || committedRef.current.id !== id || endedItemRef.current === id) return;
     const url = audioUrlsRef.current[id];
     if (!url) return;
+    const pos = filePos(id, committedPos(id), a); // before the src: a new one forgets the file's length
     rowTakesPrimary(id);
     a.src = url;
     levelOnto(a, id);
-    a.currentTime = filePos(id, committedPos(id));
+    a.currentTime = pos;
     a.play()
       .then(() => setAudioPlaying(true))
       .catch((err) => onPlayRejected(id, err));
@@ -4929,9 +4948,14 @@ export function LiveMode({
   // blocker stops neither). The row's clock is wall time and the file is not: 30 s asleep at 1:00
   // of a 4:00 song, the file came back at 1:00 and AUTO cut it 30 s before its end; 5 min asleep,
   // the next song started by itself the moment the lid opened (2026-10-30, hunt 12).
-  // · A file sounding is the truth, hidden or not. A loop goes round, so it is not one.
-  // · With no such file, the row's time is shifted by the gap - only on a visible page: a hidden
-  //   web tab's ticks are throttled, and its wall clock is still right.
+  // · A file sounding is the truth, hidden or not: the row's time moves by what the file LOST
+  //   across the gap (gap minus how far it played), never to the file's position - a song started
+  //   early by a negative buffer is rightly ahead of its row, and a stall or a throttled tab with
+  //   the sound playing on lost nothing (Argon on hunt 12). A loop goes round, so it is not one.
+  // · With no such file, the row's time is shifted by the gap - only on a visible page, or in the
+  //   desktop app, which turns throttling off for a running show: a hidden web tab's ticks are
+  //   throttled and its wall clock is still right, while the desktop's first tick after a wake
+  //   can land before the window says it is visible.
   // Only the device running the show moves it; viewers follow the state it sends. The show's
   // total and Hard Out stay on real time (startedAt, `now`).
   onClockGapRef.current = (gapMs) => {
@@ -4946,10 +4970,15 @@ export function LiveMode({
       !cur.loop_audio && !!a && playingIdRef.current === cur.id && !a.paused && !a.ended && !a.error;
     let itemStartedAt: number;
     if (fileSounds) {
-      itemStartedAt = Date.now() - a.currentTime * 1000;
-      if (Math.abs(itemStartedAt - s.itemStartedAt) < CLOCK_DRIFT_MS) return;
+      const last = lastFileRef.current;
+      const lostMs =
+        last.id === cur.id
+          ? gapMs - (a.currentTime - last.at) * 1000
+          : Date.now() - a.currentTime * 1000 - s.itemStartedAt; // a row begun just before the gap
+      if (lostMs < CLOCK_DRIFT_MS) return;
+      itemStartedAt = s.itemStartedAt + lostMs;
     } else {
-      if (!visible) return;
+      if (!visible && !(window as { cueiqNative?: unknown }).cueiqNative) return;
       itemStartedAt = s.itemStartedAt + gapMs;
     }
     const lost = Math.round(Math.abs(itemStartedAt - s.itemStartedAt) / 1000);
@@ -5111,8 +5140,8 @@ export function LiveMode({
     const tag = el?.tagName;
     // A question on screen (จบการแสดงเลยไหม, ล้าง's): Space on its button is that button. Taken
     // here it answered nothing and paused the show instead (2026-10-30, hunt 12; Enter already
-    // had this rule, set-mixer.tsx).
-    if (el?.closest?.('[role="dialog"]')) return;
+    // had this rule, set-mixer.tsx). Only Space: → and N still move the show from there.
+    if (e.code === "Space" && el?.closest?.('[role="dialog"]')) return;
     // A level slider is not a text field: Chromium (the desktop app) focuses an
     // <input type="range"> on a mouse drag, and after one ride of STAGE's level
     // Space / N / → did nothing (→ moved the level instead) - dead air in Manual.
