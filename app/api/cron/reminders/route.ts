@@ -5,7 +5,7 @@ import { PUSH_TTL_SECONDS } from "@/lib/push";
 import { cronSecretMatches, reportCronFailure } from "@/lib/cron-report";
 import { approvalNagBody, approvalsNeedingNag } from "@/lib/approval-nag";
 import { expireSupersededDailyNotifications } from "@/lib/notification-expiry";
-import { callTimeByEvent, showReminderBody } from "@/lib/next-show";
+import { callDayOffset, callTimeByEvent, showReminderBody } from "@/lib/next-show";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -70,6 +70,7 @@ async function runReminders(): Promise<Response> {
   // approve it. Change the cron expression and this line together, or not at all.
   const today = now.toISOString().slice(0, 10);
   const tomorrow = new Date(now.getTime() + 86_400_000).toISOString().slice(0, 10);
+  const dayAfter = new Date(now.getTime() + 2 * 86_400_000).toISOString().slice(0, 10);
   const in2days = new Date(now.getTime() + 2 * 86_400_000).toISOString();
   const dedupeSince = new Date(now.getTime() - 20 * 3_600_000).toISOString();
 
@@ -167,9 +168,20 @@ async function runReminders(): Promise<Response> {
     .gte("event_date", today)
     .lte("event_date", tomorrow);
   if (showsError) failed("shows", showsError);
+  // ...and the day after's: a show called the evening BEFORE its date (a 00:30 stage
+  // called at 22:30 - lib/next-show.ts callDayOffset) is called tomorrow, so tomorrow is
+  // what this morning tells its band (2026-10-30, hunt 11).
+  const { data: lateShows, error: lateShowsError } = await admin
+    .from("events")
+    .select("id, name, group_id, tenant_id, event_date, show_start_time, groups(name)")
+    .eq("is_template", false)
+    .eq("is_practice", false)
+    .eq("event_date", dayAfter);
+  if (lateShowsError) failed("shows (day after)", lateShowsError);
+  const upcoming = [...(shows ?? []), ...(lateShows ?? [])];
   // Their call times, for the reminder's body (lib/next-show.ts). Best-effort: a
   // failed read sends the reminder as it always was — name and band.
-  const showIds = (shows ?? []).map((e) => e.id as string);
+  const showIds = upcoming.map((e) => e.id as string);
   const { data: scheduleRows } = showIds.length
     ? await admin
         .from("schedule_items")
@@ -178,9 +190,23 @@ async function runReminders(): Promise<Response> {
     : { data: [] };
   const callTimes = callTimeByEvent(
     (scheduleRows ?? []) as { event_id: string; start_time: string | null; kind: string | null }[],
-    Object.fromEntries((shows ?? []).map((e) => [e.id as string, e.show_start_time as string | null]))
+    Object.fromEntries(upcoming.map((e) => [e.id as string, e.show_start_time as string | null]))
   );
-  for (const ev of shows ?? []) {
+  for (const ev of upcoming) {
+    // The day the band is CALLED, which is the show's date for every show but one called
+    // the evening before it (2026-10-30, hunt 11): that one was "โชว์พรุ่งนี้ — นัด 22:30"
+    // on the morning of a call that same night, and "โชว์วันนี้" on its date, hours after
+    // the show. It is told "พรุ่งนี้" the morning before its call and "คืนนี้" on the
+    // call's day, and nothing on its date. Every other show: exactly as before.
+    const offset = callDayOffset(callTimes[ev.id as string], ev.show_start_time as string | null);
+    const callDay = offset
+      ? new Date(Date.parse(`${ev.event_date as string}T00:00:00Z`) + offset * 86_400_000)
+          .toISOString()
+          .slice(0, 10)
+      : (ev.event_date as string);
+    const when =
+      callDay === today ? (offset ? "คืนนี้" : "วันนี้") : callDay === tomorrow ? "พรุ่งนี้" : null;
+    if (!when) continue;
     const { data: roles, error: rolesError } = await admin
       .from("group_roles")
       .select("user_id")
@@ -190,7 +216,6 @@ async function runReminders(): Promise<Response> {
       continue;
     }
     const band = bandName(ev.groups);
-    const when = ev.event_date === today ? "วันนี้" : "พรุ่งนี้";
     await fan(
       ev.id as string,
       ev.group_id as string,

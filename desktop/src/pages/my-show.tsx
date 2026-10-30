@@ -231,6 +231,9 @@ export function MyShow() {
   const [adding, setAdding] = useState(false);
   const [storageBytes, setStorageBytes] = useState(0);
   const [lastRun, setLastRun] = useState<{ seconds: number; at: number } | null>(null);
+  // ล้าง's question, asked in the record itself (clearLastRun) - dropped by a new record
+  const [askClear, setAskClear] = useState(false);
+  useEffect(() => setAskClear(false), [lastRun]);
   // songs whose legacy source file is gone (see boot migration) — need a re-pick
   const [brokenIds, setBrokenIds] = useState<Set<string>>(new Set());
 
@@ -1168,8 +1171,10 @@ export function MyShow() {
 
   function clearLastRun() {
     // The saved run time went on one tap of "ล้าง" with no question (2026-10-30, hunt 10; a
-    // confirm before every delete). Reset's own confirm style.
-    if (!window.confirm("ล้างเวลาโชว์ล่าสุดที่บันทึกไว้? ล้างแล้วกู้คืนไม่ได้")) return;
+    // confirm before every delete). Asked in the record (askClear), never with window.confirm:
+    // the key is there while the show runs, and a modal stops the JS thread - the Auto
+    // countdown below and every fade waited on the answer (2026-10-30, hunt 11).
+    setAskClear(false);
     setLastRun(null);
     setSoloLastRun(null).catch(() => {});
   }
@@ -2266,10 +2271,21 @@ export function MyShow() {
 
             {/* last saved run */}
             {lastRun && (
-              <div className="flex items-center justify-between gap-2 slab rounded-[3px] px-4 py-3">
+              <div
+                className={cn(
+                  "flex items-center justify-between gap-2 slab rounded-[3px] px-4 py-3",
+                  askClear && "flex-wrap"
+                )}
+              >
                 <div className="min-w-0">
-                  <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                    <Timer className="h-3.5 w-3.5" /> เวลาโชว์ล่าสุด (บันทึกไว้)
+                  <p
+                    className={cn(
+                      "flex items-center gap-1.5 text-xs",
+                      askClear ? "font-semibold text-destructive" : "text-muted-foreground"
+                    )}
+                  >
+                    <Timer className="h-3.5 w-3.5" />{" "}
+                    {askClear ? "ล้างเวลานี้? ล้างแล้วกู้คืนไม่ได้" : "เวลาโชว์ล่าสุด (บันทึกไว้)"}
                   </p>
                   <p className="text-xl font-bold tabular-nums">
                     {formatDuration(lastRun.seconds)}
@@ -2284,14 +2300,25 @@ export function MyShow() {
                     </span>
                   </p>
                 </div>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={clearLastRun}
-                  className="shrink-0 text-muted-foreground"
-                >
-                  ล้าง
-                </Button>
+                {askClear ? (
+                  <div className="flex shrink-0 items-center gap-1.5">
+                    <Button variant="ghost" size="sm" onClick={() => setAskClear(false)}>
+                      ไม่ล้าง
+                    </Button>
+                    <Button variant="destructive-outline" size="sm" onClick={clearLastRun}>
+                      ล้างเลย
+                    </Button>
+                  </div>
+                ) : (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => setAskClear(true)}
+                    className="shrink-0 text-muted-foreground"
+                  >
+                    ล้าง
+                  </Button>
+                )}
               </div>
             )}
           </>

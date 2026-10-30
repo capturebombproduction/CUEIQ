@@ -24,7 +24,7 @@ import { KindTile } from "@/components/event/kind";
 import { TimingInput } from "@/components/event/timing-input";
 import { RunMeter } from "@/components/event/run-meter";
 import { createClient } from "@/lib/supabase/client";
-import { newLocalRowId } from "@/lib/mgmt-outbox";
+import { isQueueableWriteError, newLocalRowId } from "@/lib/mgmt-outbox";
 import { hasRunOrderTie } from "@/lib/run-order-sort";
 import {
   OFFLINE_QUEUED_MESSAGE,
@@ -85,6 +85,47 @@ import {
 } from "@/lib/time";
 
 const KIND_KEYS = Object.keys(SETLIST_KIND_LABELS) as SetlistKind[];
+
+/** How long the read-back of an insert whose answer was lost may take (insertLanded). */
+const READ_BACK_TIMEOUT_MS = 4000;
+
+/**
+ * Did an insert that got NO HTTP answer land anyway? (2026-10-30, hunt 11)
+ *
+ * On venue Wi-Fi the request can reach the server and its answer be lost on the way back (a
+ * phone hopping from Wi-Fi to cellular, a roam between access points): supabase-js then says
+ * "TypeError: Failed to fetch" with status 0. That read as "เพิ่มไม่สำเร็จ", the row was not
+ * on screen, the user tapped again - and the server held the song twice, which Live Mode then
+ * played twice. The insert now carries the id it was minted with, so one bounded read of that
+ * id tells. Only for a write with no answer at all: a real HTTP answer (a 4xx, a 5xx) is
+ * judged exactly as before. Rows when EVERY id is there, else null - and null keeps the caller
+ * on its old path. An empty answer proves nothing more than that (sent as anon, RLS reads 0
+ * rows with no error), so it is never read as "not there" beyond keeping today's path.
+ */
+async function insertLanded<T>(
+  supabase: ReturnType<typeof createClient>,
+  ids: string[],
+  error: { message?: string | null } | null,
+  status: number | null | undefined
+): Promise<T[] | null> {
+  if (typeof status === "number" && status > 0) return null;
+  if (!isQueueableWriteError(error?.message, true, status)) return null;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const res = await Promise.race([
+      supabase.from("setlist_items").select("*").in("id", ids),
+      new Promise<null>((r) => {
+        timer = setTimeout(() => r(null), READ_BACK_TIMEOUT_MS);
+      }),
+    ]);
+    if (!res || res.error || !Array.isArray(res.data) || res.data.length !== ids.length) return null;
+    return res.data as T[];
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 // ---- m:ss duration field with its own text buffer --------------------------
 function DurationField({
@@ -794,9 +835,12 @@ export function SetlistBuilder({
   const hardOutSec = parseClockToSeconds(hardOutTime);
   const hasClock = showStartSec != null;
 
+  // The hard out only judges a set that has a start (2026-10-30, hunt 11), as on the Summary
+  // (event-summary.tsx): without one the set runs from 00:00, and a 20-minute set against a
+  // 13:40 hard out read a green "อยู่ในเวลา · เหลือ 13:20:00" - about a start nobody entered.
   const timing = useMemo(
-    () => computeSetlistTimes(items, showStartSec ?? 0, hardOutSec),
-    [items, showStartSec, hardOutSec]
+    () => computeSetlistTimes(items, showStartSec ?? 0, hasClock ? hardOutSec : null),
+    [items, showStartSec, hasClock, hardOutSec]
   );
 
   function setLocal(id: string, partial: Partial<SetlistItem>) {
@@ -970,7 +1014,8 @@ export function SetlistBuilder({
   // Set this item's duration to all the time left until Hard Out (e.g. final MC).
   // startSec is this row's clock-of-day start (already includes its buffer_before).
   function fillRemaining(itemId: string, startSec: number, bufferAfter: number) {
-    if (hardOutSec == null) return;
+    // timing's, not the raw one: it is null without a show start too (see timing)
+    if (timing.hardOutSec == null) return;
     // timing.hardOutSec is hardOutSec folded past midnight when the show starts
     // before it (23:00 show, 00:30 hard out) — startSec is already a folded
     // clock-of-day value from computeSetlistTimes, so subtracting the raw
@@ -1077,9 +1122,15 @@ export function SetlistBuilder({
         return true;
       }
       const sort = (await lastSortOrder()) + 1;
-      const { data, error, status } = await supabase
+      // Minted BEFORE the insert, and sent with it (2026-10-30, hunt 11): an insert whose
+      // answer is lost can be read back by this id (insertLanded), and the offline queue
+      // below holds the SAME row - a replay then finds it already there instead of adding
+      // a second one.
+      const local = mintLocalItem(sort, extra);
+      const res = await supabase
         .from("setlist_items")
         .insert({
+          id: local.id,
           tenant_id: tenantId,
           event_id: eventId,
           buffer_before_seconds: 0,
@@ -1090,8 +1141,12 @@ export function SetlistBuilder({
         })
         .select("*")
         .single();
+      const { error, status } = res;
+      let data = res.data as SetlistItem | null;
       if (error || !data) {
-        const local = mintLocalItem(sort, extra);
+        data = (await insertLanded<SetlistItem>(supabase, [local.id], error, status))?.[0] ?? null;
+      }
+      if (!data) {
         if (await queueOffline([...items, local], error?.message, status)) {
           localOnlyIds.current.add(local.id);
           setItems((prev) => [...prev, local]);
@@ -1100,8 +1155,9 @@ export function SetlistBuilder({
         toast.error("เพิ่มไม่สำเร็จ", { description: writeErrorText(error) });
         return false;
       }
-      ackedRef.current = [...ackedRef.current, data as SetlistItem];
-      setItems((prev) => [...prev, data as SetlistItem]);
+      const row = data;
+      ackedRef.current = [...ackedRef.current, row];
+      setItems((prev) => [...prev, row]);
       notifyLive();
       return true;
     } finally {
@@ -1553,7 +1609,8 @@ export function SetlistBuilder({
           </div>
         )}
         <div className="mt-2 flex flex-wrap items-center gap-2">
-        {hardOutSec != null && (
+        {/* timing's hard out: none without a show start - no in-time / over claim then */}
+        {timing.hardOutSec != null && (
           <>
             {/* Over is the band-independent alarm, never --destructive: a red
                 band's skin moves that token off red (lib/skin.ts). */}

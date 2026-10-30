@@ -2835,8 +2835,10 @@ export function LiveMode({
     if (!canEdit || watchingOnly()) return;
     // The show's one record of its run time, on every device (persistLastRun) - one tap on
     // "ล้าง", right under จบโชว์ / รีเซ็ต in Live tools, wiped it with no question (2026-10-30,
-    // hunt 10; the label's rule is a confirm before every delete). Reset's own confirm style.
-    if (!window.confirm("ล้างเวลาโชว์ล่าสุดที่บันทึกไว้? ล้างแล้วกู้คืนไม่ได้")) return;
+    // hunt 10; the label's rule is a confirm before every delete). The question is asked IN
+    // the record (LastRunRecord), not here: hunt 10 asked with window.confirm, and the key is
+    // live for the controller mid-show - a modal stops the JS thread, so Auto's next row, the
+    // count and every fade under it waited on the answer (2026-10-30, hunt 11; see autoMute).
     setLastRun(null);
     persistLastRun(eventId, null, null).catch(() => {});
     channelRef.current?.send({
@@ -6593,11 +6595,29 @@ function LastRunRecord({
   onClear: (() => void) | null;
   className?: string;
 }) {
+  // ล้าง asks here, in place - never window.confirm, which stops the JS thread under a running
+  // show (2026-10-30, hunt 11; clearLastRun). A new record, or the key taken away, drops an open
+  // question: a yes must never clear a record it was not asked about.
+  const [asking, setAsking] = useState(false);
+  const canClear = !!onClear;
+  useEffect(() => setAsking(false), [seconds, at, canClear]);
   return (
-    <div className={cn("slab flex items-center justify-between gap-2 px-4 py-3", className)}>
+    <div
+      className={cn(
+        "slab flex items-center justify-between gap-2 px-4 py-3",
+        asking && "flex-wrap",
+        className
+      )}
+    >
       <div className="min-w-0">
-        <p className="flex items-center gap-1.5 text-[12.5px] text-muted-foreground">
-          <Timer aria-hidden className="size-3.5 shrink-0" /> เวลาโชว์ล่าสุด (บันทึกไว้)
+        <p
+          className={cn(
+            "flex items-center gap-1.5 text-[12.5px]",
+            asking ? "font-semibold text-destructive" : "text-muted-foreground"
+          )}
+        >
+          <Timer aria-hidden className="size-3.5 shrink-0" />{" "}
+          {asking ? "ล้างเวลานี้? ล้างแล้วกู้คืนไม่ได้" : "เวลาโชว์ล่าสุด (บันทึกไว้)"}
         </p>
         <p className="num text-[22px] leading-tight">
           {formatDuration(seconds)}
@@ -6619,16 +6639,34 @@ function LastRunRecord({
           </span>
         </p>
       </div>
-      {onClear && (
-        <Button
-          variant="ghost"
-          onClick={onClear}
-          className="h-11 shrink-0 text-muted-foreground"
-          title="ล้างเวลาโชว์ล่าสุดที่บันทึกไว้"
-        >
-          ล้าง
-        </Button>
-      )}
+      {onClear &&
+        (asking ? (
+          <div className="flex shrink-0 items-center gap-1.5">
+            <Button variant="ghost" onClick={() => setAsking(false)} className="h-11">
+              ไม่ล้าง
+            </Button>
+            <Button
+              variant="destructive-outline"
+              onClick={() => {
+                setAsking(false);
+                onClear();
+              }}
+              className="h-11"
+              title="ยืนยันล้างเวลาโชว์ล่าสุด"
+            >
+              ล้างเลย
+            </Button>
+          </div>
+        ) : (
+          <Button
+            variant="ghost"
+            onClick={() => setAsking(true)}
+            className="h-11 shrink-0 text-muted-foreground"
+            title="ล้างเวลาโชว์ล่าสุดที่บันทึกไว้"
+          >
+            ล้าง
+          </Button>
+        ))}
     </div>
   );
 }

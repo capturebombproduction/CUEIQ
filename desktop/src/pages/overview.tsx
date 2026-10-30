@@ -7,6 +7,7 @@ import { PageTitle } from "@/components/page-title";
 import { RefreshButton } from "@/components/refresh-button";
 import { createClient } from "@/lib/supabase/client";
 import { photoRoundsOf } from "@/lib/photo-rounds";
+import { dayOrderSeconds, stageAnchorSeconds } from "@/lib/day-order";
 import {
   canApprove,
   canEditPhotoTime,
@@ -403,11 +404,23 @@ export function Overview() {
       // ALL slots of a kind, earliest first — a band can play twice and work several
       // booth shifts in one day, and the first-row-only read hid the rest. Mirrors
       // app/(app)/overview/page.tsx; [0] stays the sort/filter key.
-      const rangesOf = (eventId: string, kind: string) =>
-        sched
-          .filter((s) => s.event_id === eventId && s.kind === kind)
-          .sort((a, b) => (a.start_time ?? "￿").localeCompare(b.start_time ?? "￿"))
+      // "Earliest" round the show's own day (lib/day-order.ts, the event sheet's rule), not
+      // down the clock string: a 22:00 set's booth shifts at 23:00 and 00:30 had the 00:30 FIRST,
+      // the one the board sorts and prints by (2026-10-30, hunt 11). A day that does not cross
+      // midnight keeps the plain clock order.
+      const eventById = new Map(eventRows.map((e) => [e.id, e]));
+      const rangesOf = (eventId: string, kind: string) => {
+        const own = sched.filter((s) => s.event_id === eventId);
+        const anchor = stageAnchorSeconds(own, eventById.get(eventId) ?? {});
+        return own
+          .filter((s) => s.kind === kind)
+          .sort(
+            (a, b) =>
+              dayOrderSeconds(a.start_time, anchor) - dayOrderSeconds(b.start_time, anchor) ||
+              (a.start_time ?? "￿").localeCompare(b.start_time ?? "￿")
+          )
           .map((it) => ({ start: it.start_time, end: it.end_time }));
+      };
       const rangeOf = (eventId: string, kind: string) => rangesOf(eventId, kind)[0] ?? null;
       // Every ถ่ายรูป round (mig 0042 allows several, each named) - lib/photo-rounds.ts.
       const photosOf = (eventId: string) =>

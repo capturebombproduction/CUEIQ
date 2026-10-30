@@ -22,7 +22,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
-import { newLocalRowId } from "@/lib/mgmt-outbox";
+import { isQueueableWriteError, newLocalRowId } from "@/lib/mgmt-outbox";
 import {
   OFFLINE_QUEUED_MESSAGE,
   QUEUED_BEHIND_PENDING_MESSAGE,
@@ -53,6 +53,42 @@ import {
 } from "@/lib/types";
 
 const KIND_KEYS = Object.keys(SCHEDULE_KIND_LABELS) as ScheduleKind[];
+
+/** How long the read-back of an insert whose answer was lost may take (insertLanded). */
+const READ_BACK_TIMEOUT_MS = 4000;
+
+/**
+ * Did an insert that got NO HTTP answer land anyway? (2026-10-30, hunt 11) The same rule as
+ * setlist-builder.tsx's insertLanded: an answer lost on the way back (Wi-Fi to cellular, an
+ * AP roam) read as "Failed to add item", and the retap put a second row on the call sheet.
+ * The row carries the id it was minted with, so one bounded read tells. Only for a write with
+ * no answer at all; the row when it is there, else null (the caller's old path). An empty
+ * answer (maybe anon) proves no more than that.
+ */
+async function insertLanded(
+  supabase: ReturnType<typeof createClient>,
+  id: string,
+  error: { message?: string | null } | null,
+  status: number | null | undefined
+): Promise<ScheduleItem | null> {
+  if (typeof status === "number" && status > 0) return null;
+  if (!isQueueableWriteError(error?.message, true, status)) return null;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const res = await Promise.race([
+      supabase.from("schedule_items").select("*").eq("id", id),
+      new Promise<null>((r) => {
+        timer = setTimeout(() => r(null), READ_BACK_TIMEOUT_MS);
+      }),
+    ]);
+    if (!res || res.error || !Array.isArray(res.data) || res.data.length !== 1) return null;
+    return res.data[0] as ScheduleItem;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 // One-click presets for the most common call-time entries (short labels for chips).
 const QUICK_KINDS: { kind: ScheduleKind; label: string }[] = [
@@ -354,9 +390,12 @@ export function ScheduleEditor({
       setItems((prev) => [...prev, local]);
       return;
     }
-    const { data, error, status } = await supabase
+    // Sent with the id minted above (2026-10-30, hunt 11): a lost answer is read back by it
+    // (insertLanded) - still busy meanwhile, so no retap - and the queue holds the SAME row.
+    const res = await supabase
       .from("schedule_items")
       .insert({
+        id: local.id,
         tenant_id: tenantId,
         event_id: eventId,
         kind,
@@ -365,8 +404,11 @@ export function ScheduleEditor({
       })
       .select("*")
       .single();
+    const { error, status } = res;
+    let data = res.data as ScheduleItem | null;
+    if (error || !data) data = await insertLanded(supabase, local.id, error, status);
     setBusy(false);
-    if (error || !data) {
+    if (!data) {
       if (await queueOffline([...items, local], error?.message, status)) {
         setItems((prev) => [...prev, local]);
         return;
@@ -376,8 +418,9 @@ export function ScheduleEditor({
       else toast.error("Failed to add item", { description: writeErrorText(error) });
       return;
     }
-    ackedRef.current = [...ackedRef.current, data as ScheduleItem];
-    setItems((prev) => [...prev, data as ScheduleItem]);
+    const row = data;
+    ackedRef.current = [...ackedRef.current, row];
+    setItems((prev) => [...prev, row]);
   }
 
   async function removeItem(id: string) {

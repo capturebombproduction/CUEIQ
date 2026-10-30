@@ -397,6 +397,23 @@ export function unitOwner(unit: RunSeqOp[]): string | undefined {
 }
 
 /**
+ * The rows held by presses a flush here will NOT send: units (groupRunSeqPresses, cut from
+ * the whole queue as doFlush cuts them) whose owner is another account (unitOwner). The board
+ * kept laying them over the server rows (2026-10-30, hunt 11): the account signed in saw an
+ * act live, or done, that the server and every other device never got, with a "ค้างซิงค์"
+ * banner it could neither send nor clear. A press made ON one of these rows still folds into
+ * it (event-live-caller's queued-row check reads the whole queue) and replays under the
+ * account signed in - unitOwner's rule.
+ */
+export function foreignRunSeqRows(ops: RunSeqOp[]): Set<string> {
+  const rows = new Set<string>();
+  for (const unit of groupRunSeqPresses(ops)) {
+    if (queuedByAnotherAccount(unitOwner(unit))) for (const o of unit) rows.add(o.rowId);
+  }
+  return rows;
+}
+
+/**
  * Lay the still-pending presses back over a set of server (or cached) rows.
  *
  * The queue is the only record of what the operator did offline, so any row state

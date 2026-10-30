@@ -7,6 +7,7 @@
 // be anywhere by — so the call time, the question every member opens the app
 // with, took a tap into the show and a read down the schedule.
 import { parseClockToSeconds, shortClock } from "@/lib/time";
+import { aroundTheClock } from "@/lib/day-order";
 
 /**
  * A show's call time: its earliest timed schedule row BEFORE the stage.
@@ -40,6 +41,28 @@ export function callTimeOf(
     if (d < 0 && (!best || d < best.d)) best = { t: r.start_time!, d };
   }
   return best?.t ?? null;
+}
+
+/**
+ * Which calendar day a show's call falls on, against its event_date: -1 when the call is
+ * the evening BEFORE (a 00:30 stage called at 22:30), else 0. Counted by callTimeOf's own
+ * rule - the call sits aroundTheClock(stage, call) before the stage, the short way round,
+ * and going back that far from the stage either crosses midnight or does not. Without a
+ * call or a stage there is nothing to cross: 0.
+ *
+ * 2026-10-30, hunt 11: the morning push and the Next Show ticket keyed "พรุ่งนี้" /
+ * "วันนี้" on event_date alone. The day before a 00:30 show they said "โชว์พรุ่งนี้ —
+ * นัด 22:30" about a call that was THAT night, and on the show's date "โชว์วันนี้"
+ * arrived hours after it was over.
+ */
+export function callDayOffset(
+  call: string | null | undefined,
+  stage: string | null | undefined
+): -1 | 0 {
+  const callSec = parseClockToSeconds(call);
+  const stageSec = parseClockToSeconds(stage);
+  if (callSec == null || stageSec == null) return 0;
+  return stageSec + aroundTheClock(stageSec, callSec) < 0 ? -1 : 0;
 }
 
 /** callTimeOf for many shows at once: schedule rows tagged with their show. */

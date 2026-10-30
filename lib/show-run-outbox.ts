@@ -152,6 +152,10 @@ export function queuedByAnotherAccount(owner: string | null | undefined): boolea
  * sign-out-button.tsx: opened WITHOUT a version and aborted on upgrade, so asking can
  * never create an empty, store-less database that would then break openDB() above.
  * 0 on any failure: it only decides whether to ask.
+ * Only what a sign-in WILL send (2026-10-30, hunt 11): a PARKED press (conflict: true) is
+ * never replayed - it waits for someone to decide on its board (ทิ้ง) - so counting it had
+ * both questions promise "ส่งขึ้นเมื่อบัญชีเดิมเข้าสู่ระบบ" for a press that never goes up, on
+ * every sign-out and every login screen, for as long as it stayed parked.
  */
 export function countQueuedShowRunWork(): Promise<number> {
   return new Promise((resolve) => {
@@ -177,6 +181,14 @@ export function countQueuedShowRunWork(): Promise<number> {
         let total = 0;
         const tx = db.transaction(stores, "readonly");
         for (const s of stores) {
+          if (s === "runseq") {
+            // the presses a flush replays (lib/run-order-outbox.ts doFlush): never a parked one
+            const all = tx.objectStore(s).getAll();
+            all.onsuccess = () => {
+              total += ((all.result ?? []) as { conflict?: boolean }[]).filter((o) => !o?.conflict).length;
+            };
+            continue;
+          }
           const c = tx.objectStore(s).count();
           c.onsuccess = () => {
             total += c.result;
@@ -277,6 +289,29 @@ async function listOps(): Promise<{ key: string; rec: QueuedOp }[]> {
   });
 }
 
+/** The op stored under `key` now, or undefined (none, or the read failed). */
+async function getOp(key: string): Promise<QueuedOp | undefined> {
+  try {
+    const db = await openDB();
+    return await new Promise<QueuedOp | undefined>((resolve, reject) => {
+      const tx = db.transaction(STORE, "readonly");
+      const req = tx.objectStore(STORE).get(key);
+      req.onsuccess = () => resolve(req.result as QueuedOp | undefined);
+      tx.oncomplete = () => db.close();
+      tx.onerror = () => {
+        db.close();
+        reject(tx.error);
+      };
+      settleOnAbort(tx, () => {
+        db.close();
+        reject(tx.error);
+      });
+    });
+  } catch {
+    return undefined;
+  }
+}
+
 async function removeOp(key: string): Promise<void> {
   const db = await openDB();
   return new Promise((resolve) => {
@@ -347,11 +382,16 @@ async function removeOpIf(key: string, stillOurs: (rec: QueuedOp) => boolean): P
  * Callers must therefore branch on null explicitly — `count > 0` reads a null as
  * "no", which is the safe direction only for hiding a chip, never for reporting
  * one. See components/event/live-status-strip.tsx.
+ *
+ * This account's writes only (2026-10-30, hunt 11): one queued by ANOTHER account is not
+ * sent while this one is signed in (flushOutbox), so counting it kept "รอซิงค์ 1" on in
+ * every show, for an account that can neither send it nor clear it. An op with no owner
+ * replays for whoever is signed in, so it still counts.
  */
 export async function pendingCount(): Promise<number | null> {
   try {
     const ops = await listOps();
-    return ops.length;
+    return ops.filter(({ rec }) => !queuedByAnotherAccount(rec.owner)).length;
   } catch {
     return null;
   }
@@ -445,8 +485,31 @@ async function eventIsGone(eventId: string): Promise<boolean> {
  *
  * Returns counts. Safe to call repeatedly (idempotent: each op overwrites the
  * same field).
+ *
+ * ONE pass at a time in this tab, and ordered against persistLastRun (2026-10-30, hunt 11).
+ * A replay is a network round trip, and a direct จบโชว์ / ล้าง of the same show could be
+ * sent while the replay of its OLDER run time was still on the wire: the clear landed
+ * first, the old time after it, and the server kept the run the operator had just wiped -
+ * with the queued op already deleted as "superseded", so nothing ever put it right.
+ * Now persistLastRun queues its value behind a running pass instead of racing it, a pass
+ * leaves alone a show whose direct write is in flight, and every op is re-read as it
+ * stands when its turn comes (the list at the top may hold a value superseded since).
  */
-export async function flushOutbox(): Promise<{ flushed: number; remaining: number }> {
+export function flushOutbox(): Promise<{ flushed: number; remaining: number }> {
+  if (flushInFlight) return flushInFlight;
+  const run = doFlushOutbox().finally(() => {
+    flushInFlight = null;
+  });
+  flushInFlight = run;
+  return run;
+}
+
+/** The pass running in this tab (flushOutbox), if any. */
+let flushInFlight: Promise<{ flushed: number; remaining: number }> | null = null;
+/** Shows whose run time persistLastRun is writing directly right now (count per show). */
+const directWrites = new Map<string, number>();
+
+async function doFlushOutbox(): Promise<{ flushed: number; remaining: number }> {
   let ops: { key: string; rec: QueuedOp }[];
   try {
     ops = await listOps();
@@ -454,7 +517,14 @@ export async function flushOutbox(): Promise<{ flushed: number; remaining: numbe
     return { flushed: 0, remaining: 0 };
   }
   let flushed = 0;
-  for (const { key, rec } of ops) {
+  for (const { key, rec: listed } of ops) {
+    // This show's run time is being written directly (persistLastRun): that write decides
+    // what becomes of this op - sent beside it, the two could land in either order.
+    if (directWrites.has(listed.op.eventId)) continue;
+    // As it stands NOW: a persistLastRun since may have superseded it (gone) or put a newer
+    // value under the same key - and the newer one is what goes out.
+    const rec = await getOp(key);
+    if (!rec) continue;
     // Another account's run time (2026-10-30, hunt 10): not sent, and never judged
     // "gone" through this account's RLS - it waits, untouched, for its owner.
     if (queuedByAnotherAccount(rec.owner)) continue;
@@ -538,6 +608,42 @@ function announceSave(outcome: ShowRunSaveOutcome): ShowRunSaveOutcome {
  * `false` are read); a caller that cannot gets the window event above.
  */
 export async function persistLastRun(
+  eventId: string,
+  seconds: number | null,
+  at: number | null
+): Promise<ShowRunSaveOutcome> {
+  // A replay of this device's queue is on the wire (flushOutbox), maybe with an OLDER run
+  // time of this very show: written now, this value could land first and be overwritten by
+  // it (2026-10-30, hunt 11). Put it in the queue instead, over the old one under the same
+  // key - the running pass sends it if it has not reached this show yet, keeps it if it has
+  // (removeOpIf: a newer value), and the pass started after that one sends it - so it lands
+  // AFTER whatever the running replay writes. No waiting: both callers are fire-and-forget,
+  // and a pass on a dead venue link can hang for minutes; the queue is on disk at once.
+  const running = flushInFlight;
+  if (running) {
+    try {
+      await enqueue({ kind: "event_last_run", eventId, seconds, at });
+      const again = () => {
+        flushOutbox().catch(() => {});
+      };
+      running.then(again, again);
+      return announceSave("queued");
+    } catch {
+      /* the queue will not take it: the direct write below is all that is left */
+    }
+  }
+  directWrites.set(eventId, (directWrites.get(eventId) ?? 0) + 1);
+  try {
+    return await writeLastRunNow(eventId, seconds, at);
+  } finally {
+    const n = (directWrites.get(eventId) ?? 1) - 1;
+    if (n > 0) directWrites.set(eventId, n);
+    else directWrites.delete(eventId);
+  }
+}
+
+/** persistLastRun's direct write, queued for later if it does not land. */
+async function writeLastRunNow(
   eventId: string,
   seconds: number | null,
   at: number | null

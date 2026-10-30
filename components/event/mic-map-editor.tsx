@@ -4,7 +4,7 @@ import { useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Plus, Trash2, ChevronUp, ChevronDown, Mic2 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
-import { newLocalRowId } from "@/lib/mgmt-outbox";
+import { isQueueableWriteError, newLocalRowId } from "@/lib/mgmt-outbox";
 import {
   OFFLINE_QUEUED_MESSAGE,
   QUEUED_BEHIND_PENDING_MESSAGE,
@@ -29,6 +29,42 @@ import type { Member, MicAssignment, SetlistItem } from "@/lib/types";
 
 /** One mic tile as the Mic Map draws it for a member to read (spec §G.3). */
 const MIC_TILE_CLS = "py-2 [&_.num]:text-[28px] [&_.truncate]:text-[14px]";
+
+/** How long the read-back of an insert whose answer was lost may take (insertLanded). */
+const READ_BACK_TIMEOUT_MS = 4000;
+
+/**
+ * Did an insert that got NO HTTP answer land anyway? (2026-10-30, hunt 11) The same rule as
+ * setlist-builder.tsx's insertLanded: an answer lost on the way back (Wi-Fi to cellular, an
+ * AP roam) read as "เพิ่มไมค์ไม่สำเร็จ", and the retap seeded every standing mic a second time
+ * - the per-event rows every surface then prints. The rows carry the ids they were minted
+ * with, so one bounded read tells. Only for a write with no answer at all; rows when EVERY id
+ * is there, else null (the caller's old path). An empty answer (maybe anon) proves no more.
+ */
+async function insertLanded(
+  supabase: ReturnType<typeof createClient>,
+  ids: string[],
+  error: { message?: string | null } | null,
+  status: number | null | undefined
+): Promise<MicAssignment[] | null> {
+  if (typeof status === "number" && status > 0) return null;
+  if (!isQueueableWriteError(error?.message, true, status)) return null;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const res = await Promise.race([
+      supabase.from("mic_assignments").select("*").in("id", ids),
+      new Promise<null>((r) => {
+        timer = setTimeout(() => r(null), READ_BACK_TIMEOUT_MS);
+      }),
+    ]);
+    if (!res || res.error || !Array.isArray(res.data) || res.data.length !== ids.length) return null;
+    return res.data as MicAssignment[];
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 /**
  * The mics the band actually uses when nobody has set any for THIS show: each
@@ -279,11 +315,29 @@ export function MicMapEditor({
       setMics((prev) => [...prev, ...locals]);
       return;
     }
-    const { data, error, status } = await supabase
+    // Sent with the ids minted above (2026-10-30, hunt 11): a lost answer is read back by
+    // them (insertLanded), and the offline queue holds the SAME rows.
+    const res = await supabase
       .from("mic_assignments")
-      .insert(wanted.map((r) => ({ tenant_id: tenantId, event_id: eventId, ...r })))
+      .insert(
+        locals.map((l) => ({
+          id: l.id,
+          tenant_id: tenantId,
+          event_id: eventId,
+          mic_number: l.mic_number,
+          holder_name: l.holder_name,
+          order_index: l.order_index,
+        }))
+      )
       .select("*");
+    const { error, status } = res;
+    let data = res.data as MicAssignment[] | null;
     if (error || !data) {
+      const landed = await insertLanded(supabase, locals.map((l) => l.id), error, status);
+      // in the order they were written, as the insert's own answer would have been
+      data = landed ? locals.map((l) => landed.find((r) => r.id === l.id)!) : null;
+    }
+    if (!data) {
       if (await queueOffline([...mics, ...locals], error?.message, status)) {
         setMics((prev) => [...prev, ...locals]);
         return;
@@ -319,9 +373,11 @@ export function MicMapEditor({
         setMics((prev) => [...prev, local]);
         return;
       }
-      const { data, error, status } = await supabase
+      // with the minted id - see seedFromStanding (2026-10-30, hunt 11)
+      const res = await supabase
         .from("mic_assignments")
         .insert({
+          id: local.id,
           tenant_id: tenantId,
           event_id: eventId,
           mic_number: nextNum,
@@ -330,7 +386,10 @@ export function MicMapEditor({
         })
         .select("*")
         .single();
-      if (error || !data) {
+      const { error, status } = res;
+      let data = res.data as MicAssignment | null;
+      if (error || !data) data = (await insertLanded(supabase, [local.id], error, status))?.[0] ?? null;
+      if (!data) {
         if (await queueOffline([...mics, local], error?.message, status)) {
           setMics((prev) => [...prev, local]);
           return;
@@ -338,8 +397,9 @@ export function MicMapEditor({
         toast.error("เพิ่มไมค์ไม่สำเร็จ", { description: writeErrorText(error) });
         return;
       }
-      ack((rows) => [...rows, data as MicAssignment]);
-      setMics((prev) => [...prev, data as MicAssignment]);
+      const row = data;
+      ack((rows) => [...rows, row]);
+      setMics((prev) => [...prev, row]);
     } finally {
       insertingRef.current = false;
       setInserting(false);
@@ -365,9 +425,11 @@ export function MicMapEditor({
         setMics((prev) => [...prev, local]);
         return;
       }
-      const { data, error, status } = await supabase
+      // with the minted id - see seedFromStanding (2026-10-30, hunt 11)
+      const res = await supabase
         .from("mic_assignments")
         .insert({
+          id: local.id,
           tenant_id: tenantId,
           event_id: eventId,
           mic_number: micNumber,
@@ -376,7 +438,10 @@ export function MicMapEditor({
         })
         .select("*")
         .single();
-      if (error || !data) {
+      const { error, status } = res;
+      let data = res.data as MicAssignment | null;
+      if (error || !data) data = (await insertLanded(supabase, [local.id], error, status))?.[0] ?? null;
+      if (!data) {
         if (await queueOffline([...mics, local], error?.message, status)) {
           setMics((prev) => [...prev, local]);
           return;
@@ -384,8 +449,9 @@ export function MicMapEditor({
         toast.error("เพิ่มคนไม่สำเร็จ", { description: writeErrorText(error) });
         return;
       }
-      ack((rows) => [...rows, data as MicAssignment]);
-      setMics((prev) => [...prev, data as MicAssignment]);
+      const row = data;
+      ack((rows) => [...rows, row]);
+      setMics((prev) => [...prev, row]);
     } finally {
       insertingRef.current = false;
       setInserting(false);

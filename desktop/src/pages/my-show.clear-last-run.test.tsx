@@ -1,6 +1,8 @@
 // 2026-10-30, hunt 10 (mistakes-4): Quick Show's "ล้าง" beside เวลาโชว์ล่าสุด cleared the saved run
-// time on a single tap. The label's rule is a confirm before every delete; it now asks first, in
-// the page's own window.confirm style (Reset's).
+// time on a single tap. The label's rule is a confirm before every delete; it now asks first.
+// 2026-10-30, hunt 11: hunt 10 asked with window.confirm, and the key is there while the show runs -
+// a modal stops the JS thread, so the Auto countdown and every fade waited on the answer. It asks in
+// the record itself now, and window.confirm is never called.
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
@@ -80,28 +82,39 @@ async function boot() {
 }
 const clearKey = () => screen.getByRole("button", { name: "ล้าง" });
 
-describe("Quick Show · ล้าง เวลาโชว์ล่าสุด asks first", () => {
+describe("Quick Show · ล้าง เวลาโชว์ล่าสุด asks first, in place", () => {
   it("answered no: the saved run time stays", async () => {
-    const ask = vi.spyOn(window, "confirm").mockReturnValue(false);
+    const modal = vi.spyOn(window, "confirm");
     await boot();
     expect(screen.getAllByText("12:34").length).toBeGreaterThan(0);
     await act(async () => {
       fireEvent.click(clearKey());
     });
     await settle();
-    expect(ask).toHaveBeenCalledTimes(1);
+    expect(screen.getByText("ล้างเวลานี้? ล้างแล้วกู้คืนไม่ได้")).toBeTruthy();
+    expect(store.lastRunWrites).toHaveLength(0);
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "ไม่ล้าง" }));
+    });
+    await settle();
     expect(store.lastRunWrites).toHaveLength(0);
     expect(screen.getAllByText("12:34").length).toBeGreaterThan(0);
+    expect(screen.getByRole("button", { name: "ล้าง" })).toBeTruthy();
+    expect(modal).not.toHaveBeenCalled();
   });
 
   it("answered yes: cleared as before", async () => {
-    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const modal = vi.spyOn(window, "confirm");
     await boot();
     await act(async () => {
       fireEvent.click(clearKey());
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "ล้างเลย" }));
     });
     await settle();
     expect(store.lastRunWrites).toEqual([null]);
     expect(screen.queryByRole("button", { name: "ล้าง" })).toBeNull();
+    expect(modal).not.toHaveBeenCalled();
   });
 });

@@ -52,6 +52,7 @@ import {
   discardRunSeqOp,
   enqueueRunSeq,
   flushRunSeqOutbox,
+  foreignRunSeqRows,
   listRunSeqOps,
   newRunSeqPressId,
   onRunSeqOutboxChange,
@@ -368,10 +369,16 @@ export function EventLiveCaller({
   const onThisBoard = (o: RunSeqOp) =>
     boardRowIds.has(o.rowId) || !o.topic || o.topic === boardTopic;
   const parked = queued.filter((o) => o.conflict && onThisBoard(o));
-  // Unfiltered on purpose: the overlay matches by row id, and apply()'s
-  // queued-row check must see every un-parked press there is.
-  const waiting = queued.filter((o) => !o.conflict);
+  // Unfiltered on purpose: apply()'s queued-row check must see every un-parked press
+  // there is - another account's too, so a press on its rows folds into it (mergeOp).
+  const unparked = queued.filter((o) => !o.conflict);
+  // ...but the overlay and the banner only what a flush HERE sends (2026-10-30, hunt 11):
+  // another account's presses wait for that account (foreignRunSeqRows), and laid over the
+  // rows they showed this account a board the server and every other device never had.
+  const foreignRows = useMemo(() => foreignRunSeqRows(queued), [queued]);
+  const waiting = unparked.filter((o) => !foreignRows.has(o.rowId));
   const waitingHere = waiting.filter(onThisBoard);
+  const foreignHere = unparked.filter((o) => foreignRows.has(o.rowId) && onThisBoard(o));
 
   // Server rows are only the truth for presses the server has SEEN. Anything
   // still in the queue happened on this device and nowhere else, so it is laid
@@ -804,7 +811,7 @@ export function EventLiveCaller({
     // folds this press into the existing op, keeping the FIRST precondition (the
     // last server state anyone actually observed) and the LATEST value of each
     // column. The whole sequence then replays as one coherent write.
-    let queuedRowIds = new Set(waiting.map((o) => o.rowId));
+    let queuedRowIds = new Set(unparked.map((o) => o.rowId));
     if (updates.some((u) => queuedRowIds.has(u.id))) {
       // Try to clear the way first. Otherwise a queue that failed its one
       // reconnect attempt (the flush refuses to judge anything without a proven
@@ -1474,6 +1481,14 @@ export function EventLiveCaller({
               </span>
             </p>
           </div>
+        )}
+
+        {/* Another account's unsent presses (foreignRunSeqRows): not on the board above and
+            not sent from here - they go up when that account signs in on this device. */}
+        {foreignHere.length > 0 && (
+          <p className="px-1 text-[12.5px] text-muted-foreground" data-testid="runseq-foreign-queued">
+            มีคิวของบัญชีอื่น {foreignHere.length} รายการรอในเครื่องนี้ — ส่งขึ้นเมื่อบัญชีนั้นเข้าสู่ระบบ
+          </p>
         )}
 
         {/* Parked: someone else drove the board while this device was offline. We do

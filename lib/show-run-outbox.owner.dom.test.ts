@@ -95,7 +95,10 @@ describe("another account's run time waits for it", () => {
     // B's RLS: the update touches nothing and the event reads as absent
     supa.setTable("events", () => ok([]));
     await flushOutbox();
-    expect(await pendingCount()).toBe(1);
+    // still on the device - but no longer in B's "รอซิงค์" (pendingCount counts only the
+    // account signed in since hunt 11), so asked of the whole queue
+    expect(await countQueuedShowRunWork()).toBe(1);
+    expect(await pendingCount()).toBe(0);
     expect(supa.callsTo("events")).toHaveLength(0);
   });
 

@@ -107,10 +107,10 @@ describe("MicMapEditor · the first add seeds the show's map from the standing m
     const call = inserts()[0];
     expect(call.selectAfterWrite).toBe(true); // the write asks for its rows back
     expect(call.values).toEqual([
-      { tenant_id: "t1", event_id: "e1", mic_number: 1, holder_name: "นิค1", order_index: 1 },
-      { tenant_id: "t1", event_id: "e1", mic_number: 2, holder_name: "นิค2", order_index: 1 },
-      { tenant_id: "t1", event_id: "e1", mic_number: 3, holder_name: "นิค3", order_index: 1 },
-      { tenant_id: "t1", event_id: "e1", mic_number: 4, holder_name: "", order_index: 1 },
+      { id: expect.any(String), tenant_id: "t1", event_id: "e1", mic_number: 1, holder_name: "นิค1", order_index: 1 },
+      { id: expect.any(String), tenant_id: "t1", event_id: "e1", mic_number: 2, holder_name: "นิค2", order_index: 1 },
+      { id: expect.any(String), tenant_id: "t1", event_id: "e1", mic_number: 3, holder_name: "นิค3", order_index: 1 },
+      { id: expect.any(String), tenant_id: "t1", event_id: "e1", mic_number: 4, holder_name: "", order_index: 1 },
     ]);
 
     // the show's own map has taken over: the standing tiles and their caption are gone,
@@ -202,6 +202,7 @@ describe("MicMapEditor · the first add seeds the show's map from the standing m
     await waitFor(() => expect(micInputs()).toEqual([1, 2, 3, 4, 5]));
     expect(inserts()).toHaveLength(2);
     expect(inserts()[1].values).toEqual({
+      id: expect.any(String), // the minted id rides along (2026-10-30, hunt 11)
       tenant_id: "t1",
       event_id: "e1",
       mic_number: 5,
@@ -218,6 +219,7 @@ describe("MicMapEditor · the paths that must not change", () => {
     await waitFor(() => expect(micInputs()).toEqual([1, 7, 8]));
     expect(inserts()).toHaveLength(1);
     expect(inserts()[0].values).toEqual({
+      id: expect.any(String), // the minted id rides along (2026-10-30, hunt 11)
       tenant_id: "t1",
       event_id: "e1",
       mic_number: 8,
@@ -232,6 +234,7 @@ describe("MicMapEditor · the paths that must not change", () => {
     await waitFor(() => expect(micInputs()).toEqual([1]));
     expect(inserts()).toHaveLength(1);
     expect(inserts()[0].values).toEqual({
+      id: expect.any(String), // the minted id rides along (2026-10-30, hunt 11)
       tenant_id: "t1",
       event_id: "e1",
       mic_number: 1,

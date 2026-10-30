@@ -39,7 +39,8 @@ import { Button } from "@/components/ui/button";
 import { FIELD } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { bandTriplet } from "@/lib/band-triplet";
-import { shortClock, bkkTodayKey } from "@/lib/time";
+import { shortClock, bkkTodayKey, parseClockToSeconds } from "@/lib/time";
+import { dayOrderSeconds } from "@/lib/day-order";
 import { shownDeadline } from "@/components/event/deadline-chip";
 import { captureElementToImage } from "@/lib/export-image";
 import type { GroupStatus, StaffContact } from "@/lib/types";
@@ -267,32 +268,67 @@ function toMinutes(t: string): number {
   const [h, m] = t.split(":");
   return (Number(h) || 0) * 60 + (Number(m) || 0);
 }
+/**
+ * Each date's latest act start (seconds), from the acts in `events`: the anchor
+ * lib/day-order's dayOrderSeconds reads that date's slots around. 2026-10-30, hunt 11: a
+ * festival that runs past midnight (a countdown: 22:00, 23:00, then 00:00 - every act on
+ * the festival's date, the way run_sequence keys it) listed its 00:00 act FIRST, on the
+ * board and in the crew JPG, with its 00:30 booth at the top of the booth table. Anchored
+ * on the day's latest act, the small hours after an evening day go to its end, as on the
+ * event's own sheet, the share page and the Excel. A date with no slot in the small
+ * hours keeps the plain clock order it always had.
+ */
+type DayAnchors = ReadonlyMap<string, number>;
+function dayAnchors(events: readonly OverviewEvent[]): DayAnchors {
+  const out = new Map<string, number>();
+  for (const ev of events) {
+    if (!ev.event_date) continue;
+    const sec = parseClockToSeconds(actStart(ev));
+    if (sec == null) continue;
+    const cur = out.get(ev.event_date);
+    if (cur == null || sec > cur) out.set(ev.event_date, sec);
+  }
+  return out;
+}
+/** Minutes into the act's day for `t` (toMinutes, moved past midnight by dayOrderSeconds
+ *  when the date's anchor says so); untimed = last. */
+function dayMinutes(t: string | null | undefined, ev: OverviewEvent, anchors?: DayAnchors): number {
+  if (!t) return Number.POSITIVE_INFINITY;
+  const sec = dayOrderSeconds(t, anchors?.get(ev.event_date ?? "") ?? null);
+  return Number.isFinite(sec) ? Math.floor(sec / 60) : toMinutes(t);
+}
 // An event's STAGE start (when the band actually performs) — the time staff sort a
 // day by, so every list reads in show order (พี่: เรียงตามเวลาขึ้นเวที). NOT the
 // earliest prep activity: an early photo/booth time must not pull a late-stage act
 // up the list. Falls back to booth → photo when there's no stage time; a show with
 // no time at all sorts last.
-function stageMinutes(ev: OverviewEvent): number {
-  const t = ev.stage?.start ?? ev.booth?.start ?? firstPhotoStart(ev);
-  return t ? toMinutes(t) : Number.POSITIVE_INFINITY;
+function actStart(ev: OverviewEvent): string | null {
+  return ev.stage?.start ?? ev.booth?.start ?? firstPhotoStart(ev);
+}
+function stageMinutes(ev: OverviewEvent, anchors?: DayAnchors): number {
+  return dayMinutes(actStart(ev), ev, anchors);
 }
 // Each activity sorts by ITS OWN start time so its table reads in that activity's
 // order (a late-stage act with an early photo slot must sit early in the PHOTO
 // table, not be dragged down by its stage time). Untimed acts sort last.
-function photoMinutes(ev: OverviewEvent): number {
-  const t = firstPhotoStart(ev);
-  return t ? toMinutes(t) : Number.POSITIVE_INFINITY;
+function photoMinutes(ev: OverviewEvent, anchors?: DayAnchors): number {
+  return dayMinutes(firstPhotoStart(ev), ev, anchors);
 }
-function boothMinutes(ev: OverviewEvent): number {
-  return ev.booth?.start ? toMinutes(ev.booth.start) : Number.POSITIVE_INFINITY;
+function boothMinutes(ev: OverviewEvent, anchors?: DayAnchors): number {
+  return dayMinutes(ev.booth?.start, ev, anchors);
 }
 /**
  * Date first, then the given clock: a list that spans several dates (a band's section,
  * a week, the Past fold) must read in calendar order, because each stub leads with its
  * date tile. `newestFirst` flips the dates only (the Past fold) — within one day the
- * clock still runs forward — and an undated show sorts last either way.
+ * clock still runs forward — and an undated show sorts last either way. `anchors`
+ * (dayAnchors of the list) puts a day's slots past midnight at that day's end.
  */
-function byDateThen(minutes: (ev: OverviewEvent) => number, newestFirst = false) {
+function byDateThen(
+  minutes: (ev: OverviewEvent, anchors?: DayAnchors) => number,
+  newestFirst = false,
+  anchors?: DayAnchors
+) {
   return (a: OverviewEvent, b: OverviewEvent): number => {
     const da = a.event_date ?? "";
     const db = b.event_date ?? "";
@@ -301,7 +337,7 @@ function byDateThen(minutes: (ev: OverviewEvent) => number, newestFirst = false)
       if (!db) return -1;
       return (da < db ? -1 : 1) * (newestFirst ? -1 : 1);
     }
-    return minutes(a) - minutes(b);
+    return minutes(a, anchors) - minutes(b, anchors);
   };
 }
 const hasPhoto = (ev: OverviewEvent) => !!firstPhotoStart(ev);
@@ -765,9 +801,10 @@ function ActivityTables({
   todayKey: string;
   newestFirst?: boolean;
 }) {
+  const anchors = useMemo(() => dayAnchors(events), [events]);
   const stageRows = useMemo(
-    () => [...events].sort(byDateThen(stageMinutes, newestFirst)),
-    [events, newestFirst]
+    () => [...events].sort(byDateThen(stageMinutes, newestFirst, anchors)),
+    [events, newestFirst, anchors]
   );
   // While a photo editor holds focus, its row is PINNED to the section + sort key it
   // had when focus arrived. PhotoTimeCell commits on blur, and tabbing start→end blurs
@@ -801,21 +838,21 @@ function ActivityTables({
     const timed = (ev: OverviewEvent) =>
       pinned && pinned.id === ev.id ? pinned.timed : hasPhoto(ev);
     const at = (ev: OverviewEvent) =>
-      pinned && pinned.id === ev.id ? pinned.at : photoMinutes(ev);
+      pinned && pinned.id === ev.id ? pinned.at : photoMinutes(ev, anchors);
     return {
       photoRows: events.filter((ev) => timed(ev)).sort(byDateThen(at, newestFirst)),
       // Untimed acts keep the bucket's own (date → stage-time) order — there is no
       // photo time to sort them by yet.
       photoTodoRows: events.filter((ev) => ev.canEditPhoto && !timed(ev)),
     };
-  }, [events, pinned, newestFirst]);
+  }, [events, pinned, newestFirst, anchors]);
   // The to-do section opens by default on a day that already uses photo calls, and
   // starts COLLAPSED on a stage-only day, where a wall of blank inputs is pure noise —
   // its one header line keeps it discoverable for the staffer who does need to fill in.
   const [showPhotoTodo, setShowPhotoTodo] = useState(() => photoRows.length > 0);
   const boothRows = useMemo(
-    () => events.filter(hasBooth).sort(byDateThen(boothMinutes, newestFirst)),
-    [events, newestFirst]
+    () => events.filter(hasBooth).sort(byDateThen(boothMinutes, newestFirst, anchors)),
+    [events, newestFirst, anchors]
   );
   // Muted secondary tag (event name and/or date) — only when those vary in the
   // bucket, so multi-show / multi-date views stay clear without a separate column.
@@ -836,7 +873,7 @@ function ActivityTables({
       // row anyway, which is the whole thing the pin exists to prevent.
       p && p.id === ev.id
         ? p
-        : { id: ev.id, timed: hasPhoto(ev), at: photoMinutes(ev) }
+        : { id: ev.id, timed: hasPhoto(ev), at: photoMinutes(ev, anchors) }
     );
   const unpinPhotoRow = (e: React.FocusEvent<HTMLTableCellElement>) => {
     // relatedTarget = where focus is heading; null (clicked dead space) or anything
@@ -1151,9 +1188,10 @@ function ExportSchedule({
       ? first.event_date
       : null;
 
-  const stageRows = [...events].sort(byDateThen(stageMinutes));
-  const photoRows = events.filter(hasPhoto).sort(byDateThen(photoMinutes));
-  const boothRows = events.filter(hasBooth).sort(byDateThen(boothMinutes));
+  const anchors = dayAnchors(events);
+  const stageRows = [...events].sort(byDateThen(stageMinutes, false, anchors));
+  const photoRows = events.filter(hasPhoto).sort(byDateThen(photoMinutes, false, anchors));
+  const boothRows = events.filter(hasBooth).sort(byDateThen(boothMinutes, false, anchors));
 
   // Disambiguate rows when the group mixes shows/dates: append the differing bits.
   const secondary = (ev: OverviewEvent) => {
@@ -1358,16 +1396,17 @@ function TodayHero({
   actionsHint?: ReactNode;
 }) {
   const p = dateParts(todayKey);
+  const anchors = dayAnchors(events);
   const todays = events
     .filter((e) => e.event_date === todayKey)
-    .sort((a, b) => stageMinutes(a) - stageMinutes(b));
+    .sort((a, b) => stageMinutes(a, anchors) - stageMinutes(b, anchors));
   const next = todays.length
     ? null
     : events
         .filter((e) => !!e.event_date && e.event_date > todayKey)
         .sort((a, b) =>
           a.event_date === b.event_date
-            ? stageMinutes(a) - stageMinutes(b)
+            ? stageMinutes(a, anchors) - stageMinutes(b, anchors)
             : (a.event_date ?? "") < (b.event_date ?? "")
               ? -1
               : 1
@@ -1545,16 +1584,15 @@ export function OverviewClient({
 
   // Order the whole schedule by date, then by each show's STAGE time — staff read a
   // day top-to-bottom in performance order, regardless of band.
-  const sortedEvents = useMemo(
-    () =>
-      [...mergedEvents].sort((a, b) => {
-        const da = a.event_date ?? "9999-12-31";
-        const db = b.event_date ?? "9999-12-31";
-        if (da !== db) return da < db ? -1 : 1;
-        return stageMinutes(a) - stageMinutes(b);
-      }),
-    [mergedEvents]
-  );
+  const sortedEvents = useMemo(() => {
+    const anchors = dayAnchors(mergedEvents);
+    return [...mergedEvents].sort((a, b) => {
+      const da = a.event_date ?? "9999-12-31";
+      const db = b.event_date ?? "9999-12-31";
+      if (da !== db) return da < db ? -1 : 1;
+      return stageMinutes(a, anchors) - stageMinutes(b, anchors);
+    });
+  }, [mergedEvents]);
   const byBand = useMemo(
     () =>
       bandFilter === "all"
@@ -1661,7 +1699,7 @@ export function OverviewClient({
         ? filtered
             .filter(isPast)
             // Most recent first: the show that just happened is the one looked up.
-            .sort(byDateThen(stageMinutes, true))
+            .sort(byDateThen(stageMinutes, true, dayAnchors(filtered)))
         : [],
     [filtered, folding, isPast]
   );

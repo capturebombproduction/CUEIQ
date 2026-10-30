@@ -1,7 +1,10 @@
 // 2026-10-30, hunt 10 (mistakes-4): "ล้าง" beside เวลาโชว์ล่าสุด - in Live tools right under จบโชว์ /
 // รีเซ็ต - wiped the show's one record of its run time, on every device (persistLastRun + the
 // "lastrun" broadcast), on a single tap. The label's rule is a confirm before every delete; it now
-// asks first, in Reset's own window.confirm style.
+// asks first.
+// 2026-10-30, hunt 11: hunt 10 asked with window.confirm - and the key is live for the controller
+// mid-show, where a modal stops the JS thread (Auto's next row, the count, every fade waited on
+// the answer). It asks in the record itself now, and window.confirm is never called.
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, act, fireEvent } from "@testing-library/react";
 import { makeSupabaseFake, makeSession, ok, type SupabaseFake } from "@/test/fakes/supabase";
@@ -79,28 +82,39 @@ async function mountWithRecord() {
 const clearKey = () => screen.getAllByTitle("ล้างเวลาโชว์ล่าสุดที่บันทึกไว้")[0];
 const lastrunSends = () => (supa.channelFor(liveTopic(EVENT_ID))?.sent ?? []).filter((s) => s.event === "lastrun");
 
-describe("LiveMode · ล้าง เวลาโชว์ล่าสุด asks first", () => {
+describe("LiveMode · ล้าง เวลาโชว์ล่าสุด asks first, in place", () => {
   it("answered no: the record stays here and on the server, and no device is told", async () => {
-    const ask = vi.spyOn(window, "confirm").mockReturnValue(false);
+    const modal = vi.spyOn(window, "confirm");
     await mountWithRecord();
     expect(screen.getAllByText("12:34").length).toBeGreaterThan(0);
     await act(async () => {
       fireEvent.click(clearKey());
     });
-    expect(ask).toHaveBeenCalledTimes(1);
+    // the question, in the record - nothing cleared by the first tap
+    expect(screen.getByText("ล้างเวลานี้? ล้างแล้วกู้คืนไม่ได้")).toBeTruthy();
+    expect(h.persist).not.toHaveBeenCalled();
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "ไม่ล้าง" }));
+    });
+    expect(screen.queryByText("ล้างเวลานี้? ล้างแล้วกู้คืนไม่ได้")).toBeNull();
     expect(screen.getAllByText("12:34").length).toBeGreaterThan(0);
     expect(h.persist).not.toHaveBeenCalled();
     expect(lastrunSends()).toHaveLength(0);
+    expect(modal).not.toHaveBeenCalled();
   });
 
   it("answered yes: cleared as before - here, on the server and on every device", async () => {
-    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const modal = vi.spyOn(window, "confirm");
     await mountWithRecord();
     await act(async () => {
       fireEvent.click(clearKey());
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByTitle("ยืนยันล้างเวลาโชว์ล่าสุด"));
     });
     expect(screen.queryAllByText("12:34")).toHaveLength(0);
     expect(h.persist).toHaveBeenCalledWith(EVENT_ID, null, null);
     expect(lastrunSends().at(-1)?.payload).toEqual({ record: null });
+    expect(modal).not.toHaveBeenCalled();
   });
 });

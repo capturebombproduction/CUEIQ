@@ -45,7 +45,7 @@ import {
   monthBeforeKey,
 } from "@/lib/time";
 import { cn } from "@/lib/utils";
-import { showTimesLabel } from "@/lib/next-show";
+import { callDayOffset, showTimesLabel } from "@/lib/next-show";
 
 type EventWithGroup = EventRow & {
   groups: {
@@ -631,6 +631,14 @@ export function EventsList({
 
   // ---- the hero (spec §G.1) — plain values, no hooks below this line ----
   const days = nextShow?.event_date ? daysUntil(nextShow.event_date) : null;
+  // The day word before the show's date counts to the CALL: a show called the evening
+  // before its date (a 00:30 stage called at 22:30, lib/next-show.ts callDayOffset) read
+  // "พรุ่งนี้ · นัด 22:30" on the day of that call (2026-10-30, hunt 11). On the date itself
+  // it is still "วันนี้". Every other show: callDays === days.
+  const callDays =
+    days != null && days > 0 && nextShow
+      ? days + callDayOffset(callTimes?.[nextShow.id], nextShow.show_start_time)
+      : days;
   const nextDp = dateParts(nextShow?.event_date);
   const nextStage = shortClock(nextShow?.show_start_time) || null;
   const nextCallRaw = shortClock(nextShow ? callTimes?.[nextShow.id] : null) || null;
@@ -725,14 +733,23 @@ export function EventsList({
                     </span>
                   )}
                 </>
-              ) : days === 1 ? (
+              ) : callDays === 0 ? (
+                <>
+                  <span className="pb-[1px] text-[30px] font-semibold">คืนนี้</span>
+                  {nextStage && (
+                    <span className="num ml-3 pb-[2px] text-[50px] font-extrabold leading-[.86]">
+                      {nextStage}
+                    </span>
+                  )}
+                </>
+              ) : callDays === 1 ? (
                 <span className="pb-[1px] text-[30px] font-semibold">พรุ่งนี้</span>
               ) : (
                 <>
                   <span className="pb-[5px] pr-2 text-[18px] font-medium text-muted-foreground">อีก</span>
                   {/* 3 digits at 144 px overrun a 390 px phone; 96 px keeps the row in. */}
-                  <span className={cn("hero-num hard-drop slam", days != null && days > 99 && "text-[96px]")}>
-                    {days}
+                  <span className={cn("hero-num hard-drop slam", callDays != null && callDays > 99 && "text-[96px]")}>
+                    {callDays}
                   </span>
                   <span className="pb-[1px] pl-4 text-[30px] font-semibold">วัน</span>
                 </>

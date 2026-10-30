@@ -12,7 +12,9 @@ import { countQueuedShowRunWork } from "@/lib/show-run-outbox";
  *  It goes out only when that SAME account signs back in, so say so before the
  *  person types someone else's name. Same amber as the shell's "ค้างซิงค์" chip.
  *  The show-run / running-order queue counts too (2026-10-30, hunt 10): no sign-out
- *  wipes it, and it, too, goes out only for the account that queued it. */
+ *  wipes it, and it, too, goes out only for the account that queued it. Not a parked
+ *  press (2026-10-30, hunt 11): it never goes out on a sign-in - it waits for a decision on
+ *  its board - and counted, it kept this notice up on every login (countQueuedShowRunWork). */
 function QueuedWorkNotice() {
   const [count, setCount] = useState(0);
   useEffect(() => {

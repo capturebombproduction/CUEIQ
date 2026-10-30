@@ -3,11 +3,12 @@
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import type { RealtimeChannel } from "@supabase/supabase-js";
-import { Plus, Trash2, ArrowUp, ArrowDown, Download, ImageDown } from "lucide-react";
+import { Plus, Trash2, ArrowUp, ArrowDown, Download, ImageDown, TriangleAlert } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { Button } from "@/components/ui/button";
 import { FIELD, Input } from "@/components/ui/input";
 import { useConfirm } from "@/components/ui/confirm-dialog";
+import { offBandSchedule } from "@/components/event/event-run-status";
 import { captureElementToImage, safeFileStem } from "@/lib/export-image";
 import { privateChannel, runOrderTopic } from "@/lib/realtime";
 import { compareRunOrder, hasRunOrderTie } from "@/lib/run-order-sort";
@@ -334,6 +335,29 @@ export function RunOrderBuilder({
     const snap = rows;
     setLocal(id, partial);
     persist(id, partial, snap);
+  }
+
+  // The link dropdown has said "ดึงเวลา" since Phase 1 and pulled nothing: only
+  // นำเข้าจากเวทีวง ever copied a slot's time (2026-10-30, hunt 11). A line with NO time yet
+  // now takes its band's slot - the first one, in play order, that no other line of that
+  // band already stands on. A line that HAS a time keeps it: overwriting a time staff
+  // typed would be a silent re-plan, and the chip on the row says when the two disagree.
+  function linkBand(r: RunSequence, eventId: string) {
+    const partial: Partial<RunSequence> = { linked_event_id: eventId || null };
+    if (eventId && !r.planned_start) {
+      const taken = new Set(
+        rows
+          .filter((o) => o.id !== r.id && o.linked_event_id === eventId)
+          .map((o) => hhmm(o.planned_start))
+      );
+      const slots = slotsInPlayOrder(bandEvents.filter((b) => b.id === eventId && b.stage_start));
+      const slot = slots.find((s) => !taken.has(hhmm(s.stage_start))) ?? slots[0];
+      if (slot) {
+        partial.planned_start = slot.stage_start;
+        if (!r.planned_end && slot.stage_end) partial.planned_end = slot.stage_end;
+      }
+    }
+    update(r.id, partial);
   }
 
   // The last sort_order in use: the higher of this screen's rows and the SERVER's.
@@ -671,126 +695,143 @@ export function RunOrderBuilder({
         </p>
       ) : (
         <div className="stack">
-          {ordered.map((r, i) => (
-            <div key={r.id} className="slab flex items-start gap-2 p-2.5">
-              {/* These once carried no size classes, so each button collapsed to its
-                  16px icon and the pair sat flush — one 16px target directly on top
-                  of a 16px target that does the opposite, and they are the ONLY
-                  reorder control here. A mis-tap reorders the festival running
-                  order and broadcasts it to the live คุมคิว board. 44 × 44 each:
-                  stacked beside the fields on a phone, side by side from sm up. */}
-              <div className="flex flex-none flex-col gap-0.5 sm:flex-row">
-                <button
-                  type="button"
-                  onClick={() => move(r.id, -1)}
-                  disabled={i === 0}
-                  className="flex h-11 w-11 items-center justify-center rounded-[3px] text-muted-foreground hover:bg-muted disabled:opacity-30"
-                  aria-label="เลื่อนขึ้น"
-                  title="เลื่อนขึ้น"
-                >
-                  <ArrowUp className="h-5 w-5" />
-                </button>
-                <button
-                  type="button"
-                  onClick={() => move(r.id, 1)}
-                  disabled={i === ordered.length - 1}
-                  className="flex h-11 w-11 items-center justify-center rounded-[3px] text-muted-foreground hover:bg-muted disabled:opacity-30"
-                  aria-label="เลื่อนลง"
-                  title="เลื่อนลง"
-                >
-                  <ArrowDown className="h-5 w-5" />
-                </button>
-              </div>
-              <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
-                <Input
-                  type="time"
-                  value={hhmm(r.planned_start)}
-                  className="num w-[7.5rem] shrink-0"
-                  onChange={(e) => update(r.id, { planned_start: e.target.value || null })}
-                />
-                <span aria-hidden className="text-muted-foreground">
-                  –
-                </span>
-                <Input
-                  type="time"
-                  value={hhmm(r.planned_end)}
-                  className="num w-[7.5rem] shrink-0"
-                  onChange={(e) => update(r.id, { planned_end: e.target.value || null })}
-                />
-                <select
-                  value={r.kind}
-                  onChange={(e) => update(r.id, { kind: e.target.value })}
-                  className={selCls}
-                >
-                  {KINDS.map((k) => (
-                    <option key={k.value} value={k.value}>
-                      {k.label}
-                    </option>
-                  ))}
-                </select>
-                <Input
-                  value={r.title}
-                  placeholder="ชื่อลำดับ (เช่น Opening / Show Match)"
-                  className="min-w-[160px] flex-1"
-                  // The only field that saves on blur instead of on change — so mark it
-                  // while it has focus and applyRows() won't swap the half-typed name
-                  // out from under the staffer (see typingIdRef).
-                  onFocus={() => {
-                    typingIdRef.current = r.id;
-                  }}
-                  onChange={(e) => setLocal(r.id, { title: e.target.value })}
-                  onBlur={(e) => {
-                    // cleared BEFORE the write, so its own rollback is free to put the
-                    // server's title back on this row
-                    typingIdRef.current = null;
-                    persist(r.id, { title: e.target.value });
-                  }}
-                />
-                <select
-                  value={r.linked_event_id ?? ""}
-                  onChange={(e) => update(r.id, { linked_event_id: e.target.value || null })}
-                  className={selCls}
-                  title="ผูกกับวง (ดึงเวลา/เปิด setlist)"
-                >
-                  <option value="">— ไม่ผูกวง —</option>
-                  {bandOptions.map((b) => (
-                    <option key={b.id} value={b.id}>
-                      {b.label}
-                    </option>
-                  ))}
-                </select>
-                <label className="flex items-center gap-1.5 text-[13px] font-medium text-muted-foreground">
-                  buffer
+          {ordered.map((r, i) => {
+            // A linked line whose time is none of its band's stage slots (offBandSchedule,
+            // 2026-10-30 hunt 11): the caller calls one time, the band's schedule says
+            // another. Said, never fixed here - staff decide which side is right.
+            const off = r.linked_event_id
+              ? offBandSchedule(r.planned_start, optStarts.get(r.linked_event_id) ?? [])
+              : null;
+            return (
+              <div key={r.id} className="slab flex items-start gap-2 p-2.5">
+                {/* These once carried no size classes, so each button collapsed to its
+                    16px icon and the pair sat flush — one 16px target directly on top
+                    of a 16px target that does the opposite, and they are the ONLY
+                    reorder control here. A mis-tap reorders the festival running
+                    order and broadcasts it to the live คุมคิว board. 44 × 44 each:
+                    stacked beside the fields on a phone, side by side from sm up. */}
+                <div className="flex flex-none flex-col gap-0.5 sm:flex-row">
+                  <button
+                    type="button"
+                    onClick={() => move(r.id, -1)}
+                    disabled={i === 0}
+                    className="flex h-11 w-11 items-center justify-center rounded-[3px] text-muted-foreground hover:bg-muted disabled:opacity-30"
+                    aria-label="เลื่อนขึ้น"
+                    title="เลื่อนขึ้น"
+                  >
+                    <ArrowUp className="h-5 w-5" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => move(r.id, 1)}
+                    disabled={i === ordered.length - 1}
+                    className="flex h-11 w-11 items-center justify-center rounded-[3px] text-muted-foreground hover:bg-muted disabled:opacity-30"
+                    aria-label="เลื่อนลง"
+                    title="เลื่อนลง"
+                  >
+                    <ArrowDown className="h-5 w-5" />
+                  </button>
+                </div>
+                <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
                   <Input
-                    type="number"
-                    min={0}
-                    value={Math.round((r.buffer_seconds || 0) / 60)}
-                    className="num w-16"
-                    onChange={(e) =>
-                      update(r.id, {
-                        buffer_seconds: Math.max(0, Number(e.target.value) || 0) * 60,
-                      })
-                    }
+                    type="time"
+                    value={hhmm(r.planned_start)}
+                    className="num w-[7.5rem] shrink-0"
+                    onChange={(e) => update(r.id, { planned_start: e.target.value || null })}
                   />
-                  น.
-                </label>
-                {/* A row delete is the ghost trash key that opens the confirm sheet
-                    (§G.4, like the sibling editors) — 44 × 44, not a bare 16 px glyph
-                    at a row's edge, and not a loud dashed box on every row. */}
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon"
-                  onClick={() => removeRow(r.id)}
-                  className="ml-auto text-destructive hover:text-destructive"
-                  aria-label="ลบ"
-                  title="ลบลำดับนี้"
-                >
-                  <Trash2 />
-                </Button>
+                  <span aria-hidden className="text-muted-foreground">
+                    –
+                  </span>
+                  <Input
+                    type="time"
+                    value={hhmm(r.planned_end)}
+                    className="num w-[7.5rem] shrink-0"
+                    onChange={(e) => update(r.id, { planned_end: e.target.value || null })}
+                  />
+                  <select
+                    value={r.kind}
+                    onChange={(e) => update(r.id, { kind: e.target.value })}
+                    className={selCls}
+                  >
+                    {KINDS.map((k) => (
+                      <option key={k.value} value={k.value}>
+                        {k.label}
+                      </option>
+                    ))}
+                  </select>
+                  <Input
+                    value={r.title}
+                    placeholder="ชื่อลำดับ (เช่น Opening / Show Match)"
+                    className="min-w-[160px] flex-1"
+                    // The only field that saves on blur instead of on change — so mark it
+                    // while it has focus and applyRows() won't swap the half-typed name
+                    // out from under the staffer (see typingIdRef).
+                    onFocus={() => {
+                      typingIdRef.current = r.id;
+                    }}
+                    onChange={(e) => setLocal(r.id, { title: e.target.value })}
+                    onBlur={(e) => {
+                      // cleared BEFORE the write, so its own rollback is free to put the
+                      // server's title back on this row
+                      typingIdRef.current = null;
+                      persist(r.id, { title: e.target.value });
+                    }}
+                  />
+                  <select
+                    value={r.linked_event_id ?? ""}
+                    onChange={(e) => linkBand(r, e.target.value)}
+                    className={selCls}
+                    title="ผูกกับวง (ดึงเวลา/เปิด setlist)"
+                  >
+                    <option value="">— ไม่ผูกวง —</option>
+                    {bandOptions.map((b) => (
+                      <option key={b.id} value={b.id}>
+                        {b.label}
+                      </option>
+                    ))}
+                  </select>
+                  {off && (
+                    <span
+                      data-cueiq-off-schedule
+                      className="chip chip-warning"
+                      title={`เวลาบนบอร์ดนี้ไม่ตรงกับเวลาขึ้นเวทีในตารางของวง (${off.join(", ")}) — แก้ให้ตรงกันที่นี่ หรือที่ตารางวง`}
+                    >
+                      <TriangleAlert aria-hidden /> เวลาไม่ตรงกับตารางวง · {off.join(", ")}
+                    </span>
+                  )}
+                  <label className="flex items-center gap-1.5 text-[13px] font-medium text-muted-foreground">
+                    buffer
+                    <Input
+                      type="number"
+                      min={0}
+                      value={Math.round((r.buffer_seconds || 0) / 60)}
+                      className="num w-16"
+                      onChange={(e) =>
+                        update(r.id, {
+                          buffer_seconds: Math.max(0, Number(e.target.value) || 0) * 60,
+                        })
+                      }
+                    />
+                    น.
+                  </label>
+                  {/* A row delete is the ghost trash key that opens the confirm sheet
+                      (§G.4, like the sibling editors) — 44 × 44, not a bare 16 px glyph
+                      at a row's edge, and not a loud dashed box on every row. */}
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    onClick={() => removeRow(r.id)}
+                    className="ml-auto text-destructive hover:text-destructive"
+                    aria-label="ลบ"
+                    title="ลบลำดับนี้"
+                  >
+                    <Trash2 />
+                  </Button>
+                </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
 

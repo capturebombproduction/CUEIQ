@@ -310,6 +310,17 @@ export function EventForm({
             : "เซิร์ฟเวอร์ตอบไม่ได้ตอนนี้ — สร้างงานไว้ในเครื่องแล้ว จะซิงค์ให้อัตโนมัติ"
         );
       } else toast.success("สร้างงานสำเร็จ 🎉");
+      // A show CREATED already as รออนุมัติ (or, by an approver, approved / rejected) is told
+      // like a status the edit path below changes (2026-10-30, hunt 11): hunt 10 covered only
+      // the edit, so a band that created its show straight into รออนุมัติ left the approvers
+      // with no bell and no push - and no "ส่งตรวจ" button to send it again. Only once it is on
+      // the server (/api/notify checks the row's real status); a draft says nothing.
+      const createdStatus = statusPatch.status;
+      if (!res.queued && res.id && createdStatus) {
+        if (createdStatus === "approved") notify("event_approved", { eventId: res.id });
+        else if (createdStatus === "rejected") notify("event_rejected", { eventId: res.id });
+        else if (createdStatus === "pending_review") notify("event_submitted", { eventId: res.id });
+      }
       router.push(`/events/${res.id}`);
       router.refresh();
     } else if (event) {

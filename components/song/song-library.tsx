@@ -246,11 +246,32 @@ async function songBandMoveBlocker(
  * ตาที่ 3 on hunt 7; lib/write-guard.ts) - not "used nowhere".
  * One read for all three since 2026-10-30 (hunt 10): "ลบไฟล์เสียง" said only "ข้อมูลเพลงยังอยู่"
  * and deleted the master that every linked row of tomorrow's show plays.
+ * BOUNDED (2026-10-30, hunt 11): it runs before each of those prompts, and supabase-js has no
+ * timeout - on venue Wi-Fi that answers slowly or not at all the prompt never came and the
+ * picked file looked ignored. Past USAGE_READ_TIMEOUT_MS it is `unknown`, which every prompt
+ * already words as "ตรวจไม่ได้ (เน็ตขัดข้อง)".
  */
-async function songUsage(
+const USAGE_READ_TIMEOUT_MS = 8000;
+/** A second file job on a song whose first is still running (2026-10-30, hunt 11). */
+const ROW_FILE_BUSY_MESSAGE = "ไฟล์ของเพลงนี้กำลังทำงานอยู่ — รอให้เสร็จก่อน แล้วค่อยเลือกใหม่";
+type SongUsage = { unknown: boolean; used: number; rooms: number; parts: string[] };
+async function songUsage(supabase: ReturnType<typeof createClient>, songId: string): Promise<SongUsage> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      readSongUsage(supabase, songId),
+      new Promise<SongUsage>((r) => {
+        timer = setTimeout(() => r({ unknown: true, used: 0, rooms: 0, parts: [] }), USAGE_READ_TIMEOUT_MS);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+async function readSongUsage(
   supabase: ReturnType<typeof createClient>,
   songId: string
-): Promise<{ unknown: boolean; used: number; rooms: number; parts: string[] }> {
+): Promise<SongUsage> {
   const read = await (async () =>
     Promise.all([
       supabase
@@ -394,8 +415,9 @@ export function SongLibrary({
   // file picked in the add/edit dialog — uploaded to R2 on save (one-step add+upload)
   const [pickedFile, setPickedFile] = useState<File | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
-  // per-song audio upload (to R2). audioBusy[songId] = which op is running.
-  const [audioBusy, setAudioBusy] = useState<Record<string, "up" | "del">>({});
+  // per-song audio upload (to R2). audioBusy[songId] = which op is running. "check": a picked
+  // file or a delete waits on its usage read and the question after it (2026-10-30, hunt 11).
+  const [audioBusy, setAudioBusy] = useState<Record<string, "up" | "del" | "check">>({});
   const audioFileRef = useRef<HTMLInputElement>(null);
   const audioTargetRef = useRef<Song | null>(null);
   // Desktop-only (Electron): per-device local audio source. `native` is the
@@ -988,6 +1010,12 @@ export function SongLibrary({
       });
       return;
     }
+    // ...or one picked from the row is still waiting on its question (2026-10-30, hunt 11): this
+    // save's own question would be answered "cancelled" behind it, unseen (useConfirm).
+    if (pickedFile && current && audioBusy[current.id] === "check") {
+      toast.info(ROW_FILE_BUSY_MESSAGE);
+      return;
+    }
     const seq = ++saveSeqRef.current;
     const stillMine = () => saveSeqRef.current === seq;
     setSaving(true);
@@ -1456,29 +1484,68 @@ export function SongLibrary({
     });
   }
 
+  /** Clear a row's "check" when nothing follows it (a no, or the read gave way). */
+  function endCheck(songId: string) {
+    setAudioBusy((b) => {
+      if (b[songId] !== "check") return b;
+      const n = { ...b };
+      delete n[songId];
+      return n;
+    });
+  }
+
   async function onPickAudioFile(file: File | undefined) {
     const song = audioTargetRef.current;
     if (audioFileRef.current) audioFileRef.current.value = "";
     if (!file || !song) return;
+    // One file job per song at a time (2026-10-30, hunt 11): a second pick while the first one's
+    // question was pending was answered "cancelled" unseen (useConfirm), or named the wrong file.
+    if (audioBusy[song.id]) {
+      toast.info(ROW_FILE_BUSY_MESSAGE);
+      return;
+    }
     // a file no player opens is refused inside uploadSongAudio - nothing to ask about
-    if (!unplayableAudio(file) && !(await confirmReplaceFile(song, file))) return;
+    if (!unplayableAudio(file) && song.audio_path) {
+      // Busy from the pick on (2026-10-30, hunt 11): the usage read before the question went out
+      // with nothing on screen, so on slow venue Wi-Fi the pick looked ignored and ⬆ / 🗑 stayed
+      // live. uploadSongAudio takes the row over ("up") on a yes.
+      setAudioBusy((b) => ({ ...b, [song.id]: "check" }));
+      let ok = false;
+      try {
+        ok = await confirmReplaceFile(song, file);
+      } finally {
+        if (!ok) endCheck(song.id);
+      }
+      if (!ok) return;
+    }
     await uploadSongAudio(song, file);
   }
 
   async function removeSongAudio(song: Song) {
     if (!song.audio_path) return;
-    // Every row that links the song plays its file (setlist_items.audio_path NULL), so this is
-    // the same loss onDelete warns about - it said only "ข้อมูลเพลงยังอยู่" (2026-10-30, hunt 10).
-    const u = await songUsage(supabase, song.id);
-    const ok = await confirm({
-      title: `ลบไฟล์เสียงของ “${song.title}”?`,
-      description: u.unknown
-        ? "ตรวจไม่ได้ว่าเพลงนี้ถูกใช้ในงานหรือห้องซ้อมไหนอยู่บ้าง (เน็ตขัดข้อง) — ถ้าใช้อยู่ ที่นั่นจะไม่มีเสียงเพลงนี้\nไฟล์จะถูกลบถาวร กู้คืนไม่ได้"
-        : u.parts.length > 0
-          ? `เพลงนี้ถูกใช้อยู่ใน ${u.parts.join(" และ ")} — ลบแล้วที่นั่นจะไม่มีเสียงเพลงนี้ จนกว่าจะอัปไฟล์ใหม่\nไฟล์จะถูกลบถาวร กู้คืนไม่ได้`
-          : "ไฟล์จะถูกลบถาวร กู้คืนไม่ได้",
-      confirmText: "ลบไฟล์เสียง",
-    });
+    if (audioBusy[song.id]) {
+      toast.info(ROW_FILE_BUSY_MESSAGE);
+      return;
+    }
+    // busy while the usage read runs, as a replace is (onPickAudioFile; 2026-10-30, hunt 11)
+    setAudioBusy((b) => ({ ...b, [song.id]: "check" }));
+    let ok = false;
+    try {
+      // Every row that links the song plays its file (setlist_items.audio_path NULL), so this is
+      // the same loss onDelete warns about - it said only "ข้อมูลเพลงยังอยู่" (2026-10-30, hunt 10).
+      const u = await songUsage(supabase, song.id);
+      ok = await confirm({
+        title: `ลบไฟล์เสียงของ “${song.title}”?`,
+        description: u.unknown
+          ? "ตรวจไม่ได้ว่าเพลงนี้ถูกใช้ในงานหรือห้องซ้อมไหนอยู่บ้าง (เน็ตขัดข้อง) — ถ้าใช้อยู่ ที่นั่นจะไม่มีเสียงเพลงนี้\nไฟล์จะถูกลบถาวร กู้คืนไม่ได้"
+          : u.parts.length > 0
+            ? `เพลงนี้ถูกใช้อยู่ใน ${u.parts.join(" และ ")} — ลบแล้วที่นั่นจะไม่มีเสียงเพลงนี้ จนกว่าจะอัปไฟล์ใหม่\nไฟล์จะถูกลบถาวร กู้คืนไม่ได้`
+            : "ไฟล์จะถูกลบถาวร กู้คืนไม่ได้",
+        confirmText: "ลบไฟล์เสียง",
+      });
+    } finally {
+      if (!ok) endCheck(song.id);
+    }
     if (!ok) return;
     setAudioBusy((b) => ({ ...b, [song.id]: "del" }));
     const path = song.audio_path;
@@ -1769,7 +1836,7 @@ export function SongLibrary({
       return (
         <span className="flex items-center gap-1.5 text-[12.5px] text-muted-foreground">
           <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
-          {busy === "up" ? "กำลังอัป…" : "กำลังลบ…"}
+          {busy === "up" ? "กำลังอัป…" : busy === "check" ? "กำลังตรวจ…" : "กำลังลบ…"}
         </span>
       );
     }

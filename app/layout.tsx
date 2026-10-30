@@ -7,6 +7,7 @@ import { Toaster } from "@/components/ui/sonner";
 import { SwRegister } from "@/components/sw-register";
 import { OfflineBanner } from "@/components/offline-banner";
 import { OutboxFlusher } from "@/components/outbox-flusher";
+import { AuthCookieKeeper } from "@/components/auth-cookie-keeper";
 import { SkinRefresher } from "@/components/skin-refresher";
 import { THEME_COLOR, THEME_STORAGE_KEY } from "@/lib/theme-mode";
 
@@ -101,6 +102,9 @@ export default async function RootLayout({
         />
         <OfflineBanner />
         <OutboxFlusher />
+        {/* WebKit caps a script-written cookie at 7 days: re-set the session cookie
+            from the server after each refresh (2026-10-30, hunt 11). */}
+        <AuthCookieKeeper />
         {/* Re-derives a saved band colour on every page (AccentPicker used to). */}
         <SkinRefresher />
         {children}

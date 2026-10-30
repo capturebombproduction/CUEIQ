@@ -142,6 +142,9 @@ export function useSignOut(): () => Promise<void> {
     // (2026-10-30, hunt 10). A sign-out never wipes it - it waits on this device for the
     // account that queued it - but nothing said it was there, so a run time or the cue
     // presses of an offline show left with the laptop unsent. Said as KEPT, not lost.
+    // Only what a sign-in sends (2026-10-30, hunt 11): a parked press waits for a decision
+    // on its board and is not counted, or this asked on every sign-out forever, promising
+    // a send that never comes.
     const showQueued = await countQueuedShowRunWork();
     const showKept = `เวลาโชว์/การกดคิวที่ค้างซิงค์ ${showQueued} รายการไม่หาย — เก็บไว้ในเครื่องนี้ และส่งขึ้นเมื่อบัญชีเดิมเข้าสู่ระบบอีกครั้งตอนต่อเน็ต`;
     const ask =

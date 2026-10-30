@@ -48,6 +48,29 @@ function driftPhrase(min: number): string {
 }
 
 /**
+ * An act's stage time lives in TWO places that nothing keeps in step (2026-10-30, hunt
+ * 11): the festival board's line (run_sequence.planned_start - what the caller calls and
+ * this card projects) and the band's own stage row (schedule_items kind 'stage' - what
+ * the band's Live clock, call time, ticket and reminders read). "นำเข้าจากเวทีวง" copies
+ * one into the other once; after that an edit on either side left the other stale, and
+ * the band's page showed two different stage times with nothing saying so. Nothing is
+ * moved here - which side is right is a person's call - this only says they disagree.
+ *
+ * The band's slot times ("HH:MM") when `planned` matches none of them; null when they
+ * agree, when the line has no time, or when there is no band stage time to compare with.
+ * Shared with the builder (components/event/run-order-builder.tsx).
+ */
+export function offBandSchedule(
+  planned: string | null | undefined,
+  bandStarts: readonly (string | null | undefined)[]
+): string[] | null {
+  const p = shortClock(planned);
+  if (!p) return null;
+  const starts = [...new Set(bandStarts.map((s) => shortClock(s)).filter((s) => !!s))];
+  return starts.length > 0 && !starts.includes(p) ? starts : null;
+}
+
+/**
  * Read-only, band-facing companion to the festival-wide live show-caller
  * (EventLiveCaller). It shows ONE band — on its own event page — where the whole
  * show is right now (overall drift + what's playing) and, more importantly, the
@@ -114,6 +137,34 @@ export function EventRunStatusCard({
   const refetchRef = useRef(refetch);
   refetchRef.current = refetch;
 
+  // This band's own stage time(s), to say when the board's time for its slot is not the
+  // one in its schedule (offBandSchedule, 2026-10-30 hunt 11). Read once, best-effort and
+  // after mount: a failed, empty or anon answer only leaves the hint out, never paints it.
+  const [bandStarts, setBandStarts] = useState<string[]>([]);
+  useEffect(() => {
+    let alive = true;
+    Promise.resolve(
+      supabase
+        .from("schedule_items")
+        .select("start_time")
+        .eq("tenant_id", tenantId)
+        .eq("event_id", selfEventId)
+        .eq("kind", "stage")
+    )
+      .then(({ data, error }) => {
+        if (!alive || error || !data) return;
+        setBandStarts(
+          (data as { start_time: string | null }[])
+            .map((r) => r.start_time)
+            .filter((t): t is string => !!t)
+        );
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [supabase, tenantId, selfEventId]);
+
   useEffect(() => {
     const ch = privateChannel(
       supabase,
@@ -176,6 +227,10 @@ export function EventRunStatusCard({
     selfRows[selfRows.length - 1] ??
     null;
   const selfIdx = selfRow ? selfRows.indexOf(selfRow) : -1;
+  // Only while the slot is still to play: that is when a band reads its time off this
+  // card. A set on stage or over has no time left to get wrong.
+  const offSchedule =
+    selfRow?.status === "pending" ? offBandSchedule(selfRow.planned_start, bandStarts) : null;
 
   // Project a pending row's start onto the clock given the current drift.
   function projectedStartSec(r: RunSeqLive): number | null {
@@ -360,6 +415,12 @@ export function EventRunStatusCard({
         <div data-cueiq-self={selfRow?.status ?? "unlinked"}>
           <SelfStatus />
         </div>
+        {offSchedule && selfRow && (
+          <p data-cueiq-off-schedule className="text-xs font-medium text-warning-ink">
+            เวลาบนบอร์ดคิว {shortClock(selfRow.planned_start)} ไม่ตรงกับตารางวง{" "}
+            {offSchedule.join(", ")} — ถามสตาฟคุมคิวว่าเวลาไหนถูก
+          </p>
+        )}
       </div>
 
       {/* Overall: what's playing festival-wide right now */}
