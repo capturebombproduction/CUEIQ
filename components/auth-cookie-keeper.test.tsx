@@ -122,15 +122,70 @@ describe("AuthCookieKeeper", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
-  it("one request at a time", async () => {
-    emit("TOKEN_REFRESHED", { expires_at: inAnHour() });
-    emit("TOKEN_REFRESHED", { expires_at: inAnHour() + 1 });
-    emit("SIGNED_IN", { expires_at: inAnHour() + 2 });
+  it("the same token asked twice while its keep is out is one request", async () => {
+    const exp = inAnHour();
+    emit("TOKEN_REFRESHED", { expires_at: exp });
+    emit("SIGNED_IN", { expires_at: exp }); // auth-js's recovery of the same session
+    emit("INITIAL_SESSION", { expires_at: exp });
     expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(pending[0].signal.aborted).toBe(false);
     pending[0].resolve(true);
     await flush();
-    emit("TOKEN_REFRESHED", { expires_at: inAnHour() + 3 });
+    emit("TOKEN_REFRESHED", { expires_at: exp + 3600 });
     expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  // Argon on hunt 11 (2026-10-30): a keep stalled on a venue link used to block every later
+  // one, and its late answer could re-set the token a refresh had already used.
+  it("a refresh while an older token's keep is out drops that keep and sends the new token", async () => {
+    const v1 = inAnHour();
+    emit("TOKEN_REFRESHED", { expires_at: v1 });
+    const first = pending[0].signal;
+    emit("TOKEN_REFRESHED", { expires_at: v1 + 3600 });
+    expect(first.aborted).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    pending[1].resolve(true);
+    await flush();
+    expect(JSON.parse(localStorage.getItem(KEPT_KEY)!).exp).toBe(v1 + 3600);
+  });
+
+  it("a sign-in with a different token than the keep still out replaces it too", () => {
+    const v1 = inAnHour();
+    emit("INITIAL_SESSION", { expires_at: v1 });
+    emit("SIGNED_IN", { expires_at: v1 + 60 });
+    expect(pending[0].signal.aborted).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("a keep that hangs is dropped after 15 s, and the next refresh is sent", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    try {
+      emit("TOKEN_REFRESHED", { expires_at: inAnHour() });
+      const { signal } = pending[0];
+      await vi.advanceTimersByTimeAsync(14_999);
+      expect(signal.aborted).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(signal.aborted).toBe(true);
+      expect(localStorage.getItem(KEPT_KEY)).toBeNull();
+      emit("TOKEN_REFRESHED", { expires_at: inAnHour() + 3600 });
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a keep that answers in time leaves no timer behind to abort it", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    try {
+      emit("TOKEN_REFRESHED", { expires_at: inAnHour() });
+      const { signal } = pending[0];
+      pending[0].resolve(true);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(vi.getTimerCount()).toBe(0);
+      expect(signal.aborted).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("a sign-out drops a keep still out - its answer would put the cleared cookie back", async () => {

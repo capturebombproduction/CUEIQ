@@ -1514,7 +1514,9 @@ export function SongLibrary({
       try {
         ok = await confirmReplaceFile(song, file);
       } finally {
-        if (!ok) endCheck(song.id);
+        // always: on a yes uploadSongAudio sets "up" in this same tick (batched with this), and
+        // a return of its before that must not leave the row on "กำลังตรวจ…" (ตาที่ 3, hunt 11)
+        endCheck(song.id);
       }
       if (!ok) return;
     }

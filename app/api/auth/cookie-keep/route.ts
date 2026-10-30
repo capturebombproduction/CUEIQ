@@ -28,12 +28,64 @@ const SESSION_COOKIE = /^sb-.+-auth-token(?:\.\d+)?$/;
 
 type SetCookie = { name: string; value: string; options: CookieOptions };
 
+/** A token this close to its expiry is about to be refreshed by the page (90 s before). */
+const NEAR_REFRESH_MS = 4 * 60 * 1000;
+
+/** The stored session's expires_at (epoch s), or null when it cannot be read. */
+function expiryOf(raw: string): number | null {
+  try {
+    // @supabase/ssr writes `base64-` + base64url(JSON) by default
+    const text = raw.startsWith("base64-")
+      ? Buffer.from(raw.slice("base64-".length), "base64url").toString("utf8")
+      : raw;
+    const exp = (JSON.parse(text) as { expires_at?: unknown } | null)?.expires_at;
+    return typeof exp === "number" && Number.isFinite(exp) ? exp : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The expiry of every stored session among the request's cookies - a whole cookie, or
+ *  its `.0`, `.1` … chunks joined (the whole one wins, as in the library). */
+function storedExpiries(cookies: { name: string; value: string }[]): (number | null)[] {
+  const whole = new Map<string, string>();
+  const chunks = new Map<string, Map<number, string>>();
+  for (const { name, value } of cookies) {
+    const m = /^(sb-.+-auth-token)(?:\.(\d+))?$/.exec(name);
+    if (!m) continue;
+    if (m[2] === undefined) whole.set(m[1], value);
+    else {
+      const parts = chunks.get(m[1]) ?? new Map<number, string>();
+      parts.set(Number(m[2]), value);
+      chunks.set(m[1], parts);
+    }
+  }
+  const values = [...whole.values()];
+  for (const [base, parts] of chunks) {
+    if (whole.has(base)) continue;
+    let joined = "";
+    for (let i = 0; parts.has(i); i++) joined += parts.get(i);
+    values.push(joined);
+  }
+  return values.map(expiryOf);
+}
+
 function noStore(res: NextResponse): NextResponse {
   res.headers.set("Cache-Control", "no-store");
   return res;
 }
 
 export async function POST(request: NextRequest) {
+  // A token near its refresh is left alone - not echoed, and not even read, because
+  // getUser() would refresh it here while the page refreshes it too (one refresh token,
+  // two users of it). The keeper only sends tokens with 5 min left and drops a keep after
+  // 15 s, so this answers only a request that stalled on the way (Argon on hunt 11).
+  // An unreadable value proves nothing and goes on as before.
+  const now = Date.now();
+  if (storedExpiries(request.cookies.getAll()).some((e) => e != null && e * 1000 - now < NEAR_REFRESH_MS)) {
+    return noStore(NextResponse.json({ kept: false }, { status: 409 }));
+  }
+
   // What the library itself wrote while reading the user (a refresh) - that is the
   // answer then, and nothing is echoed over it.
   const lib = { wrote: null as SetCookie[] | null };

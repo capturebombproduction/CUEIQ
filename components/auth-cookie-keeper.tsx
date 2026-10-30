@@ -23,8 +23,13 @@ import { createClient } from "@/lib/supabase/client";
  *    put the cookie back after the sign-out cleared it.
  * Only a token with FRESH_MS left goes: no refresh - the page's (90 s before expiry) or
  * the route's - can land while the request is out and be overwritten by the older copy.
- * One request at a time. Web only: mounted in app/layout.tsx, which the desktop app
- * never renders (it keeps its session in localStorage, which this cap does not touch).
+ * That holds only for a request that ENDS: one stalled on a venue link could answer
+ * minutes later, after a refresh, and put the used token back over the new one (signed
+ * out at the next refresh), while the new token waited behind it unkept. So every keep is
+ * dropped after KEEP_TIMEOUT_MS, and a keep for a NEWER token drops the one still out
+ * and goes itself; the same token asked twice is still one request (Argon on hunt 11).
+ * Web only: mounted in app/layout.tsx, which the desktop app never renders (it keeps its
+ * session in localStorage, which this cap does not touch).
  */
 
 const KEEP_URL = "/api/auth/cookie-keep";
@@ -32,6 +37,8 @@ const KEEP_URL = "/api/auth/cookie-keep";
 const KEPT_KEY = "cueiq:auth-cookie-kept";
 const KEEP_AGAIN_MS = 12 * 60 * 60 * 1000;
 const FRESH_MS = 5 * 60 * 1000;
+/** The route's whole job is sub-second; far inside FRESH_MS, so a keep never outlives it. */
+const KEEP_TIMEOUT_MS = 15 * 1000;
 
 interface Kept {
   exp: number;
@@ -58,12 +65,16 @@ function writeKept(exp: number): void {
 export function AuthCookieKeeper() {
   useEffect(() => {
     const supabase = createClient();
-    let inFlight: AbortController | null = null;
+    /** The keep still out, and the token (its expiry) it carries. */
+    let inFlight: { ctl: AbortController; exp: number } | null = null;
 
     const keep = (exp: number) => {
-      if (inFlight) return;
+      if (inFlight?.exp === exp) return; // this token is already on its way
+      inFlight?.ctl.abort(); // an older token's keep: its late answer must not land
       const ctl = new AbortController();
-      inFlight = ctl;
+      const mine = { ctl, exp };
+      inFlight = mine;
+      const timer = setTimeout(() => ctl.abort(), KEEP_TIMEOUT_MS);
       fetch(KEEP_URL, {
         method: "POST",
         credentials: "same-origin",
@@ -74,10 +85,11 @@ export function AuthCookieKeeper() {
           if (res.ok) writeKept(exp);
         })
         .catch(() => {
-          /* offline, aborted: the cookie stays as the page wrote it */
+          /* offline, aborted, timed out: the cookie stays as the page wrote it */
         })
         .finally(() => {
-          if (inFlight === ctl) inFlight = null;
+          clearTimeout(timer);
+          if (inFlight === mine) inFlight = null;
         });
     };
 
@@ -86,7 +98,7 @@ export function AuthCookieKeeper() {
 
     const { data } = supabase.auth.onAuthStateChange((event, session) => {
       if (event === "SIGNED_OUT") {
-        inFlight?.abort();
+        inFlight?.ctl.abort();
         inFlight = null;
         return;
       }
@@ -104,7 +116,7 @@ export function AuthCookieKeeper() {
     });
     return () => {
       data.subscription.unsubscribe();
-      inFlight?.abort();
+      inFlight?.ctl.abort();
       inFlight = null;
     };
   }, []);

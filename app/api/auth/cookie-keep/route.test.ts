@@ -20,6 +20,7 @@ const h = vi.hoisted(() => ({
   libraryWrites: null as SetCookie[] | null,
   /** the cookies the route handed the library */
   seen: [] as { name: string; value: string }[],
+  getUserCalls: 0,
 }));
 
 vi.mock("@supabase/ssr", async (importOriginal) => {
@@ -38,6 +39,7 @@ vi.mock("@supabase/ssr", async (importOriginal) => {
     ) => ({
       auth: {
         getUser: async () => {
+          h.getUserCalls += 1;
           h.seen = opts.cookies.getAll();
           if (h.libraryWrites) opts.cookies.setAll(h.libraryWrites);
           return { data: { user: h.user }, error: h.user ? null : { message: "no session" } };
@@ -71,7 +73,15 @@ beforeEach(() => {
   h.user = null;
   h.libraryWrites = null;
   h.seen = [];
+  h.getUserCalls = 0;
 });
+
+/** A stored session cookie value as @supabase/ssr writes it, expiring `inSec` from now. */
+const sessionCookie = (inSec: number) =>
+  "base64-" +
+  Buffer.from(
+    JSON.stringify({ access_token: "t", refresh_token: "r", expires_at: Math.floor(Date.now() / 1000) + inSec })
+  ).toString("base64url");
 
 describe("POST /api/auth/cookie-keep", () => {
   it("a signed-in request with a valid token gets every session cookie chunk back in Set-Cookie, unchanged, 400 days, readable by the page", async () => {
@@ -156,5 +166,45 @@ describe("POST /api/auth/cookie-keep", () => {
     h.user = { id: "u1" };
     await POST(keepRequest(SIGNED_IN_COOKIES));
     expect(h.seen.map((c) => c.name)).toContain("sb-x-auth-token.0");
+  });
+});
+
+// Argon on hunt 11 (2026-10-30): a keep that stalled on the way could reach the route after
+// the page had refreshed - echoing it put a used refresh token back, and reading it made
+// getUser() refresh here too, with the same refresh token as the page.
+describe("POST /api/auth/cookie-keep - a token near its refresh", () => {
+  it("is neither echoed nor read: 409, nothing written, getUser never called", async () => {
+    h.user = { id: "u1" };
+    const res = await POST(keepRequest(`sb-x-auth-token=${sessionCookie(3 * 60)}`));
+    expect(res.status).toBe(409);
+    expect(res.headers.get("set-cookie")).toBeNull();
+    expect(res.headers.get("cache-control")).toBe("no-store");
+    expect(h.getUserCalls).toBe(0);
+  });
+
+  it("an already expired token likewise", async () => {
+    h.user = { id: "u1" };
+    const res = await POST(keepRequest(`sb-x-auth-token=${sessionCookie(-60)}`));
+    expect(res.status).toBe(409);
+    expect(res.headers.get("set-cookie")).toBeNull();
+  });
+
+  it("read from the joined chunks when the session is split", async () => {
+    h.user = { id: "u1" };
+    const v = sessionCookie(60);
+    const res = await POST(
+      keepRequest(`sb-x-auth-token.0=${v.slice(0, 20)}; sb-x-auth-token.1=${v.slice(20)}`)
+    );
+    expect(res.status).toBe(409);
+    expect(res.headers.get("set-cookie")).toBeNull();
+  });
+
+  it("a token with time to spare is echoed as before", async () => {
+    h.user = { id: "u1" };
+    const v = sessionCookie(50 * 60);
+    const res = await POST(keepRequest(`sb-x-auth-token=${v}`));
+    expect(res.status).toBe(200);
+    expect(res.cookies.getAll().map((c) => [c.name, c.value])).toEqual([["sb-x-auth-token", v]]);
+    expect(h.getUserCalls).toBe(1);
   });
 });

@@ -146,3 +146,92 @@ describe("show-run queue · a replay never lands over a newer direct write", () 
     expect(a.flushed).toBe(1);
   });
 });
+
+// ตาที่ 3 on hunt 11: two DIRECT writes of the same show raced too (จบโชว์ on slow wifi, then
+// ล้าง: the clear could land first, the run time after it), and a value queued behind a running
+// pass while a direct write of that show was on the wire waited for the next flush tick - every
+// pass skipped the show, and nothing started one when the direct write ended.
+describe("show-run queue · a write never lands over a newer one of the same show", () => {
+  type Hold = { sent: Promise<void>; release: () => void; mark: () => void; held: Promise<void> };
+  /** an update writing a held value is SENT (mark) and then hangs until released */
+  let holds: Map<number | null, Hold>;
+  /** the value whose update fails on the wire (none when undefined) */
+  let failing: number | undefined;
+  function hold(v: number | null): Hold {
+    let release!: () => void;
+    let mark!: () => void;
+    const held = new Promise<void>((r) => (release = r));
+    const sent = new Promise<void>((r) => (mark = r));
+    const h: Hold = { sent, release, mark, held };
+    holds.set(v, h);
+    return h;
+  }
+  beforeEach(() => {
+    holds = new Map();
+    failing = undefined;
+    supa.setTable("events", async (call: RecordedCall) => {
+      if (call.verb === "update") {
+        const v = (call.values as { last_run_seconds: number | null }).last_run_seconds;
+        const h = holds.get(v);
+        if (h) {
+          h.mark();
+          await h.held;
+        }
+        if (failing !== undefined && v === failing) throw new Error("Failed to fetch"); // the venue link drops
+        server.last_run_seconds = v;
+        writes.push(v);
+        return ok([{ id: "ev1" }]);
+      }
+      return ok({ id: "ev1" });
+    });
+  });
+
+  it("จบโชว์ then ล้าง while the run time is still on the wire: the server ends cleared", async () => {
+    const first = hold(1800);
+    const endShow = persistLastRun("ev1", 1800, 1_754_100_000_000);
+    await first.sent; // on slow venue wifi
+    const clear = persistLastRun("ev1", null, null); // ล้าง
+    expect(await clear).toBe("queued"); // behind the write on the wire, not beside it
+    first.release();
+    expect(await endShow).toBe("saved");
+    await drain(); // no flush tick, no 'online': the end of the first write sends it
+    expect(server.last_run_seconds).toBeNull();
+    expect(writes).toEqual([1800, null]);
+    expect(await pendingCount()).toBe(0);
+  });
+
+  it("…and if that first write fails, its older value never replaces the queued clear", async () => {
+    failing = 1800;
+    const first = hold(1800);
+    const endShow = persistLastRun("ev1", 1800, 1_754_100_000_000);
+    await first.sent;
+    expect(await persistLastRun("ev1", null, null)).toBe("queued");
+    first.release();
+    expect(await endShow).toBe("queued");
+    failing = undefined;
+    await drain();
+    await flushOutbox();
+    expect(server.last_run_seconds).toBeNull();
+    expect(writes).not.toContain(1800);
+  });
+
+  it("a value queued behind a running pass AND a direct write of its show goes out when that write lands", async () => {
+    await enqueue({ kind: "event_last_run", eventId: "ev0", seconds: 100, at: 1 }); // another show
+    const direct = hold(1800);
+    const other = hold(100);
+    const endShow = persistLastRun("ev1", 1800, 1_754_100_000_000);
+    await direct.sent;
+    const flushing = flushOutbox(); // reconnect: a pass starts, busy with the other show
+    await other.sent;
+    expect(await persistLastRun("ev1", null, null)).toBe("queued");
+    other.release();
+    await flushing;
+    await drain(); // the pass after it skipped ev1 too: its direct write is still out
+    expect(writes).toEqual([100]);
+    direct.release();
+    expect(await endShow).toBe("saved");
+    await drain(); // sent now - not at the next flush tick
+    expect(writes).toEqual([100, 1800, null]);
+    expect(server.last_run_seconds).toBeNull();
+  });
+});

@@ -237,15 +237,25 @@ function openDB(): Promise<IDBDatabase> {
   });
 }
 
-/** Queue an op (replacing any pending op for the same datum). Best-effort. */
-export async function enqueue(op: ShowRunOp): Promise<void> {
+/** Queue an op (replacing any pending op for the same datum). Best-effort.
+ *  `keepQueuedSince`: leave a value queued at or after that moment in place instead - it is
+ *  newer than this one (persistLastRun's failed direct write, 2026-10-30, hunt 11). */
+export async function enqueue(op: ShowRunOp, keepQueuedSince?: number): Promise<void> {
   // a synchronous storage read - never a network wait on the จบโชว์ path
   const owner = storedSessionUserId();
   const db = await openDB();
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE, "readwrite");
     const rec: QueuedOp = { op, queuedAt: Date.now(), ...(owner ? { owner } : {}) };
-    tx.objectStore(STORE).put(rec, opKey(op));
+    const store = tx.objectStore(STORE);
+    if (keepQueuedSince === undefined) store.put(rec, opKey(op));
+    else {
+      const cur = store.get(opKey(op));
+      cur.onsuccess = () => {
+        const held = cur.result as QueuedOp | undefined;
+        if (!held || held.queuedAt < keepQueuedSince) store.put(rec, opKey(op));
+      };
+    }
     tx.oncomplete = () => {
       db.close();
       resolve();
@@ -619,14 +629,16 @@ export async function persistLastRun(
   // (removeOpIf: a newer value), and the pass started after that one sends it - so it lands
   // AFTER whatever the running replay writes. No waiting: both callers are fire-and-forget,
   // and a pass on a dead venue link can hang for minutes; the queue is on disk at once.
-  const running = flushInFlight;
-  if (running) {
+  // The same for a DIRECT write of this show still on the wire (ตาที่ 3 on hunt 11): จบโชว์ on
+  // slow venue wifi, then ล้าง - two direct writes, and the clear could land first and the run
+  // time after it. Queued, it goes out once that write is over (queuedBehindDirect).
+  if (flushInFlight || directWrites.has(eventId)) {
     try {
       await enqueue({ kind: "event_last_run", eventId, seconds, at });
-      const again = () => {
-        flushOutbox().catch(() => {});
-      };
-      running.then(again, again);
+      // a pass skips this show while its direct write is on the wire, so the end of that
+      // write sends it; one that ended while this was being queued has already looked
+      if (directWrites.has(eventId)) queuedBehindDirect.add(eventId);
+      else passAfterTheRunningOne();
       return announceSave("queued");
     } catch {
       /* the queue will not take it: the direct write below is all that is left */
@@ -638,8 +650,24 @@ export async function persistLastRun(
   } finally {
     const n = (directWrites.get(eventId) ?? 1) - 1;
     if (n > 0) directWrites.set(eventId, n);
-    else directWrites.delete(eventId);
+    else {
+      directWrites.delete(eventId);
+      // A newer value waited behind this write: send it now, not at the next flush tick. AFTER
+      // any pass in flight - that one skipped this show, so joining it would send nothing.
+      if (queuedBehindDirect.delete(eventId)) passAfterTheRunningOne();
+    }
   }
+}
+
+/** Shows with a value queued behind their direct write (persistLastRun). */
+const queuedBehindDirect = new Set<string>();
+
+/** Start a pass once the one in flight (if any) has settled - never just join it. */
+function passAfterTheRunningOne(): void {
+  const kick = () => {
+    flushOutbox().catch(() => {});
+  };
+  (flushInFlight ?? Promise.resolve()).then(kick, kick);
 }
 
 /** persistLastRun's direct write, queued for later if it does not land. */
@@ -677,7 +705,9 @@ async function writeLastRunNow(
     /* network failure → fall through to queue */
   }
   try {
-    await enqueue({ kind: "event_last_run", eventId, seconds, at });
+    // ...but never over a value queued since this write began: that one is newer (a ล้าง
+    // pressed while this จบโชว์ was on the wire, queued behind it - persistLastRun)
+    await enqueue({ kind: "event_last_run", eventId, seconds, at }, startedAt);
     return announceSave("queued");
   } catch (err) {
     // The one case with nowhere left to put the number. Say it three ways,

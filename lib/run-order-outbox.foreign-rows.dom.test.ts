@@ -7,7 +7,7 @@
 // whoever is signed in - so it stays on the board.
 import "fake-indexeddb/auto";
 import { beforeEach, describe, expect, it } from "vitest";
-import { foreignRunSeqRows, type RunSeqOp } from "@/lib/run-order-outbox";
+import { foreignRunSeqRows, groupRunSeqPresses, mergeOp, type RunSeqOp } from "@/lib/run-order-outbox";
 
 const A = "aaaaaaaa-0000-4000-8000-00000000000a";
 const B = "bbbbbbbb-0000-4000-8000-00000000000b";
@@ -51,5 +51,24 @@ describe("foreignRunSeqRows", () => {
     expect(foreignRunSeqRows([op("r1", ["pA"], A)]).size).toBe(0);
     signIn(B);
     expect(foreignRunSeqRows([op("r1", [])]).size).toBe(0);
+  });
+
+  // ตาที่ 3 on hunt 11 asked: can THIS account's press end up in a unit with another account's
+  // PARKED op (the helper groups the whole queue, parked included - as doFlush does), and be
+  // hidden from the board as "บัญชีอื่น"? No: a press on a parked row replaces that record
+  // (mergeOp takes the new press, its owner and its press ids only), and a unit with any op of
+  // this account's - or with no owner - is never foreign.
+  it("this account's press on a row another account's press PARKED on is this account's, on the board", () => {
+    signIn(B);
+    const parkedA = op("r2", ["pA"], A, true);
+    const pressB = op("r2", ["pB"], B);
+    const record = mergeOp(parkedA, pressB);
+    expect(record.owner).toBe(B);
+    expect(record.conflict).toBeFalsy();
+    expect(record.presses).toEqual(["pB"]);
+    // beside the rest of A's parked press on another row: still two units, and only A's is foreign
+    const queue = [op("r1", ["pA"], A, true), record];
+    expect(groupRunSeqPresses(queue)).toHaveLength(2);
+    expect([...foreignRunSeqRows(queue)]).toEqual(["r1"]);
   });
 });
