@@ -28,6 +28,19 @@ const darkVariants = (files: string[]) =>
       .map((line) => `${f}: ${line.trim()}`)
   );
 
+// lib/export-image.ts puts .export-light on the node and takes the picture about 80 ms
+// later. A row's 150 ms `transition-colors` (components/ui/table.tsx) was still easing its
+// colour from the dark theme's near-white while the picture was cloned, so every cell that
+// inherits it (song titles, durations) came out nearly white on the white paper: on a real
+// Chromium capture a title's darkest pixel measured 248 of 255 with the transition, 0 without.
+// jsdom runs no transitions, so this test holds the rule, not the pixels.
+describe("a capture never catches a colour half way", () => {
+  it("switches transitions off on the captured node and everything inside it", () => {
+    const css = fs.readFileSync(path.join(repoRoot, "app/stage.css"), "utf8");
+    expect(css).toMatch(/\.export-light,\s*\.export-light \*\s*\{\s*transition:\s*none\s*!important;\s*\}/);
+  });
+});
+
 describe("exported / printed surfaces use tokens, not dark: variants", () => {
   it("the run sheet (event-summary.tsx) has none", () => {
     expect(darkVariants(["components/event/event-summary.tsx"])).toEqual([]);

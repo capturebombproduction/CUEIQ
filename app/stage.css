@@ -505,6 +505,10 @@ input[type=range]:focus-visible { outline: 2px solid hsl(var(--ring)); outline-o
    into it. Titles in a capture use .poster, numerals .num. */
 .export-light :is(.h1, .h2, .title-slab, .hero-num, .ztag, .nlabel) { font-style: normal; }
 .export-light .title-slab { background: none; color: inherit; padding: 0; }
+/* The picture is taken about 80 ms after the class lands, so a 150 ms `transition-colors`
+   row was still easing from the dark theme's near-white: cells inheriting its colour (song
+   titles, durations) came out pale on the white paper. */
+.export-light, .export-light * { transition: none !important; }
 
 /* ---------------- a row that scrolls sideways without drawing its scrollbar ---------------- */
 /* Here, not in globals.css: desktop/src/index.css loads theme.css + stage.css only, and the
