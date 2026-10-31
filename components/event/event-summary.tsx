@@ -32,6 +32,7 @@ import {
 } from "@/components/ui/table";
 import {
   computeSetlistTimes,
+  durationWithUnit,
   formatDuration,
   formatClockOfDay,
   parseClockToSeconds,
@@ -386,11 +387,18 @@ export function EventSummary({
   const callShort = shortClock(callTimeOf(schedule, event.show_start_time));
   const callShortOrDash =
     callShort && callShort !== shortClock(event.show_start_time) ? callShort : "—";
-  const sheetTiles: [string, string][] = [
+  const runTime = durationWithUnit(timing.totalSeconds);
+  const sheetTiles: [string, React.ReactNode][] = [
     ["นัด", callShortOrDash],
     ["ขึ้นเวที", shortClock(event.show_start_time) || "—"],
     ["Hard Out", shortClock(event.hard_out_time) || "—"],
-    ["Run time", formatDuration(timing.totalSeconds)],
+    [
+      "Run time",
+      <>
+        {runTime.value}{" "}
+        <span className="font-sans text-[12px] font-normal text-muted-foreground">{runTime.unit}</span>
+      </>,
+    ],
   ];
 
   const overBadge =

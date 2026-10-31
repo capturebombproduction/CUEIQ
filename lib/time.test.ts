@@ -5,6 +5,7 @@ import {
   foldWaitsIntoNext,
   timingMeaning,
   deadlineInfo,
+  durationWithUnit,
   formatClockOfDay,
   formatCountdown,
   formatDuration,
@@ -37,6 +38,31 @@ describe("formatDuration", () => {
   it("clamps negatives to zero and rounds", () => {
     expect(formatDuration(-10)).toBe("0:00");
     expect(formatDuration(59.6)).toBe("1:00");
+  });
+});
+
+describe("durationWithUnit", () => {
+  const said = (sec: number) => {
+    const { value, unit } = durationWithUnit(sec);
+    return `${value} ${unit}`;
+  };
+  it("says whole minutes and whole hours without a clock shape", () => {
+    expect(said(1200)).toBe("20 นาที");
+    expect(said(60)).toBe("1 นาที");
+    expect(said(3600)).toBe("1 ชม.");
+    expect(said(7200)).toBe("2 ชม.");
+  });
+  it("keeps the seconds that a whole number would lose", () => {
+    expect(said(1187)).toBe("19:47 นาที");
+    expect(said(61)).toBe("1:01 นาที");
+    expect(said(3599)).toBe("59:59 นาที");
+    expect(said(3660)).toBe("1:01:00 ชม.");
+    expect(said(3930)).toBe("1:05:30 ชม.");
+  });
+  it("rounds and clamps as formatDuration does", () => {
+    expect(said(59.6)).toBe("1 นาที");
+    expect(said(0)).toBe("0 นาที");
+    expect(said(-10)).toBe("0 นาที");
   });
 });
 

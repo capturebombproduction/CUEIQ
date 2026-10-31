@@ -18,6 +18,22 @@ export function formatDuration(totalSeconds: number): string {
 }
 
 /**
+ * A length with its unit, for where it stands beside clock times: a bare "20:00" next
+ * to "14:00" reads as eight in the evening (Seishin's Ar, feedback 2026-10-31). The two
+ * parts are apart so the unit can be set smaller than the number.
+ * e.g. 1200 -> 20 นาที, 1187 -> 19:47 นาที, 3930 -> 1:05:30 ชม.
+ */
+export function durationWithUnit(totalSeconds: number): { value: string; unit: string } {
+  const s = Math.max(0, Math.round(totalSeconds));
+  const inHours = s >= 3600;
+  const whole = inHours ? 3600 : 60;
+  return {
+    value: s % whole === 0 ? String(s / whole) : formatDuration(s),
+    unit: inHours ? "ชม." : "นาที",
+  };
+}
+
+/**
  * Parse a duration string into seconds.
  * Accepts "ss", "m:ss", or "h:mm:ss" - and "m.ss" / "h.mm.ss", the way a length is
  * commonly written in Thai ("3.30" = three and a half minutes). Number("3.30") is
