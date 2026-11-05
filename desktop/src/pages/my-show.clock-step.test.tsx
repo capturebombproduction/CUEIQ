@@ -145,4 +145,27 @@ describe("Quick Show · the wall clock set BACK under a running show (a time syn
     expect(store.lastRuns).toHaveLength(1);
     expect((store.lastRuns[0] as { seconds: number }).seconds).toBeGreaterThanOrEqual(90); // used to: 86
   }, 30_000);
+
+  // Argon on hunt 13: START pressed between the step and the next tick is already on the new
+  // clock - it was pushed forward by the whole step and AUTO cut Song 1 30 s early.
+  it("START pressed just after the step, before the next tick: Song 1 plays to its end", async () => {
+    render(
+      <MemoryRouter>
+        <MyShow />
+      </MemoryRouter>
+    );
+    await settle();
+    await settle();
+    await act(async () => void fireEvent.click(screen.getByRole("button", { name: /^Auto$/i })));
+    await act(async () => void vi.advanceTimersByTime(500)); // a tick: nothing begun yet
+    vi.setSystemTime(Date.now() - 30_000); // the time sync, 100 ms before START
+    await act(async () => void vi.advanceTimersByTime(100));
+    await act(async () => void fireEvent.click(screen.getByTestId("start-show")));
+    const play = player(media.first()!, 240);
+    await play(230_000);
+    expect(onNow()).toBe("Song 1"); // used to: Song 2 with 30 s of Song 1 left
+    await play(11_000);
+    expect(onNow()).toBe("Song 2");
+    expect(toast.warning).not.toHaveBeenCalled();
+  }, 60_000);
 });

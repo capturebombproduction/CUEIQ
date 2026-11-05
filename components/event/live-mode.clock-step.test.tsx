@@ -243,4 +243,42 @@ describe("LiveMode · the wall clock set BACK under a running show (a time sync)
     const realElapsed = Date.now() + 5_000 - realStart;
     expect(Math.abs(Date.now() - lastState().startedAt - realElapsed)).toBeLessThan(1_000);
   }, 30_000);
+
+  // Argon on hunt 13: a stamp made AFTER the step is already on the new clock. START pressed
+  // between the step and the next tick was taken as begun before it - the row was pushed forward
+  // by the whole step, and AUTO cut the first song 30 s early.
+  it("START pressed just after the step, before the next tick: nothing moves, the song plays to its end", async () => {
+    const set = [makeItem(1), makeItem(2)];
+    const media = instrumentMediaElements();
+    h.saved = set.map((it) => ({ itemId: it.id, blob: new Blob([it.id]), name: `${it.id}.wav`, path: null }));
+    supa.setScript({ setlist_items: ok(set), songs: ok([]), show_authority: ok([]) });
+    render(
+      <LiveMode
+        eventId={EVENT_ID}
+        groupId={GROUP_ID}
+        eventName="Clock"
+        items={set}
+        songAudio={{}}
+        canEdit={true}
+        lastRunSeconds={null}
+        lastRunAt={null}
+      />
+    );
+    await act(async () => {});
+    await act(async () => live().setStatus("SUBSCRIBED"));
+    await act(async () => void vi.advanceTimersByTime(2_000));
+    await act(async () => void fireEvent.click(screen.getByRole("button", { name: /^Auto$/ })));
+    await act(async () => void vi.advanceTimersByTime(500)); // a tick: nothing begun yet
+    vi.setSystemTime(Date.now() - 30_000); // the time sync, 100 ms before START
+    await act(async () => void vi.advanceTimersByTime(100));
+    await act(async () => void fireEvent.click(screen.getByTestId("start-show")));
+    const begun = lastState().itemStartedAt;
+    const play = player(media, media.first()!, 240);
+    await play(230_000); // the first tick after START reads the whole step as a negative gap
+    expect(lastState().itemStartedAt).toBe(begun);
+    expect(lastState().currentIndex).toBe(0); // used to: AUTO on row 2 with 30 s of song 1 left
+    await play(11_000);
+    expect(lastState().currentIndex).toBe(1);
+    expect(h.toast.warning).not.toHaveBeenCalled();
+  }, 60_000);
 });

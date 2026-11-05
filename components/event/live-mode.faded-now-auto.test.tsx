@@ -278,4 +278,25 @@ describe("LiveMode · Manual → AUTO when NOW's sound is over (hunt 6)", () => 
     expect(playing(media, "item-3")).toHaveLength(1);
     expect(playing(media, "item-4")).toHaveLength(0);
   });
+
+  // 2026-11-05 (Argon on hunt 13): the wall clock set back (a time sync) while a row is cued and
+  // the last song still sounds. The sounding song's anchor stayed on the old clock: the phones were
+  // told it was 5 s short of where it really was (and a controller holding no file - which takes
+  // AUTO's row clock from that anchor, not from a file - ran that row 5 s long). The PA itself
+  // resumes from its file's own position either way.
+  it("a step back during the cue wait: the sounding song's anchor moves with it", async () => {
+    await startPads();
+    await tick(2_000);
+    await press(3);
+    const pressedAt = Date.now();
+    await tick(1_000);
+    await cueNext(); // row 4 cued, row 3 sounds on
+    await tick(1_000);
+    vi.setSystemTime(Date.now() - 5_000);
+    await tick(1_000);
+    const realSounded = Date.now() + 5_000 - pressedAt;
+    const p = last() as { running: boolean; audioItemId: string; audioAnchor: number };
+    expect(p).toMatchObject({ running: false, audioItemId: "item-3" });
+    expect(Math.abs(Date.now() - p.audioAnchor - realSounded)).toBeLessThan(1_000); // used to: 5 s short
+  });
 });

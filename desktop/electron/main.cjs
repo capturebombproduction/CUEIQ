@@ -2520,8 +2520,13 @@ async function createWindow() {
       if (updateBusyReason() === "show") holdInstallForShowQuit();
       event.preventDefault();
     }
-    // stayed: the quit is off, so a staged Mac update must not reopen on some later quit
-    else macReopen = false;
+    // stayed: the quit is off, so a staged Mac update must not reopen on some later quit - and a
+    // renderer killed from outside later on is a crash again, to reload (Argon on hunt 13: a quit
+    // the operator turned down left appQuitting set, and that kill left a black window)
+    else {
+      macReopen = false;
+      appQuitting = false;
+    }
   });
 
   const load = () =>

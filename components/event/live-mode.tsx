@@ -121,6 +121,8 @@ const LIST_REREAD_MS = 60_000;
 const CLOCK_GAP_MS = 3000;
 /** A row's clock this close to its file is left alone: a normal stretch of playback, nothing to say. */
 const CLOCK_DRIFT_MS = 1000;
+/** The wall-clock stamps a tick saw: the ones a wall clock set back may have to move. */
+type ClockStamps = { startedAt: number | null; itemStartedAt: number | null; anchor: number | null };
 
 type ShowMode = "manual" | "auto";
 
@@ -623,6 +625,7 @@ export function LiveMode({
   // real time never runs backwards, so any such gap is that (2026-11-05, hunt 13).
   const lastTickRef = useRef(Date.now());
   const onClockGapRef = useRef<(gapMs: number) => void>(() => {});
+  const onClockStepBackRef = useRef<(gapMs: number, seen: ClockStamps) => void>(() => {});
   // Where the sounding file stood at the last tick: how far it moved across a gap (onClockGapRef).
   // `el` and `sounding`: a file that ended inside the gap is known by them (hunt 13).
   const lastFileRef = useRef<{ id: string | null; at: number; el: HTMLMediaElement | null; sounding: boolean }>({
@@ -631,11 +634,18 @@ export function LiveMode({
     el: null,
     sounding: false,
   });
+  // What the last tick saw of the stamps a wall clock set back has to move (onClockStepBackRef):
+  // one that changed since was made after that tick - maybe after the step, on the new clock.
+  const lastStampsRef = useRef<ClockStamps>({ startedAt: null, itemStartedAt: null, anchor: null });
   function tickClock() {
     const t = Date.now();
     const gap = t - lastTickRef.current;
     lastTickRef.current = t;
-    if (gap > CLOCK_GAP_MS || gap < -CLOCK_DRIFT_MS) onClockGapRef.current(gap);
+    const seen = lastStampsRef.current;
+    const st = stateRef.current;
+    lastStampsRef.current = { startedAt: st.startedAt, itemStartedAt: st.itemStartedAt, anchor: committedRef.current.anchor };
+    if (gap > CLOCK_GAP_MS) onClockGapRef.current(gap);
+    else if (gap < -CLOCK_DRIFT_MS) onClockStepBackRef.current(gap, seen);
     const a = audioRef.current;
     lastFileRef.current = {
       id: playingIdRef.current,
@@ -4985,65 +4995,85 @@ export function LiveMode({
   //   can land before the window says it is visible.
   // Only the device running the show moves it; viewers follow the state it sends. The show's
   // total and Hard Out stay on real time (startedAt, `now`).
-  // Two more (2026-11-05, hunt 13):
-  // · A file that sounded at the last tick and has ENDED by this one played out inside the gap:
-  //   the audio thread runs on through a JS freeze (a window.confirm read and answered, any stall).
-  //   It counts as played, to its end. Taken for a silent row, its clock was pushed back by the
-  //   whole freeze, AUTO sat silent for as long again as the song had had left, and the toast
-  //   said the machine had stopped. A hidden web tab stays on its wall clock, as above.
-  // · The wall clock set BACK (a negative gap): what reads it stays continuous - the row by the
-  //   same rules (a file sounding: by what it played; none: by the step, hidden or not, since a
-  //   step is no throttled tick) and the show's total, which lost the step. Nothing happened
-  //   that the operator has to hear about: no toast. Hard Out reads the wall, which is right.
+  // One more (2026-11-05, hunt 13): a file that sounded at the last tick and has ENDED by this one
+  // played out inside the gap - the audio thread runs on through a JS freeze (a window.confirm
+  // read and answered, any stall). Nothing was lost: it ran to its end, and the time since is the
+  // row's own (Manual counts it as over); AUTO moves on at once. Taken for a silent row, its clock
+  // was pushed back by the whole freeze, AUTO sat silent for as long again as the song had had
+  // left, and the toast said the machine had stopped. (A wall clock set BACK is not a gap at all:
+  // onClockStepBackRef below.)
   onClockGapRef.current = (gapMs) => {
     if (!isControllerRef.current || restoreHeldRef.current || showEndedRef.current) return;
     const s = stateRef.current;
-    const back = gapMs < 0;
-    if (!s.begun) return;
-    if (!s.running || s.itemStartedAt == null) {
-      // a paused row's clock does not read the wall; the show's total does
-      if (back && s.startedAt != null) apply({ ...s, startedAt: s.startedAt + gapMs });
-      return;
-    }
+    if (!s.begun || !s.running || s.itemStartedAt == null) return;
     const cur = itemsRef.current[s.currentIndex];
     if (!cur) return;
     const a = audioRef.current;
     const visible = document.visibilityState === "visible";
-    const native = !!(window as { cueiqNative?: unknown }).cueiqNative;
     const last = lastFileRef.current;
     const fileSounds =
       !cur.loop_audio && !!a && playingIdRef.current === cur.id && !a.paused && !a.ended && !a.error;
     const playedOut =
       !fileSounds && !cur.loop_audio && !!a && a === last.el && last.id === cur.id && last.sounding && a.ended && !a.error;
-    let shift: number;
-    if ((fileSounds || playedOut) && a) {
-      // Played out inside a freeze: nothing was lost - the file ran to its end, and the time since
-      // is the row's own (Manual counts it as over). AUTO moves on at once by its ended path.
-      if (playedOut && !back) return;
-      const pos = playedOut && Number.isFinite(a.duration) && a.duration > 0 ? a.duration : a.currentTime;
+    if (playedOut) return;
+    let itemStartedAt: number;
+    if (fileSounds) {
       const lostMs =
         last.id === cur.id
-          ? gapMs - (pos - last.at) * 1000
-          : back
-            ? gapMs // a row begun just before the step has no position of its own to go by
-            : Date.now() - pos * 1000 - s.itemStartedAt; // a row begun just before the gap
-      if (back ? lostMs > -CLOCK_DRIFT_MS : lostMs < CLOCK_DRIFT_MS) return;
-      shift = lostMs;
+          ? gapMs - (a.currentTime - last.at) * 1000
+          : Date.now() - a.currentTime * 1000 - s.itemStartedAt; // a row begun just before the gap
+      if (lostMs < CLOCK_DRIFT_MS) return;
+      itemStartedAt = s.itemStartedAt + lostMs;
     } else {
-      if (!back && !visible && !native) return;
-      shift = gapMs;
+      if (!visible && !(window as { cueiqNative?: unknown }).cueiqNative) return;
+      itemStartedAt = s.itemStartedAt + gapMs;
     }
-    const lost = Math.round(Math.abs(shift) / 1000);
-    apply({
-      ...s,
-      itemStartedAt: s.itemStartedAt + shift,
-      startedAt: back && s.startedAt != null ? s.startedAt + shift : s.startedAt,
-    });
-    if (visible && !back) {
+    const lost = Math.round(Math.abs(itemStartedAt - s.itemStartedAt) / 1000);
+    apply({ ...s, itemStartedAt });
+    if (visible) {
       toast.warning(`เครื่องหยุดไป ${lost} วินาที`, {
         description: fileSounds ? "เวลารายการเดินตามเพลงต่อ" : "เวลารายการนี้ไม่นับช่วงที่เครื่องหยุด",
       });
     }
+  };
+
+  // The wall clock set BACK under a begun show - a negative tick gap: Windows' time sync stepped it
+  // (2026-11-05, hunt 13). Every row then ran long by the step (dead air before AUTO's next song)
+  // and the show's total lost it. Real time never runs backwards: nothing stopped, nothing is said.
+  // Every clock that reads the wall - the row's, the show's total, a Manual cue-wait's sounding
+  // track - moves by the step, so it reads on as if the wall had never moved. Hard Out reads the
+  // wall itself, which is right after a correction.
+  // Only stamps made BEFORE the step move (Argon on hunt 13: a row begun just after the step was
+  // pushed forward by it, and AUTO cut its song by the step). One made since the last tick - it
+  // differs from what that tick saw - that reads no later than that tick was made after the step,
+  // on the new clock: one made before the step, since that tick, reads later than it.
+  // The step is measured on the file that sounded across it, when one did (its clock never moved);
+  // otherwise it is the gap, up to one tick short.
+  onClockStepBackRef.current = (gapMs, seen) => {
+    if (!isControllerRef.current || restoreHeldRef.current || showEndedRef.current) return;
+    const s = stateRef.current;
+    if (!s.begun) return;
+    const lastTick = Date.now() - gapMs;
+    const beforeStep = (x: number | null, was: number | null): x is number =>
+      x != null && (x === was || x > lastTick);
+    const a = audioRef.current;
+    const last = lastFileRef.current;
+    const fileRan = !!a && a === last.el && last.sounding && last.id != null && playingIdRef.current === last.id && !a.error;
+    const pos = fileRan && a.ended && Number.isFinite(a.duration) && a.duration > 0 ? a.duration : (a?.currentTime ?? 0);
+    const step = fileRan ? gapMs - (pos - last.at) * 1000 : gapMs;
+    if (step > -CLOCK_DRIFT_MS) return;
+    const c = committedRef.current;
+    // a running row's anchor is its own start (apply below sets it); a PAUSED show's anchor and
+    // pausedAt are both on the old clock, and how far in it stands is their difference: left alone
+    if (!s.running && c.pausedAt == null && beforeStep(c.anchor, seen.anchor)) {
+      committedRef.current = { ...c, anchor: c.anchor + step };
+    }
+    const startedAt = beforeStep(s.startedAt, seen.startedAt) ? s.startedAt + step : s.startedAt;
+    const itemStartedAt =
+      s.running && beforeStep(s.itemStartedAt, seen.itemStartedAt) ? s.itemStartedAt + step : s.itemStartedAt;
+    lastStampsRef.current = { startedAt, itemStartedAt, anchor: committedRef.current.anchor };
+    if (startedAt === s.startedAt && itemStartedAt === s.itemStartedAt) return;
+    apply({ ...s, startedAt, itemStartedAt });
   };
 
   // in Auto mode, advance to the next item when the countdown (duration + buffers)

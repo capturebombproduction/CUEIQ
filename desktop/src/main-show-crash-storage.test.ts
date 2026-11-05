@@ -33,6 +33,8 @@ type Sandbox = {
   appEvent: (ev: string) => void;
   winEvent: (ev: string) => void;
   gone: (reason: string) => void;
+  /** The page refused to unload (a show runs): main asks; 0 = อยู่ต่อ, 1 = ออกเลย. */
+  unloadAsked: (choice: number) => void;
   readonly flushes: number;
   readonly reloads: number;
   readonly boxes: number;
@@ -48,6 +50,8 @@ function buildSandbox(): Sandbox {
   // from the crash bookkeeping to the end of the render-process-gone handler (and whatever
   // window handlers sit between them)
   const crash = slice("  let recentReloads = [];", /\r?\n {2}\/\/ "Unresponsive"/);
+  // the leave-a-running-show question, which a quit runs into first
+  const unload = slice('  win.webContents.on("will-prevent-unload"', /\r?\n {2}\}\);\r?\n/) + "\n  });";
   const src = `
     let now = 1_000_000;
     const Date = { now: () => now };
@@ -89,7 +93,12 @@ function buildSandbox(): Sandbox {
     const console = { log() {} };
     let reloads = 0;
     let boxes = 0;
-    const dialog = { showMessageBox: () => { boxes++; return Promise.resolve({ response: 0 }); } };
+    let unloadChoice = 0;
+    let macReopen = false;
+    const dialog = {
+      showMessageBox: () => { boxes++; return Promise.resolve({ response: 0 }); },
+      showMessageBoxSync: () => unloadChoice,
+    };
     const reloadToLastKnownUrl = () => { reloads++; return Promise.resolve(); };
     const winHandlers = {};
     const contentsHandlers = {};
@@ -104,6 +113,7 @@ function buildSandbox(): Sandbox {
     ${registerIpc}
     registerIpc();
     ${crash}
+    ${unload}
     const sender = { isDestroyed: () => false, setBackgroundThrottling() {} };
     return {
       send: (ch, arg) => handlers[ch]?.({ sender }, arg),
@@ -111,6 +121,7 @@ function buildSandbox(): Sandbox {
       appEvent: (ev) => appHandlers[ev]?.(),
       winEvent: (ev) => winHandlers[ev]?.(),
       gone: (reason) => contentsHandlers["render-process-gone"]({}, { reason, exitCode: 1 }),
+      unloadAsked: (choice) => { unloadChoice = choice; contentsHandlers["will-prevent-unload"]({ preventDefault() {} }); },
       get flushes() { return flushes; },
       get reloads() { return reloads; },
       get boxes() { return boxes; },
@@ -177,6 +188,24 @@ describe("main.cjs — a renderer killed from outside comes back", () => {
     t.winEvent("session-end");
     t.gone("killed");
     expect(t.reloads).toBe(0);
+  });
+
+  // Argon on hunt 13: a quit turned down at the leave-the-show question left the app "quitting"
+  // for good - a renderer killed from outside after that stayed a black window.
+  it("a quit the operator turned down (อยู่ต่อ): a later kill is a crash again, and reloads", () => {
+    const s = buildSandbox();
+    s.appEvent("before-quit");
+    s.unloadAsked(0);
+    s.gone("killed");
+    expect(s.reloads).toBe(1);
+  });
+
+  it("a quit the operator went on with (ออกเลย): the kill that follows is left alone", () => {
+    const s = buildSandbox();
+    s.appEvent("before-quit");
+    s.unloadAsked(1);
+    s.gone("killed");
+    expect(s.reloads).toBe(0);
   });
 
   it("our own quit's clean-exit is still never reloaded", () => {
