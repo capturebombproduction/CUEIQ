@@ -31,6 +31,7 @@ import { hasLiveSession } from "@/lib/auth-session";
 import { QuickShowLink } from "~/components/quick-show-link";
 import { onRouterRefresh } from "~/shims/next-navigation";
 import { useWorkspace } from "~/data/workspace-context";
+import { withTimeout } from "@/lib/with-timeout";
 
 /** How long the band's live-queue read (run_sequence) may wait before the cached order is
  *  shown - the same budget as the event read (EVENT_BUNDLE_TIMEOUT_MS). It had none, so on
@@ -40,19 +41,6 @@ export const RUNSEQ_CARD_TIMEOUT_MS = 8000;
 /** …and the "was that empty answer really empty?" session probe after it (as
  *  EVENT_BUNDLE_SESSION_TIMEOUT_MS): getSession() can try a refresh over the same dead link. */
 export const RUNSEQ_CARD_SESSION_TIMEOUT_MS = 2000;
-
-/** `p`, or null once `ms` has passed - the late answer is dropped (~/data/event-bundle.ts). */
-function withTimeout<T>(p: PromiseLike<T>, ms: number): Promise<T | null> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  return Promise.race<T | null>([
-    p,
-    new Promise<null>((resolve) => {
-      timer = setTimeout(() => resolve(null), ms);
-    }),
-  ]).finally(() => {
-    if (timer !== undefined) clearTimeout(timer);
-  });
-}
 
 /** Shown when the load came back with NOTHING because the server could not be
  *  reached — as opposed to because the show is gone or is not this account's.

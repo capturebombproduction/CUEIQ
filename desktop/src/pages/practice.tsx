@@ -10,6 +10,7 @@ import { canEditGroup, canViewGroup } from "@/lib/permissions";
 import type { SongMarker, PracticeSong } from "@/lib/types";
 import { loadEventBundle, type EventBundle } from "~/data/event-bundle";
 import { useWorkspace } from "~/data/workspace-context";
+import { withTimeout } from "@/lib/with-timeout";
 
 type State = {
   loading: boolean;
@@ -30,22 +31,6 @@ type State = {
  *  TIMEOUT_MS): slow still gets to deliver fresh data; never-answering is a failed
  *  read, which this page already says out loud (`partial`). */
 const PRACTICE_ROOM_READ_TIMEOUT_MS = 8000;
-
-/** Resolves to `null` if `p` has not settled within `ms`. A local twin of the
- *  canonical helper in ~/data/workspace.ts (read its comment before changing this
- *  one): the request is ABANDONED, not cancelled; the timer is cleared on both
- *  outcomes; a late value is discarded and a late rejection still observed. */
-function withTimeout<T>(p: PromiseLike<T>, ms: number): Promise<T | null> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  return Promise.race<T | null>([
-    p,
-    new Promise<null>((resolve) => {
-      timer = setTimeout(() => resolve(null), ms);
-    }),
-  ]).finally(() => {
-    if (timer !== undefined) clearTimeout(timer);
-  });
-}
 
 const EMPTY: State = {
   loading: false,

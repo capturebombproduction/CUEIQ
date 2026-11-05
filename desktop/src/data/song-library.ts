@@ -14,6 +14,7 @@ import { createClient } from "@/lib/supabase/client";
 import { hasLiveSession } from "@/lib/auth-session";
 import type { Song } from "@/lib/types";
 import { isOffline, readCache, writeCache } from "~/data/cache";
+import { withTimeout } from "@/lib/with-timeout";
 
 /** How long ONE read here may wait on Supabase before the read is written off.
  *
@@ -24,26 +25,6 @@ import { isOffline, readCache, writeCache } from "~/data/cache";
  *  TCP connects, nothing ever answers. Same budget as the loaders round 11 already
  *  bounded; a timeout takes the module's existing "could not trust it" branch. */
 export const SONG_LIBRARY_TIMEOUT_MS = 8000;
-
-/** Resolves to `null` if `p` has not settled within `ms`. The in-flight request is
- *  not cancelled, it is ABANDONED: the timer is cleared on both outcomes, nothing
- *  subscribes to `p` after the race settles so a late value is discarded (it does
- *  NOT warm any cache — no path here writes one), and a late rejection is still
- *  observed by the race, so it cannot go unhandled. (Mirrors ~/data/workspace.ts,
- *  which owns the canonical comment; kept local because that copy is not exported.) */
-function withTimeout<T>(p: PromiseLike<T>, ms: number): Promise<T | null> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  return Promise.race<T | null>([
-    p,
-    new Promise<null>((resolve) => {
-      timer = setTimeout(() => resolve(null), ms);
-    }),
-  ]).finally(() => {
-    // Without this the pending timer keeps a handle alive for its full duration
-    // after every fast, successful load.
-    if (timer !== undefined) clearTimeout(timer);
-  });
-}
 
 /** Cache key for one tenant + set of bands. Order-independent: the caller's band
  *  list comes from permissions and must not produce two entries for one scope. */

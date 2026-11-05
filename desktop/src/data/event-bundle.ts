@@ -25,6 +25,7 @@ import type {
   SetlistItem,
   Song,
 } from "@/lib/types";
+import { withTimeout } from "@/lib/with-timeout";
 
 export interface EventBundle {
   event: EventRow & { group: Group | null };
@@ -92,26 +93,6 @@ export const EVENT_BUNDLE_BATCH_TIMEOUT_MS = 20000;
  *  It is also the one bound here whose expiry costs nothing: a timeout takes the
  *  same "keep the cached bundle" branch that a slow answer would have produced. */
 export const EVENT_BUNDLE_SESSION_TIMEOUT_MS = 2000;
-
-/** Resolves to `null` if `p` has not settled within `ms`. The in-flight request is
- *  not cancelled, it is ABANDONED: the timer is cleared on both outcomes, nothing
- *  subscribes to `p` after the race settles so a late value is discarded (it does
- *  NOT warm any cache — no path here writes one), and a late rejection is still
- *  observed by the race, so it cannot go unhandled. (Mirrors ~/data/workspace.ts,
- *  which owns the canonical comment; kept local because that copy is not exported.) */
-function withTimeout<T>(p: PromiseLike<T>, ms: number): Promise<T | null> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  return Promise.race<T | null>([
-    p,
-    new Promise<null>((resolve) => {
-      timer = setTimeout(() => resolve(null), ms);
-    }),
-  ]).finally(() => {
-    // Without this the pending timer keeps a handle alive for its full duration
-    // after every fast, successful load.
-    if (timer !== undefined) clearTimeout(timer);
-  });
-}
 
 /** First cached bundle belonging to `groupId` — a source of members/songs offline. */
 function findCachedSibling(groupId: string | undefined): EventBundle | null {

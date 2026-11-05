@@ -7,6 +7,7 @@ import { makePerms, type GroupRoleRow, type Perms } from "@/lib/permissions";
 import type { Group, Role, Tenant } from "@/lib/types";
 import { isOffline, readCache, writeCache } from "~/data/cache";
 import { getStoredSessionUser } from "~/data/stored-session";
+import { withTimeout } from "@/lib/with-timeout";
 
 const WS_CACHE_KEY = "workspace";
 
@@ -32,41 +33,6 @@ export const WORKSPACE_READ_TIMEOUT_MS = 8000;
  *  signed-in account yet: a fresh install, or one whose first load never finished.
  *  The Shell asks for the network once instead of showing the generic failure. */
 export const COLD_OFFLINE = "workspace: offline, and nothing of this account is cached here";
-
-/** Resolves to `null` if `p` has not settled within `ms`.
- *
- *  THE CANONICAL COPY of this helper (events-list, event-bundle, run-order,
- *  song-library and pages/practice.tsx each keep a local twin; change one, change
- *  all six).
- *
- *  There is no AbortController: the in-flight request is not cancelled, it is
- *  ABANDONED. That is safe here, and this is the checklist to re-verify before
- *  assuming a late answer can corrupt anything:
- *    • the timer is cleared on BOTH outcomes (the .finally below), so a fast load
- *      leaves no handle behind;
- *    • nothing subscribes to `p` after the race settles — the caller has already
- *      been handed `null` and moved on to the cache — so a late VALUE is simply
- *      discarded. It does NOT warm the cache; no path here writes one. (An earlier
- *      version of this comment claimed it did, which was a benefit that never
- *      existed and, worse, the stated reason for skipping the AbortController.)
- *    • a late REJECTION is still observed by the race's own subscription, so it
- *      cannot surface as an unhandled rejection.
- *  What it does cost is a socket and its response body, held until the server or
- *  the OS gives up. Worth an AbortController the day these budgets get long or a
- *  screen fires them in a loop; not worth one today. */
-function withTimeout<T>(p: Promise<T>, ms: number): Promise<T | null> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  return Promise.race([
-    p,
-    new Promise<null>((resolve) => {
-      timer = setTimeout(() => resolve(null), ms);
-    }),
-  ]).finally(() => {
-    // Without this the pending timer keeps a handle alive for its full duration
-    // after every fast, successful load.
-    if (timer !== undefined) clearTimeout(timer);
-  });
-}
 
 /** The cached workspace, but only if it belongs to the account still persisted on
  *  this machine. The owner check is the shared-band-device privacy boundary: a

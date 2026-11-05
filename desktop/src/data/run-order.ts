@@ -42,6 +42,7 @@ import { RUNSEQ_LANDED_EVENT, type RunSeqLanded } from "@/lib/run-order-outbox";
 import type { RunSeqLive } from "@/components/event/event-live-caller";
 import type { RunBandEvent, RunSequence } from "@/components/event/run-order-builder";
 import { isOffline, readCache, readCacheKeys, writeCache } from "~/data/cache";
+import { withTimeout } from "@/lib/with-timeout";
 
 export type RunOrderLive = {
   name: string;
@@ -117,26 +118,6 @@ if (typeof window !== "undefined") window.addEventListener(RUNSEQ_LANDED_EVENT, 
  *  loaders round 11 already bounded, same budget (WORKSPACE_READ_TIMEOUT_MS): slow
  *  still gets to deliver FRESH data; never-answering falls through to the cache. */
 export const RUN_ORDER_TIMEOUT_MS = 8000;
-
-/** Resolves to `null` if `p` has not settled within `ms`. The in-flight request is
- *  not cancelled, it is ABANDONED: the timer is cleared on both outcomes, nothing
- *  subscribes to `p` after the race settles so a late value is discarded (it does
- *  NOT warm any cache — no path here writes one), and a late rejection is still
- *  observed by the race, so it cannot go unhandled. (Mirrors ~/data/workspace.ts,
- *  which owns the canonical comment; kept local because that copy is not exported.) */
-function withTimeout<T>(p: PromiseLike<T>, ms: number): Promise<T | null> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  return Promise.race<T | null>([
-    p,
-    new Promise<null>((resolve) => {
-      timer = setTimeout(() => resolve(null), ms);
-    }),
-  ]).finally(() => {
-    // Without this the pending timer keeps a handle alive for its full duration
-    // after every fast, successful load.
-    if (timer !== undefined) clearTimeout(timer);
-  });
-}
 
 function served<T>(cached: T | null): RunOrderResult<T> {
   return cached ? { status: "ok", data: cached, fromCache: true } : { status: "error" };

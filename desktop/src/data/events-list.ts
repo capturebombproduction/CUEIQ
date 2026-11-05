@@ -13,6 +13,7 @@ import { isOffline, readCache, writeCache } from "~/data/cache";
 import { hasLiveSession } from "@/lib/auth-session";
 import { pendingMgmtOps } from "~/data/mgmt-outbox";
 import type { WorkspaceData } from "~/data/workspace";
+import { withTimeout } from "@/lib/with-timeout";
 
 export type EventWithGroup = EventRow & {
   groups: { name: string; color: string | null; exempt_from_deadline: boolean } | null;
@@ -56,26 +57,6 @@ export const EVENTS_LIST_TIMEOUT_MS = 8000;
  *  this directory pin the mechanism only — they advance the constants themselves, so
  *  they stay green at any value. */
 export const EVENTS_LIST_SESSION_TIMEOUT_MS = 2000;
-
-/** Resolves to `null` if `p` has not settled within `ms`. The in-flight request is
- *  not cancelled, it is ABANDONED: the timer is cleared on both outcomes, nothing
- *  subscribes to `p` after the race settles so a late value is discarded (it does
- *  NOT warm any cache — no path here writes one), and a late rejection is still
- *  observed by the race, so it cannot go unhandled. (Mirrors ~/data/workspace.ts,
- *  which owns the canonical comment; kept local because that copy is not exported.) */
-function withTimeout<T>(p: PromiseLike<T>, ms: number): Promise<T | null> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  return Promise.race<T | null>([
-    p,
-    new Promise<null>((resolve) => {
-      timer = setTimeout(() => resolve(null), ms);
-    }),
-  ]).finally(() => {
-    // Without this the pending timer keeps a handle alive for its full duration
-    // after every fast, successful load.
-    if (timer !== undefined) clearTimeout(timer);
-  });
-}
 
 /** Overlay pending offline writes; synthesized creates get full display fields. */
 async function withPendingOverlay(rows: EventWithGroup[]): Promise<EventWithGroup[]> {
