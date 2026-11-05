@@ -4,14 +4,7 @@ import { AudioLines, Loader2, Pause, Play, X } from "lucide-react";
 import { useHoldBottomSlot } from "@/lib/bottom-slot";
 import { THAI_RE } from "@/lib/thai";
 import { cn } from "@/lib/utils";
-
-/** m:ss, rounded DOWN — an elapsed clock must not read 0:01 half a second in. */
-function clock(sec: number): string {
-  if (!isFinite(sec) || sec < 0) sec = 0;
-  const m = Math.floor(sec / 60);
-  const s = Math.floor(sec % 60);
-  return `${m}:${s.toString().padStart(2, "0")}`;
-}
+import { formatPlayhead } from "@/lib/time";
 
 /**
  * The Library's preview player: what is playing, how far in, play/pause, close.
@@ -92,8 +85,8 @@ export function LibraryMiniPlayer({
             {title}
           </div>
           <div className="truncate text-[12.5px] text-muted-foreground">
-            <span className="num text-[13.5px] text-foreground">{clock(position)}</span>
-            <span className="num text-[13.5px]"> / {duration > 0 ? clock(duration) : "–:––"}</span>
+            <span className="num text-[13.5px] text-foreground">{formatPlayhead(position)}</span>
+            <span className="num text-[13.5px]"> / {duration > 0 ? formatPlayhead(duration) : "–:––"}</span>
             {" · ตัวอย่างในคลังเพลง"}
             {/* a master can be 88 MB over venue Wi-Fi — say why nothing is heard yet */}
             {loading && " · กำลังโหลด…"}

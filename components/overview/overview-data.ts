@@ -453,9 +453,15 @@ export async function loadOverviewData(
   // down the clock string: a 22:00 set's booth shifts at 23:00 and 00:30 had the 00:30 FIRST,
   // the one the board sorts and prints by (2026-10-30, hunt 11). A day that does not cross
   // midnight keeps the plain clock order.
+  //
+  // Every per-event helper below reads the event's OWN rows from schedByEvent (built
+  // above, same rows in the same order) instead of filtering the tenant-wide `sched`
+  // again - that was six full scans per event. None of them mutates its input
+  // (stageAnchorSeconds / photoRoundsOf filter first), so the shared arrays are safe.
   const eventById = new Map(eventRows.map((e) => [e.id, e]));
+  const ownSched = (eventId: string) => schedByEvent.get(eventId) ?? [];
   const rangesOf = (eventId: string, kind: string) => {
-    const own = sched.filter((s) => s.event_id === eventId);
+    const own = ownSched(eventId);
     const anchor = stageAnchorSeconds(own, eventById.get(eventId) ?? {});
     return own
       .filter((s) => s.kind === kind)
@@ -466,18 +472,15 @@ export async function loadOverviewData(
       )
       .map((it) => ({ start: it.start_time, end: it.end_time }));
   };
-  const rangeOf = (eventId: string, kind: string) => rangesOf(eventId, kind)[0] ?? null;
   // Every ถ่ายรูป round (mig 0042 allows several, each named) - lib/photo-rounds.ts.
-  const photosOf = (eventId: string) =>
-    photoRoundsOf(sched.filter((s) => s.event_id === eventId));
+  const photosOf = (eventId: string) => photoRoundsOf(ownSched(eventId));
   const maxSortOf = (eventId: string) =>
-    sched.reduce(
-      (m, s) => (s.event_id === eventId && s.sort_order > m ? s.sort_order : m),
-      0
-    );
+    ownSched(eventId).reduce((m, s) => (s.sort_order > m ? s.sort_order : m), 0);
 
   const events: OverviewEvent[] = eventRows.map((e) => {
     const g = groupById.get(e.group_id);
+    const stages = rangesOf(e.id, "stage");
+    const booths = rangesOf(e.id, "booth");
     const { main: photoRow, more: photoMore } = photosOf(e.id);
     const cr = copyrightOf(e.id);
     const comp = completenessOf(e);
@@ -491,10 +494,10 @@ export async function loadOverviewData(
       event_date: e.event_date,
       status: e.status,
       deadline: e.deadline,
-      stage: rangeOf(e.id, "stage"),
-      booth: rangeOf(e.id, "booth"),
-      stageMore: rangesOf(e.id, "stage").slice(1),
-      boothMore: rangesOf(e.id, "booth").slice(1),
+      stage: stages[0] ?? null,
+      booth: booths[0] ?? null,
+      stageMore: stages.slice(1),
+      boothMore: booths.slice(1),
       photo: photoRow?.start_time ?? null,
       photoEnd: photoRow?.end_time ?? null,
       photoMore,

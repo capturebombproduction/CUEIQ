@@ -60,6 +60,7 @@ import { cn } from "@/lib/utils";
 import { hasThai } from "@/lib/thai";
 import { useSongCovers } from "@/lib/song-covers";
 import { MARKER_PRESETS, type Song, type SongMarker, type PracticeSong } from "@/lib/types";
+import { formatPlayhead } from "@/lib/time";
 
 // Speed presets — slowing down for practice. The engine (SoundTouchJS) time-
 // stretches with pitch preserved, so 0.5x stays in the same key, just slower —
@@ -118,13 +119,6 @@ function sameQueue(a: QueueEntry[], b: QueueEntry[]): boolean {
         q.adjacent === b[i].adjacent
     )
   );
-}
-
-function mmss(sec: number) {
-  if (!isFinite(sec) || sec < 0) sec = 0;
-  const m = Math.floor(sec / 60);
-  const s = Math.floor(sec % 60);
-  return `${m}:${s.toString().padStart(2, "0")}`;
 }
 
 /**
@@ -949,7 +943,7 @@ export function PracticePlayer({
     const m = data as SongMarker;
     setMarkers((prev) => ({ ...prev, [current.id]: [...(prev[current.id] ?? []), m] }));
     setCustomLabel("");
-    toast.success(`มาร์ค “${label}” ที่ ${mmss(pos)}`);
+    toast.success(`มาร์ค “${label}” ที่ ${formatPlayhead(pos)}`);
     await refreshMarkers(current.id);
   }
 
@@ -1208,7 +1202,7 @@ export function PracticePlayer({
   const handOverAt = runNext && runNext.overlap > 0 && !loopOn && dur > 0 ? Math.max(0, dur - runNext.overlap) : null;
   // a loop end reads as its section's name when it sits on a mark ("วน Hook → Bridge")
   const pointLabel = (t: number) =>
-    curMarkers.find((m) => Math.abs(m.position_seconds - t) < 0.75)?.label ?? mmss(t);
+    curMarkers.find((m) => Math.abs(m.position_seconds - t) < 0.75)?.label ?? formatPlayhead(t);
   const presetLabel = (label: string) => (MARKER_PRESETS as readonly string[]).includes(label);
 
   return (
@@ -1299,7 +1293,7 @@ export function PracticePlayer({
                       type="button"
                       onClick={() => jumpTo(m.position_seconds)}
                       aria-pressed={m.id === activeMarkerId}
-                      title={`ไปที่ ${m.label} (${mmss(m.position_seconds)})`}
+                      title={`ไปที่ ${m.label} (${formatPlayhead(m.position_seconds)})`}
                       className={cn(
                         "chip chip-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
                         // presets are English chrome; a typed label stays as typed
@@ -1308,7 +1302,7 @@ export function PracticePlayer({
                       )}
                     >
                       {m.label}
-                      <span className="num text-[13px] opacity-70">{mmss(m.position_seconds)}</span>
+                      <span className="num text-[13px] opacity-70">{formatPlayhead(m.position_seconds)}</span>
                     </button>
                     {canCurate && editMarkers && (
                       <button
@@ -1369,7 +1363,7 @@ export function PracticePlayer({
               />
             </div>
             <div className="mt-1.5 flex items-center justify-between gap-2 text-[12px] text-muted-foreground">
-              <span className="num text-[16px] text-foreground">{mmss(cur)}</span>
+              <span className="num text-[16px] text-foreground">{formatPlayhead(cur)}</span>
               {loopA != null && loopB != null && (
                 <span className="flex min-w-0 items-center gap-1 truncate">
                   <Repeat className="h-[13px] w-[13px] shrink-0" strokeWidth={2.2} aria-hidden />
@@ -1381,13 +1375,13 @@ export function PracticePlayer({
                 <span
                   className="num text-[16px]"
                   data-testid="song-ends-at"
-                  title={`เพลงถัดไปเข้าที่ ${mmss(handOverAt)} (เล่นซ้อน ${runNext!.overlap} วิ) · ไฟล์ยาว ${mmss(dur)}`}
+                  title={`เพลงถัดไปเข้าที่ ${formatPlayhead(handOverAt)} (เล่นซ้อน ${runNext!.overlap} วิ) · ไฟล์ยาว ${formatPlayhead(dur)}`}
                 >
-                  {mmss(handOverAt)}
+                  {formatPlayhead(handOverAt)}
                 </span>
               ) : (
                 <span className="num text-[16px]" data-testid="song-ends-at">
-                  {mmss(dur)}
+                  {formatPlayhead(dur)}
                 </span>
               )}
             </div>
@@ -1521,7 +1515,7 @@ export function PracticePlayer({
                   onClick={setA}
                 >
                   <span className="en text-[14px]">Mark In</span>
-                  {loopA != null && <span className="num text-[14px]">{mmss(loopA)}</span>}
+                  {loopA != null && <span className="num text-[14px]">{formatPlayhead(loopA)}</span>}
                 </Button>
                 <Button
                   variant={loopB != null ? "outline" : "secondary"}
@@ -1530,7 +1524,7 @@ export function PracticePlayer({
                   onClick={setB}
                 >
                   <span className="en text-[14px]">Mark Out</span>
-                  {loopB != null && <span className="num text-[14px]">{mmss(loopB)}</span>}
+                  {loopB != null && <span className="num text-[14px]">{formatPlayhead(loopB)}</span>}
                 </Button>
                 <Button
                   variant={loopOn ? "default" : "secondary"}
@@ -1611,7 +1605,7 @@ export function PracticePlayer({
                         onChange={(e) => setCustomLabel(e.target.value)}
                         aria-label="ชื่อท่อนเอง"
                         className="min-w-0"
-                        placeholder={`ชื่อท่อนเอง แล้วเพิ่มที่ ${mmss(cur)}`}
+                        placeholder={`ชื่อท่อนเอง แล้วเพิ่มที่ ${formatPlayhead(cur)}`}
                         onKeyDown={(e) => {
                           if (e.key === "Enter" && customLabel.trim()) addMarker(customLabel.trim());
                         }}
@@ -1797,7 +1791,7 @@ export function PracticePlayer({
                         </span>
                       )}
                       {s.duration_seconds > 0 && (
-                        <span className="num shrink-0 text-[16px]">{mmss(s.duration_seconds)}</span>
+                        <span className="num shrink-0 text-[16px]">{formatPlayhead(s.duration_seconds)}</span>
                       )}
                     </button>
                     {canCurate && (
@@ -1896,7 +1890,7 @@ function AddPracticeSongDialog({
                       <span className="truncate font-medium">{s.title}</span>
                     </span>
                     <span className="num shrink-0 text-[15px] text-muted-foreground">
-                      {s.duration_seconds ? mmss(s.duration_seconds) : "—"}
+                      {s.duration_seconds ? formatPlayhead(s.duration_seconds) : "—"}
                     </span>
                   </button>
                 ))

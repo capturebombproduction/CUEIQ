@@ -18,6 +18,19 @@ export function formatDuration(totalSeconds: number): string {
 }
 
 /**
+ * An elapsed / playhead clock: "m:ss", rounded DOWN - an elapsed clock must not read
+ * 0:01 half a second in. Unlike formatDuration it never rounds up and never switches to
+ * h:mm:ss; NaN or a negative reads 0:00. (The practice player, the Library preview and
+ * the desktop's My Show each had their own copy.)
+ */
+export function formatPlayhead(sec: number): string {
+  if (!isFinite(sec) || sec < 0) sec = 0;
+  const m = Math.floor(sec / 60);
+  const s = Math.floor(sec % 60);
+  return `${m}:${s.toString().padStart(2, "0")}`;
+}
+
+/**
  * A length with its unit, for where it stands beside clock times: a bare "20:00" next
  * to "14:00" reads as eight in the evening (Seishin's Ar, feedback 2026-10-31). The two
  * parts are apart so the unit can be set smaller than the number.

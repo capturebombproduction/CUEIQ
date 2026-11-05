@@ -57,6 +57,7 @@ import { cn } from "@/lib/utils";
 import {
   formatCountdown,
   formatDuration,
+  formatPlayhead,
   isSettled,
   nowClock,
   runSecondsOf,
@@ -144,13 +145,6 @@ function timingChip(seconds: number): string | null {
   if (s < 0) return `เล่นซ้อน ${-s} วิ`;
   if (s > 0) return `รอ ${s} วิ`;
   return null;
-}
-
-function fmtTime(sec: number) {
-  if (!isFinite(sec) || sec < 0) sec = 0;
-  const m = Math.floor(sec / 60);
-  const s = Math.floor(sec % 60);
-  return `${m}:${s.toString().padStart(2, "0")}`;
 }
 
 /** "3:45" → 225, "-0:05" → -5; a plain number is taken as seconds. null = unparseable. */
@@ -1930,8 +1924,8 @@ export function MyShow() {
                     />
                     <span className="num w-[5.5rem] shrink-0 text-right text-[13px]">
                       {playingId === current.id
-                        ? `${fmtTime(audioCurrent)} / ${fmtTime(audioDuration)}`
-                        : fmtTime(audioDuration)}
+                        ? `${formatPlayhead(audioCurrent)} / ${formatPlayhead(audioDuration)}`
+                        : formatPlayhead(audioDuration)}
                     </span>
                   </div>
                   <div className="flex items-center gap-2">
@@ -2407,12 +2401,12 @@ export function MyShow() {
                             เวลา
                             <input
                               key={`${it.id}-d${it.durationSeconds}`}
-                              defaultValue={fmtTime(it.durationSeconds)}
+                              defaultValue={formatPlayhead(it.durationSeconds)}
                               onBlur={(e) => {
                                 const sec = parseMmss(e.target.value);
                                 if (sec != null && sec >= 0 && sec !== it.durationSeconds)
                                   updateItem(it.id, { durationSeconds: sec });
-                                else e.target.value = fmtTime(it.durationSeconds);
+                                else e.target.value = formatPlayhead(it.durationSeconds);
                               }}
                               title="ความยาวช่วงนี้ (นาที:วินาที)"
                               className="h-7 w-16 rounded-md border bg-background px-2 text-center tabular-nums"

@@ -10,6 +10,7 @@ import {
   formatCountdown,
   formatDuration,
   formatOvertime,
+  formatPlayhead,
   isSettled,
   monthBeforeKey,
   pad2,
@@ -38,6 +39,22 @@ describe("formatDuration", () => {
   it("clamps negatives to zero and rounds", () => {
     expect(formatDuration(-10)).toBe("0:00");
     expect(formatDuration(59.6)).toBe("1:00");
+  });
+});
+
+describe("formatPlayhead", () => {
+  it("rounds DOWN, so an elapsed clock does not read 0:01 half a second in", () => {
+    expect(formatPlayhead(0.5)).toBe("0:00");
+    expect(formatPlayhead(59.6)).toBe("0:59");
+    expect(formatPlayhead(225)).toBe("3:45");
+  });
+  it("never switches to hours (unlike formatDuration)", () => {
+    expect(formatPlayhead(3930)).toBe("65:30");
+  });
+  it("reads 0:00 for NaN, Infinity and negatives (an <audio> with no duration yet)", () => {
+    expect(formatPlayhead(NaN)).toBe("0:00");
+    expect(formatPlayhead(Infinity)).toBe("0:00");
+    expect(formatPlayhead(-5)).toBe("0:00");
   });
 });
 
