@@ -606,7 +606,9 @@ export async function getSongs(
   groupIds?: string[]
 ): Promise<Song[]> {
   const supabase = await createClient();
-  const base = supabase.from("songs").select("*").eq("tenant_id", tenantId);
+  // Every column but `cover`: the Library reads the covers in the browser, once per visit
+  // (components/song/library-covers.ts) - sent here they were ~1.1 MB of its HTML.
+  const base = supabase.from("songs").select(SONG_SHOW_COLUMNS).eq("tenant_id", tenantId);
   const scoped = groupIds ? base.in("group_id", groupIds) : base;
   const res = await scoped.order("created_at", { ascending: false });
   // a failed read is not an empty library: the Library would offer to upload them again

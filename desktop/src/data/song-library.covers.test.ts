@@ -9,7 +9,8 @@ import { makeSession, makeSupabaseFake, ok } from "@/test/fakes/supabase";
 const h = vi.hoisted(() => ({ supa: null as unknown }));
 vi.mock("@/lib/supabase/client", () => ({ createClient: () => h.supa }));
 
-import { fetchSongs, readCachedSongs, songsCacheKey } from "./song-library";
+import { SONG_SHOW_COLUMNS } from "@/lib/song-columns";
+import { fetchSongs, readCachedSongs, songsCacheKey, warmSongLibrary } from "./song-library";
 
 const TENANT_ID = "aaaaaaaa-0000-4000-8000-000000000001";
 const GROUP = "bbbbbbbb-0000-4000-8000-000000000001";
@@ -42,5 +43,29 @@ describe("fetchSongs: the cached catalogue", () => {
     void _c2;
     expect(cached).toEqual([rest1, rest2]);
     expect(window.localStorage.getItem(`cueiq:cache:${songsCacheKey(TENANT_ID, [GROUP])}`)!.length).toBeLessThan(1_000);
+  });
+});
+
+// 2026-11-05 performance pass: the dashboard warms this cache on every visit, and the warm-up
+// read "*" - all ~362 K of covers, over the venue network on the PA laptop - only for the
+// line above to drop them before writing. It reads every column but the cover now.
+describe("warmSongLibrary: the read behind the dashboard's warm-up", () => {
+  it("asks for every column but the cover, and caches the same rows as before", async () => {
+    const supa = makeSupabaseFake({ session: makeSession(), script: { songs: ok(ROWS.map(({ cover: _c, ...r }) => (void _c, r))) } });
+    h.supa = supa;
+    await warmSongLibrary(TENANT_ID, [GROUP]);
+    const reads = supa.query.callsTo("songs", "select");
+    expect(reads).toHaveLength(1);
+    expect(reads[0].columns).toBe(SONG_SHOW_COLUMNS);
+    const cached = readCachedSongs(TENANT_ID, [GROUP]);
+    expect(cached?.map((r) => r.id)).toEqual(["song-1", "song-2"]);
+    for (const row of cached ?? []) expect("cover" in row).toBe(false);
+  });
+
+  it("the Library's own read still asks for the covers", async () => {
+    const supa = makeSupabaseFake({ session: makeSession(), script: { songs: ok(ROWS) } });
+    h.supa = supa;
+    await fetchSongs(TENANT_ID, [GROUP]);
+    expect(supa.query.callsTo("songs", "select")[0].columns).toBe("*");
   });
 });

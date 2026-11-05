@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ComponentProps, type ReactNode } from "react";
 import { toast } from "sonner";
 import {
   Plus,
@@ -113,8 +113,9 @@ import { useConfirm } from "@/components/ui/confirm-dialog";
 import { sendOnTopic, songsTopic } from "@/lib/realtime";
 import { cn } from "@/lib/utils";
 import { THAI_RE } from "@/lib/thai";
-import { useLibraryPreview } from "@/components/song/use-library-preview";
+import { useLibraryPreview, type PreviewPosition } from "@/components/song/use-library-preview";
 import { LibraryMiniPlayer } from "@/components/song/library-mini-player";
+import { useLibraryCovers } from "@/components/song/library-covers";
 
 const NONE = "__none__";
 /** How long past the PUT uploadSongAudio still waits for the player's "can't open" (ms). */
@@ -144,17 +145,44 @@ function isSoundEffect(song: Song): boolean {
 }
 
 /**
+ * The mini player, subscribed to the preview's playhead on its own: the clock moves ~4 times
+ * a second while a song plays, and only this re-renders for it - not the Library around it
+ * (use-library-preview.ts, PreviewPosition).
+ */
+function PreviewMiniPlayer({
+  position,
+  ...props
+}: Omit<ComponentProps<typeof LibraryMiniPlayer>, "position"> & { position: PreviewPosition }) {
+  const at = useSyncExternalStore(position.subscribe, position.get, position.get);
+  return <LibraryMiniPlayer {...props} position={at} />;
+}
+
+/**
  * The 44 px cover (spec §G.5): a song is a solid band tile with a note, an SE a
  * well with a waveform, and the one in the player shows the EQ glyph instead.
  */
-function CoverTile({ song, current }: { song: Song; current: boolean }) {
+function CoverTile({
+  song,
+  cover,
+  current,
+}: {
+  song: Song;
+  /** the data URL, null for the band tile, undefined while it is still being read */
+  cover: string | null | undefined;
+  current: boolean;
+}) {
   const se = isSoundEffect(song);
   const Icon = current ? AudioLines : se ? AudioWaveform : Music;
-  if (song.cover) {
+  // still being read (library-covers.ts): the cover's own empty frame, not the band tile -
+  // most songs have a cover, so the tile would flash and then be replaced
+  if (cover === undefined) {
+    return <span aria-hidden className="h-11 w-11 flex-none rounded-[2px] bg-muted" />;
+  }
+  if (cover) {
     return (
       <span aria-hidden className="relative h-11 w-11 flex-none overflow-hidden rounded-[2px] bg-muted">
         {/* eslint-disable-next-line @next/next/no-img-element -- a 192 px data-URL thumbnail: next/image adds nothing */}
-        <img src={song.cover} alt="" className="h-full w-full object-cover" />
+        <img src={cover} alt="" className="h-full w-full object-cover" />
         {current && (
           <span className="absolute inset-0 grid place-items-center bg-[hsl(var(--scrim)/.55)] text-white">
             <AudioLines className="h-[19px] w-[19px]" strokeWidth={2.8} />
@@ -339,6 +367,7 @@ export function SongLibrary({
   toolbarEnd,
   footer,
   fromCache = false,
+  lazyCovers = false,
 }: {
   tenantId: string;
   groups: Group[];
@@ -354,6 +383,12 @@ export function SongLibrary({
   footer?: ReactNode;
   /** initialSongs is the desktop's read-cache, not a fresh read (see the cache GC). */
   fromCache?: boolean;
+  /**
+   * The rows come without `cover` and the covers are read here, once per visit
+   * (components/song/library-covers.ts - the web page; they were ~1.1 MB of its HTML).
+   * Off (the desktop): every song is drawn from its own row, as before.
+   */
+  lazyCovers?: boolean;
 }) {
   const supabase = createClient();
   const confirm = useConfirm();
@@ -854,6 +889,10 @@ export function SongLibrary({
 
   // The sheet's song, live from `songs`: gone (deleted elsewhere) closes the sheet.
   const sheetSong = sheetId ? songs.find((s) => s.id === sheetId) ?? null : null;
+  const coverOf = useLibraryCovers(songs, lazyCovers);
+  // undefined while the sheet song's cover is still being read (lazyCovers)
+  const sheetCoverRead = sheetSong ? coverOf(sheetSong) : null;
+  const sheetCover = sheetCoverRead ?? null;
 
   function openAdd() {
     saveSeqRef.current++;
@@ -2302,7 +2341,7 @@ export function SongLibrary({
                   >
                     <TableCell>
                       <div className="flex items-center gap-3">
-                        <CoverTile song={song} current={isCurrent} />
+                        <CoverTile song={song} cover={coverOf(song)} current={isCurrent} />
                         <div className="min-w-0">
                           {/* the title opens the song's sheet — the same one a phone row
                               opens: notes in full, the file, removing it, local source */}
@@ -2431,7 +2470,7 @@ export function SongLibrary({
                     onClick={() => setSheetId(song.id)}
                     className="-my-1 flex min-h-11 min-w-0 flex-1 items-center gap-3 rounded-[2px] text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   >
-                    <CoverTile song={song} current={isCurrent} />
+                    <CoverTile song={song} cover={coverOf(song)} current={isCurrent} />
                     <span className="min-w-0 flex-1">
                       <span
                         className={cn(
@@ -2522,10 +2561,10 @@ export function SongLibrary({
               <div className="space-y-2">
                 <span className="eyebrow text-muted-foreground">Cover</span>
                 <div className="flex items-center gap-3">
-                  {sheetSong.cover ? (
+                  {sheetCover ? (
                     // eslint-disable-next-line @next/next/no-img-element -- data-URL thumbnail
                     <img
-                      src={sheetSong.cover}
+                      src={sheetCover}
                       alt={`ปกเพลง ${sheetSong.title}`}
                       className="h-24 w-24 flex-none rounded-[2px] object-cover shadow-edge"
                     />
@@ -2550,9 +2589,9 @@ export function SongLibrary({
                         ) : (
                           <ImagePlus className="h-4 w-4" aria-hidden />
                         )}
-                        {sheetSong.cover ? "เปลี่ยนปก" : "ใส่ปกเพลง"}
+                        {sheetCover ? "เปลี่ยนปก" : "ใส่ปกเพลง"}
                       </Button>
-                      {sheetSong.cover && (
+                      {sheetCover && (
                         <Button
                           type="button"
                           variant="ghost"
@@ -2576,7 +2615,8 @@ export function SongLibrary({
                       />
                     </div>
                   ) : (
-                    !sheetSong.cover && <p className="text-[12.5px] text-muted-foreground">ยังไม่มีปก</p>
+                    // not while it is still being read: "no cover yet" would be a guess
+                    sheetCoverRead === null && <p className="text-[12.5px] text-muted-foreground">ยังไม่มีปก</p>
                   )}
                 </div>
               </div>
@@ -2831,9 +2871,12 @@ export function SongLibrary({
           {/* room to scroll the last song, and the page's footer, out from under
               the fixed player — so this stays the LAST thing in the page */}
           <div aria-hidden className="h-20" />
-          <LibraryMiniPlayer
+          <PreviewMiniPlayer
             title={preview.current.title}
-            cover={songs.find((s) => s.id === preview.current?.id)?.cover ?? null}
+            cover={(() => {
+              const playing = songs.find((s) => s.id === preview.current?.id);
+              return playing ? coverOf(playing) ?? null : null;
+            })()}
             position={preview.position}
             duration={preview.duration}
             playing={preview.playing}

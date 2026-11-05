@@ -49,6 +49,19 @@ vi.mock("@/lib/mgmt-write", () => ({
 }));
 vi.mock("@/lib/mgmt-outbox", () => ({ MGMT_OUTBOX_EVENT: "cueiq-test-outbox" }));
 vi.mock("@/lib/supabase/client", () => ({ createClient: () => ({}) }));
+// The Library calls useLibraryCovers once per render of its own: counting those calls counts
+// how often the WHOLE Library re-rendered (the real hook still runs underneath).
+const libRenders = vi.hoisted(() => ({ n: 0 }));
+vi.mock("./library-covers", async (importOriginal) => {
+  const real = await importOriginal<typeof import("./library-covers")>();
+  return {
+    ...real,
+    useLibraryCovers: (...args: Parameters<typeof real.useLibraryCovers>) => {
+      libRenders.n++;
+      return real.useLibraryCovers(...args);
+    },
+  };
+});
 const toastMock = vi.hoisted(() => ({ error: vi.fn(), info: vi.fn(), success: vi.fn() }));
 vi.mock("sonner", () => ({ toast: toastMock }));
 
@@ -123,6 +136,24 @@ async function startPlaying(title: string) {
 }
 
 describe("SongLibrary — preview playback", () => {
+  // 2026-11-05 performance pass: the element's timeupdate (~4/s) was React state in the hook,
+  // so every tick re-rendered the whole Library (both lists, every row) for a clock only the
+  // mini player draws. The clock must still move; the Library around it must not re-render.
+  it("the playhead moves the mini player's clock without re-rendering the Library", async () => {
+    render(tree());
+    await startPlaying("Neon Lullaby");
+    const el = theElement();
+    const before = libRenders.n;
+    for (let s = 1; s <= 8; s++) {
+      Object.defineProperty(el, "currentTime", { configurable: true, value: s * 0.25 + 6 });
+      act(() => {
+        el.dispatchEvent(new Event("timeupdate"));
+      });
+    }
+    expect(within(player() as HTMLElement).getByText("0:08")).toBeTruthy(); // 6 + 8 x 0.25 s
+    expect(libRenders.n).toBe(before);
+  });
+
   it("offers ▶ only on songs that have a file, on both the table and the phone card", () => {
     render(tree());
     expect(screen.getAllByRole("button", { name: "เล่นตัวอย่าง Neon Lullaby" })).toHaveLength(2);

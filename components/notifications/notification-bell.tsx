@@ -70,6 +70,9 @@ function relTime(iso: string): string {
   return new Date(iso).toLocaleDateString("th-TH", { day: "numeric", month: "short" });
 }
 
+/** focus + visibilitychange on one return to the page: one read, not two. */
+const REFOCUS_DEDUPE_MS = 2000;
+
 export function NotificationBell({
   userId,
   tenantId,
@@ -146,15 +149,31 @@ export function NotificationBell({
 
   // initial load + poll on focus/visibility + a slow interval (no realtime: RLS
   // postgres_changes don't deliver on the publishable key, so we poll).
+  // Only while the page is in front (2026-11-05, performance pass): the bell is read on this
+  // page and nowhere else (no app badge, no title), yet a tab left in the background asked
+  // every 45 s all day (~80 reads an hour), and hiding the page asked once more. Coming back
+  // asks at once; focus and visibilitychange both fire on that return, so a second ask within
+  // REFOCUS_DEDUPE_MS is the same return and is skipped.
   useEffect(() => {
-    load();
-    const onFocus = () => load();
-    window.addEventListener("focus", onFocus);
-    document.addEventListener("visibilitychange", onFocus);
-    const iv = setInterval(load, 45000);
+    let lastAt = 0;
+    const ask = () => {
+      lastAt = Date.now();
+      load();
+    };
+    const inFront = () => document.visibilityState !== "hidden";
+    const onBack = () => {
+      if (!inFront() || Date.now() - lastAt < REFOCUS_DEDUPE_MS) return;
+      ask();
+    };
+    ask();
+    window.addEventListener("focus", onBack);
+    document.addEventListener("visibilitychange", onBack);
+    const iv = setInterval(() => {
+      if (inFront()) ask();
+    }, 45000);
     return () => {
-      window.removeEventListener("focus", onFocus);
-      document.removeEventListener("visibilitychange", onFocus);
+      window.removeEventListener("focus", onBack);
+      document.removeEventListener("visibilitychange", onBack);
       clearInterval(iv);
     };
   }, [load]);

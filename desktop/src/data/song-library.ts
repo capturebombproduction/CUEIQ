@@ -15,6 +15,7 @@ import { hasLiveSession } from "@/lib/auth-session";
 import type { Song } from "@/lib/types";
 import { isOffline, readCache, writeCache } from "~/data/cache";
 import { withTimeout } from "@/lib/with-timeout";
+import { SONG_SHOW_COLUMNS } from "@/lib/song-columns";
 
 /** How long ONE read here may wait on Supabase before the read is written off.
  *
@@ -45,16 +46,21 @@ export function readCachedSongs(tenantId: string, groupIds: string[]): Song[] | 
  */
 export async function fetchSongs(
   tenantId: string,
-  groupIds: string[]
+  groupIds: string[],
+  /** false: leave the cover pictures out of the read - for a caller that only fills the
+   *  read-cache, which keeps no covers anyway (withoutCover). 2026-11-05: the dashboard's
+   *  warm-up downloaded all ~362 K of them on every visit to throw them away. */
+  withCovers = true
 ): Promise<Song[] | null> {
   if (groupIds.length === 0) return [];
   if (isOffline()) return null;
   // A request that NEVER answers is the same situation as one that fails, so it
   // takes the same branch: null, and the caller serves readCachedSongs.
+  // two literal selects, not a variable: postgrest-js types a .select() by parsing the literal
+  const songs = createClient().from("songs");
+  const query = withCovers ? songs.select("*") : songs.select(SONG_SHOW_COLUMNS);
   const res = await withTimeout(
-    createClient()
-      .from("songs")
-      .select("*")
+    query
       .eq("tenant_id", tenantId)
       .in("group_id", groupIds)
       .order("created_at", { ascending: false }),
@@ -99,7 +105,7 @@ export async function warmSongLibrary(
 ): Promise<void> {
   if (groupIds.length === 0 || isOffline()) return;
   try {
-    await fetchSongs(tenantId, groupIds);
+    await fetchSongs(tenantId, groupIds, false); // the cache keeps no covers: don't download them
   } catch {
     /* best-effort, same contract as the read-cache itself */
   }

@@ -434,6 +434,20 @@ describe("getEventBundle — the songs it reads", () => {
   });
 });
 
+// 2026-11-05 (performance pass): the Library's HTML carried every cover THREE times (two
+// <img>s + the RSC payload), ~1.1 MB of base64 per open. getSongs leaves them out; the
+// Library reads them in the browser (components/song/library-covers.ts).
+describe("getSongs — the columns it reads", () => {
+  it("leaves the cover pictures out", async () => {
+    const supa = makeSupabaseFake({ session: makeSession(), script: { songs: ok([{ id: "s1" }]) } });
+    h.supa = supa;
+    await expect(getSongs("tenant-1", ["band-1"])).resolves.toHaveLength(1); // positive control
+    const reads = supa.query.callsTo("songs", "select");
+    expect(reads).toHaveLength(1);
+    expect(reads[0].columns).toBe(SONG_SHOW_COLUMNS);
+  });
+});
+
 // 2026-10-24 review (Argon, verified): getSongs / getMembers coalesced a failed read to
 // [] - the Library then showed a band with no songs and Artists one with no members, and
 // the obvious next move on that screen is to upload or add them again, as duplicates.

@@ -38,7 +38,8 @@ export interface LibraryPreview {
   playing: boolean;
   /** Its bytes are still on their way (IndexedDB read, maybe a download). */
   loading: boolean;
-  position: number;
+  /** Where the song stands, as a store: read it with useSyncExternalStore (PreviewPosition). */
+  position: PreviewPosition;
   duration: number;
   /** Start `song`; on the song already in the player, play/pause it instead. */
   play: (song: PreviewSong) => void;
@@ -58,6 +59,35 @@ function errorName(err: unknown): string | undefined {
   return err && typeof err === "object" && "name" in err
     ? String((err as { name: unknown }).name)
     : undefined;
+}
+
+/**
+ * The playhead, kept OUT of React state (2026-11-05, performance pass): `timeupdate` fires
+ * ~4 times a second, and as state each one re-rendered the whole Library - both lists, every
+ * row - for a clock only the mini player draws. Only what subscribes re-renders now.
+ */
+export interface PreviewPosition {
+  get: () => number;
+  subscribe: (listener: () => void) => () => void;
+}
+
+function createPositionStore(): PreviewPosition & { set: (v: number) => void } {
+  let value = 0;
+  const listeners = new Set<() => void>();
+  return {
+    get: () => value,
+    set: (v: number) => {
+      if (v === value) return;
+      value = v;
+      listeners.forEach((l) => l());
+    },
+    subscribe: (listener) => {
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+      };
+    },
+  };
 }
 
 export function useLibraryPreview(): LibraryPreview {
@@ -83,7 +113,8 @@ export function useLibraryPreview(): LibraryPreview {
   const [current, setCurrent] = useState<{ id: string; title: string } | null>(null);
   const [playing, setPlaying] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [position, setPosition] = useState(0);
+  const [position] = useState(createPositionStore);
+  const setPosition = position.set;
   const [duration, setDuration] = useState(0);
 
   const setLoadingBoth = (v: boolean) => {
@@ -125,7 +156,7 @@ export function useLibraryPreview(): LibraryPreview {
     setPlaying(false);
     setPosition(0);
     setDuration(0);
-  }, []);
+  }, [setPosition]);
 
   function fail(err: unknown) {
     const name = errorName(err);

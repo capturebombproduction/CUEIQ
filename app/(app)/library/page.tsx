@@ -47,6 +47,7 @@ export default async function LibraryPage() {
         tenantId={ws.membership.tenant_id}
         groups={bands}
         initialSongs={songs}
+        lazyCovers
         perms={ws.perms}
         toolbarEnd={<RefreshButton variant="secondary" className="h-[46px] px-3" />}
         // Inside the library, not after it: the room kept for the preview player is
