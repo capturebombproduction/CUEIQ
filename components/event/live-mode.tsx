@@ -619,16 +619,30 @@ export function LiveMode({
   // Every tick goes through here so that a clock that jumped (the lid closed, Windows asleep)
   // is seen BEFORE the render that would read the jump as a row run out: the re-anchor and the
   // new `now` land in one render (onClockGapRef, by Auto's advance).
+  // A tick EARLIER than the last one is the wall clock set back (Windows' time sync steps it):
+  // real time never runs backwards, so any such gap is that (2026-11-05, hunt 13).
   const lastTickRef = useRef(Date.now());
   const onClockGapRef = useRef<(gapMs: number) => void>(() => {});
   // Where the sounding file stood at the last tick: how far it moved across a gap (onClockGapRef).
-  const lastFileRef = useRef<{ id: string | null; at: number }>({ id: null, at: 0 });
+  // `el` and `sounding`: a file that ended inside the gap is known by them (hunt 13).
+  const lastFileRef = useRef<{ id: string | null; at: number; el: HTMLMediaElement | null; sounding: boolean }>({
+    id: null,
+    at: 0,
+    el: null,
+    sounding: false,
+  });
   function tickClock() {
     const t = Date.now();
     const gap = t - lastTickRef.current;
     lastTickRef.current = t;
-    if (gap > CLOCK_GAP_MS) onClockGapRef.current(gap);
-    lastFileRef.current = { id: playingIdRef.current, at: audioRef.current?.currentTime ?? 0 };
+    if (gap > CLOCK_GAP_MS || gap < -CLOCK_DRIFT_MS) onClockGapRef.current(gap);
+    const a = audioRef.current;
+    lastFileRef.current = {
+      id: playingIdRef.current,
+      at: a?.currentTime ?? 0,
+      el: a,
+      sounding: !!a && !a.paused && !a.ended && !a.error,
+    };
     setNow(t);
   }
   useEffect(() => {
@@ -742,7 +756,8 @@ export function LiveMode({
 
   // Crash/reload recovery: restore a recently-running show so an accidental refresh
   // (or a browser crash) doesn't reset the live position + accumulated time. The
-  // timestamps are absolute, so the clock resumes as if nothing happened; a live
+  // timestamps are absolute, so a page back at once resumes as if nothing happened; one
+  // gone for minutes comes back paused on its row (lib/live-restore.ts); a live
   // controller on another device still overrides this via the realtime sync.
   const liveRestoredRef = useRef(false);
   const announceRestoreRef = useRef(false);
@@ -771,8 +786,11 @@ export function LiveMode({
         if (snap?.state?.begun && fresh && snap.isController !== false) {
           // Gone longer than STALE_RESTORE_MS (a rehearsal closed while running), the
           // show comes back PAUSED where it stopped, with nothing sounding - see
-          // lib/live-restore.ts. A crash a minute ago carries on as before.
-          const { state: restored, stale } = restoreShow(snap.state as LiveState, snap.savedAt);
+          // lib/live-restore.ts. Gone for minutes (`cut`: the PA killed or rebooted
+          // mid-song) it comes back paused the same way, but still the show: not held,
+          // and play goes on from where the song was cut (2026-11-05, hunt 13). Back at
+          // once, it carries on as before.
+          const { state: restored, stale, cut } = restoreShow(snap.state as LiveState, snap.savedAt);
           // ...and tells the viewers once its channel is up: the phones still watching
           // this run last heard it RUNNING, and a restore is not a broadcast
           announceRestoreRef.current = true;
@@ -787,7 +805,8 @@ export function LiveMode({
             setRestoreHeld(true);
           }
           // a fresh restore of a show mid-duck comes back ducked, its own level kept aside
-          if (!stale && snap.ducks && typeof snap.ducks === "object") {
+          // (a paused one does not: the sound that was ducked is over, as `committed` below)
+          if (!stale && !cut && snap.ducks && typeof snap.ducks === "object") {
             const now: Record<string, number> = {};
             for (const [id, d] of Object.entries(snap.ducks as Record<string, { prev?: unknown; now?: unknown }>)) {
               if (typeof d?.prev !== "number" || typeof d?.now !== "number") continue;
@@ -799,7 +818,10 @@ export function LiveMode({
               setVolumes((v) => ({ ...v, ...now }));
             }
           }
-          committedRef.current = stale
+          // Nothing sounds after a gap: what did (a Manual cue's previous track too) is over,
+          // and play starts the row from its own paused position. Kept, its anchor would
+          // put the rescue tap at the wall clock - past the file's end.
+          committedRef.current = stale || cut
             ? { id: null, anchor: null }
             : (snap.committed ?? { id: null, anchor: null });
           if (typeof snap.endedId === "string" && snap.endedId === committedRef.current.id) {
@@ -845,6 +867,11 @@ export function LiveMode({
           } else if (held) {
             toast.message("กู้คืนโชว์ที่ค้างไว้ — หยุดรอไว้ก่อน", {
               description: `ค้างมานานเกิน ${STALE_RESTORE_MS / 60_000} นาที เพลงจะไม่เล่นเอง — กดเล่นเมื่อพร้อม หรือกดรีเซ็ตถ้าจะเริ่มใหม่`,
+            });
+          } else if (cut) {
+            const min = Math.max(1, Math.ceil((Date.now() - snap.savedAt) / 60_000));
+            toast.message("กู้คืนโชว์ — หยุดรอไว้ที่เพลงที่ค้าง", {
+              description: `แอปปิดไปประมาณ ${min} นาที เพลงจะไม่เล่นเอง — กดเล่นเพื่อเล่นต่อจากจุดที่ค้าง หรือกดรีเซ็ตถ้าจะเริ่มใหม่`,
             });
           } else {
             toast.message("กู้คืนสถานะโชว์ที่ค้างไว้", {
@@ -4958,32 +4985,61 @@ export function LiveMode({
   //   can land before the window says it is visible.
   // Only the device running the show moves it; viewers follow the state it sends. The show's
   // total and Hard Out stay on real time (startedAt, `now`).
+  // Two more (2026-11-05, hunt 13):
+  // · A file that sounded at the last tick and has ENDED by this one played out inside the gap:
+  //   the audio thread runs on through a JS freeze (a window.confirm read and answered, any stall).
+  //   It counts as played, to its end. Taken for a silent row, its clock was pushed back by the
+  //   whole freeze, AUTO sat silent for as long again as the song had had left, and the toast
+  //   said the machine had stopped. A hidden web tab stays on its wall clock, as above.
+  // · The wall clock set BACK (a negative gap): what reads it stays continuous - the row by the
+  //   same rules (a file sounding: by what it played; none: by the step, hidden or not, since a
+  //   step is no throttled tick) and the show's total, which lost the step. Nothing happened
+  //   that the operator has to hear about: no toast. Hard Out reads the wall, which is right.
   onClockGapRef.current = (gapMs) => {
     if (!isControllerRef.current || restoreHeldRef.current || showEndedRef.current) return;
     const s = stateRef.current;
-    if (!s.begun || !s.running || s.itemStartedAt == null) return;
+    const back = gapMs < 0;
+    if (!s.begun) return;
+    if (!s.running || s.itemStartedAt == null) {
+      // a paused row's clock does not read the wall; the show's total does
+      if (back && s.startedAt != null) apply({ ...s, startedAt: s.startedAt + gapMs });
+      return;
+    }
     const cur = itemsRef.current[s.currentIndex];
     if (!cur) return;
     const a = audioRef.current;
     const visible = document.visibilityState === "visible";
+    const native = !!(window as { cueiqNative?: unknown }).cueiqNative;
+    const last = lastFileRef.current;
     const fileSounds =
       !cur.loop_audio && !!a && playingIdRef.current === cur.id && !a.paused && !a.ended && !a.error;
-    let itemStartedAt: number;
-    if (fileSounds) {
-      const last = lastFileRef.current;
+    const playedOut =
+      !fileSounds && !cur.loop_audio && !!a && a === last.el && last.id === cur.id && last.sounding && a.ended && !a.error;
+    let shift: number;
+    if ((fileSounds || playedOut) && a) {
+      // Played out inside a freeze: nothing was lost - the file ran to its end, and the time since
+      // is the row's own (Manual counts it as over). AUTO moves on at once by its ended path.
+      if (playedOut && !back) return;
+      const pos = playedOut && Number.isFinite(a.duration) && a.duration > 0 ? a.duration : a.currentTime;
       const lostMs =
         last.id === cur.id
-          ? gapMs - (a.currentTime - last.at) * 1000
-          : Date.now() - a.currentTime * 1000 - s.itemStartedAt; // a row begun just before the gap
-      if (lostMs < CLOCK_DRIFT_MS) return;
-      itemStartedAt = s.itemStartedAt + lostMs;
+          ? gapMs - (pos - last.at) * 1000
+          : back
+            ? gapMs // a row begun just before the step has no position of its own to go by
+            : Date.now() - pos * 1000 - s.itemStartedAt; // a row begun just before the gap
+      if (back ? lostMs > -CLOCK_DRIFT_MS : lostMs < CLOCK_DRIFT_MS) return;
+      shift = lostMs;
     } else {
-      if (!visible && !(window as { cueiqNative?: unknown }).cueiqNative) return;
-      itemStartedAt = s.itemStartedAt + gapMs;
+      if (!back && !visible && !native) return;
+      shift = gapMs;
     }
-    const lost = Math.round(Math.abs(itemStartedAt - s.itemStartedAt) / 1000);
-    apply({ ...s, itemStartedAt });
-    if (visible) {
+    const lost = Math.round(Math.abs(shift) / 1000);
+    apply({
+      ...s,
+      itemStartedAt: s.itemStartedAt + shift,
+      startedAt: back && s.startedAt != null ? s.startedAt + shift : s.startedAt,
+    });
+    if (visible && !back) {
       toast.warning(`เครื่องหยุดไป ${lost} วินาที`, {
         description: fileSounds ? "เวลารายการเดินตามเพลงต่อ" : "เวลารายการนี้ไม่นับช่วงที่เครื่องหยุด",
       });

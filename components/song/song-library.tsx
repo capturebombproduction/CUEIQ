@@ -110,7 +110,7 @@ import {
 } from "@/lib/types";
 import { canApprove, canEditGroup, type Perms } from "@/lib/permissions";
 import { useConfirm } from "@/components/ui/confirm-dialog";
-import { privateChannel, songsTopic } from "@/lib/realtime";
+import { sendOnTopic, songsTopic } from "@/lib/realtime";
 import { cn } from "@/lib/utils";
 import { THAI_RE } from "@/lib/thai";
 import { useLibraryPreview } from "@/components/song/use-library-preview";
@@ -1258,15 +1258,12 @@ export function SongLibrary({
   }
 
   // Tell any open Live Mode (same band) that a song's audio changed, so it
-  // re-resolves in real time. Group-scoped broadcast → reaches every device.
+  // re-resolves in real time. Group-scoped broadcast → reaches every device. A one-off
+  // send (lib/realtime.ts sendOnTopic, 2026-11-05 hunt 13): the old join-then-remove
+  // channel sent nothing when this device already held the topic, and a Live opened
+  // on this device inside its 600 ms was handed it and then lost it.
   function broadcastSongsChanged(groupId: string) {
-    const ch = privateChannel(supabase, songsTopic(groupId));
-    ch.subscribe((status) => {
-      if (status === "SUBSCRIBED") {
-        ch.send({ type: "broadcast", event: "changed", payload: {} });
-        setTimeout(() => supabase.removeChannel(ch), 600);
-      }
-    });
+    void sendOnTopic(supabase, songsTopic(groupId), "changed", {});
   }
 
   // The measuring half of an upload (see uploadSongAudio): the new file's own length and its

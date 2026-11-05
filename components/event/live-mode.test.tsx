@@ -2841,9 +2841,9 @@ describe("LiveMode · a show left running long ago comes back paused", () => {
     expect(seeks.at(-1)?.value).toBe(50);
   });
 
-  it("a minute after a crash: the show carries on running, as before", async () => {
+  it("seconds after a crash (a reload): the show carries on running, as before", async () => {
     h.saved = [{ itemId: "item-1", blob: new Blob(["audio"]), name: "song.wav", path: null }];
-    seedSnapshot(runningSnap(60_000, 50));
+    seedSnapshot(runningSnap(20_000, 50));
     await mountLive();
     await act(async () => {
       vi.advanceTimersByTime(3000);
@@ -3210,8 +3210,8 @@ describe("LiveMode · restore and announce edges", () => {
       expect(p?.audioPlaying).toBe(false);
     });
 
-    it("a minute after a crash: the previous track is still the one sounding, as before", async () => {
-      seedSnapshot(cued(60_000));
+    it("seconds after a crash (a reload): the previous track is still the one sounding, as before", async () => {
+      seedSnapshot(cued(20_000));
       await mountLive();
       const p = await announced();
       expect(p?.audioItemId).toBe("item-1");

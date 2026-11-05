@@ -366,18 +366,31 @@ export function MyShow() {
   }, []);
 
   // ticking clock (same cadence as Live Mode), which also sees a clock that jumped before the
-  // render that would read the jump as a row run out (onClockGapRef, by Auto's advance)
+  // render that would read the jump as a row run out (onClockGapRef, by Auto's advance) - and a
+  // tick EARLIER than the last one, the wall clock set back by a time sync (2026-11-05, hunt 13)
   const lastTickRef = useRef(Date.now());
   const onClockGapRef = useRef<(gapMs: number) => void>(() => {});
   // Where the sounding file stood at the last tick: how far it moved across a gap (onClockGapRef).
-  const lastFileRef = useRef<{ id: string | null; at: number }>({ id: null, at: 0 });
+  // `el` and `sounding`: a file that ended inside the gap is known by them (hunt 13).
+  const lastFileRef = useRef<{ id: string | null; at: number; el: HTMLMediaElement | null; sounding: boolean }>({
+    id: null,
+    at: 0,
+    el: null,
+    sounding: false,
+  });
   useEffect(() => {
     const id = setInterval(() => {
       const t = Date.now();
       const gap = t - lastTickRef.current;
       lastTickRef.current = t;
-      if (gap > CLOCK_GAP_MS) onClockGapRef.current(gap);
-    lastFileRef.current = { id: playingIdRef.current, at: audioRef.current?.currentTime ?? 0 };
+      if (gap > CLOCK_GAP_MS || gap < -CLOCK_DRIFT_MS) onClockGapRef.current(gap);
+      const a = audioRef.current;
+      lastFileRef.current = {
+        id: playingIdRef.current,
+        at: a?.currentTime ?? 0,
+        el: a,
+        sounding: !!a && !a.paused && !a.ended && !a.error,
+      };
       setNow(t);
     }, 500);
     return () => clearInterval(id);
@@ -575,8 +588,11 @@ export function MyShow() {
         if (snap?.state?.begun && fresh) {
           // Gone longer than STALE_RESTORE_MS (a rehearsal closed while running), the
           // show comes back PAUSED where it stopped - nothing starts out of the PA by
-          // itself (lib/live-restore.ts). A crash a minute ago carries on as before.
-          const { state: s, stale } = restoreShow(snap.state as ShowState, snap.savedAt);
+          // itself (lib/live-restore.ts). Gone for minutes (`cut`: the laptop killed or
+          // rebooted mid-song) it comes back paused on its row the same way, and play goes
+          // on from where the song was cut, not past its end (2026-11-05, hunt 13). Back at
+          // once, it carries on as before.
+          const { state: s, stale, cut } = restoreShow(snap.state as ShowState, snap.savedAt);
           s.currentIndex = Math.min(s.currentIndex, Math.max(0, itemsRef.current.length - 1));
           setState(s);
           // Restore "the show already ended" too — the same fix, for the same
@@ -588,7 +604,8 @@ export function MyShow() {
           // navigate-away or quit.
           if (snap.ended) markShowEnded(true);
           // a fresh restore of a show mid-duck comes back ducked, its own level kept aside
-          if (!stale && snap.ducks && typeof snap.ducks === "object") {
+          // (a paused one does not: the sound that was ducked is over)
+          if (!stale && !cut && snap.ducks && typeof snap.ducks === "object") {
             const now: Record<string, number> = {};
             for (const [id, d] of Object.entries(snap.ducks as Record<string, { prev?: unknown; now?: unknown }>)) {
               if (typeof d?.prev !== "number" || typeof d?.now !== "number") continue;
@@ -606,6 +623,11 @@ export function MyShow() {
           } else if (stale) {
             toast.message("กู้คืนโชว์ที่ค้างไว้ — หยุดรอไว้ก่อน", {
               description: `ค้างมานานเกิน ${STALE_RESTORE_MS / 60_000} นาที เพลงจะไม่เล่นเอง — กดเล่นเมื่อพร้อม หรือกดรีเซ็ตถ้าจะเริ่มใหม่`,
+            });
+          } else if (cut) {
+            const min = Math.max(1, Math.ceil((Date.now() - snap.savedAt) / 60_000));
+            toast.message("กู้คืนโชว์ — หยุดรอไว้ที่เพลงที่ค้าง", {
+              description: `แอปปิดไปประมาณ ${min} นาที เพลงจะไม่เล่นเอง — กดเล่นเพื่อเล่นต่อจากจุดที่ค้าง หรือกดรีเซ็ตถ้าจะเริ่มใหม่`,
             });
           } else {
             toast.message("กู้คืนสถานะโชว์ที่ค้างไว้", {
@@ -1230,30 +1252,52 @@ export function MyShow() {
   // started the next song the moment the lid opened (2026-10-30, hunt 12; as Live Mode's). A
   // file sounding is the truth (a loop goes round: it is not one); with none, the row's time
   // shifts by the gap, on a visible page only. The show's total stays on real time.
+  // Two more, as Live Mode's (2026-11-05, hunt 13): a file that sounded at the last tick and has
+  // ENDED by this one played out inside the gap (the audio runs on through a JS freeze) - it
+  // counts as played, to its end, not as a silent row pushed back by the whole freeze. And the
+  // wall clock set BACK (a negative gap, a time sync): the row by the same rules and the show's
+  // total stay continuous, with no toast - nothing happened that the operator has to hear about.
   onClockGapRef.current = (gapMs) => {
     const s = stateRef.current;
-    if (!s.begun || !s.running || s.itemStartedAt == null || showEndedRef.current) return;
+    const back = gapMs < 0;
+    if (!s.begun || showEndedRef.current) return;
+    if (!s.running || s.itemStartedAt == null) {
+      // a paused row's clock does not read the wall; the show's total does
+      if (back && s.startedAt != null) setState({ ...s, startedAt: s.startedAt + gapMs });
+      return;
+    }
     const cur = itemsRef.current[s.currentIndex];
     if (!cur) return;
     const a = audioRef.current;
     const visible = document.visibilityState === "visible";
+    const last = lastFileRef.current;
     const fileSounds = !cur.loop && !!a && playingIdRef.current === cur.id && !a.paused && !a.ended && !a.error;
-    let itemStartedAt: number;
-    if (fileSounds) {
+    const playedOut =
+      !fileSounds && !cur.loop && !!a && a === last.el && last.id === cur.id && last.sounding && a.ended && !a.error;
+    let shift: number;
+    if ((fileSounds || playedOut) && a) {
+      // played out inside a freeze: nothing was lost (Live Mode's rule) - AUTO moves on at once
+      if (playedOut && !back) return;
       // what the file LOST across the gap, not its position (Live Mode's rule; Argon on hunt 12)
-      const last = lastFileRef.current;
+      const pos = playedOut && Number.isFinite(a.duration) && a.duration > 0 ? a.duration : a.currentTime;
       const lostMs =
         last.id === cur.id
-          ? gapMs - (a.currentTime - last.at) * 1000
-          : Date.now() - a.currentTime * 1000 - s.itemStartedAt;
-      if (lostMs < CLOCK_DRIFT_MS) return;
-      itemStartedAt = s.itemStartedAt + lostMs;
+          ? gapMs - (pos - last.at) * 1000
+          : back
+            ? gapMs // a row begun just before the step has no position of its own to go by
+            : Date.now() - pos * 1000 - s.itemStartedAt;
+      if (back ? lostMs > -CLOCK_DRIFT_MS : lostMs < CLOCK_DRIFT_MS) return;
+      shift = lostMs;
     } else {
-      itemStartedAt = s.itemStartedAt + gapMs; // hidden too: no throttling here while a show runs
+      shift = gapMs; // hidden too: no throttling here while a show runs
     }
-    const lost = Math.round(Math.abs(itemStartedAt - s.itemStartedAt) / 1000);
-    setState({ ...s, itemStartedAt });
-    if (visible) {
+    const lost = Math.round(Math.abs(shift) / 1000);
+    setState({
+      ...s,
+      itemStartedAt: s.itemStartedAt + shift,
+      startedAt: back && s.startedAt != null ? s.startedAt + shift : s.startedAt,
+    });
+    if (visible && !back) {
       toast.warning(`เครื่องหยุดไป ${lost} วินาที`, {
         description: fileSounds ? "เวลารายการเดินตามเพลงต่อ" : "เวลารายการนี้ไม่นับช่วงที่เครื่องหยุด",
       });

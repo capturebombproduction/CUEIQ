@@ -7,7 +7,7 @@
 // never has to be whitelisted on the R2 bucket) and open the native file picker for
 // local-file ingest. Auth stays in the renderer: main only ever sees a presigned
 // URL the renderer already minted, so no R2/Supabase secret is bundled in the app.
-const { app, BrowserWindow, Menu, ipcMain, dialog, net, shell, powerSaveBlocker, powerMonitor } = require("electron");
+const { app, BrowserWindow, Menu, ipcMain, dialog, net, shell, powerSaveBlocker, powerMonitor, session } = require("electron");
 const path = require("node:path");
 const fs = require("node:fs");
 const { pathToFileURL } = require("node:url");
@@ -324,12 +324,44 @@ const PICK_AUDIO_MAX_BYTES = 500 * 1024 * 1024;
 // to track whether it's already on/off.
 let powerSaveBlockerId = null;
 
+// While a show runs, what the page writes to localStorage - Live's and Quick Show's crash
+// snapshot above all - goes to the disk at once (2026-11-05, hunt 13). Chromium keeps those
+// writes in memory and commits them on a delay: five seconds, then about one commit a minute
+// (its rate limit; measured on Electron 45, killed after 100 s of writes, the value read back
+// was 40 s old). A renderer crash loses nothing - this process holds them - but a hard kill
+// (Task Manager, a blue screen, the power button held) lost up to a minute of the show: it
+// came back on the row before, with no show at all after a START, or running again after a
+// จบโชว์. flushStorageData() commits now (measured: at most a second lost). IndexedDB - the
+// outboxes, the audio - is written at once and needs none of this.
+const STORAGE_FLUSH_MS = 2000;
+let storageFlushTimer = null;
+function flushStorageNow() {
+  try {
+    session.defaultSession?.flushStorageData(); // the window's: it has no partition of its own
+  } catch {
+    /* best-effort: a flush must never get in the way of a show or a quit */
+  }
+}
+/** The app is on its way out (a quit, an update's install, Windows ending the session): a
+ *  renderer killed now is part of that, not a crash to reload (render-process-gone). */
+let appQuitting = false;
+app.on("before-quit", () => {
+  appQuitting = true;
+  flushStorageNow();
+});
+
 function startShowPowerSaveBlocker() {
+  if (storageFlushTimer === null) storageFlushTimer = setInterval(flushStorageNow, STORAGE_FLUSH_MS);
   if (powerSaveBlockerId !== null && powerSaveBlocker.isStarted(powerSaveBlockerId)) return;
   powerSaveBlockerId = powerSaveBlocker.start("prevent-display-sleep");
 }
 
 function stopShowPowerSaveBlocker() {
+  if (storageFlushTimer !== null) {
+    clearInterval(storageFlushTimer);
+    storageFlushTimer = null;
+    flushStorageNow(); // the show's last word (จบโชว์'s snapshot) goes to the disk too
+  }
   if (powerSaveBlockerId === null) return;
   if (powerSaveBlocker.isStarted(powerSaveBlockerId)) powerSaveBlocker.stop(powerSaveBlockerId);
   powerSaveBlockerId = null;
@@ -2549,16 +2581,26 @@ async function createWindow() {
   // 27–88 MB WAV blobs plus their decoded audio all at once. Reload by default —
   // the SPA persists a running show's snapshot (see the beforeunload guard above)
   // and restores it, so a reload recovers the show instead of just the window.
-  // "clean-exit"/"killed" are excluded: those are OUR OWN app.quit()/process kill,
-  // not a crash, and reloading then would fight a deliberate shutdown.
+  // "clean-exit" is excluded: that is OUR OWN app.quit(), not a crash, and reloading then
+  // would fight a deliberate shutdown. "killed" is a crash unless the app is quitting
+  // (appQuitting) - nothing here kills its own renderer, and one killed from outside (a
+  // child "CueIQ" ended in Task Manager, an antivirus) left a black window and a dead show,
+  // with no reload and no word (2026-11-05, hunt 13; measured: reason "killed", exit code 1).
   let recentReloads = [];
   const MAX_RELOADS_PER_WINDOW = 3;
   const RELOAD_WINDOW_MS = 60_000;
   // When a crash last took down a RUNNING show. Read before the resets below, and kept
   // across the loop: a renderer that dies again while booting has not re-armed the show yet.
   let showCrashAt = -Infinity;
+  // Windows is ending the session (a restart for an update, a shutdown) and may not wait for
+  // a clean quit: what the show wrote goes to the disk now, and nothing reloads from here on.
+  win.on("query-session-end", () => flushStorageNow());
+  win.on("session-end", () => {
+    appQuitting = true;
+    flushStorageNow();
+  });
   win.webContents.on("render-process-gone", (_e, details) => {
-    if (details.reason === "clean-exit" || details.reason === "killed") return;
+    if (details.reason === "clean-exit" || (details.reason === "killed" && appQuitting)) return;
     const now = Date.now();
     if (updateBusyReason() === "show") showCrashAt = now;
     stopShowPowerSaveBlocker(); // the document that was holding it is gone either way

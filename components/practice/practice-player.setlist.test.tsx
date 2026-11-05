@@ -149,6 +149,7 @@ vi.mock("@/lib/supabase/client", () => ({
       if (open) return open;
       let joined = false;
       const ch = {
+        topic: `realtime:${topic}`,
         subscribe: (cb: (s: string) => void) => {
           if (joined) return ch;
           joined = true;
@@ -163,6 +164,7 @@ vi.mock("@/lib/supabase/client", () => ({
       h.channels.set(topic, ch);
       return ch;
     },
+    getChannels: () => [...h.channels.values()],
     removeChannel: (ch: unknown) =>
       new Promise((r) => setTimeout(r, h.leaveMs)).then(() => {
         for (const [t, c] of h.channels) if (c === ch) h.channels.delete(t);

@@ -38,7 +38,7 @@ import {
   type AudioUploadOp,
 } from "@/lib/audio-upload-queue";
 import { removeEventAudio, uploadEventAudio, uploadTimeoutMs } from "@/lib/audio-remote";
-import { liveTopic, privateChannel, songsTopic } from "@/lib/realtime";
+import { liveTopic, sendOnTopic, songsTopic } from "@/lib/realtime";
 import { clearLocalSource, getLocalSource } from "@/lib/local-source";
 import { cacheSongBlob } from "@/lib/song-cache";
 import { STALE_FILE_FACTS, writeSongFileFacts } from "@/lib/song-file-facts";
@@ -690,43 +690,25 @@ function putQueuedAudioOnce(path: string, blob: Blob, contentType: string): Prom
  * RealtimeChannel.subscribe() only runs its join callback (where the send()
  * below lives) when the channel is CLOSED. On an open channel it is a same-tick
  * no-op: the "SUBSCRIBED" branch never fires and the broadcast silently vanishes
- * with no error anywhere. So: reuse an already-open channel directly, and only
- * create+subscribe+tear down a channel of our own when none exists yet. A
- * channel we created is removed on every terminal status, not just SUBSCRIBED —
- * an errored/timed-out join still holds the topic and must not leak it for the
- * rest of the session.
+ * with no error anywhere. So: reuse an already-open channel directly, and with none
+ * open send without joining at all (broadcastOnTopic → lib/realtime.ts sendOnTopic,
+ * 2026-11-05: a joined channel of our own was handed to a Live Mode mounting while
+ * it lived, and torn down under it when we removed it).
  */
 function broadcastAudioChanged(groupId: string): void {
   broadcastOnTopic(songsTopic(groupId), "changed", {});
 }
 
-/** One broadcast on `topic`, reusing a channel someone already holds open (see above). */
+/** One broadcast on `topic`, reusing a channel someone already holds open (see above).
+ *  lib/realtime.ts sendOnTopic (2026-11-05, hunt 13): a channel of our own, joined and removed
+ *  600 ms later, was handed to a Live Mode mounting inside that window and torn down under it;
+ *  now nothing joins, and a channel someone else holds is never removed. */
 function broadcastOnTopic(topic: string, event: string, payload: Record<string, unknown>): void {
-  const supabase = createClient();
-  // RealtimeClient stores channels under a "realtime:" prefixed topic — see
-  // RealtimeClient.channel() in @supabase/realtime-js.
-  const existing = supabase.getChannels().find((c) => c.topic === `realtime:${topic}`);
-  if (existing) {
-    // Someone else (Live Mode, the setlist builder) owns this channel's lifecycle —
-    // send on it as-is and never remove a channel we didn't create.
-    existing.send({ type: "broadcast", event, payload });
-    return;
+  try {
+    void sendOnTopic(createClient(), topic, event, payload);
+  } catch {
+    /* best-effort: the write landed either way */
   }
-  const ch = privateChannel(supabase, topic);
-  ch.subscribe((status) => {
-    if (status === "SUBSCRIBED") {
-      ch.send({ type: "broadcast", event, payload });
-      setTimeout(() => supabase.removeChannel(ch), 600);
-    } else if (
-      status === "CHANNEL_ERROR" ||
-      status === "TIMED_OUT" ||
-      status === "CLOSED"
-    ) {
-      // Never reached SUBSCRIBED (or the socket dropped it) — remove it here or
-      // this channel, and the topic it holds, leaks for the rest of the session.
-      supabase.removeChannel(ch);
-    }
-  });
 }
 
 /**

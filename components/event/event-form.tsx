@@ -6,7 +6,7 @@ import { toast } from "sonner";
 import { QUEUED_BEHIND_PENDING_MESSAGE, saveEventWrite } from "@/lib/mgmt-write";
 import { useHoldBottomSlot } from "@/lib/bottom-slot";
 import { createClient } from "@/lib/supabase/client";
-import { liveTopic, privateChannel } from "@/lib/realtime";
+import { liveTopic, sendOnTopic } from "@/lib/realtime";
 import { notify } from "@/lib/notify-client";
 import { useConfirm } from "@/components/ui/confirm-dialog";
 import { useUnsavedDraftGuard } from "@/components/event/use-leave-guard";
@@ -71,31 +71,14 @@ function friendlyError(message?: string): string | undefined {
 /**
  * The show's day, start or Hard Out changed: tell a Live Mode that is open on it (2026-10-30,
  * hunt 12). It read them once when it opened, and a Hard Out cut on a phone left the PA judging
- * the show against the old one all night. Its own short-lived channel, as the practice room's
- * note to Live (setlist-run-card.tsx): this form navigates away at once. Best-effort.
+ * the show against the old one all night. A one-off send (lib/realtime.ts sendOnTopic): this
+ * form navigates away at once, and the show page it lands on opens the same topic - its own
+ * short-lived channel used to be handed to that page and then torn down under it (2026-11-05,
+ * hunt 13). Best-effort.
  */
 function tellLiveTimesChanged(eventId: string) {
   try {
-    const supabase = createClient();
-    const ch = privateChannel(supabase, liveTopic(eventId));
-    let closed = false;
-    const close = () => {
-      if (closed) return;
-      closed = true;
-      void Promise.resolve(supabase.removeChannel(ch)).catch(() => {});
-    };
-    ch.subscribe((status) => {
-      if (status !== "SUBSCRIBED") {
-        close(); // CHANNEL_ERROR / TIMED_OUT / CLOSED
-        return;
-      }
-      void Promise.resolve(
-        ch.send({ type: "broadcast", event: "setlist-changed", payload: { at: Date.now() } })
-      )
-        .catch(() => {})
-        .finally(close);
-    });
-    window.setTimeout(close, 10000); // never left open
+    void sendOnTopic(createClient(), liveTopic(eventId), "setlist-changed", { at: Date.now() });
   } catch {
     /* nothing here may stop a save */
   }

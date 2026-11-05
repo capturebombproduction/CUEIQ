@@ -692,8 +692,8 @@ describe("Quick Show — a show left running long ago comes back paused", () => 
     expect(countdown()).not.toBe(frozen);
   });
 
-  it("a minute after a crash: the clock carries on running", async () => {
-    window.localStorage.setItem(SNAPSHOT_KEY, runningSnap(60_000, 50));
+  it("seconds after a crash (a reload): the clock carries on running", async () => {
+    window.localStorage.setItem(SNAPSHOT_KEY, runningSnap(20_000, 50));
     await boot(threeUp());
     expect(positionLabel()).toBe("2 / 3");
     const before = countdown();

@@ -47,7 +47,7 @@
 import { createClient } from "@/lib/supabase/client";
 import { settleOnAbort } from "@/lib/idb-tx";
 import { hasLiveSession } from "@/lib/auth-session";
-import { privateChannel } from "@/lib/realtime";
+import { sendOnTopic } from "@/lib/realtime";
 import { notify } from "@/lib/notify-client";
 import { parseClockToSeconds } from "@/lib/time";
 // the same database's owner rule (2026-10-30, hunt 10) - see lib/show-run-outbox.ts
@@ -905,35 +905,13 @@ function broadcastRunOrderChanged(topics: string[]): void {
       // ⚠️ THE CHANNEL MAY ALREADY BE OURS. The browser supabase client is a
       // singleton and realtime dedupes by topic, so when the show-caller is
       // sitting on the board — the normal case for a flush — asking for this
-      // topic hands back the channel that board is already joined to. Two things
-      // follow, and both bit: subscribe() on a joined channel returns without
-      // ever invoking the callback (so a send nested inside it never happens),
-      // and removing it would tear the board's own channel out from under it,
-      // leaving that screen deaf to every other device for the rest of its life.
-      // So: send on an existing channel and leave it alone; only create, and only
-      // tear down, a channel we made ourselves.
-      const existing = supabase
-        .getChannels()
-        .find((c) => c.topic === `realtime:${topic}` || c.topic === topic);
-      if (existing) {
-        existing.send({ type: "broadcast", event: "changed", payload: {} });
-        continue;
-      }
-      const ch = privateChannel(supabase, topic);
-      ch.subscribe((status) => {
-        if (status === "SUBSCRIBED") {
-          ch.send({ type: "broadcast", event: "changed", payload: {} });
-          setTimeout(() => supabase.removeChannel(ch), 600);
-        } else if (
-          status === "CHANNEL_ERROR" ||
-          status === "TIMED_OUT" ||
-          status === "CLOSED"
-        ) {
-          // Otherwise a failed join strands a channel that still holds the topic,
-          // which a board mounting later would then be handed instead of its own.
-          supabase.removeChannel(ch);
-        }
-      });
+      // topic hands back the channel that board is already joined to: a join of
+      // our own never called back, and removing it tore the board's channel out
+      // from under it. The other order bit too (2026-11-05, hunt 13): a board
+      // mounting inside our own channel's life was handed OURS, and lost it when
+      // we removed it. sendOnTopic (lib/realtime.ts) sends on a channel already
+      // there and leaves it alone, else sends without joining at all.
+      void sendOnTopic(supabase, topic, "changed", {});
     } catch {
       /* realtime unavailable — the writes still landed */
     }

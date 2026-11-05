@@ -13,9 +13,9 @@ const running = (itemStartedAt: number) => ({
 });
 
 describe("restoreShow", () => {
-  it("a page back within the window carries its show on, untouched", () => {
-    const s = running(NOW - 90_000);
-    const r = restoreShow(s, NOW - 60_000, NOW);
+  it("a page back at once (a reload) carries its show on, untouched", () => {
+    const s = running(NOW - 50_000);
+    const r = restoreShow(s, NOW - 20_000, NOW);
     expect(r).toEqual({ state: s, stale: false });
   });
 

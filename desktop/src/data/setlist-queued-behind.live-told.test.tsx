@@ -163,7 +163,7 @@ describe("a queued setlist edit that lands reaches a running Live Mode", () => {
     expect(live.removed).toBe(false);
   });
 
-  it("with no screen holding the show's channel, it opens one, sends, and lets it go", async () => {
+  it("with no screen holding the show's channel, it sends without joining one, and lets it go", async () => {
     const rows = [{ ...server[0], title: "Song A (acoustic)" }, server[1]];
     await enqueueMgmtOp({
       kind: "setlist.upsert",
@@ -177,16 +177,11 @@ describe("a queued setlist edit that lands reaches a running Live Mode", () => {
     expect(await flushMgmtOutbox()).toMatchObject({ flushed: 1, parked: 0 });
     const ch = supa.channelFor(liveTopic(EVENT_ID))!;
     expect(ch).toBeTruthy();
-    expect(ch.sent).toHaveLength(0); // not before the join
-    vi.useFakeTimers();
-    try {
-      ch.setStatus("SUBSCRIBED");
-      expect(ch.sent.map((s) => s.event)).toEqual(["setlist-changed"]);
-      vi.advanceTimersByTime(1000);
-      expect(ch.removed).toBe(true);
-    } finally {
-      vi.useRealTimers();
-    }
+    // 2026-11-05 (hunt 13): no join of its own - a Live Mode mounting while that channel lived
+    // was handed it and lost it when it was removed (lib/realtime.ts sendOnTopic)
+    expect(ch.subscribe).not.toHaveBeenCalled();
+    expect(ch.sent.map((s) => s.event)).toEqual(["setlist-changed"]);
+    await waitFor(() => expect(ch.removed).toBe(true));
   });
 
   // A client never hears its own broadcast (lib/realtime.ts self: false): a Live Mode open on

@@ -63,6 +63,28 @@ describe("EventForm: the show's times and an open Live Mode", () => {
     expect(ch.removed).toBe(true);
   });
 
+  // 2026-11-05, hunt 13 (build-1): realtime hands an open channel to whoever asks for its topic.
+  // With a screen of this tab already on the show's channel (the Setlist tab, Live), the form's
+  // own join never called back - nothing was sent - and its 10 s clean-up removed that screen's
+  // channel: it sat deaf to every other device until a reload.
+  it("a screen already on the show's channel hears it there, and keeps its channel", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const page = supa.channel(liveTopic("e1"));
+      page.subscribe(() => {});
+      page.setStatus("SUBSCRIBED");
+      await edit(setHardOut);
+      expect(page.sent.map((s) => s.event)).toEqual(["setlist-changed"]);
+      await act(async () => {
+        vi.advanceTimersByTime(11_000);
+      });
+      expect(page.removed).toBe(false);
+      expect(supa.channels).toContain(page);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("a save that touched no time tells nobody", async () => {
     await edit(() => fireEvent.change(screen.getByLabelText("สถานที่"), { target: { value: "New Hall" } }));
     expect(supa.channelFor(liveTopic("e1"))).toBeFalsy();

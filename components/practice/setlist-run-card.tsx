@@ -18,7 +18,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { createClient } from "@/lib/supabase/client";
-import { liveTopic, privateChannel } from "@/lib/realtime";
+import { liveTopic, sendOnTopic } from "@/lib/realtime";
 import { hasLiveSession } from "@/lib/auth-session";
 import { writeFailureMessage } from "@/lib/practice-journal-gate";
 import { wroteNothing, noRowsMessage } from "@/lib/write-guard";
@@ -75,56 +75,22 @@ export type RoomSet = {
 // are one write, not three racing each other to the server.
 const SAVE_AFTER_MS = 700;
 
-// The Live Mode notices out right now, per show. ONE channel per show at a time:
-// supabase.channel() hands back the channel already open on a topic until
-// removeChannel() has finished with it, and subscribe() on that one never calls back -
-// so a second save (the next transition, a second after the first) sent nothing, and
-// Live Mode kept the old number. A save that lands while a notice is out asks for one
-// more: sent on the same channel if it is still up, else on a fresh one once the old
-// one is gone.
-const liveNotices = new Map<string, { again: boolean }>();
-
 /**
  * Tell a Live Mode screen already open on this show to pull the setlist again — the
  * same "setlist-changed" the setlist builder sends after each save — so it plays the
  * new overlap without a reload. Best-effort: a screen that misses it reads the number
  * on its next load.
+ *
+ * A one-off send (lib/realtime.ts sendOnTopic), no channel of its own (2026-11-05, hunt 13). The
+ * old short-lived channel needed a per-show queue here (a second save a second later rode the
+ * first one's leaving channel, whose subscribe() never called back), and a Live screen opened on
+ * this device inside its life was handed that channel and lost it when the notice closed it.
  */
 function tellLiveMode(eventId: string) {
-  const inFlight = liveNotices.get(eventId);
-  if (inFlight) {
-    inFlight.again = true;
-    return;
-  }
-  const notice = { again: false };
-  liveNotices.set(eventId, notice);
   try {
-    const supabase = createClient();
-    const ch = privateChannel(supabase, liveTopic(eventId));
-    let closed = false;
-    const close = () => {
-      if (closed) return;
-      closed = true;
-      void Promise.resolve(supabase.removeChannel(ch))
-        .catch(() => {})
-        .finally(() => {
-          liveNotices.delete(eventId);
-          if (notice.again) tellLiveMode(eventId);
-        });
-    };
-    const send = () => {
-      notice.again = false;
-      void ch
-        .send({ type: "broadcast", event: "setlist-changed", payload: { at: Date.now() } })
-        .finally(() => (notice.again && !closed ? send() : close()));
-    };
-    ch.subscribe((status) => {
-      if (status === "SUBSCRIBED") send();
-      else close(); // CHANNEL_ERROR / TIMED_OUT / CLOSED
-    });
-    window.setTimeout(close, 10000); // never left open
+    void sendOnTopic(createClient(), liveTopic(eventId), "setlist-changed", { at: Date.now() });
   } catch {
-    liveNotices.delete(eventId); // see above
+    /* best-effort, see above */
   }
 }
 
