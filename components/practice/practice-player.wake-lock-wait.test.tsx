@@ -74,7 +74,6 @@ vi.mock("@/lib/song-cache", () => ({ getSongBlob: (path: string) => Promise.reso
 vi.mock("@/lib/local-source", () => ({ getLocalSource: async () => null, listLocalSourceIds: async () => [] }));
 vi.mock("@/lib/mgmt-outbox", () => ({ MGMT_OUTBOX_EVENT: "cueiq-test-outbox" }));
 vi.mock("@/lib/bpm-detect", () => ({ detectBeats: () => null }));
-vi.mock("@/components/practice/metronome", () => ({ Metronome: () => null }));
 vi.mock("@/components/practice/break-timer", () => ({ BreakTimer: () => null }));
 vi.mock("@/lib/auth-session", () => ({ hasLiveSession: async () => true }));
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn(), info: vi.fn() } }));

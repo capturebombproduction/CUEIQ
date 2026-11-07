@@ -24,7 +24,6 @@ const BUDGET: Record<string, number> = {
   "components/event/device-storage.tsx": 6,
   "components/song/song-library.tsx": 4,
   "components/practice/practice-player.tsx": 3,
-  "components/practice/metronome.tsx": 2,
 };
 
 const repoRoot = path.resolve(__dirname, "..");

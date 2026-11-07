@@ -1,5 +1,5 @@
 // Desktop practice room — mirrors app/(app)/events/[id]/practice/page.tsx.
-// Reuses PracticeMode verbatim (slow-down/pitch + markers + metronome + journal).
+// Reuses PracticeMode verbatim (slow-down/pitch + markers + journal; metronome removed 2026-11-07).
 import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { ArrowLeft, ChevronLeft } from "lucide-react";

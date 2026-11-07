@@ -39,7 +39,6 @@ import { getSongBlob } from "@/lib/song-cache";
 import { getLocalSource, listLocalSourceIds } from "@/lib/local-source";
 import { MGMT_OUTBOX_EVENT } from "@/lib/mgmt-outbox";
 import { PracticeAudioEngine } from "@/lib/practice-audio";
-import { detectBeats } from "@/lib/bpm-detect";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { useConfirm } from "@/components/ui/confirm-dialog";
@@ -53,7 +52,6 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import { BreakTimer } from "@/components/practice/break-timer";
-import { Metronome } from "@/components/practice/metronome";
 import { SetlistRunCard } from "@/components/practice/setlist-run-card";
 import { roomQueue, timingParts, type QueueEntry } from "@/lib/practice-setlist";
 import { cn } from "@/lib/utils";
@@ -162,24 +160,12 @@ export function PracticePlayer({
   // hidden by a tab switch, used to vanish (and re-marking inserted a duplicate row).
   markers: Record<string, SongMarker[]>;
   setMarkers: Dispatch<SetStateAction<Record<string, SongMarker[]>>>;
-  canManage: boolean; // Ar/admin — gates only the metronome's "save BPM to song"
-  // (BPM lives on the guarded songs table)
+  canManage: boolean; // Ar/admin
   canCurate: boolean; // may edit THIS band's practice list + section markers
   onRunLogged?: () => void;
 }) {
   const confirm = useConfirm();
-  // A tempo the metronome saved to a song ("บันทึกลงเพลง") is that song's from now on.
-  // `songs` is the page-load snapshot, so without this a trip to another song and
-  // back handed the metronome the OLD bpm again (its song-change effect reads
-  // song.bpm) and the synced count ran at it until the page was reloaded.
-  const [savedBpm, setSavedBpm] = useState<Record<string, number>>({});
-  const songsById = useMemo(
-    () =>
-      new Map(
-        songs.map((s) => [s.id, s.id in savedBpm ? { ...s, bpm: savedBpm[s.id] } : s] as const)
-      ),
-    [songs, savedBpm]
-  );
+  const songsById = useMemo(() => new Map(songs.map((s) => [s.id, s] as const)), [songs]);
   // ⭐#1 step 7 — a song whose only copy is a file held on THIS device (an upload
   // queued at a venue with no wifi) is playable here, so it must not be filtered
   // out of the practice list as if it had no audio at all.
@@ -1630,27 +1616,9 @@ export function PracticePlayer({
         )}
       </section>
 
-      {/* practice tools: closed they are two keys; open, each is its own slab */}
+      {/* practice tools: closed it is a key; open, its own slab. The metronome was REMOVED
+          2026-11-07 on พี่'s word ("มีปัญหาเยอะและใช้ไม่ได้จริง") - do not bring it back. */}
       <div className="flex flex-wrap items-start gap-2">
-        <Metronome
-          song={current}
-          canManage={canManage}
-          // Not while the first slow-down decodes (the spinner): the engine keeps
-          // `playing` through it - a ⏸ there must still count as a pause - but the song
-          // is silent, and a synced count went on over the silence and stayed early by
-          // the whole decode once the song came back at the point it left (no jump for
-          // it to re-anchor on). It stops here and anchors again at the real restart.
-          playing={playing && !preparing}
-          position={cur}
-          // the playhead now, not the last ~4 Hz timeupdate `cur` is (see songPos there)
-          getPosition={() => engineRef.current?.position ?? cur}
-          speed={speed}
-          onBpmSaved={(songId, bpm) => setSavedBpm((m) => ({ ...m, [songId]: bpm }))}
-          onDetectBeats={async () => {
-            const buf = await engineRef.current?.getBuffer();
-            return buf ? detectBeats(buf) : null;
-          }}
-        />
         <BreakTimer />
       </div>
 
