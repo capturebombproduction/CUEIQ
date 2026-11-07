@@ -5450,27 +5450,123 @@ describe("LiveMode · SET MIXER pads", () => {
   // A row the pads left sounding UNDER NOW can come round again by the other roads - cued and
   // RUN in MANUAL, or Auto reaching it. It starts from its top on the row-on-now's element; the
   // copy still sounding underneath must not play on beside it (one row, two places in the song).
-  it("a row cued and RUN while it still sounds under NOW plays once - from its top", async () => {
+  // 2026-11-08 (พี่, rehearsing tonight's pad show: song 4, pad 5, back to song 4 - "ภาพไม่วิ่ง แต่เสียงเล่น
+  // ต่อปกติ"): a row tapped back to while it still sounds under NOW is NOW again where it IS. It used to
+  // be CUED - its clock frozen at 0:00 while it played on - and RUN then played it again from its top.
+  const moves = (media: MediaInstrumentation, el: HTMLMediaElement, from: number) =>
+    media
+      .callsFor(el)
+      .slice(from)
+      .map((c) => c.type)
+      .filter((x) => x === "play" || x === "pause" || x === "src" || x === "currentTime" || x === "load");
+  it("a row tapped back to while it still sounds under NOW is NOW again where it is - one copy, never restarted", async () => {
     const media = await startPads();
     await tick(1_000);
     await press(3);
     await tick(1_000);
     await press(5); // Track 3 goes under
-    expect(playing(media, "item-3")).toHaveLength(1);
-    // back to Track 3 in MANUAL: ← ← cues it, RUN commits it
+    const [three] = playing(media, "item-3");
+    expect(three).toBeTruthy();
+    media.set(three, { currentTime: 12 }); // 12 s into Track 3
+    const before = media.callsFor(three).length;
+    // back to Track 3 in MANUAL: ← ← (Track 4, the MC, is only passed over)
     pressKey(window, { key: "ArrowLeft", code: "ArrowLeft" });
     pressKey(window, { key: "ArrowLeft", code: "ArrowLeft" });
-    expect(last()).toMatchObject({ currentIndex: 2, running: false });
-    await act(async () => {
-      fireEvent.click(screen.getByTestId("run-toggle"));
-    });
-    const now = playing(media, "item-3");
-    expect(now).toHaveLength(1);
-    expect(media.state(now[0]).currentTime).toBe(0);
+    await act(async () => {});
+    expect(last()).toMatchObject({ currentIndex: 2, running: true, itemStartedAt: Date.now() - 12_000 });
+    // its sound is not touched - no pause, no new file, no seek - and there is one copy of it
+    expect(moves(media, three, before)).toEqual([]);
+    expect(playing(media, "item-3")).toEqual([three]);
+    // Track 5 went under in its place and plays on
+    expect(playing(media, "item-5")).toHaveLength(1);
     expect(pad(3)).toHaveAttribute("data-state", "on");
-    // the pads' word goes out on the state RUN made - on the one before, viewers would go back to the cue
+    expect(pad(5)).toHaveAttribute("data-state", "on");
+    // (Track 1, from START, still plays on under them both)
+    const under = last().pads.layers.map((l: { id: string }) => l.id);
+    expect(under).toContain("item-5");
+    expect(under).not.toContain("item-3");
+    // and its clock runs on
+    const r1 = screen.getByTestId("console-remain").textContent;
+    await tick(3_000);
+    expect(screen.getByTestId("console-remain").textContent).not.toBe(r1);
+  });
+
+  it("…a CONSOLE clip tapped does the same", async () => {
+    const media = await startPads();
+    await tick(1_000);
+    await press(3);
+    await tick(1_000);
+    await press(5);
+    const [three] = playing(media, "item-3");
+    const before = media.callsFor(three).length;
+    await act(async () => {
+      fireEvent.click(screen.getAllByTestId("console-clip")[2]);
+    });
     expect(last()).toMatchObject({ currentIndex: 2, running: true });
-    expect(last().pads.layers.map((l: { id: string }) => l.id)).not.toContain("item-3");
+    expect(moves(media, three, before)).toEqual([]);
+    expect(playing(media, "item-3")).toEqual([three]);
+  });
+
+  it("…but a row whose sound is on its way out (its green pad faded it) is cued, as before", async () => {
+    await startPads();
+    await tick(1_000);
+    await press(3);
+    await tick(1_000);
+    await press(5); // Track 3 goes under
+    await tick(1_000);
+    await press(3); // its green pad: Auto Mute's 3 s fade out
+    expect(pad(3)).toHaveAttribute("data-state", "fade");
+    pressKey(window, { key: "ArrowLeft", code: "ArrowLeft" });
+    pressKey(window, { key: "ArrowLeft", code: "ArrowLeft" });
+    await act(async () => {});
+    expect(last()).toMatchObject({ currentIndex: 2, running: false });
+  });
+
+  it("…and a Loop bed under a silent row is cued, as before - its row's own clock did not go under with it", async () => {
+    const set = [
+      makeItem(1, { duration_seconds: 200 }),
+      makeItem(2, { kind: "mc", title: "MC BGM", loop_audio: true, duration_seconds: 120 }),
+      makeItem(3, { kind: "mc", title: "MC talk", duration_seconds: 60 }),
+    ];
+    const media = instrumentMediaElements();
+    supa.setScript({ setlist_items: ok(set), songs: ok([]), show_authority: ok([]) });
+    // the talk has no file: a pad on it leaves the bed under it, sounding
+    h.saved = set.slice(0, 2).map((it) => ({
+      itemId: it.id,
+      blob: Object.assign(new Blob([it.id]), { row: it.id }),
+      name: `${it.id}.wav`,
+      path: null,
+    }));
+    await mountLive({ items: set });
+    await startShowFromUi();
+    await tick(1_000);
+    await press(2); // the bed
+    await tick(1_000);
+    await press(3); // the talk
+    expect(playing(media, "item-2")).toHaveLength(1);
+    expect(pad(2)).toHaveAttribute("data-state", "on");
+    pressKey(window, { key: "ArrowLeft", code: "ArrowLeft" });
+    await act(async () => {});
+    expect(last()).toMatchObject({ currentIndex: 1, running: false });
+  });
+
+  it("…and it keeps the level it sounds at: a song that went under ducked (MC) is not put back to full at once", async () => {
+    const media = await startPads();
+    await tick(1_000);
+    await press(3);
+    const [three] = playing(media, "item-3");
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "MC" }));
+    });
+    await tick(2_500); // the MC duck: Track 3 down to 30
+    expect(media.state(three).volume).toBeCloseTo(0.3, 2);
+    await press(5); // Track 3 goes under at 30, and its own level is given back
+    await tick(500);
+    pressKey(window, { key: "ArrowLeft", code: "ArrowLeft" });
+    pressKey(window, { key: "ArrowLeft", code: "ArrowLeft" });
+    await tick(500);
+    expect(last()).toMatchObject({ currentIndex: 2, running: true });
+    expect(media.state(three).volume).toBeCloseTo(0.3, 2);
   });
 
   it("a pad pressed over its own row's last seconds (Auto's overlap) plays it once - from its top", async () => {

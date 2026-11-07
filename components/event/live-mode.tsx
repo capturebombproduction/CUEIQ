@@ -4526,6 +4526,54 @@ export function LiveMode({
       setAudioDuration(0);
     });
   }
+  /** A tap (a running-order row, a CONSOLE clip, ← / →) on a row that still sounds UNDER the row
+   *  on now - a pad fired another row over it: it comes back as NOW where it IS. Its own element
+   *  becomes the primary, its sound never stopped, restarted or moved, and what was NOW goes under
+   *  in its place, as a pad would put it (a loop bed fades out, as under a pad's new song). goto's
+   *  "returning to the track that is SOUNDING", for a layer (พี่ 2026-11-08). Not taken back - the
+   *  tap cues the row, as before: a layer on its way out (fading), and a Loop bed - its row's own
+   *  clock did not go under with it (the layer knows its FILE's place, and a bed goes round), so
+   *  its countdown, and AUTO's end of it (loopByClock), would come back wrong. False = nothing taken. */
+  function takeBackLayer(index: number): boolean {
+    if (!isControllerRef.current) return false;
+    const s = stateRef.current;
+    const it = itemsRef.current[index];
+    const layer = it ? liveLayers.of(it.id) : undefined;
+    const primary = audioRef.current;
+    if (!it || it.loop_audio || !layer || layer.fadeAt != null || !primary) return false;
+    const el = layer.el as HTMLAudioElement;
+    if (el === primary || idleEl(el)) return false;
+    const t = Date.now();
+    const pos = el.currentTime; // how far into the row: its file's place, as goto's sounding track
+    const keep = layer.level;
+    withLayers(() => {
+      liveLayers.release(el); // the primary now: off the layers, and it plays on untouched
+      const nowId = playingIdRef.current;
+      if (nowId && nowId !== it.id && !idleEl(primary)) {
+        const fired = padFiredRef.current;
+        const under = goUnder(primary, nowId, fired.id === nowId ? fired.at : 0);
+        if (under && loopRow(nowId)) liveLayers.fadeOut(under);
+      }
+      audioRef.current = el;
+      if (audioRef2.current === el) audioRef2.current = freePlayer([el]);
+      if (endedItemRef.current === it.id) endedItemRef.current = null;
+      playingIdRef.current = it.id;
+      setPlayingId(it.id);
+      setAudioPlaying(true);
+      setAudioCurrent(el.currentTime);
+      setAudioDuration(Number.isFinite(el.duration) && el.duration > 0 ? el.duration : 0);
+      // It keeps the level it sounds at. A row that went under ducked (MC) had its own level given
+      // back when it went, and NOW's level effect would put it there at once - a jump on the PA.
+      // Held as a fade key's duck (fadeKey): given back when it stops sounding.
+      if (Math.abs(levelOf(it.id) - keep) > 0.5) {
+        if (!(it.id in duckRef.current)) duckRef.current[it.id] = levelOf(it.id, intendedVolumes());
+        fadeVolumeFor(it.id, keep, 0);
+        broadcastVolume(it.id, Math.round(keep), 0);
+      }
+      apply({ ...s, currentIndex: index, running: true, itemStartedAt: t - pos * 1000, itemElapsedAtPause: null });
+    }, false);
+    return true;
+  }
   /** GO (and Enter): the row the GO bar names (goIndex), as its pad. Twice in a breath is one row, not two. */
   function goPad() {
     const next = goIndexRef.current;
@@ -4875,6 +4923,11 @@ export function LiveMode({
       });
       return;
     }
+    // …or it sounds UNDER the row on now: a pad fired another row over it, and it plays on
+    // (SET MIXER). It comes back as NOW where it IS (takeBackLayer). Cued, it stood frozen at
+    // 0:00 while it played on, and RUN then started it again from the top (2026-11-08, พี่'s
+    // rehearsal: song 4, pad 5, back to song 4 - "ภาพไม่วิ่ง แต่เสียงเล่นต่อปกติ").
+    if (state.begun && it && state.mode === "manual" && takeBackLayer(index)) return;
     if (state.mode === "auto") {
       // Auto: jump + play new track + run countdown
       apply({
