@@ -26,7 +26,7 @@ export const config = {
   matcher: [
     /*
      * Match all request paths EXCEPT:
-     * - static assets / images / audio (public/sounds/count/*.mp3) / fonts
+     * - static assets / images / audio / fonts
      * - /api/* (route handlers do their own auth, e.g. /api/audio/presign — running
      *   the proxy here would be a wasted second getUser() network call)
      * - /share/* (public run sheet via anon RPC — no session needed)

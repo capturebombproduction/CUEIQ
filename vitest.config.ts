@@ -165,11 +165,10 @@ export default defineConfig({
         // types say and what file:// actually loads is the bug that shipped to พี่.
         ["desktop/src/**/*.test.tsx", "desktop/src/**/*.test.ts"],
         {
-          // ORDER MATTERS and mirrors desktop/vite.config.ts exactly: the two shim
-          // entries must precede "@", because alias matching takes the first hit and
+          // ORDER MATTERS and mirrors desktop/vite.config.ts exactly: the shim
+          // entry must precede "@", because alias matching takes the first hit and
           // "@" also matches "@/lib/supabase/client".
           "@/lib/supabase/client": path.join(desktopSrc, "shims/supabase-client.ts"),
-          "@/lib/count-samples": path.join(desktopSrc, "shims/count-samples.ts"),
           "@": repoRoot,
           "~": desktopSrc,
           "next/navigation": path.join(desktopSrc, "shims/next-navigation.tsx"),
