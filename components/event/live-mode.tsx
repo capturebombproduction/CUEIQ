@@ -4581,6 +4581,9 @@ export function LiveMode({
     if (Date.now() - padFiredRef.current.at < PAD_SETTLE_MS) return;
     // START by Enter on its focused button and a second Enter: one intention, as Space and N
     if (justStarted()) return;
+    // The row GO names still sounds UNDER NOW (its pad, then one before it): GO brings it in where
+    // it is. As its pad - a green one - it faded out: GO took the sound away (2026-11-08 usage walk).
+    if (takeBackLayer(next)) return;
     firePad(next);
   }
   /** A tile's fader: the row's level (kept, sent, NOW's element when it is NOW) and its layer's. */

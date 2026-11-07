@@ -5522,6 +5522,25 @@ describe("LiveMode · SET MIXER pads", () => {
     expect(last()).toMatchObject({ currentIndex: 2, running: false });
   });
 
+  it("GO on a row still sounding under NOW brings it in where it is - it never fades it out", async () => {
+    const media = await startPads();
+    await tick(1_000);
+    await press(3);
+    await tick(1_000);
+    await press(2); // NOW = Track 2; Track 3 plays on under it, and GO names it (the row after NOW)
+    await tick(1_000);
+    const [three] = playing(media, "item-3");
+    const before = media.callsFor(three).length;
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("console-go"));
+    });
+    expect(last()).toMatchObject({ currentIndex: 2, running: true });
+    expect(moves(media, three, before)).toEqual([]);
+    expect(playing(media, "item-3")).toEqual([three]);
+    expect(pad(3)).toHaveAttribute("data-state", "on");
+    expect(pad(2)).toHaveAttribute("data-state", "on"); // Track 2 went under in its place
+  });
+
   it("…and a Loop bed under a silent row is cued, as before - its row's own clock did not go under with it", async () => {
     const set = [
       makeItem(1, { duration_seconds: 200 }),
