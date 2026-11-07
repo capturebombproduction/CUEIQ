@@ -4,7 +4,7 @@
 // builds, the STAGE meters or CONSOLE's analysis, may ever reach an output. And CONSOLE's
 // analysis must read after each player's fader, and leave nothing behind when it stops.
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { SignalTap } from "./live-signal";
+import { isDesktopApp, SignalTap, signalTapSupported } from "./live-signal";
 import { kWeighting } from "./song-analysis";
 
 class FakeNode {
@@ -303,5 +303,62 @@ describe("SignalTap · it hears the song that is playing NOW", () => {
     a.st.paused = true;
     expect(tap2.read().ready).toBe(true);
     expect(tap2.read().rmsL).toBeCloseTo(0.4, 5);
+  });
+});
+
+// 2026-11-08 (พี่: users asked why the meters and the EQ never moved on the web): the tap runs on
+// Chrome / Edge on the web too; Firefox (its captureStream silences the element) and Safari (none)
+// still do not. The alarms stay the desktop app's - isDesktopApp is what live-mode.tsx gates them on.
+describe("signalTapSupported · where it taps", () => {
+  const nav = navigator as unknown as Record<string, unknown>;
+  const setUA = (ua: string) => Object.defineProperty(navigator, "userAgent", { get: () => ua, configurable: true });
+  const setBrands = (brands: string[] | null) =>
+    Object.defineProperty(navigator, "userAgentData", {
+      value: brands ? { brands: brands.map((brand) => ({ brand, version: "130" })) } : undefined,
+      configurable: true,
+    });
+  const onTheWeb = () => {
+    (window as unknown as Record<string, unknown>).cueiqNative = undefined;
+  };
+  afterEach(() => {
+    delete nav.userAgent;
+    delete nav.userAgentData;
+  });
+  const CHROME_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36";
+
+  it("the desktop app taps, and it is the desktop app (its alarms run)", () => {
+    expect(signalTapSupported()).toBe(true);
+    expect(isDesktopApp()).toBe(true);
+  });
+  it("Chrome on the web taps - and is not the desktop app (no alarms)", () => {
+    onTheWeb();
+    setBrands(["Chromium", "Google Chrome", "Not?A_Brand"]);
+    expect(signalTapSupported()).toBe(true);
+    expect(isDesktopApp()).toBe(false);
+  });
+  it("Edge on the web taps, read off its user agent where it names no brands", () => {
+    onTheWeb();
+    setBrands(null);
+    setUA(CHROME_UA + " Edg/130.0.0.0");
+    expect(signalTapSupported()).toBe(true);
+  });
+  it("Firefox never taps - even with a captureStream, it would silence the song", () => {
+    onTheWeb();
+    setBrands(null);
+    setUA("Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:132.0) Gecko/20100101 Firefox/132.0");
+    expect(signalTapSupported()).toBe(false);
+  });
+  it("Safari has no captureStream: no tap", () => {
+    onTheWeb();
+    setBrands(null);
+    setUA("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.1 Safari/605.1.15");
+    delete (HTMLMediaElement.prototype as unknown as { captureStream?: unknown }).captureStream;
+    expect(signalTapSupported()).toBe(false);
+  });
+  it("Chrome on an iPhone is WebKit: no tap", () => {
+    onTheWeb();
+    setBrands(null);
+    setUA("Mozilla/5.0 (iPhone; CPU iPhone OS 18_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/130.0.6723.90 Mobile/15E148 Safari/604.1");
+    expect(signalTapSupported()).toBe(false);
   });
 });

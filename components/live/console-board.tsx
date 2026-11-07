@@ -400,7 +400,7 @@ export function ConsoleBoard({
           </div>
           {!tap ? (
             <p className="shrink-0 px-3 pb-2 text-[11.5px] leading-snug text-muted-foreground [@container_(max-height:420px)]:hidden">
-              มิเตอร์ทำงานในแอปเดสก์ท็อปเท่านั้น
+              มิเตอร์ทำงานในแอปบนคอม และ Chrome / Edge
             </p>
           ) : (
             <div className="flex shrink-0 items-baseline justify-between px-3 pb-2">
@@ -929,7 +929,7 @@ const ClipEditor = memo(function ClipEditor({
 
 // ── THE BOTTOM PANEL ──────────────────────────────────────────────────────────────────────
 // ANALYZER | SET MIXER | SPECTROGRAM. The two that read the live sound need the tap (the desktop
-// app); the web build has the SET MIXER alone. The choice is kept per device. On a short stage
+// app, Chrome / Edge on the web); Safari and Firefox have the SET MIXER alone. The choice is kept per device. On a short stage
 // the whole panel steps aside (the column's container query) and the analysis stops drawing.
 type PanelTab = "analyzer" | "mixer" | "spectrogram";
 const TAB_KEY = "cueiq:consoleTab";

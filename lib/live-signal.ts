@@ -6,8 +6,13 @@
 // createMediaElementSource: that one REROUTES the element through the graph (the desktop smoke's
 // measureTheSound uses it because a test may; a show may not). Live audio is zero-tolerance.
 //
-// ⚠️ CHROMIUM ONLY (the desktop app). Firefox's captureStream SILENCES the element it copies,
-// and Safari has none; signalTapSupported() is the gate and the web build never taps.
+// ⚠️ CHROMIUM ONLY: the desktop app, and since 2026-11-08 Chrome / Edge on the web too (พี่: users
+// asked why the meters and the EQ never moved on the web). Firefox's captureStream SILENCES the
+// element it copies, and Safari has none; signalTapSupported() is the gate. On the web the songs
+// play from blob: copies on the device (same-origin), so the copy hears them as the desktop does.
+// The ALARMS stay the desktop app's (isDesktopApp, in live-mode.tsx): NO SIGNAL / Stalled /
+// DEVICE LOST were measured and tuned there, and a browser names no output device without a
+// microphone permission - on the web the tap is the meters and CONSOLE's analysis only.
 //
 // What it can say: the file is producing a signal, how loud, whether it clips, and whether the
 // playhead is moving. What it cannot: whether the cable after the computer, the mixer or the PA
@@ -150,12 +155,26 @@ export function outputLabel(sinkId: string, devices: readonly { deviceId: string
 // ── THE TAP (Web Audio; Chromium only) ────────────────────────────────────────────────
 type CapturableElement = HTMLMediaElement & { captureStream?: () => MediaStream };
 
-/** Only where a capture is a pure copy: Chromium, i.e. the desktop app. */
+/** The desktop app (Electron): the one place the Signal's alarms and the output's name run. */
+export function isDesktopApp(): boolean {
+  return typeof window !== "undefined" && !!(window as { cueiqNative?: { isElectron?: boolean } }).cueiqNative?.isElectron;
+}
+
+/** A Chromium browser on the web (Chrome, Edge, …): its captureStream is the desktop app's own. An
+ *  iOS browser is WebKit whatever it is called (CriOS, EdgiOS: no captureStream anyway). */
+export function isChromiumBrowser(): boolean {
+  if (typeof navigator === "undefined") return false;
+  const brands = (navigator as Navigator & { userAgentData?: { brands?: { brand: string }[] } }).userAgentData?.brands;
+  if (brands && brands.length > 0) return brands.some((b) => /Chromium/i.test(b.brand));
+  const ua = navigator.userAgent || "";
+  return /\b(?:Chrome|Chromium|Edg)\/\d/.test(ua) && !/\b(?:Firefox|FxiOS|CriOS|EdgiOS|OPiOS)\b/.test(ua);
+}
+
+/** Only where a capture is a pure copy: Chromium - the desktop app, Chrome / Edge on the web. */
 export function signalTapSupported(): boolean {
   if (typeof window === "undefined" || typeof AudioContext === "undefined") return false;
-  const isDesktop = !!(window as { cueiqNative?: { isElectron?: boolean } }).cueiqNative?.isElectron;
   const canCapture = typeof (HTMLMediaElement.prototype as CapturableElement).captureStream === "function";
-  return isDesktop && canCapture;
+  return canCapture && (isDesktopApp() || isChromiumBrowser());
 }
 
 export interface SignalReading {
@@ -297,7 +316,7 @@ export class SignalTap {
    * 8192-point spectrum, the raw left / right for the stereo picture, and BS.1770's K-weighting
    * (lib/song-analysis.ts's two stages, as IIR filters, per channel) into analysers long enough
    * to hold the 400 ms momentary block. Like everything here it ends in analysers: no output.
-   * null where there is no tap (the web build, an engine without IIR filters).
+   * null where there is no tap (Safari, Firefox, an engine without IIR filters).
    */
   startAnalysis(): AnalysisSource | null {
     const ctx = this.ctx;

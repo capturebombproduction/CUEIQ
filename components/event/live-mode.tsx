@@ -76,7 +76,7 @@ import { AudioOutputPicker, AUDIO_SINK_KEY, loadAudioSink } from "@/components/e
 import { NowCard } from "@/components/live/now-card";
 import { SignalStrip } from "@/components/live/signal-strip";
 import { useShowOutput } from "@/components/live/use-show-output";
-import { SignalTap, signalTapSupported, type SilenceVerdict } from "@/lib/live-signal";
+import { isDesktopApp, SignalTap, signalTapSupported, type SilenceVerdict } from "@/lib/live-signal";
 import { baseLevel, MC_LEVEL } from "@/lib/live-levels";
 import { decodeWaveform } from "@/lib/song-analysis";
 import { loudnessDelta, waveOverBlock, type SongSignalMap } from "@/lib/song-signal";
@@ -1230,9 +1230,12 @@ export function LiveMode({
     // eslint-disable-next-line react-hooks/exhaustive-deps -- makePlayer reads refs and setters only
   }, []);
 
-  // Live Signal (desktop app): meters + the NO SIGNAL watch, from a tap on a COPY of both
-  // players' output (lib/live-signal.ts - never in the audio path). After the players exist:
-  // effects run in order, so both elements are there to tap. Absent on the web build.
+  // Live Signal: meters + the NO SIGNAL watch, from a tap on a COPY of both players' output
+  // (lib/live-signal.ts - never in the audio path). After the players exist: effects run in order,
+  // so both elements are there to tap. The desktop app and Chrome / Edge on the web (2026-11-08);
+  // absent on Safari and Firefox. Its ALARMS - NO SIGNAL / Stalled / DEVICE LOST - and the output's
+  // name are the desktop app's only (signalAlarms): on the web the tap is the meters and the analysis.
+  const signalAlarms = isDesktopApp();
   const [signalTap, setSignalTap] = useState<SignalTap | null>(null);
   const signalTapRef = useRef<SignalTap | null>(null); // a pad's new element is tapped too
   const [signalVerdict, setSignalVerdict] = useState<SilenceVerdict>(null);
@@ -1250,7 +1253,7 @@ export function LiveMode({
     };
   }, []);
   // where the sound goes, and a change of device mid-show (the Signal strip + DEVICE LOST)
-  const showOutput = useShowOutput(sinkId, !!signalTap, state.begun);
+  const showOutput = useShowOutput(sinkId, !!signalTap && signalAlarms, state.begun);
 
   // Load this device's sound-output preference once (per-device, survives reload).
   useEffect(() => {
@@ -3714,7 +3717,7 @@ export function LiveMode({
   // The Signal alarm, laid over the NOW card's top strip (never in the flow: the countdown
   // keeps its size). The playing file has gone silent or stalled, or the sound's device
   // changed mid-show. Each clears itself when the cause does; a device change waits for ปิด.
-  const signalAlarm: ReactNode = signalVerdict ? (
+  const signalAlarm: ReactNode = signalVerdict && signalAlarms ? (
     <div role="alert" data-testid="signal-alarm" data-kind={signalVerdict} className="signal-band">
       <VolumeX aria-hidden />
       {signalVerdict === "frozen" ? (
@@ -6006,8 +6009,9 @@ export function LiveMode({
             </>
           )}
         </button>
-        {/* The meters (desktop app): what this machine sends, live. Hidden under stage; the
-            NO SIGNAL watch behind them runs regardless (its alarm is on the NOW card). */}
+        {/* The meters (desktop app, Chrome / Edge): what this machine sends, live. Hidden under
+            stage; the NO SIGNAL watch behind them runs regardless (its alarm, the desktop app's
+            only, is on the NOW card). */}
         {signalTap && soundOutput && (
           <SignalStrip
             tap={signalTap}
@@ -6237,7 +6241,7 @@ export function LiveMode({
           onVolume={isController && current ? (v) => setVolumeFor(current.id, v) : null}
           onFade={isController ? (target: number, ms?: number) => (target === 0 ? autoMute() : fadeKey(target, ms)) : null}
           volumeDead={volumeIsDead && soundOutput}
-          output={signalTap ? { label: showOutput.label, kind: showOutput.kind } : null}
+          output={signalTap && signalAlarms ? { label: showOutput.label, kind: showOutput.kind } : null}
           soundOn={soundOutput}
           onOutput={openTools}
           // STAGE's running-order tap, under the same lock

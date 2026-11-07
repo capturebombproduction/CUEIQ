@@ -329,7 +329,7 @@ describe("the playback channel", () => {
 
   it("without a tap (the web build) the meters stand unlit and say where they work", () => {
     mount();
-    expect(screen.getByText("มิเตอร์ทำงานในแอปเดสก์ท็อปเท่านั้น")).toBeTruthy();
+    expect(screen.getByText("มิเตอร์ทำงานในแอปบนคอม และ Chrome / Edge")).toBeTruthy();
     expect(screen.queryByTestId("console-peak")).toBeNull();
   });
 
