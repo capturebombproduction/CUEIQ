@@ -242,6 +242,26 @@ describe("LiveMode pads · before START (MANUAL)", () => {
     expect(playing(media, "item-1")).toHaveLength(1);
   });
 
+  // The venue's own failure: on the Wi-Fi with no route out, START's check never answers and its
+  // 1.5 s bound decides. For that long the pressed pad says so - a pad that looks dead gets pressed again.
+  it("a dead link: the pad says it is starting, a second pad meanwhile starts nothing, and the show begins on the first at 1.5 s", async () => {
+    const media = await openPads();
+    supa.setTable("show_authority", () => new Promise(() => {}));
+    await press(3);
+    expect(pad(3)).toHaveAttribute("data-starting", "1");
+    expect(pad(3).textContent).toContain("กำลังเริ่ม");
+    expect(stateSends().filter((s) => s.payload.begun)).toEqual([]);
+    expect(playing(media, "item-3")).toEqual([]);
+    await tick(500);
+    await press(5); // impatient: START takes one at a time, and this is not queued behind it
+    await tick(1_250);
+    expect(last()).toMatchObject({ begun: true, running: true, currentIndex: 2 });
+    expect(playing(media, "item-3")).toHaveLength(1);
+    expect(playing(media, "item-5")).toEqual([]);
+    expect(pad(3)).not.toHaveAttribute("data-starting");
+    expect(pad(3)).toHaveAttribute("data-state", "on");
+  });
+
   it("reset, then a pad: a new show begins on that pad's row", async () => {
     const media = await openPads();
     await press(3);
