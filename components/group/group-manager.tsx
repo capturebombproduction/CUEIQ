@@ -2,13 +2,14 @@
 
 import { useRef, useState, type CSSProperties } from "react";
 import { toast } from "sonner";
-import { Mic, Plus, Trash2, Undo2, Users } from "lucide-react";
+import { ArrowDown01, Mic, Plus, Trash2, Undo2, Users } from "lucide-react";
 import { BulkAddMembers } from "@/components/group/bulk-add-members";
 import { createClient } from "@/lib/supabase/client";
 import { removeEventAudio } from "@/lib/audio-remote";
 import { noRowsMessage, writeErrorText, wroteNothing } from "@/lib/write-guard";
 import { hasLiveSession } from "@/lib/auth-session";
 import { hasLeft, leftOnKey } from "@/lib/member-status";
+import { micOrderPlan } from "@/lib/member-order";
 import { bkkTodayKey } from "@/lib/time";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -310,6 +311,54 @@ export function GroupManager({
     // anon after a failed token refresh, or the row is gone). See lib/write-guard.ts.
     if (wroteNothing(data)) {
       toast.error("ยังไม่ได้บันทึก", { description: await noRowsMessage() });
+    }
+  }
+
+  /**
+   * "เรียงตามเลขไมค์" (2026-11-10): the band's members.sort_order rewritten to mic order
+   * (lib/member-order.ts) - the order they then stand in here, in a show's lineup and on the
+   * Mic Map. Each row is written only if it still carries the number this screen saw (another
+   * Ar adding a member meanwhile is not overwritten); what was written is shown, and a row
+   * that did not take leaves the button lit to press again.
+   */
+  const sortingMics = useRef(false);
+  async function sortByMic(groupId: string) {
+    if (sortingMics.current) return;
+    const plan = micOrderPlan(membersOf(groupId));
+    if (plan.length === 0) return;
+    const ok = await confirm({
+      title: "เรียงสมาชิกตามเลขไมค์?",
+      description:
+        "ลำดับสมาชิกของวงนี้จะเรียงตามเลขไมค์ (คนที่ยังไม่มีเลขไมค์อยู่ท้าย) ทั้งในหน้านี้ ไลน์อัปของงาน และ Mic Map — เลขไมค์ของแต่ละคนไม่เปลี่ยน",
+      confirmText: "เรียงเลย",
+      destructive: false,
+    });
+    if (!ok || sortingMics.current) return;
+    sortingMics.current = true;
+    try {
+      const done = await Promise.all(
+        plan.map(async (p) => {
+          const { data, error } = await supabase
+            .from("members")
+            .update({ sort_order: p.to })
+            .eq("id", p.id)
+            .eq("sort_order", p.from)
+            .select("id");
+          return { p, error, missed: !error && wroteNothing(data) };
+        })
+      );
+      const wrote = new Map(done.filter((d) => !d.error && !d.missed).map((d) => [d.p.id, d.p.to]));
+      if (wrote.size > 0) setMembers((prev) => prev.map((m) => (wrote.has(m.id) ? { ...m, sort_order: wrote.get(m.id)! } : m)));
+      const failed = done.find((d) => d.error);
+      if (failed || wrote.size < plan.length) {
+        toast.error(wrote.size > 0 ? "เรียงได้ไม่ครบ — กดเรียงอีกครั้ง" : "เรียงไม่สำเร็จ", {
+          description: failed?.error ? (writeErrorText(failed.error) ?? failed.error.message) : await noRowsMessage(),
+        });
+        return;
+      }
+      toast.success("เรียงตามเลขไมค์แล้ว");
+    } finally {
+      sortingMics.current = false;
     }
   }
 
@@ -763,6 +812,20 @@ export function GroupManager({
                           <Plus aria-hidden /> เพิ่มสมาชิก
                         </Button>
                         <BulkAddMembers onAdd={(text) => bulkAddMembers(g.id, text)} />
+                        {gm.length > 1 && (
+                          <Button
+                            variant="secondary"
+                            onClick={() => sortByMic(g.id)}
+                            disabled={micOrderPlan(membersOf(g.id)).length === 0}
+                            title={
+                              micOrderPlan(membersOf(g.id)).length === 0
+                                ? "เรียงตามเลขไมค์อยู่แล้ว"
+                                : "เรียงลำดับสมาชิกตามเลขไมค์ (คนไม่มีเลขไมค์อยู่ท้าย)"
+                            }
+                          >
+                            <ArrowDown01 aria-hidden /> เรียงตามเลขไมค์
+                          </Button>
+                        )}
                       </>
                     )}
                     {admin && (
