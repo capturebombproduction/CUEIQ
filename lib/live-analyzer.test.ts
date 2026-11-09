@@ -9,7 +9,9 @@ import {
   gatedIntegrated,
   loudnessRange,
   bandLevels,
-  THIRD_OCTAVES,
+  octaveBands,
+  SPECTRUM_BANDS,
+  spectrumX,
   spectrumPos,
   correlation,
   gonioPoints,
@@ -95,29 +97,76 @@ describe("loudness", () => {
 });
 
 describe("the spectrum", () => {
-  it("bins become third-octave bands by summed power", () => {
-    // 48 kHz, 8192-point FFT: 4096 bins of 5.86 Hz. One 0 dB bin at 1 kHz.
-    const bins = new Float32Array(4096).fill(-Infinity);
-    bins[Math.round(1000 / (24000 / 4096))] = 0;
-    const bands = bandLevels(bins, 48000);
-    expect(bands).toHaveLength(THIRD_OCTAVES.length);
-    expect(bands[THIRD_OCTAVES.indexOf(1000)]).toBeCloseTo(0, 6);
-    expect(bands[THIRD_OCTAVES.indexOf(2000)]).toBe(-Infinity);
-    // two equal bins in one band add up: +3 dB
-    bins[Math.round(1050 / (24000 / 4096))] = 0;
-    expect(bandLevels(bins, 48000)[THIRD_OCTAVES.indexOf(1000)]).toBeCloseTo(3.01, 2);
-    // a band is a THIRD of an octave: 1200 Hz is the 1250 band's (891-1122 | 1114-1403), not 1000's
-    bins[Math.round(1200 / (24000 / 4096))] = 0;
-    const third = bandLevels(bins, 48000);
-    expect(third[THIRD_OCTAVES.indexOf(1000)]).toBeCloseTo(3.01, 2);
-    expect(third[THIRD_OCTAVES.indexOf(1250)]).toBeCloseTo(0, 6);
+  // 48 kHz, 8192-point FFT (the tap's): 4096 bins of 5.86 Hz, bin i covering i ± ½
+  const HZ = 24000 / 4096;
+  const silent = () => new Float32Array(4096).fill(-Infinity);
+  const K1 = SPECTRUM_BANDS.indexOf(1000);
+
+  it("the bars are twelfths of an octave around 1 kHz, 20 Hz to 20 kHz", () => {
+    expect(SPECTRUM_BANDS).toHaveLength(121);
+    expect(K1).toBe(68);
+    expect(SPECTRUM_BANDS[0]).toBeCloseTo(19.69, 2);
+    expect(SPECTRUM_BANDS[120]).toBeCloseTo(20158.74, 1);
+    SPECTRUM_BANDS.slice(1).forEach((fc, i) => expect(fc / SPECTRUM_BANDS[i]).toBeCloseTo(Math.pow(2, 1 / 12), 9));
+    expect(octaveBands(3)).toHaveLength(31);
   });
 
-  it("a band narrower than one bin takes the bin its centre falls in", () => {
-    // 48 kHz, 1024-point FFT: 46.9 Hz bins - the 20-40 Hz bands hold no bin edge to edge
-    const bins = new Float32Array(512).fill(-Infinity);
-    bins[1] = -6;
-    expect(bandLevels(bins, 48000)[THIRD_OCTAVES.indexOf(40)]).toBeCloseTo(-6, 6);
+  it("a frequency label sits over its own bar", () => {
+    expect(spectrumX(1000)).toBeCloseTo(68.5 / 121, 9);
+    expect(spectrumX(SPECTRUM_BANDS[0])).toBeCloseTo(0.5 / 121, 9);
+    expect(spectrumX(2000) - spectrumX(1000)).toBeCloseTo(12 / 121, 9);
+  });
+
+  it("a band is the power of the bins inside it, read as a third octave's worth", () => {
+    // one 0 dB bin at 1 kHz: its own band only (972-1029 Hz), 4 twelfths to the third = +6 dB
+    const bins = silent();
+    bins[Math.round(1000 / HZ)] = 0;
+    const one = bandLevels(bins, 48000);
+    expect(one).toHaveLength(SPECTRUM_BANDS.length);
+    expect(one[K1]).toBeCloseTo(6.02, 2);
+    expect(one[K1 - 1]).toBe(-Infinity);
+    expect(one[K1 + 1]).toBe(-Infinity);
+    // two equal bins in one band add up: +3 dB
+    bins[Math.round(1015 / HZ)] = 0;
+    expect(bandLevels(bins, 48000)[K1]).toBeCloseTo(9.03, 2);
+    // a flat spectrum stands exactly as tall as it did under third-octave bars
+    const flat = new Float32Array(4096).fill(-40);
+    const third = -40 + 10 * Math.log10((1000 * (Math.pow(2, 1 / 6) - Math.pow(2, -1 / 6))) / HZ);
+    expect(bandLevels(flat, 48000)[K1]).toBeCloseTo(third, 1);
+    expect(bandLevels(flat, 48000, octaveBands(3), 3)[octaveBands(3).indexOf(1000)]).toBeCloseTo(third, 1);
+  });
+
+  it("a bin the band's edge cuts is shared with the neighbour, none of it lost or counted twice", () => {
+    // 1 kHz's band ends at 1029.3 Hz = bin 175.67: bin 176 (175.5-176.5) is 17 % its, 83 % the next's
+    const bins = silent();
+    bins[176] = 0;
+    const b = bandLevels(bins, 48000);
+    const lin = (db: number) => Math.pow(10, db / 10) / 4; // back from "a third octave's worth"
+    expect(lin(b[K1])).toBeCloseTo(0.17, 2);
+    expect(lin(b[K1 + 1])).toBeCloseTo(0.83, 2);
+    expect(lin(b[K1]) + lin(b[K1 + 1])).toBeCloseTo(1, 9);
+  });
+
+  it("bands narrower than a bin draw the slope between two bins, not steps of one bin", () => {
+    // bins 4 (23.4 Hz) and 5 (29.3 Hz): the 24.8 / 26.3 / 27.8 Hz bands all lie between them
+    const bins = silent();
+    bins[4] = -20;
+    bins[5] = -10;
+    const b = bandLevels(bins, 48000);
+    const [k1, k2, k3] = [24.8, 26.3, 27.8].map((hz) => SPECTRUM_BANDS.findIndex((fc) => Math.abs(fc - hz) < 0.1));
+    expect([k1, k2, k3]).toEqual([4, 5, 6]);
+    expect(b[k1]).toBeLessThan(b[k2] - 1);
+    expect(b[k2]).toBeLessThan(b[k3] - 1);
+    // exactly: the power between the two bins at the band's centre, times the band's width in bins
+    const c = SPECTRUM_BANDS[k2] / HZ;
+    const width = (SPECTRUM_BANDS[k2] * (Math.pow(2, 1 / 24) - Math.pow(2, -1 / 24))) / HZ;
+    expect(width).toBeLessThan(1);
+    expect(b[k2]).toBeCloseTo(10 * Math.log10((0.01 * (5 - c) + 0.1 * (c - 4)) * width * 4), 6);
+  });
+
+  it("no bins, or no sample rate: every bar is silent", () => {
+    expect(bandLevels(new Float32Array(0), 48000).every((v) => v === -Infinity)).toBe(true);
+    expect(bandLevels(silent(), 0)).toHaveLength(121);
   });
 
   it("the bar scale: −72 dB empty, 0 full", () => {

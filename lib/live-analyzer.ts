@@ -150,33 +150,61 @@ function historyBars(seconds: readonly { sec: number; max: number }[], now: numb
 }
 
 // ── THE SPECTRUM ─────────────────────────────────────────────────────────────────────────
-/** The ISO 266 third-octave centres from 20 Hz to 20 kHz (31 bands). */
-export const THIRD_OCTAVES = [
-  20, 25, 31.5, 40, 50, 63, 80, 100, 125, 160, 200, 250, 315, 400, 500, 630, 800, 1000, 1250, 1600, 2000, 2500, 3150,
-  4000, 5000, 6300, 8000, 10000, 12500, 16000, 20000,
-];
+/**
+ * The analyzer's bars: twelfths of an octave (2026-11-10 - third octaves drew 31 fat bars, and
+ * the 8192-point spectrum holds four times that). Centres on IEC 61260's base-2 series around
+ * 1 kHz, the ones from 20 Hz to 20 kHz: 121 bands, 19.7 Hz to 20.2 kHz.
+ */
+export const SPECTRUM_PER_OCTAVE = 12;
+export function octaveBands(perOctave: number, from = 20, to = 20000): number[] {
+  const out: number[] = [];
+  for (let k = Math.round(perOctave * Math.log2(from / 1000)); k <= Math.round(perOctave * Math.log2(to / 1000)); k++)
+    out.push(1000 * Math.pow(2, k / perOctave));
+  return out;
+}
+export const SPECTRUM_BANDS: readonly number[] = octaveBands(SPECTRUM_PER_OCTAVE);
+/** Where a frequency sits across the bars, 0-1 (a band's centre is the middle of its bar). */
+export const spectrumX = (hz: number) =>
+  (SPECTRUM_PER_OCTAVE * Math.log2(hz / SPECTRUM_BANDS[0]) + 0.5) / SPECTRUM_BANDS.length;
 
 /**
- * An AnalyserNode's frequency data (dB per bin, getFloatFrequencyData) as third-octave band
- * levels: the power of every bin inside the band summed (a band narrower than one bin - the
- * bottom octaves of a short FFT - takes the bin its centre falls in). dB, −Infinity for silence.
+ * An AnalyserNode's frequency data (dB per bin, getFloatFrequencyData) as band levels, dB
+ * (−Infinity for silence). A band's power is every bin inside it, a bin the band's edge cuts
+ * counting for the part inside (bin i covers i ± ½). A band narrower than one bin - under about
+ * 100 Hz with twelfths on an 8192-point FFT - reads the spectrum between the two bins around its
+ * centre, times its own width: the two rules meet where a band is exactly one bin wide, and the
+ * bottom octave draws as a slope instead of steps of the same bin.
+ *
+ * The level is given as a THIRD octave's worth (× perOctave / 3): music then stands as tall on
+ * the −72..0 scale as it did under the third-octave bars, however fine the bars. (A lone tone
+ * so reads 6 dB over its own power on twelfths - this is a picture of the mix, not a voltmeter.)
  */
-export function bandLevels(binsDb: Float32Array, sampleRate: number, bands: readonly number[] = THIRD_OCTAVES): number[] {
+export function bandLevels(
+  binsDb: Float32Array,
+  sampleRate: number,
+  bands: readonly number[] = SPECTRUM_BANDS,
+  perOctave: number = SPECTRUM_PER_OCTAVE,
+): number[] {
   const n = binsDb.length; // fftSize / 2
   if (n === 0 || !(sampleRate > 0)) return bands.map(() => -Infinity);
   const hzPerBin = sampleRate / 2 / n;
-  const edge = Math.pow(2, 1 / 6);
+  const edge = Math.pow(2, 1 / (2 * perOctave));
+  const power = (i: number) => (i >= 0 && i < n && Number.isFinite(binsDb[i]) ? Math.pow(10, binsDb[i] / 10) : 0);
   return bands.map((fc) => {
-    const lo = Math.max(0, Math.ceil(fc / edge / hzPerBin));
-    const hi = Math.min(n - 1, Math.floor((fc * edge) / hzPerBin));
+    const a = fc / edge / hzPerBin;
+    const b = Math.min(n - 0.5, (fc * edge) / hzPerBin);
     let p = 0;
-    if (hi >= lo) {
-      for (let i = lo; i <= hi; i++) if (Number.isFinite(binsDb[i])) p += Math.pow(10, binsDb[i] / 10);
-    } else {
-      const i = Math.min(n - 1, Math.round(fc / hzPerBin));
-      if (Number.isFinite(binsDb[i])) p = Math.pow(10, binsDb[i] / 10);
+    if (b - a >= 1) {
+      for (let i = Math.max(0, Math.round(a)); i <= Math.min(n - 1, Math.round(b)); i++) {
+        const inside = Math.min(b, i + 0.5) - Math.max(a, i - 0.5);
+        if (inside > 0) p += power(i) * inside;
+      }
+    } else if (b > a) {
+      const c = fc / hzPerBin;
+      const i = Math.floor(c);
+      p = (power(i) * (1 - (c - i)) + power(i + 1) * (c - i)) * (b - a);
     }
-    return p > 0 ? 10 * Math.log10(p) : -Infinity;
+    return p > 0 ? 10 * Math.log10((p * perOctave) / 3) : -Infinity;
   });
 }
 

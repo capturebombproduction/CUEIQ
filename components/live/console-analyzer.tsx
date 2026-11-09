@@ -1,6 +1,6 @@
 "use client";
 
-// CONSOLE's ANALYZER and SPECTROGRAM tabs (phase B2): the spectrum in third octaves, the stereo
+// CONSOLE's ANALYZER and SPECTROGRAM tabs (phase B2): the spectrum in twelfths of an octave, the stereo
 // picture (goniometer + phase correlation) and the loudness of what this machine is sending,
 // live - momentary, short-term, the song's integrated value, its loudness range, the sample
 // peak, and a minute of history against the −14 LUFS line. The SPECTROGRAM is the same spectrum
@@ -18,9 +18,12 @@ import {
   correlation,
   gonioPoints,
   LoudnessMeter,
+  octaveBands,
   spectrumPos,
+  spectrumX,
+  SPECTRUM_BANDS,
   SPECTRUM_FLOOR_DB,
-  THIRD_OCTAVES,
+  SPECTRUM_PER_OCTAVE,
   type AnalysisFrame,
   type LoudnessReading,
 } from "@/lib/live-analyzer";
@@ -33,6 +36,14 @@ const histPos = (lufs: number) => (Number.isFinite(lufs) ? Math.max(0, Math.min(
 /** The spectrum's peak marks hold this long, then fall. */
 const PEAK_HOLD_MS = 900;
 const PEAK_FALL_DB_PER_S = 24;
+/**
+ * The spectrum's bars: twelfths of an octave (121), or sixths (61, the same 20 Hz - 20 kHz) where
+ * twelfths would be under 3 px a bar and run together into one filled shape - a 1024 px window,
+ * an iPad. Both read as a third octave's worth, so the picture keeps its height either way.
+ */
+const FINE = { per: SPECTRUM_PER_OCTAVE, bands: SPECTRUM_BANDS };
+const COARSE = { per: 6, bands: octaveBands(6) };
+const MIN_BAR_SLOT = 3;
 /** The spectrogram's speed, pixels (CSS) per second. */
 const SPECTRO_PX_PER_S = 60;
 const FREQ_LABELS: [number, string][] = [
@@ -120,7 +131,7 @@ export function ConsoleAnalyzer({
     let raf = 0;
     let lastFrame = performance.now();
     let spectroCarry = 0;
-    const peaks = THIRD_OCTAVES.map(() => ({ db: -Infinity, at: 0 }));
+    let peaks: { db: number; at: number }[] = [];
     let colors: Record<string, [number, number, number]> | null = null;
     let colorsAt = -Infinity;
     let reading: LoudnessReading | null = null;
@@ -147,22 +158,28 @@ export function ConsoleAnalyzer({
         g.lineTo(w, y);
         g.stroke();
       }
+      // one thin bar per band, its edges on whole device pixels (121 bars a few pixels wide would
+      // otherwise blur into each other), and over each bar the mark of how high it has been. No
+      // curve over the tops: it was removed on พี่'s word (2026-11-10 - "มันรก"), the marks say enough.
       const n = bands.length;
+      if (peaks.length !== n) peaks = bands.map(() => ({ db: -Infinity, at: 0 })); // the window crossed FINE / COARSE
       const slot = w / n;
-      const bw = Math.max(1, slot - 2);
+      const gap = slot >= 10 ? 2 : 1;
+      const px = (v: number) => Math.round(v * dpr) / dpr;
+      const barAt = (i: number): [number, number] => {
+        const x = px(i * slot);
+        return [x, Math.max(1 / dpr, px((i + 1) * slot) - gap - x)];
+      };
       const grad = g.createLinearGradient(0, h, 0, 0);
       grad.addColorStop(0, rgb(colors.success, 0.85));
       grad.addColorStop(0.62, rgb(colors.success, 0.85));
       grad.addColorStop(0.82, rgb(colors.warning, 0.9));
       grad.addColorStop(1, rgb(colors.destructive, 1));
       g.fillStyle = grad;
-      const tops: [number, number][] = [];
       bands.forEach((db, i) => {
-        const pos = spectrumPos(db);
-        const x = i * slot + 1;
-        const bh = pos * h;
+        const [x, bw] = barAt(i);
+        const bh = spectrumPos(db) * h;
         g.fillRect(x, h - bh, bw, bh);
-        tops.push([x + bw / 2, h - bh]);
         const p = peaks[i];
         if (db >= p.db || now - p.at > PEAK_HOLD_MS) {
           if (db >= p.db) {
@@ -175,22 +192,9 @@ export function ConsoleAnalyzer({
       peaks.forEach((p, i) => {
         const pos = spectrumPos(p.db);
         if (pos <= 0) return;
-        g.fillRect(i * slot + 1, Math.round((1 - pos) * h), bw, 2);
+        const [x, bw] = barAt(i);
+        g.fillRect(x, Math.round((1 - pos) * h), bw, 2);
       });
-      // the smooth curve over the bar tops
-      g.strokeStyle = rgb(colors.fg, 0.85);
-      g.lineWidth = 1.5;
-      g.beginPath();
-      tops.forEach(([x, y], i) => {
-        if (i === 0) g.moveTo(x, y);
-        else {
-          const [px, py] = tops[i - 1];
-          const mx = (px + x) / 2;
-          g.quadraticCurveTo(px, py, mx, (py + y) / 2);
-          if (i === tops.length - 1) g.lineTo(x, y);
-        }
-      });
-      g.stroke();
     };
 
     const drawGonio = (f: AnalysisFrame) => {
@@ -318,7 +322,8 @@ export function ConsoleAnalyzer({
         drawSpectrogram(f, dt);
         return;
       }
-      drawSpectrum(bandLevels(f.bins, f.sampleRate), now, dt);
+      const res = (specRef.current?.clientWidth ?? 0) >= FINE.bands.length * MIN_BAR_SLOT ? FINE : COARSE;
+      drawSpectrum(bandLevels(f.bins, f.sampleRate, res.bands, res.per), now, dt);
       drawGonio(f);
       drawHistory(reading);
       setText(mRef.current, fmtLufs(reading.momentary));
@@ -381,13 +386,13 @@ export function ConsoleAnalyzer({
               ))}
             </div>
             <div className="flex min-h-0 min-w-0 flex-col">
-              <canvas ref={specRef} aria-label="สเปกตรัม 1/3 อ็อกเทฟของเสียงที่ส่งออก" className="block min-h-0 w-full flex-1" />
+              <canvas ref={specRef} aria-label="สเปกตรัมของเสียงที่ส่งออก" className="block min-h-0 w-full flex-1" />
               <div className="relative h-4 shrink-0">
                 {FREQ_LABELS.map(([hz, label]) => (
                   <span
                     key={label}
                     className="num absolute top-0.5 -translate-x-1/2 text-[10.5px] font-semibold text-muted-foreground"
-                    style={{ left: `${((THIRD_OCTAVES.indexOf(hz) + 0.5) / THIRD_OCTAVES.length) * 100}%` }}
+                    style={{ left: `${spectrumX(hz) * 100}%` }}
                   >
                     {label}
                   </span>
