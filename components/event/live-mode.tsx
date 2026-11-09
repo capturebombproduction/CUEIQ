@@ -4422,8 +4422,16 @@ export function LiveMode({
   function firePad(index: number) {
     if (!isControllerRef.current) return;
     const s = stateRef.current;
-    if (!s.begun || s.mode !== "manual") return;
+    if (s.mode !== "manual") return;
     const it = itemsRef.current[index];
+    // Before START the pad IS the start: the show begins on its row, whichever it is - not on the
+    // first one (พี่ 2026-11-10: "ถ้าไม่กดรันเพลงแรก มันกดคอนโซล mixer แยกอิสระไม่ได้ อยากให้กดเล่นได้เลย
+    // ตามแบบแมนนวลที่ควรเป็น"). By START's own road - its sync gate, its authority probe, its
+    // one-at-a-time guard - so a pad can begin nothing START itself would refuse.
+    if (!s.begun) {
+      if (it) void start(it.id);
+      return;
+    }
     const primary = audioRef.current;
     if (!it || !primary) return;
     const t = Date.now();
@@ -4639,10 +4647,22 @@ export function LiveMode({
     const total = l.total > 0 ? l.total : lenOfItem(l.id);
     padSounding[l.id] = { elapsed: fileElapsed((now - l.anchor) / 1000, total, loopRow(l.id)), total, fadeAt: l.fadeAt, level: l.level };
   }
-  const padMode: PadMode = !state.begun ? "idle" : !isController ? "viewer" : state.mode === "auto" ? "auto" : "manual";
+  // Before START the pads are live in MANUAL wherever START is (this device may begin the show,
+  // its first sync has settled): a pad begins the show on its own row (firePad). In AUTO they
+  // wait for START, as before - Auto runs the list from its top.
+  const padMode: PadMode = !state.begun
+    ? isController && syncSettled && state.mode === "manual"
+      ? "manual"
+      : "idle"
+    : !isController
+      ? "viewer"
+      : state.mode === "auto"
+        ? "auto"
+        : "manual";
   // GO's row (Enter's too): a row cued and not started - →, N, a tap on the running order - goes
   // next, never skipped (GO fired the row after it, 2026-10-25 hunt; MiX16's GO is the cue the
   // operator picked); otherwise the row after NOW. A row paused on is not "cued": GO goes on.
+  // Before START nothing is on yet: GO is the row the show stands on (the first, or one tapped).
   const cuedRow =
     state.begun &&
     !state.running &&
@@ -4650,7 +4670,15 @@ export function LiveMode({
     current.id !== playingId &&
     current.id !== committedRef.current.id &&
     !padSounding[current.id];
-  const goIndex = cuedRow ? state.currentIndex : state.currentIndex + 1 < items.length ? state.currentIndex + 1 : -1;
+  const goIndex = !state.begun
+    ? state.currentIndex < items.length
+      ? state.currentIndex
+      : -1
+    : cuedRow
+      ? state.currentIndex
+      : state.currentIndex + 1 < items.length
+        ? state.currentIndex + 1
+        : -1;
   const goIndexRef = useRef(goIndex);
   goIndexRef.current = goIndex;
   // STAGE (every device): a row still sounding UNDER the one on now - the one that sounds longest
@@ -4745,17 +4773,22 @@ export function LiveMode({
   // replays item 0, audibly restarting the show seconds after it began.
   const startingRef = useRef(false);
   const [starting, setStarting] = useState(false);
+  // the row whose pad is beginning the show, while START's probe is out (its pad says so)
+  const [startingPad, setStartingPad] = useState<string | null>(null);
   // when THIS device's START landed (the centre key turned into NEXT) - see START_SETTLE_MS
   const startLandedAtRef = useRef(0);
   const justStarted = () => Date.now() - startLandedAtRef.current < START_SETTLE_MS;
 
-  async function start() {
+  // `padRow`: a SET MIXER pad (or GO) pressed before START, in MANUAL - the show begins on THAT
+  // row (firePad). By id, not index: the probe below is awaited, and the list can change meanwhile.
+  async function start(padRow?: string) {
     // First sync still pending — we don't yet know whether a show is already
     // running elsewhere, and starting now would hijack/reset it to item 0.
     // (Guards the Space shortcut; the START button is also disabled until then.)
     if (!syncSettled || startingRef.current || stateRef.current.begun) return;
     startingRef.current = true;
     setStarting(true);
+    setStartingPad(padRow ?? null);
     try {
       primeSecondaryAudio(); // must happen inside this tap, before any await — see the helper
       const holder = await otherDeviceHoldsShow();
@@ -4773,14 +4806,20 @@ export function LiveMode({
       // while this probe was in flight, and adopting it is not the same as
       // starting one.
       if (stateRef.current.begun) return;
-      startShow();
+      startShow(padRow);
     } finally {
       startingRef.current = false;
       setStarting(false);
+      setStartingPad(null);
     }
   }
 
-  function startShow() {
+  function startShow(padRow?: string) {
+    // A pad's row, found again after the probe. Gone from the list meanwhile (deleted on another
+    // device), or the show switched to AUTO (its pads lock): nothing begins - never another row
+    // in its place on the PA.
+    const at = padRow == null ? 0 : itemsRef.current.findIndex((x) => x.id === padRow);
+    if (at < 0 || (padRow != null && stateRef.current.mode !== "manual")) return;
     markShowEnded(false);
     const ts = Date.now();
     startLandedAtRef.current = ts;
@@ -4790,17 +4829,23 @@ export function LiveMode({
     // authority probe first, so a mode change or a setlist refetch can have landed
     // in between.
     const mode = stateRef.current.mode;
-    const first = itemsRef.current[0];
+    const first = itemsRef.current[at];
+    if (padRow != null && first) {
+      // as any pad press (firePad): its own half second, so a double-click's second tap is not
+      // "fade it out" - and a row with no file sounds nothing, so its viewers do not light it
+      padFiredRef.current = { id: first.id, at: ts };
+      if (!audioUrlsRef.current[first.id]) endedItemRef.current = first.id;
+    }
     apply({
       running: true,
       begun: true,
       startedAt: ts,
       itemStartedAt: ts,
       itemElapsedAtPause: null,
-      currentIndex: 0,
+      currentIndex: at,
       // Auto begins running the script immediately; Manual still plays the FIRST
       // song and runs its countdown right away (a natural "go"), then waits for
-      // the operator on every item after it.
+      // the operator on every item after it. (A pad before START: its own row, the same way.)
       mode,
     });
     if (first) playItemAudio(first.id);
@@ -6260,6 +6305,7 @@ export function LiveMode({
               onGo: padMode === "manual" ? goPad : null,
               onLevel: padMode === "manual" ? setPadLevel : null,
               go: goIndex,
+              starting: startingPad,
             } satisfies PadsView
           }
         />
@@ -6612,7 +6658,7 @@ export function LiveMode({
               variant="next"
               data-testid="start-show"
               className="min-w-0 flex-1"
-              onClick={start}
+              onClick={() => void start()}
               disabled={!isController || !syncSettled || starting}
               title={!syncSettled ? "กำลังซิงค์สถานะโชว์กับเครื่องอื่น…" : undefined}
             >

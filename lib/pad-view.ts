@@ -78,12 +78,14 @@ export const PAD_HEAD: Record<PadMode, string> = {
   manual: "MANUAL · แตะแป้นเหลือง = เล่นทันที · แตะแป้นเขียว = เฟดออก 3 วิ",
   auto: "AUTO · แป้นล็อก — สลับเป็น MANUAL เพื่อกดเอง",
   viewer: "ดูอย่างเดียว — กดแป้นได้ที่เครื่องที่เริ่มโชว์",
-  idle: "เริ่มโชว์ก่อน แล้วกดแป้นได้ใน MANUAL",
+  // before START, where a pad cannot begin the show: AUTO (it runs the list from the top), or
+  // this device's first sync still out. In MANUAL the pads are live before START (mode "manual").
+  idle: "ยังไม่เริ่มโชว์ · ใน MANUAL กดแป้นเริ่มได้เลย",
 };
 
 /** The GO bar's words where GO cannot be pressed. */
 export const GO_LOCKED: Record<Exclude<PadMode, "manual">, string> = {
   auto: "ใช้ได้ใน MANUAL — AUTO เล่นต่อเองตามคิว",
   viewer: "ดูอย่างเดียว",
-  idle: "เริ่มโชว์ก่อน",
+  idle: "ยังไม่เริ่มโชว์ — ใน MANUAL กด GO เริ่มได้เลย",
 };

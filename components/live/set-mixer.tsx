@@ -9,7 +9,8 @@
 //
 // In MANUAL, on the device that runs the show, a yellow or grey pad plays its row from the top
 // at once and makes it NOW, a green one fades out in Auto Mute's 3 s, and GO (or Enter) fires the
-// row after NOW. Everywhere else the pads only show (AUTO: locked; a viewer: the master's lights).
+// row after NOW. Before START too (พี่ 2026-11-10): the first pad pressed begins the show on its
+// own row. Everywhere else the pads only show (AUTO: locked; a viewer: the master's lights).
 // Like the rest of CONSOLE this owns no show state and never touches a player: every press calls
 // back into components/event/live-mode.tsx, which does the sound (lib/live-layers.ts).
 
@@ -43,13 +44,15 @@ export interface PadsView {
   levels: Readonly<Record<string, number>>;
   /** Live's clock (ms): a fade's seconds count from it */
   now: number;
-  /** null = read only (AUTO, a viewer, before START) */
+  /** null = read only (AUTO, a viewer, before START in AUTO) */
   onPad: ((index: number) => void) | null;
   onGo: (() => void) | null;
   onLevel: ((itemId: string, level: number) => void) | null;
-  /** the row GO fires, Live's choice: a row cued and not started yet, else the row after NOW;
-   *  -1 none. Absent: the row after NOW. */
+  /** the row GO fires, Live's choice: a row cued and not started yet, else the row after NOW
+   *  (before START: the row the show stands on); -1 none. Absent: the row after NOW. */
   go?: number;
+  /** the row whose pad is beginning the show right now (START's check is out), else null */
+  starting?: string | null;
 }
 
 const IDLE: PadsView = {
@@ -79,6 +82,7 @@ const PAD_WORDS: Record<PadState, string> = {
   fade: "กำลังเฟดออก",
   played: "เล่นแล้ว",
 };
+const PAD_STARTING = "กำลังเริ่ม…";
 
 export const SetMixer = memo(function SetMixer({
   items,
@@ -170,7 +174,9 @@ export const SetMixer = memo(function SetMixer({
         {items.map((it, i) => {
           const sound = p.sounding[it.id];
           const state = padState(sound, p.played.has(it.id));
-          const sub = padSub(state, sound, p.now);
+          // pressed before START: the show begins on it once START's check is back (≤ 1.5 s)
+          const starting = !!p.starting && p.starting === it.id;
+          const sub = starting ? PAD_STARTING : padSub(state, sound, p.now);
           const isNow = i === index;
           const isGo = live && i === goIndex;
           const trim = it.kind === "song" ? trimFor(it.lufs) : null;
@@ -236,11 +242,13 @@ export const SetMixer = memo(function SetMixer({
                 type="button"
                 data-testid="console-pad"
                 data-state={state}
+                data-starting={starting ? "1" : undefined}
                 onClick={live ? () => p.onPad?.(i) : undefined}
                 disabled={!live}
-                aria-label={`แป้น ${i + 1} ${it.title || "—"} — ${PAD_WORDS[state]}`}
+                aria-label={`แป้น ${i + 1} ${it.title || "—"} — ${starting ? PAD_STARTING : PAD_WORDS[state]}`}
                 className={cn(
                   "relative flex h-8 shrink-0 flex-col items-center justify-center overflow-hidden rounded-[2px]",
+                  starting && "animate-pulse",
                   state === "ready" && "bg-warning text-warning-foreground",
                   (state === "on" || state === "fade") && "bg-success/25 text-foreground",
                   state === "played" && "bg-muted text-muted-foreground",

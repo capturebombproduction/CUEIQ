@@ -5441,10 +5441,12 @@ describe("LiveMode · SET MIXER pads", () => {
     expect(media.play).not.toHaveBeenCalled();
   });
 
-  it("before START the pads only show", async () => {
+  // (2026-11-10: in MANUAL they are live once the first sync is in - a pad begins the show on its
+  // own row, components/event/live-pads-prestart.test.tsx)
+  it("before START, until this device's first sync is in, the pads only show", async () => {
     await mountLive({ items: SET });
     for (const p of pads()) expect(p).toBeDisabled();
-    expect(screen.getByTestId("console-go-locked").textContent).toContain("เริ่มโชว์ก่อน");
+    expect(screen.getByTestId("console-go-locked").textContent).toContain("ยังไม่เริ่มโชว์");
   });
 
   // A row the pads left sounding UNDER NOW can come round again by the other roads - cued and
