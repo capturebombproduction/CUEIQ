@@ -1,9 +1,10 @@
 "use client";
 
 // Live Mode's CONSOLE board (phase B, พี่'s round 3): the show as a DAW sees it. Transport
-// readouts, the setlist as an ARRANGEMENT of clips with its notes lane, the item on now as a
-// clip editor (its waveform, the practice room's sections, a bar grid), a SET MIXER of every
-// item's loudness, and the PLAYBACK channel: LED meters, the track's fader, MUTE / MC / LOUD.
+// readouts, the TIMELINE (the whole show as one row of clips, the one on now opened into its
+// waveform and the practice room's sections, a line of cue notes under it), the SET MIXER's
+// pads, the ANALYZER of what this machine is sending, and the PLAYBACK channel: LED meters,
+// the track's fader, MUTE / MC / LOUD.
 //
 // It is a second way of LOOKING at the show Live already runs. Everything it shows comes in
 // as props from live-mode.tsx and every key it has calls back into Live's own handlers (the
@@ -26,16 +27,13 @@ import { CLIP_LEVEL, METER_FLOOR_DB, meterPos, toDb, type OutputKind, type Signa
 import { decodeWaveform } from "@/lib/song-analysis";
 import { beatAt, sectionAt, waveOverBlock, type LiveMarker } from "@/lib/song-signal";
 import {
-  arrangementWindow,
   barBeat,
-  barLines,
   blockStarts,
-  inWindow,
   LOUDNESS_TARGET,
-  mmss,
   resample,
   rulerMarks,
   sectionRegions,
+  timelineLayout,
   volumeToDb,
   waveBars,
 } from "@/lib/console-view";
@@ -239,8 +237,8 @@ export function ConsoleBoard({
       data-testid="console"
       className="grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)_248px] gap-2.5 px-5 pb-3 pt-2"
     >
-      {/* the left column is a size container: on a short stage the SET MIXER steps aside,
-          whole, and the arrangement and the editor keep their room */}
+      {/* the left column is a size container: on a short stage the ANALYZER steps aside, whole,
+          then the TIMELINE gives up its notes line - the SET MIXER's pads never give way */}
       <div className="flex min-h-0 min-w-0 flex-col gap-2 [container-type:size]">
         <div className="relative shrink-0">
           <div role="group" aria-label="Transport" className="flex min-w-0 gap-1 overflow-hidden">
@@ -305,11 +303,11 @@ export function ConsoleBoard({
           </div>
         </div>
 
-        <Arrangement items={items} index={index} elapsed={elapsed} onCue={onCue} alarm={alarm} />
+        <Timeline items={items} index={index} elapsed={elapsed} running={running} sections={curMarkers} section={section} onCue={onCue} alarm={alarm} />
 
-        <ClipEditor item={current} elapsed={elapsed} running={running} sections={curMarkers} section={section} />
+        <MixerPanel items={items} index={index} playingId={playingId} liveRef={stripLive} count={entry?.count ?? null} countAt={entry?.at ?? index + 1} pads={pads} beside={!!tap} />
 
-        <BottomPanel items={items} index={index} playingId={playingId} liveRef={stripLive} tap={tap} count={entry?.count ?? null} countAt={entry?.at ?? index + 1} pads={pads} />
+        {tap && <AnalyzerPanel tap={tap} trackKey={playingId} />}
       </div>
 
       <aside aria-label="Playback" className="flex min-h-0 flex-col gap-2 [container-type:size]">
@@ -589,233 +587,71 @@ function clipTone(kind: SetlistKind | null, state: "past" | "now" | "later"): st
   return state === "past" ? "bg-muted/60" : "bg-muted";
 }
 
-// ── THE ARRANGEMENT ───────────────────────────────────────────────────────────────────────
-// The setlist on the show's PLAN timeline (block lengths, as the dock's run meter): a mini
-// map of the whole show with the visible window, a ruler, the AUDIO lane of clips (each with
-// its song's waveform) and the NOTES lane (the cue each item carries). The window follows the
-// playhead. A clip cues its item where STAGE's running order would (onCue's lock is STAGE's).
-const Arrangement = memo(function Arrangement({
+// ── THE TIMELINE ──────────────────────────────────────────────────────────────────────────
+// One strip where ARRANGEMENT and the CLIP editor stood (พี่ 2026-11-10: "ซ้ำซ้อนกันไปหน่อย …
+// เล็กเป็นเส้นเวฟยาว ๆ แทนได้"; mockup round 1, option A). The whole show is one row of clips on
+// the PLAN timeline (block lengths), and the clip on NOW is widened (lib/console-view.ts
+// timelineLayout) into what the editor drew: the song's waveform where its audio sits in the
+// block (played part lit, the last warn stretch amber - the NOW card's ladder), the practice
+// room's sections over it, the time under it, the playhead. Under the row, one line of cue
+// notes: this row's, the next one coming with its countdown, and the one after that. A clip
+// cues its item where STAGE's running order would (onCue's lock is STAGE's). Nothing here is
+// guessed: no waveform and no sections when the song has none measured or marked - it says so.
+// What did not come along: the mini map and the ruler (the dock's run meter is the whole show
+// already) and the bar grid (BAR.BEAT in the transport counts the bars).
+const Timeline = memo(function Timeline({
   items,
   index,
   elapsed,
+  running,
+  sections,
+  section,
   onCue,
   alarm,
 }: {
   items: readonly ConsoleItem[];
   index: number;
   elapsed: number;
+  running: boolean;
+  /** the cued item's sections in BLOCK seconds */
+  sections: readonly { label: string; at: number }[];
+  section: { now: string | null; next: string | null } | null;
   onCue: ((i: number) => void) | null;
   /** NO SIGNAL / STALLED / DEVICE LOST, laid over this panel's head: the transport above (REMAIN,
    *  the item's clock) stays readable, as STAGE's countdown does under its band */
   alarm?: ReactNode;
 }) {
-  const { starts, total } = useMemo(() => blockStarts(items.map((it) => it.block)), [items]);
-  const curBlock = items[index]?.block ?? 0;
-  const playhead = (starts[index] ?? 0) + Math.min(Math.max(0, elapsed), curBlock);
-  const win = arrangementWindow(playhead, total);
-  // each clip's waveform, drawn once per song (the window moves, the shapes do not)
+  const lengths = useMemo(() => items.map((it) => it.block), [items]);
+  const { starts } = useMemo(() => blockStarts(lengths), [lengths]);
+  const layout = useMemo(() => timelineLayout(lengths, index), [lengths, index]);
+  const item = items[index] ?? null;
+  const block = item?.block ?? 0;
+  const playhead = (starts[index] ?? 0) + Math.min(Math.max(0, elapsed), block);
+  // each row's file on the row's own clock (lib/song-signal.ts waveOverBlock), one column per
+  // 200th of its block: its real length, looped or silent after its end. Decoded once per setlist.
   const waves = useMemo(
     () =>
       items.map((it) => {
         const lv = decodeWaveform(it.peaks);
-        // the file on the row's own clock (lib/song-signal.ts waveOverBlock), across the whole clip
-        const over = lv.length > 0 ? waveOverBlock(lv, { block: it.block, start: it.audioStart, fileLen: it.audioLen, loop: it.loop, columns: 200 }) : [];
-        return over.length > 0 ? waveBars(resample(over, 56), 0.7, 0.04) : null;
+        return {
+          measured: lv.length > 0,
+          over: lv.length > 0 ? waveOverBlock(lv, { block: it.block, start: it.audioStart, fileLen: it.audioLen, loop: it.loop, columns: 200 }) : [],
+        };
       }),
     [items]
   );
-  const marks = rulerMarks(win);
-  const nextNote = items.findIndex((it, i) => i > index && !!it.notes);
-  const pct = (sec: number) => `${((sec - win.start) / win.span) * 100}%`;
-  return (
-    <section aria-label="Arrangement" className="slab relative flex min-h-[112px] flex-[1.05] flex-col overflow-hidden">
-      {alarm && <div className="absolute inset-x-0 top-0 z-20">{alarm}</div>}
-      <PanelHead label="Arrangement">
-        <span className="num truncate text-[12px] text-muted-foreground">
-          {mmss(win.start)}–{mmss(win.start + win.span)} · {items.length} รายการ
-        </span>
-      </PanelHead>
-      {/* the whole show: blocks by kind, the window, the playhead */}
-      <div className="relative mx-2.5 mb-1 ml-[82px] mt-1.5 h-2.5 shrink-0">
-        {/* by percent, as the window and the playhead are: flex gaps drifted them apart */}
-        {total > 0 &&
-          items.map((it, i) => (
-            <span
-              key={it.id}
-              className={cn(
-                "absolute inset-y-0 border-r border-card",
-                i === index ? "bg-primary" : i < index ? "bg-foreground/15" : it.kind === "song" ? "bg-primary/35" : "bg-foreground/20"
-              )}
-              style={{ left: `${(starts[i] / total) * 100}%`, width: `${(it.block / total) * 100}%` }}
-            />
-          ))}
-        {total > 0 && (
-          <>
-            <span
-              aria-hidden
-              className="absolute -inset-y-0.5 bg-foreground/[.06] shadow-[inset_0_0_0_1px_hsl(var(--foreground)/.7)]"
-              style={{ left: `${(win.start / total) * 100}%`, width: `${(win.span / total) * 100}%` }}
-            />
-            <span aria-hidden className="absolute -inset-y-1 w-[2px] bg-destructive" style={{ left: `${(playhead / total) * 100}%` }} />
-          </>
-        )}
-      </div>
-      <div className="grid min-h-0 flex-1 grid-cols-[72px_minmax(0,1fr)]">
-        <div className="grid grid-rows-[18px_minmax(0,1fr)_30px] shadow-[inset_-1px_0_0_hsl(var(--border))]">
-          <span />
-          <div className="flex flex-col justify-center px-2 shadow-[inset_0_-1px_0_hsl(var(--border))]">
-            <span className="en text-[12.5px] tracking-[.06em]">Audio</span>
-            <span className="text-[10.5px] leading-tight text-muted-foreground">เพลง / SE / MC</span>
-          </div>
-          <div className="flex flex-col justify-center px-2">
-            <span className="en text-[12.5px] tracking-[.06em]">Notes</span>
-          </div>
-        </div>
-        <div className="relative grid min-w-0 grid-rows-[18px_minmax(0,1fr)_30px] overflow-hidden">
-          <div className="relative bg-background/40 shadow-[inset_0_-1px_0_hsl(var(--border))]">
-            {marks.map((m) => (
-              <span
-                key={m.at}
-                className="num absolute inset-y-0 border-l border-foreground/20 pl-[3px] text-[11px] font-semibold leading-[18px] text-muted-foreground"
-                style={{ left: `${m.pct}%` }}
-              >
-                {m.label}
-              </span>
-            ))}
-          </div>
-          <div className="relative shadow-[inset_0_-1px_0_hsl(var(--border))]">
-            {items.map((it, i) => {
-              if (!inWindow(starts[i], it.block, win)) return null;
-              const state = i < index ? "past" : i === index ? "now" : "later";
-              const wave = waves[i];
-              const cut = Math.max(0, win.start - starts[i]); // seconds of the clip left of the window
-              return (
-                <button
-                  key={it.id}
-                  type="button"
-                  data-testid="console-clip"
-                  onClick={onCue ? () => onCue(i) : undefined}
-                  disabled={!onCue}
-                  title={onCue ? `${it.title} — แตะเพื่อเลือกรายการนี้` : it.title}
-                  className={cn(
-                    "absolute inset-y-[5px] flex flex-col overflow-hidden rounded-[2px] text-left disabled:cursor-default",
-                    clipTone(it.kind, state),
-                    i === index
-                      ? "shadow-[inset_0_0_0_1px_hsl(var(--primary)),0_0_12px_hsl(var(--primary)/.35)]"
-                      : i === index + 1
-                        ? "shadow-[inset_0_0_0_2px_hsl(var(--warning))]"
-                        : "shadow-[inset_0_0_0_1px_hsl(var(--foreground)/.12)]"
-                  )}
-                  style={{ left: pct(starts[i]), width: `calc(${(it.block / win.span) * 100}% - 2px)` }}
-                >
-                  <span
-                    className={cn(
-                      "truncate px-1.5 pt-0.5 text-[11px] font-medium",
-                      state === "past" ? "text-muted-foreground" : "text-foreground"
-                    )}
-                    style={cut > 0 ? { paddingLeft: `calc(${(cut / it.block) * 100}% + 6px)` } : undefined}
-                  >
-                    <span className="num text-[12px]">{pad2(i + 1)}</span> {it.title || "—"}
-                  </span>
-                  {wave && it.block > 0 && (
-                    // a box for the svg to fill: placed by top + bottom alone, an svg takes its
-                    // height from its viewBox and spills out of the clip
-                    <span aria-hidden className="absolute inset-x-0 bottom-1 top-4">
-                      <svg
-                        viewBox="0 0 56 100"
-                        preserveAspectRatio="none"
-                        className={cn("block size-full", state === "now" ? "fill-foreground/80" : "fill-foreground/30")}
-                      >
-                        <path d={wave} />
-                      </svg>
-                    </span>
-                  )}
-                </button>
-              );
-            })}
-          </div>
-          <div className="relative">
-            {items.map((it, i) => {
-              // the item on now keeps its note when its start has scrolled off (a long MC), pinned
-              // to the window's left edge as its clip's title is
-              const pinned = i === index && starts[i] < win.start;
-              if (!it.notes || (!pinned && (starts[i] < win.start || starts[i] >= win.start + win.span))) return null;
-              const up = i === nextNote;
-              const past = i < index;
-              return (
-                <span
-                  key={it.id}
-                  title={it.notes}
-                  className={cn(
-                    "absolute top-[5px] flex h-5 max-w-[30%] items-center gap-1 overflow-hidden rounded-[2px] px-1.5 text-[11px] [&_svg]:size-3 [&_svg]:shrink-0",
-                    up
-                      ? "bg-warning/[.16] text-warning-ink shadow-[inset_2px_0_0_hsl(var(--warning))]"
-                      : past
-                        ? "bg-foreground/[.04] text-faint"
-                        : i === index
-                          ? "bg-primary/[.14] text-foreground shadow-[inset_2px_0_0_hsl(var(--primary))]"
-                          : "bg-foreground/[.06] text-muted-foreground shadow-[inset_2px_0_0_hsl(var(--foreground)/.3)]"
-                  )}
-                  style={{ left: pct(Math.max(starts[i], win.start)) }}
-                >
-                  <Lightbulb aria-hidden />
-                  <span className="truncate">
-                    {it.notes}
-                    {up && ` · ใน ${formatDuration(Math.ceil(starts[i] - playhead))}`}
-                  </span>
-                </span>
-              );
-            })}
-          </div>
-          <span
-            aria-hidden
-            className="pointer-events-none absolute inset-y-0 w-[2px] bg-destructive shadow-[0_0_8px_hsl(var(--destructive)/.9)] transition-[left] duration-500 ease-linear"
-            style={{ left: pct(playhead) }}
-          />
-        </div>
-      </div>
-    </section>
-  );
-});
-
-// ── THE CLIP EDITOR ───────────────────────────────────────────────────────────────────────
-// The cued item across its whole block: the song's waveform where its audio sits (played part
-// lit, the last warn stretch amber - the NOW card's ladder), the practice room's sections as
-// regions above it, a line every four bars from the analysed first beat and tempo, the time
-// under it and the playhead. Nothing here is guessed: no waveform, no grid, no sections when
-// the song has none measured or marked - it says so instead.
-const ClipEditor = memo(function ClipEditor({
-  item,
-  elapsed,
-  running,
-  sections,
-  section,
-}: {
-  item: ConsoleItem | null;
-  elapsed: number;
-  running: boolean;
-  /** the item's sections in BLOCK seconds */
-  sections: readonly { label: string; at: number }[];
-  section: { now: string | null; next: string | null } | null;
-}) {
-  const block = item?.block ?? 0;
-  // the file on the item's own clock, one column per 200th of the block: its real length, looped
-  // or silent after its end (lib/song-signal.ts waveOverBlock)
-  const wave = useMemo(() => decodeWaveform(item?.peaks), [item?.peaks]);
-  const levels = useMemo(
+  // the squeezed clips: as many bars as their width holds
+  const minis = useMemo(
     () =>
-      item
-        ? waveOverBlock(wave, { block: item.block, start: item.audioStart, fileLen: item.audioLen, loop: item.loop, columns: 200 })
-        : [],
-    [item, wave]
+      waves.map((w, i) => {
+        if (i === index || w.over.length === 0) return null;
+        const cols = Math.max(4, Math.min(56, Math.round((layout[i]?.width ?? 0) * 3.5)));
+        return { cols, d: waveBars(resample(w.over, cols), 0.7, 0.06) };
+      }),
+    [waves, layout, index]
   );
+  const levels = waves[index]?.over ?? [];
   const regions = useMemo(() => sectionRegions(sections, block), [sections, block]);
-  const grid = useMemo(
-    // the grid over the file's first pass, inside the block
-    () => (item ? barLines(item.bpm, item.beatOffset, item.audioStart, Math.min(item.audioLen, item.block - item.audioStart)) : []),
-    [item]
-  );
-  if (!item) return null;
   const at = (sec: number) => `${block > 0 ? (sec / block) * 100 : 0}%`;
   const progress = block > 0 ? Math.min(100, Math.max(0, (elapsed / block) * 100)) : 0;
   const warnFrom = block - thresholds(block).warn;
@@ -826,99 +662,177 @@ const ClipEditor = memo(function ClipEditor({
   const warnAt = Math.max(playedTo, Math.min(n, col(warnFrom)));
   const ticks = block > 0 ? rulerMarks({ start: 0, span: block }) : [];
   const nextRegion = regions.findIndex((r) => r.start > elapsed);
+  // the notes line: this row's, the next row that carries one, the one after
+  const nextNote = items.findIndex((it, i) => i > index && !!it.notes);
+  const laterNote = nextNote < 0 ? -1 : items.findIndex((it, i) => i > nextNote && !!it.notes);
+  const noteRows = [item?.notes ? index : -1, nextNote, laterNote].filter((i) => i >= 0);
   return (
-    <section aria-label="Clip editor" className="slab flex min-h-[104px] flex-1 flex-col overflow-hidden">
-      <PanelHead label="Clip">
-        {item.kind && <KindChip kind={item.kind} className="!h-[18px] shrink-0 !px-1.5 !text-[11px]" />}
-        <span className="disp min-w-0 truncate text-[13.5px]">{item.title || "—"}</span>
-        <span className="num shrink-0 text-[12px] text-muted-foreground">
-          {formatDuration(block)}
-          {item.lufs != null ? ` · ${item.lufs.toFixed(1)} LUFS` : ""}
-          {item.bpm != null ? ` · ${Math.round(item.bpm)} BPM` : ""}
-        </span>
-        <span className="ml-auto hidden shrink-0 truncate text-[11.5px] text-muted-foreground xl:inline">
-          {grid.length > 0 ? "เส้นแบ่ง = ทุก 4 ห้อง · " : ""}แถบเหลือง = ช่วงเตือนท้ายรายการ
+    <section
+      aria-label="Timeline"
+      data-testid="console-timeline"
+      className="slab relative flex h-[112px] shrink-0 flex-col overflow-hidden [@container_(max-height:400px)]:h-[86px] [@container_(min-height:860px)]:h-[148px]"
+    >
+      {alarm && <div className="absolute inset-x-0 top-0 z-20">{alarm}</div>}
+      <PanelHead label="Timeline">
+        {item?.kind && <KindChip kind={item.kind} className="!h-[18px] shrink-0 !px-1.5 !text-[11px]" />}
+        <span className="disp min-w-0 truncate text-[13.5px]">{item ? `${pad2(index + 1)} ${item.title || "—"}` : "—"}</span>
+        {item && (
+          <span className="num shrink-0 text-[12px] text-muted-foreground">
+            {formatDuration(block)}
+            {item.lufs != null ? ` · ${item.lufs.toFixed(1)} LUFS` : ""}
+            {item.bpm != null ? ` · ${Math.round(item.bpm)} BPM` : ""}
+          </span>
+        )}
+        <span className="ml-auto hidden shrink-0 truncate pl-2 text-[11.5px] text-muted-foreground xl:inline">
+          {onCue ? "แตะช่องไหน = เลือกรายการนั้น · " : ""}แถบเหลือง = ช่วงเตือนท้ายรายการ
         </span>
       </PanelHead>
-      <div className="relative mx-2.5 min-h-0 flex-1">
-        {/* sections */}
-        <div className="absolute inset-x-0 top-1 h-4">
-          {regions.map((r, k) => {
-            const isNow = section?.now === r.label && elapsed >= r.start && elapsed < r.end;
-            const isNext = k === nextRegion;
-            return (
-              <span
-                key={`${r.label}-${r.start}`}
-                className={cn(
-                  "num absolute inset-y-0 overflow-hidden whitespace-nowrap pl-1 text-[10.5px] leading-4 tracking-[.05em] shadow-[inset_1px_0_0_hsl(var(--foreground)/.2)]",
-                  isNow ? "bg-primary text-primary-foreground" : isNext ? "bg-foreground/[.08] text-warning-ink" : "bg-foreground/[.06] text-muted-foreground"
-                )}
-                style={{ left: at(r.start), width: at(r.end - r.start) }}
-              >
-                {r.label}
-              </span>
-            );
-          })}
-        </div>
-        {/* bar grid */}
-        <div aria-hidden className="absolute inset-x-0 bottom-4 top-6">
-          {grid.map((g) => (
-            <span
-              key={g.bar}
-              className={cn("absolute inset-y-0 border-l", g.bar % 8 === 1 ? "border-foreground/[.14]" : "border-foreground/[.06]")}
-              style={{ left: at(g.at) }}
-            >
-              {g.bar % 8 === 1 && (
-                <span className="num absolute left-[3px] top-0 text-[9.5px] text-faint">{g.bar}</span>
+      {/* the show, one clip per row; by percent of the strip, each clip 2 px short of its slot */}
+      <div className="relative mx-2.5 mt-1.5 min-h-0 flex-1">
+        {items.map((it, i) => {
+          const slot = layout[i];
+          if (!slot) return null;
+          const isNow = i === index;
+          const state = i < index ? "past" : isNow ? "now" : "later";
+          const mini = minis[i];
+          return (
+            <button
+              key={it.id}
+              type="button"
+              data-testid="console-clip"
+              data-now={isNow ? "1" : undefined}
+              onClick={onCue ? () => onCue(i) : undefined}
+              disabled={!onCue}
+              aria-label={`${pad2(i + 1)} ${it.title || "—"}`}
+              title={onCue ? `${pad2(i + 1)} ${it.title} — แตะเพื่อเลือกรายการนี้` : `${pad2(i + 1)} ${it.title}`}
+              className={cn(
+                "absolute inset-y-0 block overflow-hidden rounded-[2px] text-left disabled:cursor-default",
+                !isNow && "[container-type:inline-size]",
+                clipTone(it.kind, state),
+                isNow
+                  ? "shadow-[inset_0_0_0_1px_hsl(var(--primary)),0_0_12px_hsl(var(--primary)/.35)]"
+                  : i === index + 1
+                    ? "shadow-[inset_0_0_0_2px_hsl(var(--warning))]"
+                    : "shadow-[inset_0_0_0_1px_hsl(var(--foreground)/.12)]"
               )}
-            </span>
-          ))}
-        </div>
-        {/* the waveform, where the audio sits in the block */}
-        {n > 0 ? (
-          <div
-            data-testid="console-wave"
-            aria-hidden
-            className="absolute inset-x-0 bottom-4 top-6"
-          >
-            <svg viewBox={`0 0 ${n} 100`} preserveAspectRatio="none" className="block size-full">
-              <path className="fill-foreground" d={waveBars(levels, 0.72, 0.03, 0, playedTo)} />
-              <path className="fill-foreground/25" d={waveBars(levels, 0.72, 0.03, playedTo, warnAt)} />
-              <path className="fill-warning/60" d={waveBars(levels, 0.72, 0.03, warnAt)} />
-            </svg>
-          </div>
-        ) : (
-          <p className="absolute inset-x-0 bottom-4 top-6 grid place-items-center text-[12px] text-muted-foreground">
-            {/* nothing to draw: no song, an unmeasured song, or a row with no length to draw it over */}
-            {!item.songId
-              ? "รายการนี้ไม่ได้ผูกกับเพลงในคลัง"
-              : wave.length === 0
-                ? "ยังไม่ได้วัดรูปคลื่นของเพลงนี้"
-                : "รายการนี้ยาว 0:00 — ตั้งความยาวในเซ็ตลิสต์ก่อน"}
-          </p>
-        )}
-        {/* time */}
-        <div className="absolute inset-x-0 bottom-0 h-4">
-          {ticks.map((m) => (
-            <span
-              key={m.at}
-              className="num absolute inset-y-0 border-l border-foreground/20 pl-[3px] text-[10.5px] font-semibold leading-4 text-muted-foreground"
-              style={{ left: `${m.pct}%` }}
+              style={{ left: `${slot.left}%`, width: `calc(${slot.width}% - 2px)` }}
             >
-              {m.label}
+              {isNow ? (
+                <>
+                  {/* the title is the panel's head; here: sections, the waveform, the time */}
+                  <span className="absolute inset-x-0 top-0 block h-[11px]">
+                    {regions.map((r, k) => {
+                      const on = section?.now === r.label && elapsed >= r.start && elapsed < r.end;
+                      return (
+                        <span
+                          key={`${r.label}-${r.start}`}
+                          className={cn(
+                            "num absolute inset-y-0 block overflow-hidden whitespace-nowrap pl-[3px] text-[9.5px] leading-[11px] tracking-[.05em] shadow-[inset_1px_0_0_hsl(var(--foreground)/.2)]",
+                            on ? "bg-primary text-primary-foreground" : k === nextRegion ? "bg-foreground/[.1] text-warning-ink" : "bg-foreground/[.07] text-muted-foreground"
+                          )}
+                          style={{ left: at(r.start), width: at(r.end - r.start) }}
+                        >
+                          {r.label}
+                        </span>
+                      );
+                    })}
+                  </span>
+                  {n > 0 ? (
+                    <span data-testid="console-wave" aria-hidden className="absolute inset-x-0 bottom-[11px] top-[13px] block">
+                      <svg viewBox={`0 0 ${n} 100`} preserveAspectRatio="none" className="block size-full">
+                        <path className="fill-foreground" d={waveBars(levels, 0.72, 0.03, 0, playedTo)} />
+                        <path className="fill-foreground/30" d={waveBars(levels, 0.72, 0.03, playedTo, warnAt)} />
+                        <path className="fill-warning/80" d={waveBars(levels, 0.72, 0.03, warnAt)} />
+                      </svg>
+                    </span>
+                  ) : (
+                    <span className="absolute inset-x-0 bottom-[11px] top-[13px] grid place-items-center text-[11.5px] text-muted-foreground">
+                      {/* nothing to draw: no song, an unmeasured song, or a row with no length to draw it over */}
+                      {!it.songId
+                        ? "รายการนี้ไม่ได้ผูกกับเพลงในคลัง"
+                        : !waves[i]?.measured
+                          ? "ยังไม่ได้วัดรูปคลื่นของเพลงนี้"
+                          : "รายการนี้ยาว 0:00 — ตั้งความยาวในเซ็ตลิสต์ก่อน"}
+                    </span>
+                  )}
+                  <span className="absolute inset-x-0 bottom-0 block h-[11px]">
+                    {ticks.map((m) => (
+                      <span
+                        key={m.at}
+                        className="num absolute inset-y-0 block border-l border-foreground/20 pl-[3px] text-[9.5px] font-semibold leading-[11px] text-muted-foreground"
+                        style={{ left: `${m.pct}%` }}
+                      >
+                        {m.label}
+                      </span>
+                    ))}
+                  </span>
+                  <span
+                    // keyed to the item: a new item's playhead starts at its 0, never slides back to it
+                    key={it.id}
+                    aria-hidden
+                    className={cn(
+                      "pointer-events-none absolute bottom-[11px] top-0 block w-[2px] bg-foreground shadow-[0_0_8px_hsl(var(--foreground)/.8)]",
+                      running && "transition-[left] duration-500 ease-linear"
+                    )}
+                    style={{ left: `${progress}%` }}
+                  />
+                </>
+              ) : (
+                <>
+                  <span
+                    className={cn(
+                      "absolute inset-x-[3px] top-px block overflow-hidden whitespace-nowrap text-[10.5px] font-medium leading-[13px]",
+                      state === "past" ? "text-muted-foreground" : "text-foreground"
+                    )}
+                  >
+                    {/* the number always; the title once the clip is wide enough to say some of it */}
+                    <span className="num text-[11px]">{pad2(i + 1)}</span>
+                    <span className="hidden [@container_(min-width:58px)]:inline"> {it.title || "—"}</span>
+                  </span>
+                  {mini && (
+                    // a box for the svg to fill: placed by top + bottom alone, an svg takes its
+                    // height from its viewBox and spills out of the clip
+                    <span aria-hidden className="absolute inset-x-px bottom-1 top-[15px] block">
+                      <svg viewBox={`0 0 ${mini.cols} 100`} preserveAspectRatio="none" className="block size-full fill-foreground/30">
+                        <path d={mini.d} />
+                      </svg>
+                    </span>
+                  )}
+                </>
+              )}
+            </button>
+          );
+        })}
+      </div>
+      {/* the cue notes: on a very short stage this line gives way (the notes stay on STAGE) */}
+      <div className="mx-2.5 flex h-[26px] shrink-0 items-center gap-1.5 overflow-hidden [@container_(max-height:400px)]:mb-1.5 [@container_(max-height:400px)]:h-0">
+        <span className="en w-[40px] shrink-0 text-[11.5px] tracking-[.06em] text-muted-foreground">Notes</span>
+        {noteRows.length === 0 ? (
+          <span className="text-[11.5px] text-faint">— ไม่มีโน้ตในรายการที่เหลือ —</span>
+        ) : (
+          noteRows.map((i) => (
+            <span
+              key={items[i].id}
+              data-testid="console-note"
+              title={items[i].notes ?? undefined}
+              className={cn(
+                "flex h-5 min-w-0 items-center gap-1 overflow-hidden rounded-[2px] px-1.5 text-[11.5px] [&_svg]:size-3 [&_svg]:shrink-0",
+                i === index
+                  ? "bg-primary/[.14] text-foreground shadow-[inset_2px_0_0_hsl(var(--primary))]"
+                  : i === nextNote
+                    ? "bg-warning/[.16] text-warning-ink shadow-[inset_2px_0_0_hsl(var(--warning))]"
+                    : "shrink-[3] bg-foreground/[.06] text-muted-foreground shadow-[inset_2px_0_0_hsl(var(--foreground)/.3)]"
+              )}
+            >
+              <Lightbulb aria-hidden />
+              <b className="num shrink-0 text-[12px]">{pad2(i + 1)}</b>
+              <span className="truncate">
+                {items[i].notes}
+                {i > index && ` · ใน ${formatDuration(Math.ceil(starts[i] - playhead))}`}
+              </span>
             </span>
-          ))}
-        </div>
-        <span
-          // keyed to the item: a new item's playhead starts at its 0, never slides back to it
-          key={item.id}
-          aria-hidden
-          className={cn(
-            "pointer-events-none absolute bottom-4 top-0.5 w-[2px] bg-foreground shadow-[0_0_8px_hsl(var(--foreground)/.8)]",
-            running && "transition-[left] duration-500 ease-linear"
-          )}
-          style={{ left: `${progress}%` }}
-        />
+          ))
+        )}
       </div>
     </section>
   );
@@ -927,118 +841,125 @@ const ClipEditor = memo(function ClipEditor({
 // ── THE SET MIXER ─────────────────────────────────────────────────────────────────────────
 // A pad player since 2026-10-25: components/live/set-mixer.tsx.
 
-// ── THE BOTTOM PANEL ──────────────────────────────────────────────────────────────────────
-// ANALYZER | SET MIXER | SPECTROGRAM. The two that read the live sound need the tap (the desktop
-// app, Chrome / Edge on the web); Safari and Firefox have the SET MIXER alone. The choice is kept per device. On a short stage
-// the whole panel steps aside (the column's container query) and the analysis stops drawing.
-type PanelTab = "analyzer" | "mixer" | "spectrogram";
-const TAB_KEY = "cueiq:consoleTab";
-const TAB_LABEL: Record<PanelTab, string> = { analyzer: "Analyzer", mixer: "Set mixer", spectrogram: "Spectrogram" };
+// ── SET MIXER and ANALYZER ────────────────────────────────────────────────────────────────
+// Two panels, both on screen (พี่ 2026-11-10, mockup round 1 option A). They were tabs of one
+// panel until the TIMELINE gave the room back: a show run on the pads could not watch its own
+// level. The pads are always there, and taller the more room they get (set-mixer.tsx). The
+// ANALYZER needs the tap (the desktop app, Chrome / Edge on the web; Safari and Firefox have the
+// SET MIXER alone) and is the one that steps aside on a short stage - under a 520 px column the
+// two together left the tiles no room for a fader - and its analysis then stops drawing.
+// BARS | SPECTROGRAM is one analysis seen two ways; the choice is kept per device.
+type ScopeView = "analyzer" | "spectrogram";
+/** The key of the old three-tab panel: a device that had SPECTROGRAM open still opens it. */
+const SCOPE_KEY = "cueiq:consoleTab";
+const SCOPE_LABEL: Record<ScopeView, string> = { analyzer: "Analyzer", spectrogram: "Spectrogram" };
 
-function BottomPanel({
+function MixerPanel({
   items,
   index,
   playingId,
   liveRef,
-  tap,
   count,
   countAt,
   pads,
+  beside,
 }: {
   items: readonly ConsoleItem[];
   index: number;
   playingId: string | null;
   liveRef: React.RefObject<HTMLSpanElement | null>;
-  tap: SignalTap | null;
   count: number | null;
   /** the strip the count lands on: the row AUTO comes to (past a 0:00 row) */
   countAt: number;
   pads: PadsView | null;
+  /** the ANALYZER stands under this panel (there is a tap) */
+  beside: boolean;
 }) {
-  const tabs: PanelTab[] = tap ? ["analyzer", "mixer", "spectrogram"] : ["mixer"];
-  const [picked, setPicked] = useState<PanelTab>(() => {
+  const songs = items.filter((it) => it.songId);
+  const measured = songs.filter((it) => it.lufs != null).length;
+  return (
+    // With the ANALYZER under it the mixer stops at 420 px (the pads at their tallest, 120 px) and
+    // the analyzer takes what a tall stage has left - a 2560 x 1300 window gave the tiles 250 px
+    // faders over 72 px pads. Alone it takes the whole column.
+    <section
+      aria-label="Set mixer"
+      data-testid="console-mixer"
+      className={cn("slab flex min-h-0 flex-col overflow-hidden", beside ? "max-h-[420px] flex-[1.4]" : "flex-1")}
+    >
+      <PanelHead label="Set mixer">
+        <span className="ml-auto flex min-w-0 items-center justify-end gap-3 text-[11.5px] text-muted-foreground">
+          <span
+            data-testid="console-pads-head"
+            title={`ตัวเลขในแต่ละช่อง = ความดังเฉลี่ย (LUFS) · ตัวเลขสีเหลือง/ขีดเหลืองบนเฟดเดอร์ = จุดที่อยู่ที่ ${LOUDNESS_TARGET} LUFS (บอกเฉย ๆ ไม่ปรับให้เอง)`}
+            className={cn("min-w-0 truncate", pads?.mode === "manual" && "text-foreground")}
+          >
+            {PAD_HEAD[pads?.mode ?? "idle"]}
+            {measured < songs.length ? ` · วัดแล้ว ${measured}/${songs.length} เพลง` : ""}
+          </span>
+          {(
+            [
+              ["bg-warning", "พร้อม"],
+              ["bg-success", "กำลังเล่น"],
+              ["bg-foreground/25", "เล่นแล้ว"],
+            ] as const
+          ).map(([tone, word]) => (
+            <span key={word} className="hidden shrink-0 items-center gap-1 xl:flex">
+              <span aria-hidden className={cn("size-[9px] rounded-[1px]", tone)} />
+              {word}
+            </span>
+          ))}
+        </span>
+      </PanelHead>
+      <SetMixer items={items} index={index} playingId={playingId} liveRef={liveRef} count={count} countAt={countAt} pads={pads} />
+    </section>
+  );
+}
+
+function AnalyzerPanel({ tap, trackKey }: { tap: SignalTap; trackKey: string | null }) {
+  const [view, setView] = useState<ScopeView>(() => {
     try {
-      const v = localStorage.getItem(TAB_KEY);
-      return v === "mixer" || v === "spectrogram" || v === "analyzer" ? v : "analyzer";
+      return localStorage.getItem(SCOPE_KEY) === "spectrogram" ? "spectrogram" : "analyzer";
     } catch {
       return "analyzer";
     }
   });
-  const tab: PanelTab = tabs.includes(picked) ? picked : tabs[0];
-  const pick = (t: PanelTab) => {
-    setPicked(t);
+  const pick = (v: ScopeView) => {
+    setView(v);
     try {
-      localStorage.setItem(TAB_KEY, t);
+      localStorage.setItem(SCOPE_KEY, v);
     } catch {
       /* this page still shows it */
     }
   };
-  const songs = items.filter((it) => it.songId);
-  const measured = songs.filter((it) => it.lufs != null).length;
   return (
-    // Steps aside under a 450 px column: below that SET MIXER's pads (32 px, the one part of a tile
-    // that never gives way) were cut - measured in Chromium, 1280×720 keeps them whole (2026-10-25)
     <section
-      aria-label={TAB_LABEL[tab]}
+      aria-label={SCOPE_LABEL[view]}
       data-testid="console-panel"
-      className="slab flex min-h-0 flex-[1.15] flex-col overflow-hidden [@container_(max-height:450px)]:hidden"
+      className="slab flex min-h-0 flex-1 flex-col overflow-hidden [@container_(max-height:520px)]:hidden"
     >
-      <div className="flex h-7 shrink-0 items-stretch gap-0.5 bg-foreground/[.04] pl-1 pr-2.5 shadow-[inset_0_-1px_0_hsl(var(--border))]">
-        <div role="tablist" aria-label="แผงล่าง" className="flex items-stretch gap-0.5">
-          {tabs.map((t) => (
+      <PanelHead label="Analyzer">
+        <div role="group" aria-label="มุมมองของ Analyzer" className="flex h-[18px] shrink-0 overflow-hidden rounded-[2px] shadow-[inset_0_0_0_1px_hsl(var(--border))]">
+          {(["analyzer", "spectrogram"] as const).map((v) => (
             <button
-              key={t}
+              key={v}
               type="button"
-              role="tab"
-              aria-selected={tab === t}
-              onClick={() => pick(t)}
+              aria-pressed={view === v}
+              data-testid={`console-scope-${v}`}
+              onClick={() => pick(v)}
               className={cn(
-                "en px-3 text-[12.5px] tracking-[.08em]",
-                tab === t
-                  ? "bg-card text-foreground shadow-[inset_0_-2px_0_hsl(var(--primary))]"
-                  : "text-muted-foreground hover:text-foreground"
+                "px-2 font-display text-[11px] font-extrabold uppercase leading-[18px] tracking-[.08em] [font-synthesis:none]",
+                view === v ? "bg-foreground/[.14] text-foreground" : "text-muted-foreground hover:text-foreground"
               )}
             >
-              {TAB_LABEL[t]}
+              {v === "analyzer" ? "Bars" : "Spectrogram"}
             </button>
           ))}
         </div>
-        <span className="ml-auto min-w-0 self-center truncate pl-2 text-[11.5px] text-muted-foreground">
-          {tab === "mixer" ? (
-            <span className="flex min-w-0 items-center justify-end gap-3">
-              <span
-                data-testid="console-pads-head"
-                title={`ตัวเลขในแต่ละช่อง = ความดังเฉลี่ย (LUFS) · ตัวเลขสีเหลือง/ขีดเหลืองบนเฟดเดอร์ = จุดที่อยู่ที่ ${LOUDNESS_TARGET} LUFS (บอกเฉย ๆ ไม่ปรับให้เอง)`}
-                className={cn("min-w-0 truncate", pads?.mode === "manual" && "text-foreground")}
-              >
-                {PAD_HEAD[pads?.mode ?? "idle"]}
-                {measured < songs.length ? ` · วัดแล้ว ${measured}/${songs.length} เพลง` : ""}
-              </span>
-              {(
-                [
-                  ["bg-warning", "พร้อม"],
-                  ["bg-success", "กำลังเล่น"],
-                  ["bg-foreground/25", "เล่นแล้ว"],
-                ] as const
-              ).map(([tone, word]) => (
-                <span key={word} className="hidden shrink-0 items-center gap-1 xl:flex">
-                  <span aria-hidden className={cn("size-[9px] rounded-[1px]", tone)} />
-                  {word}
-                </span>
-              ))}
-            </span>
-          ) : tab === "analyzer" ? (
-            "เสียงที่เครื่องนี้ส่งออก หลังเฟดเดอร์ · LUFS ตามมาตรฐาน BS.1770"
-          ) : (
-            "20 Hz – 20 kHz · เสียงที่เครื่องนี้ส่งออก"
-          )}
+        <span className="ml-auto min-w-0 truncate pl-2 text-[11.5px] text-muted-foreground">
+          {view === "analyzer" ? "เสียงที่เครื่องนี้ส่งออก หลังเฟดเดอร์ · LUFS ตามมาตรฐาน BS.1770" : "20 Hz – 20 kHz · เสียงที่เครื่องนี้ส่งออก"}
         </span>
-      </div>
-      {tab === "mixer" || !tap ? (
-        <SetMixer items={items} index={index} playingId={playingId} liveRef={liveRef} count={count} countAt={countAt} pads={pads} />
-      ) : (
-        <ConsoleAnalyzer tap={tap} trackKey={playingId} view={tab} />
-      )}
+      </PanelHead>
+      <ConsoleAnalyzer tap={tap} trackKey={trackKey} view={view} />
     </section>
   );
 }

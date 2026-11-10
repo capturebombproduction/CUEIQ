@@ -1,5 +1,5 @@
 // lib/console-view.ts - the arithmetic behind Live's CONSOLE board. What the board draws
-// (where the window sits, which bar a line is, how far a fader would come down) is decided
+// (how wide a clip is, which bar a beat is, how far a fader would come down) is decided
 // here; a wrong answer here is a playhead in the wrong song or a trim that raises a song.
 import { describe, it, expect } from "vitest";
 import fs from "node:fs";
@@ -9,10 +9,8 @@ import {
   STAGE_MEDIA,
   mmss,
   blockStarts,
-  arrangementWindow,
-  inWindow,
+  timelineLayout,
   rulerMarks,
-  barLines,
   barBeat,
   sectionRegions,
   resample,
@@ -21,7 +19,8 @@ import {
   dbToVolume,
   volumeToDb,
   lufsBar,
-  ARRANGEMENT_SPAN,
+  TIMELINE_MIN_SHARE,
+  TIMELINE_NOW_SHARE,
 } from "./console-view";
 
 describe("the view choice", () => {
@@ -39,32 +38,86 @@ describe("the view choice", () => {
   });
 });
 
-describe("the arrangement", () => {
+describe("the timeline", () => {
   it("blocks start where the previous ones end; bad lengths count as nothing", () => {
     expect(blockStarts([92, 228, 0, 214])).toEqual({ starts: [0, 92, 320, 320], total: 534 });
     expect(blockStarts([60, Number.NaN, -5, 30])).toEqual({ starts: [0, 60, 60, 60], total: 90 });
     expect(blockStarts([])).toEqual({ starts: [], total: 0 });
   });
 
-  it("the window follows the playhead with a lead, held inside the show", () => {
-    expect(arrangementWindow(0, 3600)).toEqual({ start: 0, span: ARRANGEMENT_SPAN });
-    expect(arrangementWindow(1000, 3600)).toEqual({ start: 1000 - 240, span: 1200 });
-    // the end of the show: the window stops at the last second, the playhead walks on to it
-    expect(arrangementWindow(3500, 3600)).toEqual({ start: 2400, span: 1200 });
-    // a show shorter than the span is shown whole
-    expect(arrangementWindow(300, 900)).toEqual({ start: 0, span: 900 });
-    // nothing planned: a harmless 1 s window, never a division by zero
-    expect(arrangementWindow(0, 0)).toEqual({ start: 0, span: 1 });
+  // the strip's clips: [left, width] percent, rounded to 2 places
+  const slots = (lengths: number[], now: number) => timelineLayout(lengths, now).map((x) => [Math.round(x.left * 100) / 100, Math.round(x.width * 100) / 100]);
+  const widths = (lengths: number[], now: number) => timelineLayout(lengths, now).map((x) => x.width);
+  const sum = (xs: number[]) => xs.reduce((a, b) => a + b, 0);
+
+  it("the clip on now takes its share of the strip, the others the rest by their length", () => {
+    // four 4-minute songs, the second on now: 44 %, and 56 % in three equal parts
+    expect(slots([240, 240, 240, 240], 1)).toEqual([
+      [0, 18.67],
+      [18.67, 44],
+      [62.67, 18.67],
+      [81.33, 18.67],
+    ]);
+    // the others by LENGTH: a 6-minute MC is three times a 2-minute song
+    const w = widths([240, 360, 120], 0);
+    expect(w[0]).toBeCloseTo(TIMELINE_NOW_SHARE * 100, 9);
+    expect(w[1] / w[2]).toBeCloseTo(3, 9);
+    expect(sum(w)).toBeCloseTo(100, 9);
   });
 
-  it("a block is clipped to the window, and one outside it is not drawn", () => {
-    const win = { start: 600, span: 1200 };
-    expect(inWindow(600, 300, win)).toEqual({ left: 0, width: 25 });
-    expect(inWindow(500, 200, win)).toEqual({ left: 0, width: (100 / 1200) * 100 });
-    expect(inWindow(1700, 400, win)).toEqual({ left: (1100 / 1200) * 100, width: (100 / 1200) * 100 });
-    expect(inWindow(0, 600, win)).toBeNull();
-    expect(inWindow(1800, 60, win)).toBeNull();
-    expect(inWindow(900, 0, win)).toBeNull();
+  it("the clips stand edge to edge in the show's order, whatever is on now", () => {
+    const lengths = [87, 230, 205, 228, 180, 241, 236, 262, 249, 150, 233, 226, 251, 244, 60, 238, 230, 120, 241, 435];
+    for (const now of [0, 6, 19]) {
+      const lay = timelineLayout(lengths, now);
+      expect(lay).toHaveLength(20);
+      lay.forEach((x, i) => expect(x.left).toBeCloseTo(i === 0 ? 0 : lay[i - 1].left + lay[i - 1].width, 9));
+      expect(lay[19].left + lay[19].width).toBeCloseTo(100, 9);
+      expect(lay[now].width).toBeCloseTo(44, 9);
+    }
+  });
+
+  it("no clip is squeezed away: a short row and a 0:00 row keep the minimum", () => {
+    // a 70-minute show's 38 s MC would be 0.5 % of the strip; a template row of 0 s, nothing
+    const w = widths([240, 38, 0, 2100, 2000], 0);
+    expect(w[0]).toBeCloseTo(44, 9);
+    expect(w[1]).toBeCloseTo(TIMELINE_MIN_SHARE * 100, 9);
+    expect(w[2]).toBeCloseTo(TIMELINE_MIN_SHARE * 100, 9);
+    // the two long rows share what the lifted ones left, still by their length
+    expect(w[3] + w[4]).toBeCloseTo(56 - 2 * TIMELINE_MIN_SHARE * 100, 9);
+    expect(w[3] / w[4]).toBeCloseTo(2100 / 2000, 9);
+    expect(sum(w)).toBeCloseTo(100, 9);
+    // and a row that IS most of the show does not take the others' minimum either
+    const long = widths([3600, 20, 20], 0);
+    expect(long[1]).toBeCloseTo(TIMELINE_MIN_SHARE * 100, 9);
+    expect(long[0]).toBeCloseTo(100 - 2 * TIMELINE_MIN_SHARE * 100, 9);
+  });
+
+  it("a clip already wider than its share keeps its own width (a two-row show)", () => {
+    expect(slots([300, 100], 0)).toEqual([
+      [0, 75],
+      [75, 25],
+    ]);
+    expect(slots([240], 0)).toEqual([[0, 100]]);
+    expect(timelineLayout([], 0)).toEqual([]);
+  });
+
+  it("more rows than the minimum has room for share what is left equally - never past the strip", () => {
+    const w = widths(new Array(101).fill(60), 50);
+    expect(w[50]).toBeCloseTo(44, 9);
+    expect(w[0]).toBeCloseTo(0.56, 9);
+    expect(sum(w)).toBeCloseTo(100, 9);
+  });
+
+  it("nothing on now (the index past the list), or a show with no lengths: every clip still has its place", () => {
+    expect(slots([100, 300], -1)).toEqual([
+      [0, 25],
+      [25, 75],
+    ]);
+    const w = widths([0, 0, 0], 1);
+    expect(w[1]).toBeCloseTo(44, 9);
+    expect(w[0]).toBeCloseTo(28, 9);
+    expect(sum(w)).toBeCloseTo(100, 9);
+    expect(widths([Number.NaN, -5, 60], 2)[2]).toBeCloseTo(100 - 2 * TIMELINE_MIN_SHARE * 100, 9);
   });
 
   it("ruler marks land on round times, at most ten of them", () => {
@@ -80,28 +133,7 @@ describe("the arrangement", () => {
   });
 });
 
-describe("the clip editor", () => {
-  it("bar lines every 4 bars from the song's first beat, in block seconds", () => {
-    // 120 BPM: a bar is 2 s; first downbeat 0.5 s into the audio, the audio 8 s into the block
-    const lines = barLines(120, 0.5, 8, 20);
-    expect(lines).toEqual([
-      { at: 8.5, bar: 1 },
-      { at: 16.5, bar: 5 },
-      { at: 24.5, bar: 9 },
-    ]);
-  });
-
-  it("no tempo, no first beat, no audio: no grid (never a grid at a guessed tempo)", () => {
-    expect(barLines(null, 0.5, 0, 200)).toEqual([]);
-    expect(barLines(128, null, 0, 200)).toEqual([]);
-    expect(barLines(0, 0.5, 0, 200)).toEqual([]);
-    expect(barLines(128, 0.5, 0, 0)).toEqual([]);
-  });
-
-  it("a grid is capped, so a nonsense tempo cannot hang the board", () => {
-    expect(barLines(100000, 0, 0, 3600, 1).length).toBe(512);
-  });
-
+describe("the clip on now", () => {
   it("BAR.BEAT counts from the first beat, 1-based, four to the bar", () => {
     expect(barBeat(0.5, 120, 0.5)).toBe("1.1");
     expect(barBeat(1.0, 120, 0.5)).toBe("1.2");
@@ -168,12 +200,5 @@ describe("the set mixer", () => {
     expect(lufsBar(-18)).toBe(0.5);
     expect(lufsBar(-3)).toBe(1);
     expect(lufsBar(null)).toBe(0);
-  });
-});
-
-describe("guards", () => {
-  it("a bar grid every 0 (or fewer) bars is no grid, never an endless loop", () => {
-    expect(barLines(120, 0, 0, 60, 0)).toEqual([]);
-    expect(barLines(120, 0, 0, 60, -4)).toEqual([]);
   });
 });

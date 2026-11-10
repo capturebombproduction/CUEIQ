@@ -133,16 +133,18 @@ describe("the transport", () => {
     expect(screen.getByTestId("console-barbeat").textContent).toBe("—");
   });
 
-  it("an alarm lies over the ARRANGEMENT's head - REMAIN, the item's only clock here, stays clear", () => {
+  it("an alarm lies over the TIMELINE's head - REMAIN, the item's only clock here, stays clear", () => {
     mount({ alarm: <div role="alert">No signal</div> });
     const alarm = screen.getByRole("alert");
-    expect(screen.getByLabelText("Arrangement").contains(alarm)).toBe(true);
+    expect(screen.getByLabelText("Timeline").contains(alarm)).toBe(true);
     expect(screen.getByRole("group", { name: "Transport" }).contains(alarm)).toBe(false);
   });
 });
 
-describe("the arrangement", () => {
-  it("draws every item of a short show as a clip, and a clip cues its item", () => {
+// One strip since 2026-11-10 (พี่: ARRANGEMENT and CLIP "ซ้ำซ้อนกันไปหน่อย"; mockup round 1, A):
+// the whole show as one row of clips, the one on now opened into its waveform.
+describe("the timeline", () => {
+  it("draws every item of the show as a clip, and a clip cues its item", () => {
     const { props } = mount();
     const clips = screen.getAllByTestId("console-clip");
     expect(clips).toHaveLength(3);
@@ -156,27 +158,62 @@ describe("the arrangement", () => {
     expect(clips[2]).toBeDisabled();
   });
 
-  it("the notes lane counts down to the next item's note", () => {
+  it("the clip on now is the wide one and holds the waveform; the others stand in order beside it", () => {
+    const { rerender, props } = mount();
+    const clips = () => screen.getAllByTestId("console-clip");
+    // three equal rows, the first on now: 44 % of the strip, the other two 28 % each
+    expect(clips().map((c) => [c.style.left, c.style.width])).toEqual([
+      ["0%", "calc(44% - 2px)"],
+      ["44%", "calc(28% - 2px)"],
+      ["72%", "calc(28% - 2px)"],
+    ]);
+    expect(clips()[0].dataset.now).toBe("1");
+    expect(clips()[0].contains(screen.getByTestId("console-wave"))).toBe(true);
+    // the show moves on: the wide clip is the second one, with its own waveform
+    rerender(<ConsoleBoard {...props} index={1} elapsed={0} remaining={240} playingId="item-2" />);
+    expect(clips().map((c) => c.style.width)).toEqual(["calc(28% - 2px)", "calc(44% - 2px)", "calc(28% - 2px)"]);
+    expect(clips()[1].contains(screen.getByTestId("console-wave"))).toBe(true);
+    expect(clips()[0].dataset.now).toBeUndefined();
+  });
+
+  it("the head names the item on now, as the CLIP editor's did", () => {
+    mount();
+    const head = screen.getByLabelText("Timeline").textContent ?? "";
+    expect(head).toContain("01 Track 1");
+    expect(head).toContain("4:00 · -11.2 LUFS · 120 BPM");
+  });
+
+  it("the notes line counts down to the next item's note", () => {
     mount();
     // the MC starts at 8:00; the playhead is at 0:30 → in 7:30
     expect(screen.getByText(/ไฟแดงเต็มเวที · ใน 7:30/)).toBeTruthy();
   });
 
-  it("the item on now keeps its note when its start has scrolled out of the window", () => {
-    // 15-minute blocks: the window (20 min, the playhead 4 min in) starts after item 2 did
-    const long = [
-      item(1, { block: 900, notes: "เปิดม่าน" }),
-      item(2, { block: 900, notes: "สปอตไลต์ขาว" }),
-      item(3, { block: 900 }),
+  it("the notes line: this row's note, the next one coming, the one after - a past row's is gone", () => {
+    const rows = [
+      item(1, { notes: "เปิดม่าน" }),
+      item(2, { notes: "สปอตไลต์ขาว" }),
+      item(3, { notes: null }),
+      item(4, { notes: "ไมค์ 3 ให้ Rin" }),
+      item(5, { notes: "ประกาศขายของ" }),
+      item(6, { notes: "ปิดม่าน" }),
     ];
-    mount({ items: long, index: 1, elapsed: 400, remaining: 500 });
-    expect(screen.getByText("สปอตไลต์ขาว")).toBeTruthy();
-    // a past item's note that scrolled out is gone, as it should be
-    expect(screen.queryByText("เปิดม่าน")).toBeNull();
+    mount({ items: rows, index: 1, elapsed: 40, remaining: 200 });
+    const notes = screen.getAllByTestId("console-note").map((n) => n.textContent);
+    // row 2 is on now (no countdown); row 4 starts at 12:00, the playhead is at 4:40
+    expect(notes).toEqual(["02สปอตไลต์ขาว", "04ไมค์ 3 ให้ Rin · ใน 7:20", "05ประกาศขายของ · ใน 11:20"]);
+    expect(screen.queryByText(/เปิดม่าน/)).toBeNull();
+    expect(screen.queryByText(/ปิดม่าน/)).toBeNull();
+  });
+
+  it("no note left in the show: it says so", () => {
+    mount({ items: [item(1), item(2)] });
+    expect(screen.queryByTestId("console-note")).toBeNull();
+    expect(screen.getByText("— ไม่มีโน้ตในรายการที่เหลือ —")).toBeTruthy();
   });
 });
 
-describe("the clip editor", () => {
+describe("the clip on now", () => {
   it("draws a measured song's waveform; says so for an unmeasured one", () => {
     const { unmount } = mount();
     expect(screen.getByTestId("console-wave")).toBeTruthy();
@@ -394,7 +431,9 @@ describe("the next channel", () => {
   });
 });
 
-describe("the bottom panel", () => {
+// Two panels since 2026-11-10 (mockup round 1, A): they were tabs of one, and a show run on the
+// pads could not watch its own level.
+describe("the set mixer and the analyzer", () => {
   /** A tap whose analysis reads a steady −12 LUFS (z = 10^((−12 + 0.691) / 10)), peak 0.5. */
   function analysisTap() {
     const stop = vi.fn();
@@ -416,36 +455,50 @@ describe("the bottom panel", () => {
   }
   beforeEach(() => localStorage.removeItem("cueiq:consoleTab"));
 
-  it("the web build (no tap) has the SET MIXER alone", () => {
+  it("without a tap (Safari, Firefox) the SET MIXER stands alone - and there are no tabs to switch", () => {
     mount();
-    expect(screen.getAllByRole("tab").map((t) => t.textContent)).toEqual(["Set mixer"]);
+    expect(screen.getAllByTestId("console-strip")).toHaveLength(3);
+    expect(screen.queryByTestId("console-panel")).toBeNull();
+    expect(screen.queryByRole("tab")).toBeNull();
   });
 
-  it("with a tap: ANALYZER first, and its readouts are the live loudness", () => {
+  it("with a tap both are on screen at once: the pads, and the live loudness beside them", () => {
     const { tap, startAnalysis } = analysisTap();
     mount({ tap });
-    expect(screen.getAllByRole("tab").map((t) => t.textContent)).toEqual(["Analyzer", "Set mixer", "Spectrogram"]);
-    expect(screen.getByRole("tab", { name: "Analyzer" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.queryByRole("tab")).toBeNull();
+    expect(screen.getAllByTestId("console-strip")).toHaveLength(3);
+    expect(screen.getByTestId("console-panel")).toHaveAttribute("aria-label", "Analyzer");
     expect(startAnalysis).toHaveBeenCalledTimes(1);
     step();
     expect(screen.getByTestId("console-lufs-momentary").textContent).toBe("−12.0");
     expect(screen.getByTestId("console-lufs-integrated").textContent).toBe("−12.0");
   });
 
-  it("a tab is kept per device; leaving the analysis tabs stops the analysis graph", () => {
+  it("BARS | SPECTROGRAM is one analysis seen two ways: not rebuilt, kept per device, the pads stay", () => {
     const { tap, startAnalysis, stop } = analysisTap();
     const { unmount } = mount({ tap });
-    fireEvent.click(screen.getByRole("tab", { name: "Spectrogram" }));
-    // analyzer -> spectrogram is the same analysis: not rebuilt
+    expect(screen.getByTestId("console-scope-analyzer")).toHaveAttribute("aria-pressed", "true");
+    fireEvent.click(screen.getByTestId("console-scope-spectrogram"));
     expect(startAnalysis).toHaveBeenCalledTimes(1);
     expect(stop).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole("tab", { name: "Set mixer" }));
-    expect(stop).toHaveBeenCalledTimes(1);
-    expect(localStorage.getItem("cueiq:consoleTab")).toBe("mixer");
+    expect(screen.getByTestId("console-panel")).toHaveAttribute("aria-label", "Spectrogram");
+    expect(screen.queryByTestId("console-lufs-momentary")).toBeNull();
     expect(screen.getAllByTestId("console-strip")).toHaveLength(3);
+    expect(localStorage.getItem("cueiq:consoleTab")).toBe("spectrogram");
+    // leaving CONSOLE stops the analysis graph; coming back opens what this device chose
     unmount();
+    expect(stop).toHaveBeenCalledTimes(1);
     mount({ tap });
-    expect(screen.getByRole("tab", { name: "Set mixer" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByTestId("console-scope-spectrogram")).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("a device that had the old SET MIXER tab open comes back to the bars, never to an empty panel", () => {
+    localStorage.setItem("cueiq:consoleTab", "mixer");
+    const { tap } = analysisTap();
+    mount({ tap });
+    expect(screen.getByTestId("console-scope-analyzer")).toHaveAttribute("aria-pressed", "true");
+    step();
+    expect(screen.getByTestId("console-lufs-momentary").textContent).toBe("−12.0");
   });
 
   it("a new song starts the integrated loudness over; a pause does not", () => {

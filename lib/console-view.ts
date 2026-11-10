@@ -1,6 +1,6 @@
 // Live Mode's CONSOLE view (phase B, components/live/console-board.tsx): the DAW-style board
-// พี่ picked in round 3 - transport readouts, the show as an arrangement of clips, the item on
-// now as a clip editor, a set mixer. A second WAY OF LOOKING at the same show: it reads Live's
+// พี่ picked in round 3 - transport readouts, the show as a timeline of clips with the item on
+// now opened into its waveform, a set mixer, an analyzer. A second WAY OF LOOKING at the same show: it reads Live's
 // state and never owns any. The audio engine, the clock and the keys stay in live-mode.tsx.
 //
 // The arithmetic is here, import-free and unit-tested (lib/console-view.test.ts); the board
@@ -28,7 +28,7 @@ export const mmss = (sec: number) => {
   return `${Math.floor(s / 60)}:${pad2(s % 60)}`;
 };
 
-// ── THE ARRANGEMENT ──────────────────────────────────────────────────────────────────────
+// ── THE TIMELINE ─────────────────────────────────────────────────────────────────────────
 /** Where each block starts on the show's PLAN timeline, and the planned total. */
 export function blockStarts(lengths: readonly number[]): { starts: number[]; total: number } {
   const starts: number[] = [];
@@ -40,29 +40,62 @@ export function blockStarts(lengths: readonly number[]): { starts: number[]; tot
   return { starts, total: at };
 }
 
-/** The arrangement shows this much of the show at a time (or all of it, when shorter). */
-export const ARRANGEMENT_SPAN = 1200;
-/** ... with the playhead this far in, so what comes next has the room. */
-export const ARRANGEMENT_LEAD = 0.2;
+/** The clip on NOW takes this share of the strip; the rest of the show shares what is left. */
+export const TIMELINE_NOW_SHARE = 0.44;
+/** No clip is squeezed under this share: at 1.25 % a one-minute row measured 7-12 px in Chromium
+ *  (1024-1440 px windows) - no room for its two-digit number, nothing to aim a tap at. */
+export const TIMELINE_MIN_SHARE = 0.02;
 
-/** The visible window: `span` seconds following the playhead, held inside the show. */
-export function arrangementWindow(
-  playhead: number,
-  total: number,
-  span = ARRANGEMENT_SPAN,
-  lead = ARRANGEMENT_LEAD
-): { start: number; span: number } {
-  if (!(total > 0)) return { start: 0, span: 1 };
-  const s = Math.min(span, total);
-  return { start: clamp(playhead - s * lead, 0, total - s), span: s };
-}
-
-/** A stretch of the show [from, from + len) as left / width percent of the window, or null if outside. */
-export function inWindow(from: number, len: number, win: { start: number; span: number }): { left: number; width: number } | null {
-  const a = Math.max(from, win.start);
-  const b = Math.min(from + len, win.start + win.span);
-  if (!(b > a)) return null;
-  return { left: ((a - win.start) / win.span) * 100, width: ((b - a) / win.span) * 100 };
+/**
+ * The TIMELINE's clips as left / width percent of the strip: the whole show in one row, in
+ * order, edge to edge. The clip on `now` is widened to `nowShare` (it keeps its own share when
+ * that is already more: a two-row show - short of the others' minimum), the others share the
+ * rest by their length, and none
+ * falls under `minShare` - a 38 s MC in a 70-minute show would be 5 px, a 0:00 row nothing at
+ * all. More rows than the minimum has room for share the rest equally. `now` outside the list:
+ * every clip by its length.
+ */
+export function timelineLayout(
+  lengths: readonly number[],
+  now: number,
+  nowShare = TIMELINE_NOW_SHARE,
+  minShare = TIMELINE_MIN_SHARE
+): { left: number; width: number }[] {
+  const n = lengths.length;
+  if (n === 0) return [];
+  const len = lengths.map((l) => (Number.isFinite(l) && l > 0 ? l : 0));
+  const total = len.reduce((a, b) => a + b, 0);
+  const hasNow = now >= 0 && now < n;
+  const share: number[] = new Array(n).fill(0);
+  const others = len.map((_, i) => i).filter((i) => !hasNow || i !== now);
+  // its own share when that is more - but never so much that the others lose their minimum
+  if (hasNow)
+    share[now] = others.length === 0 ? 1 : Math.min(Math.max(nowShare, total > 0 ? len[now] / total : 0), Math.max(nowShare, 1 - others.length * minShare));
+  const room = 1 - (hasNow ? share[now] : 0);
+  const floor = Math.min(minShare, others.length > 0 ? room / others.length : 0);
+  // by length, lifting whoever falls under the floor and sharing what is left among the rest
+  const atFloor = new Set<number>();
+  for (;;) {
+    const free = others.filter((i) => !atFloor.has(i));
+    const sum = free.reduce((a, i) => a + len[i], 0);
+    const left = room - atFloor.size * floor;
+    let lifted = false;
+    for (const i of free) {
+      const w = sum > 0 ? (len[i] / sum) * left : left / free.length;
+      if (w < floor - 1e-12) {
+        atFloor.add(i);
+        lifted = true;
+      } else share[i] = w;
+    }
+    if (!lifted) break;
+  }
+  atFloor.forEach((i) => (share[i] = floor));
+  let at = 0;
+  return share.map((w) => {
+    const slot = { left: at * 100, width: w * 100 };
+    at += w;
+    return slot;
+  });
 }
 
 /** Ruler marks at a round step that gives at most ten across the window. */
@@ -76,28 +109,7 @@ export function rulerMarks(win: { start: number; span: number }): { at: number; 
   return out;
 }
 
-// ── THE CLIP EDITOR ──────────────────────────────────────────────────────────────────────
-/**
- * Bar lines every `every` bars, in BLOCK seconds: the first downbeat is the song's analysed
- * beat_offset (seconds into its audio), the audio starts `audioStart` into the block. Bars
- * are 4/4 (what lib/bpm-detect.ts and the practice metronome assume).
- */
-export function barLines(
-  bpm: number | null,
-  offset: number | null,
-  audioStart: number,
-  audioLen: number,
-  every = 4
-): { at: number; bar: number }[] {
-  if (bpm == null || offset == null || !(bpm > 0) || !(audioLen > 0) || !Number.isFinite(offset) || !(every >= 1)) return [];
-  const barLen = 240 / bpm;
-  const out: { at: number; bar: number }[] = [];
-  for (let b = 0; offset + b * barLen < audioLen && out.length < 512; b += every) {
-    if (offset + b * barLen >= 0) out.push({ at: audioStart + offset + b * barLen, bar: b + 1 });
-  }
-  return out;
-}
-
+// ── THE CLIP ON NOW ──────────────────────────────────────────────────────────────────────
 /** "17.3": bar and beat (1-based, 4/4) at `t` seconds into the audio, or null before beat one. */
 export function barBeat(t: number, bpm: number | null, offset: number | null): string | null {
   if (bpm == null || offset == null || !(bpm > 0) || !Number.isFinite(t) || t < offset) return null;

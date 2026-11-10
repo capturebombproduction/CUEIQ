@@ -310,8 +310,8 @@ export class SignalTap {
 
   /**
    * CONSOLE's ANALYZER (components/live/console-analyzer.tsx): a second graph on the same copies,
-   * built when the panel opens and gone when the last user stops - STAGE, and CONSOLE on another
-   * tab, pay nothing. Each player's copy goes through a gain set to that player's volume (so the
+   * built when the panel opens and gone when the last user stops - STAGE pays nothing. Each
+   * player's copy goes through a gain set to that player's volume (so the
    * analysis is AFTER the fader: what the room gets) into one summing bus, and off the bus: an
    * 8192-point spectrum, the raw left / right for the stereo picture, and BS.1770's K-weighting
    * (lib/song-analysis.ts's two stages, as IIR filters, per channel) into analysers long enough

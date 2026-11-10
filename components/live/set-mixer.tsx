@@ -115,7 +115,7 @@ export const SetMixer = memo(function SetMixer({
   // Enter = GO, as Space is START / RUN (live-mode.tsx): taken whatever has the focus - a pad
   // clicked a moment ago, the dock's RUN - so the key that fires the next row never pauses the
   // show instead. Not while typing, not with a modifier, and only while GO is on screen (the
-  // SET MIXER tab open, the panel not stepped aside on a short stage). A held key is one GO:
+  // SET MIXER on screen - it always is since 2026-11-10, a panel of its own). A held key is one GO:
   // the browser's default goes on every repeat, the press happens once.
   // On the device running the show the key is taken even when GO cannot fire (NOW is the last
   // row, AUTO, a held key's repeats): left to the browser, Enter clicked whatever had the focus -
@@ -166,7 +166,8 @@ export const SetMixer = memo(function SetMixer({
 
   return (
     // a size container: on a short stage the tiles give up their time line first (the pad shows
-    // what is left), then their title (the tile's tooltip still has it) - never the pad
+    // what is left), then their title (the tile's tooltip still has it) - never the pad. And with
+    // room to spare the PAD is what grows (2026-11-10: .pad-key in app/stage.css, 32 px up to 120)
     <div ref={rootRef} className="flex min-h-0 flex-1 flex-col gap-1.5 px-2 pb-1.5 pt-1.5 [container-type:size]">
       {/* short of room the fader gives way, never the pad: the row does not scroll up and down,
           and a thin bar is all a long setlist's sideways scroll takes (2026-10-25 hunt) */}
@@ -247,7 +248,7 @@ export const SetMixer = memo(function SetMixer({
                 disabled={!live}
                 aria-label={`แป้น ${i + 1} ${it.title || "—"} — ${starting ? PAD_STARTING : PAD_WORDS[state]}`}
                 className={cn(
-                  "relative flex h-8 shrink-0 flex-col items-center justify-center overflow-hidden rounded-[2px]",
+                  "pad-key relative flex shrink-0 flex-col items-center justify-center overflow-hidden rounded-[2px]",
                   starting && "animate-pulse",
                   state === "ready" && "bg-warning text-warning-foreground",
                   (state === "on" || state === "fade") && "bg-success/25 text-foreground",
@@ -260,8 +261,8 @@ export const SetMixer = memo(function SetMixer({
                 {sound && (
                   <span aria-hidden className="absolute inset-y-0 left-0 bg-success/45" style={{ width: `${padProgress(sound) * 100}%` }} />
                 )}
-                <span className="num relative text-[17px] font-extrabold leading-none">{i + 1}</span>
-                {sub && <span className="relative text-[10px] font-bold leading-[1.15]">{sub}</span>}
+                <span className="pad-num num relative font-extrabold leading-none">{i + 1}</span>
+                {sub && <span className="pad-sub relative font-bold leading-[1.15]">{sub}</span>}
               </button>
               <div className="h-[11px] shrink-0 truncate text-center text-[9.5px] leading-[11px] text-muted-foreground [@container_(max-height:133px)]:hidden">{it.title}</div>
               {count != null && i === (countAt ?? index + 1) && (

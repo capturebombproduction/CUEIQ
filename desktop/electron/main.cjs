@@ -1637,7 +1637,8 @@ async function measureTheSound(win) {
 async function drivePads(win) {
   const out = { step: null };
   const zoomBefore = win.webContents.getZoomFactor();
-  // as the CONSOLE step: room for the bottom panel on a small CI screen (layout only)
+  // as the CONSOLE step: a desktop's height on a small CI screen (layout only; the pads are
+  // always on the board - a panel of their own since 2026-11-10, no tab to open first)
   win.webContents.setZoomFactor(0.6);
   try {
     out.step = await win.webContents.executeJavaScript(`(async () => {
@@ -1648,8 +1649,6 @@ async function drivePads(win) {
       };
       q('[data-testid=live-view-console]')?.click();
       if (!(await wait(() => !!q('[data-testid=console]'), 5000))) return 'CONSOLE never showed';
-      const tab = Array.from(document.querySelectorAll('[role=tab]')).find((t) => t.textContent.trim().toLowerCase() === 'set mixer');
-      if (tab) tab.click();
       if (!(await wait(() => document.querySelectorAll('[data-testid=console-pad]').length >= 3, 5000))) return 'no pads';
       return 'ready';
     })()`);
@@ -1885,7 +1884,7 @@ async function driveLiveScenario(win) {
     // the tone running, after both switches).
     smokeAt("live:audible:console");
     // The runner's screen may be small (a 1024 x 768 CI desktop clamps the 1280 x 860 window),
-    // and on a short stage CONSOLE's bottom panel - the ANALYZER - steps aside by design, so
+    // and on a short stage CONSOLE's ANALYZER panel steps aside by design (under a 520 px column), so
     // the step zooms the page out to give it a desktop's height, and puts the zoom back after.
     // Layout only: the players and the show never notice a zoom.
     const zoomBefore = win.webContents.getZoomFactor();
@@ -1905,7 +1904,7 @@ async function driveLiveScenario(win) {
           await win.webContents.executeJavaScript(`JSON.stringify((() => {
             const c = document.querySelector('[data-testid=console-channel]');
             const alarm = document.querySelector('[data-testid=signal-alarm]');
-            // the ANALYZER tab (the default where there is a tap): its momentary loudness, BS.1770's
+            // the ANALYZER panel (on the board wherever there is a tap): its momentary loudness, BS.1770's
             // K-weighting run live by Chromium's own IIR filters. The app prints a real minus (−).
             const m = document.querySelector('[data-testid=console-lufs-momentary]');
             const lufs = m && /[0-9]/.test(m.textContent) ? m.textContent.replace("−", "-") : null;

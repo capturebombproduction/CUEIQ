@@ -419,6 +419,19 @@ nav.glass-bottom { --glass-a: var(--tabbar-glass-a); }
 .led-live { background: linear-gradient(0deg, hsl(var(--success)) 0%, hsl(var(--warning)) 85%, hsl(var(--destructive)) 100%); }
 .fader-cap { background: linear-gradient(180deg, hsl(var(--foreground) / .32), hsl(var(--foreground) / .12));
   box-shadow: 0 3px 8px hsl(var(--shadow) / .55), inset 0 0 0 1px hsl(var(--foreground) / .35); }
+/* SET MIXER's pad (components/live/set-mixer.tsx): the one part of a tile that never gives way,
+   and the part that GROWS with the panel (2026-11-10 - 32 px was all the old tabbed panel had).
+   The steps are the mixer's CONTENT height (its box less 12 px of padding), in source order. The
+   tile's fader keeps its travel: measured in Chromium, 41 px beside a 44 px pad (1280 x 800),
+   71 beside 72 (1440 x 900), 175 beside 120 (2560 x 1300) - the old board left it about 21. */
+.pad-key { height: 32px; --pad-n: 17px; --pad-s: 10px; }
+.pad-key > .pad-num { font-size: var(--pad-n); }
+.pad-key > .pad-sub { font-size: var(--pad-s); }
+@container (min-height: 164px) { .pad-key { height: 44px; } }
+@container (min-height: 188px) { .pad-key { height: 56px; --pad-n: 22px; } }
+@container (min-height: 208px) { .pad-key { height: 72px; --pad-n: 27px; --pad-s: 11px; } }
+@container (min-height: 290px) { .pad-key { height: 96px; --pad-n: 34px; --pad-s: 12.5px; } }
+@container (min-height: 380px) { .pad-key { height: 120px; --pad-n: 42px; --pad-s: 13.5px; } }
 .hazard-band { height: 40px; display: flex; align-items: center; justify-content: center;
   background: repeating-linear-gradient(-45deg, hsl(var(--alarm-foreground)) 0 10px, hsl(var(--alarm)) 10px 20px); }
 .hazard-band > span { display: inline-flex; align-items: center; gap: 7px; height: 28px; padding: 0 18px; background: hsl(var(--alarm)); color: hsl(var(--alarm-foreground));

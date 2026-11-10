@@ -1,15 +1,16 @@
 "use client";
 
-// CONSOLE's ANALYZER and SPECTROGRAM tabs (phase B2): the spectrum in twelfths of an octave, the stereo
+// CONSOLE's ANALYZER panel, as BARS or as a SPECTROGRAM (phase B2): the spectrum in twelfths of an octave, the stereo
 // picture (goniometer + phase correlation) and the loudness of what this machine is sending,
 // live - momentary, short-term, the song's integrated value, its loudness range, the sample
 // peak, and a minute of history against the −14 LUFS line. The SPECTROGRAM is the same spectrum
 // scrolling through time.
 //
-// Desktop app only (it needs the SignalTap). The tap's analysis graph is built when this panel
-// mounts and torn down when it unmounts, so a CONSOLE on another tab, or STAGE, pays nothing.
-// Everything moves through one requestAnimationFrame loop drawing into canvases and writing
-// text onto nodes; React renders this once per tab switch.
+// It needs the SignalTap (the desktop app, Chrome / Edge on the web). The tap's analysis graph is
+// built when this panel mounts and torn down when it unmounts, so STAGE pays nothing; a panel
+// stepped aside on a short stage keeps the graph but draws nothing. Everything moves through one
+// requestAnimationFrame loop drawing into canvases and writing text onto nodes; React renders
+// this once per BARS | SPECTROGRAM switch.
 import { useEffect, useRef } from "react";
 import { cn } from "@/lib/utils";
 import type { SignalTap } from "@/lib/live-signal";
