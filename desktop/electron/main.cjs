@@ -1884,13 +1884,15 @@ async function driveLiveScenario(win) {
     // the tone running, after both switches).
     smokeAt("live:audible:console");
     // The runner's screen may be small (a 1024 x 768 CI desktop clamps the 1280 x 860 window),
-    // and on a short stage CONSOLE's ANALYZER panel steps aside by design (under a 520 px column), so
+    // and on a short stage CONSOLE's ANALYZER panel steps aside by design (under a 490 px column), so
     // the step zooms the page out to give it a desktop's height, and puts the zoom back after.
     // Layout only: the players and the show never notice a zoom.
     const zoomBefore = win.webContents.getZoomFactor();
-    // 0.6, not 0.8: at 0.8 (1260 x 818 CSS px) b893103's CI still reported the panel hidden -
-    // something above the board took the room. 0.6 leaves the column ~800 px whatever does.
-    win.webContents.setZoomFactor(0.6);
+    // 0.5: at 0.8 (1260 x 818 CSS px) b893103's CI still reported the panel hidden, and at 0.6
+    // (1680 x 1091) the column was 508 px - the readiness card above Live takes its 30dvh
+    // (desktop/src/pages/live.tsx) - which 0404b14's first 520 px step-aside point hid again.
+    // 0.5 is 2016 x 1310 on that runner: a column of ~660 px.
+    win.webContents.setZoomFactor(0.5);
     const switched = await win.webContents.executeJavaScript(
       `(() => { const b = document.querySelector('[data-testid=live-view-console]');
         if (!b) return 'no STAGE | CONSOLE switch'; b.click(); return 'clicked'; })()`

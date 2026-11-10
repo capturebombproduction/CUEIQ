@@ -846,8 +846,10 @@ const Timeline = memo(function Timeline({
 // panel until the TIMELINE gave the room back: a show run on the pads could not watch its own
 // level. The pads are always there, and taller the more room they get (set-mixer.tsx). The
 // ANALYZER needs the tap (the desktop app, Chrome / Edge on the web; Safari and Firefox have the
-// SET MIXER alone) and is the one that steps aside on a short stage - under a 520 px column the
-// two together left the tiles no room for a fader - and its analysis then stops drawing.
+// SET MIXER alone) and is the one that steps aside on a short stage - under a 490 px column the
+// two together leave it under 125 px and the tiles little fader (at 508, the desktop smoke's CI
+// window: mixer 188 px with a 45 px fader, analyzer 134) - and its analysis then stops drawing.
+// In the desktop app the readiness card above Live takes up to 30dvh of the same column.
 // BARS | SPECTROGRAM is one analysis seen two ways; the choice is kept per device.
 type ScopeView = "analyzer" | "spectrogram";
 /** The key of the old three-tab panel: a device that had SPECTROGRAM open still opens it. */
@@ -935,7 +937,7 @@ function AnalyzerPanel({ tap, trackKey }: { tap: SignalTap; trackKey: string | n
     <section
       aria-label={SCOPE_LABEL[view]}
       data-testid="console-panel"
-      className="slab flex min-h-0 flex-1 flex-col overflow-hidden [@container_(max-height:520px)]:hidden"
+      className="slab flex min-h-0 flex-1 flex-col overflow-hidden [@container_(max-height:490px)]:hidden"
     >
       <PanelHead label="Analyzer">
         <div role="group" aria-label="มุมมองของ Analyzer" className="flex h-[18px] shrink-0 overflow-hidden rounded-[2px] shadow-[inset_0_0_0_1px_hsl(var(--border))]">
