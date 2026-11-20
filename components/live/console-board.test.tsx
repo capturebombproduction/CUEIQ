@@ -276,7 +276,7 @@ describe("the playback channel", () => {
     fireEvent.click(screen.getByRole("button", { name: "MC" }));
     fireEvent.click(screen.getByRole("button", { name: "Loud" }));
     expect(props.onFade).toHaveBeenNthCalledWith(1, 0, 3000);
-    expect(props.onFade).toHaveBeenNthCalledWith(2, 30, undefined);
+    expect(props.onFade).toHaveBeenNthCalledWith(2, 20, undefined);
     expect(props.onFade).toHaveBeenNthCalledWith(3, 100, 2500);
   });
 

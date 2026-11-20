@@ -276,7 +276,7 @@ describe("LiveMode pads · a ducked song gets its own level back (7660130)", () 
     const [three] = playing(media, "item-3");
     await click(screen.getByRole("button", { name: "MC" }));
     await tick(2_250);
-    expect(media.state(three).volume).toBeCloseTo(0.3, 2);
+    expect(media.state(three).volume).toBeCloseTo(0.2, 2);
     await act(async () => {
       media.set(three, { paused: true, ended: true });
       media.emit(three, "ended");
@@ -397,7 +397,7 @@ describe("LiveMode pads · NOW's key fade vs. a layer's tile fader", () => {
       fireEvent.keyDown(fader, { key: "ArrowDown" });
     });
     await tick(3_000);
-    expect(media.state(three).volume).toBeCloseTo(0.3, 2);
+    expect(media.state(three).volume).toBeCloseTo(0.2, 2);
   });
 });
 
@@ -625,7 +625,7 @@ describe("LiveMode · RUN after Auto Mute → จบโชว์ is heard", () =
     await click(screen.getByTestId("run-toggle")); // run
     await tick(1_000);
     const [one] = playing(media, "item-1");
-    expect(media.state(one).volume).toBeCloseTo(0.3);
+    expect(media.state(one).volume).toBeCloseTo(0.2);
   });
 });
 

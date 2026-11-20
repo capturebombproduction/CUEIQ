@@ -3089,7 +3089,7 @@ describe("LiveMode · a late viewer follows the master's row and levels", () => 
     await act(async () => {
       live().emit("sync-request", { sender: "phone-late" });
     });
-    expect(stateSends().at(-1)!.payload.volumes["item-1"]).toBe(30);
+    expect(stateSends().at(-1)!.payload.volumes["item-1"]).toBe(20);
   });
 
   it("the PA on a row this list does not have yet: found the moment the list re-reads", async () => {
@@ -3902,7 +3902,7 @@ describe("LiveMode · the fade keys ride the track that is sounding, for that mo
     await act(async () => {
       vi.advanceTimersByTime(3_000);
     });
-    expect(volumeSends().at(-1)).toMatchObject({ itemId: "item-1", target: 30 });
+    expect(volumeSends().at(-1)).toMatchObject({ itemId: "item-1", target: 20 });
     await act(async () => {
       media.first()!.dispatchEvent(new Event("ended"));
     });
@@ -3931,7 +3931,7 @@ describe("LiveMode · the fade keys ride the track that is sounding, for that mo
     await act(async () => {
       vi.advanceTimersByTime(500);
     });
-    expect(volumeSends().at(-1)).toMatchObject({ itemId: "item-1", target: 30 });
+    expect(volumeSends().at(-1)).toMatchObject({ itemId: "item-1", target: 20 });
   });
 
   it("…while MC with nothing sounding still sets the cued row's level ahead of its turn", async () => {
@@ -3944,7 +3944,7 @@ describe("LiveMode · the fade keys ride the track that is sounding, for that mo
     await act(async () => {
       vi.advanceTimersByTime(500);
     });
-    expect(volumeSends().at(-1)).toMatchObject({ itemId: "item-1", target: 30 });
+    expect(volumeSends().at(-1)).toMatchObject({ itemId: "item-1", target: 20 });
   });
 
   it("Auto Mute, then a reset before its fade has landed: the song keeps its own level", async () => {
@@ -4496,11 +4496,11 @@ describe("LiveMode · held and ducks across a reload, a reset and a loop's end",
     await act(async () => {
       window.dispatchEvent(new Event("pagehide"));
     });
-    expect(JSON.parse(localStorage.getItem(SNAPSHOT_KEY)!).ducks).toEqual({ "item-1": { prev: 100, now: 30 } });
+    expect(JSON.parse(localStorage.getItem(SNAPSHOT_KEY)!).ducks).toEqual({ "item-1": { prev: 100, now: 20 } });
     first.unmount();
     await mountLive();
     const levels = screen.getAllByTitle(/^ความดังของแทร็คนี้/) as HTMLInputElement[];
-    expect(levels.some((l) => l.value === "30")).toBe(true);
+    expect(levels.some((l) => l.value === "20")).toBe(true);
     await act(async () => {
       window.dispatchEvent(new Event("pagehide"));
     });
@@ -4515,7 +4515,7 @@ describe("LiveMode · held and ducks across a reload, a reset and a loop's end",
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: /^MC$/ }));
     });
-    expect(JSON.parse(localStorage.getItem(SNAPSHOT_KEY)!).ducks).toEqual({ "item-1": { prev: 100, now: 30 } });
+    expect(JSON.parse(localStorage.getItem(SNAPSHOT_KEY)!).ducks).toEqual({ "item-1": { prev: 100, now: 20 } });
   });
 
   it("a reset during a loop BGM's end fade sends no level to the devices it just freed", async () => {
@@ -4660,7 +4660,7 @@ describe("LiveMode · the volume messages keep their order", () => {
 });
 
 // An MC row's music is a bed under the talking (พี่ 2026-10-17: "ตั้งความดังพื้นฐานไว้ที่ค่า MC
-// ของระบบ"): on a device that never set a level for the row it starts at the MC key's 30 %,
+// ของระบบ"): on a device that never set a level for the row it starts at the MC key's level (MC_LEVEL),
 // not at full. A level the device did set (its soundcheck) is still the one it plays at.
 describe("LiveMode · an MC's music starts at the MC level", () => {
   const MC_SET = [makeItem(1, { kind: "mc", title: "MC", loop_audio: true }), makeItem(2), makeItem(3)];
@@ -4670,16 +4670,16 @@ describe("LiveMode · an MC's music starts at the MC level", () => {
     supa.setScript({ setlist_items: ok(MC_SET), songs: ok([]), show_authority: ok([]) });
   });
 
-  it("plays at 30 % where this device has no level of its own for the row", async () => {
+  it("plays at the MC level (20 %) where this device has no level of its own for the row", async () => {
     const media = instrumentMediaElements();
     h.saved = [{ itemId: "item-1", blob: new Blob(["audio"]), name: "bgm.wav", path: null }];
     await mountLive({ items: MC_SET });
     await startShowFromUi();
     const primary = media.first()!;
     expect(media.state(primary).paused).toBe(false);
-    expect(media.state(primary).volume).toBeCloseTo(0.3);
+    expect(media.state(primary).volume).toBeCloseTo(0.2);
     // the level a person reads is the level it plays at
-    expect(screen.getAllByText("30%").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("20%").length).toBeGreaterThan(0);
     // a default is not a soundcheck: nothing was saved for the row
     await act(async () => {
       vi.advanceTimersByTime(1_000);
@@ -4777,10 +4777,10 @@ describe("LiveMode · a Loop row plays past its slot until Auto Mute", () => {
   it("Manual: talking past the slot, the bed keeps its level - no fade to silence", async () => {
     const media = await startLoop();
     const primary = media.first()!;
-    expect(media.state(primary).volume).toBeCloseTo(0.3); // an MC's bed, at the MC level
+    expect(media.state(primary).volume).toBeCloseTo(0.2); // an MC's bed, at the MC level
     await tick(16_000); // 6 s past a 10 s slot
     expect(media.state(primary).paused).toBe(false);
-    expect(media.state(primary).volume).toBeCloseTo(0.3);
+    expect(media.state(primary).volume).toBeCloseTo(0.2);
   });
 
   it("the last row loops on even in Auto - there is no next row to move to", async () => {
@@ -4790,7 +4790,7 @@ describe("LiveMode · a Loop row plays past its slot until Auto Mute", () => {
       fireEvent.click(screen.getByRole("button", { name: /^Auto$/ }));
     });
     await tick(16_000);
-    expect(media.state(media.first()!).volume).toBeCloseTo(0.3);
+    expect(media.state(media.first()!).volume).toBeCloseTo(0.2);
   });
 
   it("Auto with a row after it still fades the bed out to end on time", async () => {
@@ -5355,17 +5355,17 @@ describe("LiveMode · SET MIXER pads", () => {
       fireEvent.click(screen.getByRole("button", { name: "MC" })); // Track 1 ducks to 30
     });
     await tick(2_250);
-    expect(media.state(first).volume).toBeCloseTo(0.3, 2);
+    expect(media.state(first).volume).toBeCloseTo(0.2, 2);
     await press(3);
     await tick(1_000);
     // Track 1 is no longer the primary: its own level comes back for its next turn - not onto
     // the layer, which plays on at the 30 it went under at
-    expect(media.state(first).volume).toBeCloseTo(0.3, 2);
+    expect(media.state(first).volume).toBeCloseTo(0.2, 2);
     const fader = screen.getAllByTestId("console-tile-fader")[0];
-    expect(fader).toHaveAttribute("aria-valuenow", "30");
+    expect(fader).toHaveAttribute("aria-valuenow", "20");
     fireEvent.keyDown(fader, { key: "ArrowUp" });
     await tick(250);
-    expect(media.state(first).volume).toBeCloseTo(0.31, 2);
+    expect(media.state(first).volume).toBeCloseTo(0.21, 2);
   });
 
   it("STAGE says a row still sounds under NOW, and how long it has left", async () => {
@@ -5580,14 +5580,14 @@ describe("LiveMode · SET MIXER pads", () => {
       fireEvent.click(screen.getByRole("button", { name: "MC" }));
     });
     await tick(2_500); // the MC duck: Track 3 down to 30
-    expect(media.state(three).volume).toBeCloseTo(0.3, 2);
+    expect(media.state(three).volume).toBeCloseTo(0.2, 2);
     await press(5); // Track 3 goes under at 30, and its own level is given back
     await tick(500);
     pressKey(window, { key: "ArrowLeft", code: "ArrowLeft" });
     pressKey(window, { key: "ArrowLeft", code: "ArrowLeft" });
     await tick(500);
     expect(last()).toMatchObject({ currentIndex: 2, running: true });
-    expect(media.state(three).volume).toBeCloseTo(0.3, 2);
+    expect(media.state(three).volume).toBeCloseTo(0.2, 2);
   });
 
   it("a pad pressed over its own row's last seconds (Auto's overlap) plays it once - from its top", async () => {

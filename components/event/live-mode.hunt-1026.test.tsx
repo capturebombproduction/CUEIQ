@@ -145,7 +145,7 @@ describe("P1 · a Loop bed switched to MANUAL during its end-fade", () => {
     await mountLive(set);
     await startShowFromUi();
     const primary = media.first()!;
-    expect(media.state(primary).volume).toBeCloseTo(0.3); // the MC's bed at the MC level
+    expect(media.state(primary).volume).toBeCloseTo(0.2); // the MC's bed at the MC level
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: /^Auto$/ }));
     });
@@ -157,7 +157,7 @@ describe("P1 · a Loop bed switched to MANUAL during its end-fade", () => {
     await tick(6_000); // the MC talks on past the slot
     expect(media.state(primary).paused).toBe(false);
     // used to: the end-fade ran on to 0 - the bed loops on, silent
-    expect(media.state(primary).volume).toBeCloseTo(0.3);
+    expect(media.state(primary).volume).toBeCloseTo(0.2);
   });
 });
 
@@ -498,7 +498,7 @@ describe("controls", () => {
     await mountLive(set);
     await startShowFromUi();
     await tick(16_000);
-    expect(media.state(media.first()!).volume).toBeCloseTo(0.3);
+    expect(media.state(media.first()!).volume).toBeCloseTo(0.2);
   });
   it("P3 control: a row whose file ends with its slot - the tail is its last 5 s", async () => {
     const set = [

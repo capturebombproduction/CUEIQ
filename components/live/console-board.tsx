@@ -38,6 +38,7 @@ import {
   waveBars,
 } from "@/lib/console-view";
 import { PAD_HEAD } from "@/lib/pad-view";
+import { MC_LEVEL } from "@/lib/live-levels";
 import type { SetlistKind } from "@/lib/types";
 
 export interface ConsoleItem {
@@ -426,7 +427,7 @@ export function ConsoleBoard({
             {(
               [
                 ["Mute", VolumeX, 0, 3000, "ค่อย ๆ ปิดเสียงเป็น 0% ใน 3 วินาที"],
-                ["MC", Volume1, 30, undefined, "ค่อย ๆ ลดเสียงลงเป็น 30% ใน 2 วินาที (ช่วง MC)"],
+                ["MC", Volume1, MC_LEVEL, undefined, `ค่อย ๆ ลดเสียงลงเป็น ${MC_LEVEL}% ใน 2 วินาที (ช่วง MC)`],
                 ["Loud", Volume2, 100, 2500, "ค่อย ๆ เพิ่มเสียงกลับเป็น 100% ใน 2.5 วินาที"],
               ] as const
             ).map(([label, Icon, target, ms, title]) => (

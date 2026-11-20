@@ -1015,7 +1015,7 @@ describe("Quick Show — the fade keys ride the track that is sounding", () => {
     await boot(threeUp());
     await click(startButton());
     await click(screen.getByRole("button", { name: /^MC$/ }));
-    expect(JSON.parse(localStorage.getItem(SNAPSHOT_KEY)!).ducks).toEqual({ "id-Opening": { prev: 100, now: 30 } });
+    expect(JSON.parse(localStorage.getItem(SNAPSHOT_KEY)!).ducks).toEqual({ "id-Opening": { prev: 100, now: 20 } });
   });
 
   it("a relaunch mid-MC comes back ducked - and the song's own level is still what is saved", async () => {
@@ -1026,11 +1026,11 @@ describe("Quick Show — the fade keys ride the track that is sounding", () => {
     await act(async () => {
       window.dispatchEvent(new Event("pagehide"));
     });
-    expect(JSON.parse(localStorage.getItem(SNAPSHOT_KEY)!).ducks).toEqual({ "id-Opening": { prev: 100, now: 30 } });
+    expect(JSON.parse(localStorage.getItem(SNAPSHOT_KEY)!).ducks).toEqual({ "id-Opening": { prev: 100, now: 20 } });
     view.unmount();
     await boot(store.items.map((it) => ({ ...it })));
     const level = screen.getByTitle("ความดังของแทร็คนี้ (จำค่าไว้ให้)") as HTMLInputElement;
-    expect(level.value).toBe("30");
+    expect(level.value).toBe("20");
     await tick(1_000);
     expect(store.items.find((it) => it.title === "Opening")?.volume ?? 100).toBe(100);
   });
@@ -1075,7 +1075,7 @@ describe("Quick Show — the fade keys ride the track that is sounding", () => {
     expect(media.state(primary).volume).toBeCloseTo(1);
   });
 
-  it("(control) MC → pause → รันโชว์: still at the MC's 30", async () => {
+  it("(control) MC → pause → รันโชว์: still at the MC's level", async () => {
     await boot(threeUp());
     const primary = media.first() as HTMLMediaElement;
     await click(startButton());
@@ -1085,7 +1085,7 @@ describe("Quick Show — the fade keys ride the track that is sounding", () => {
     await click(transport().run); // run
     await tick(1_000);
     expect(media.state(primary).paused).toBe(false);
-    expect(media.state(primary).volume).toBeCloseTo(0.3);
+    expect(media.state(primary).volume).toBeCloseTo(0.2);
   });
 
   // 2026-10-24 review: Auto Mute is how a show ends, so it gets pressed after the last song

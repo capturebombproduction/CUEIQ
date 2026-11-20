@@ -169,6 +169,6 @@ describe("LiveMode — Auto Mute in a Loop bed's end-fade, then MANUAL", () => {
       fireEvent.click(screen.getByRole("button", { name: /^Manual$/ }));
     });
     await tick(3_000);
-    expect(media.state(primary).volume).toBeCloseTo(0.3);
+    expect(media.state(primary).volume).toBeCloseTo(0.2);
   });
 });

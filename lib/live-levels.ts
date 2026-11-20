@@ -8,7 +8,7 @@
 import type { SetlistKind } from "./types";
 
 /** The MC fade key's level, and where an MC row's music starts (percent). */
-export const MC_LEVEL = 30;
+export const MC_LEVEL = 20;
 
 /** The level a row's track starts at on a device that has not set one (0-100). */
 export function baseLevel(kind: SetlistKind | string | null | undefined): number {

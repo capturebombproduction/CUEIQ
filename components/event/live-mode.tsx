@@ -3481,7 +3481,7 @@ export function LiveMode({
     broadcastVolume(itemId, v, 0);
   }
 
-  // The NOW card's keys - Auto Mute (0), MC (30), Auto Loudness (100). They ride the
+  // The NOW card's keys - Auto Mute (0), MC (MC_LEVEL, 20), Auto Loudness (100). They ride the
   // track that is SOUNDING: in Manual that need not be the current row (NEXT cues the
   // MC while the song plays on), and pressed there they faded the cued row - nothing
   // heard, and a cued SONG kept the 0 and came in silent on รันโชว์. On a sounding
@@ -3512,7 +3512,7 @@ export function LiveMode({
   }
 
   // Smoothly fade the CURRENT item's volume to `target` over `ms` (default 2s).
-  // Auto Mute = 0, MC = 30, Auto Loudness = 100. Mirrors to the speaker device.
+  // Auto Mute = 0, MC = MC_LEVEL (20), Auto Loudness = 100. Mirrors to the speaker device.
   function fadeVolumeTo(target: number, ms = 2000) {
     const cur = items[state.currentIndex];
     if (!cur) return;

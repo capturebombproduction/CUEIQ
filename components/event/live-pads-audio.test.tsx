@@ -216,7 +216,7 @@ describe("LiveMode pads · a tile fader leaves NOW's key fade alone", () => {
     await tick(500);
     fireEvent.keyDown(screen.getAllByTestId("console-tile-fader")[0], { key: "ArrowDown" }); // the layer's
     await tick(2_500);
-    expect(media.state(three).volume).toBeCloseTo(0.3, 2);
+    expect(media.state(three).volume).toBeCloseTo(0.2, 2);
   });
 });
 

@@ -67,6 +67,7 @@ import {
 import { liveZone, zoneCaption } from "@/lib/live-zone";
 import { restoreShow, SNAPSHOT_ALIVE_MS, STALE_RESTORE_MS } from "@/lib/live-restore";
 import { fadeLevel, nextFadeFrame } from "@/lib/fade";
+import { MC_LEVEL } from "@/lib/live-levels";
 import { unplayableAudio } from "@/lib/audio";
 import {
   deleteSoloItem,
@@ -1963,8 +1964,8 @@ export function MyShow() {
                     <Button
                       type="button"
                       variant="secondary"
-                      onClick={() => fadeKey(30)}
-                      title="ค่อย ๆ ลดเสียงเป็น 30% (ช่วง MC)"
+                      onClick={() => fadeKey(MC_LEVEL)}
+                      title={`ค่อย ๆ ลดเสียงเป็น ${MC_LEVEL}% (ช่วง MC)`}
                       className="en h-11 min-w-0 gap-1.5 rounded-[2px] px-1 !text-[14px]"
                     >
                       <Volume1 aria-hidden className="h-4 w-4" /> MC
