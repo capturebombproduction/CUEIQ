@@ -271,13 +271,17 @@ describe.skipIf(process.platform === "win32")("the swap script", () => {
   });
 
   it("calls the swap off if the old app was reopened meanwhile (no reopen, staged copy kept)", async () => {
-    // a process running FROM the installed bundle, as a Dock relaunch does: a copy of sleep
-    // as Contents/MacOS/CueIQ (not `sh -c … <path>`: macOS sh execs the command and the
-    // path vanishes from the command line — the CI Mac caught exactly that)
+    // a process running FROM the installed bundle, as a Dock relaunch does: an executable
+    // script AS Contents/MacOS/CueIQ, so the kernel runs `/bin/sh <its path>` and the path
+    // stays on the command line for as long as it loops. Not `sh -c … <path>` (macOS sh
+    // execs the command and the path vanishes - the CI Mac caught that), and not a copy of
+    // sleep: on uutils coreutils (newer Ubuntu runners) sleep is one multi-call binary that,
+    // renamed CueIQ, exits at once as "utility not found" - CI went red on that 2026-11-20.
     const exe = path.join(app, "Contents", "MacOS", "CueIQ");
-    fs.copyFileSync(spawnSync("/bin/sh", ["-c", "command -v sleep"], { encoding: "utf8" }).stdout.trim(), exe);
+    fs.writeFileSync(exe, "#!/bin/sh\nwhile :; do sleep 1; done\n", { mode: 0o755 });
     fs.chmodSync(exe, 0o755);
-    const relaunched = spawn(exe, ["5"]);
+    const relaunched = spawn(exe, []);
+    expect(relaunched.exitCode).toBeNull(); // still running when the swap looks
     try {
       expect(await run(deadPid())).toBe(1);
     } finally {
